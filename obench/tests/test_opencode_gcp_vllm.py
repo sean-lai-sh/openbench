@@ -264,7 +264,20 @@ class TestThesisScripts(unittest.TestCase):
         env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
         env["MARKER"] = marker
         env["HF_TOKEN"] = "super-secret-token"
-        env.pop("VM_NAME", None)
+        for key in (
+            "VM_NAME",
+            "MACHINE_TYPE",
+            "TENSOR_PARALLEL_SIZE",
+            "VLLM_MODEL",
+            "VLLM_MAX_MODEL_LEN",
+            "VLLM_DTYPE",
+            "VLLM_TOOL_CALL_PARSER",
+            "VLLM_REASONING_PARSER",
+            "VLLM_VERSION",
+            "IMAGE_FAMILY",
+            "ALLOW_OTHER_MACHINE",
+        ):
+            env.pop(key, None)
         proc = subprocess.run(
             ["bash", "thesis/gcp/create-vllm-vm.sh", "--dry-run"],
             cwd=REPO_ROOT,
@@ -288,17 +301,45 @@ class TestThesisScripts(unittest.TestCase):
             check=False,
         )
         self.assertEqual(checked.returncode, 0, checked.stderr)
-        self.assertIn("--machine-type=a2-highgpu-1g", text)
+        self.assertIn("--machine-type=g2-standard-24", text)
         self.assertIn("--project=nyu-rdg-fy26-js11531-a68d", text)
         self.assertIn("--zone=us-central1-a", text)
         self.assertIn("thesis-vllm-glm47", text)
-        self.assertIn("--image-family=common-cu128-ubuntu-2204-nvidia-570", text)
+        self.assertIn("--image-family=common-cu129-ubuntu-2204-nvidia-580", text)
+        self.assertIn("vllm==0.30.0", script)
+        self.assertIn("unsloth/GLM-4.7-Flash-FP8-Dynamic", script)
+        self.assertIn("--tensor-parallel-size 2", script)
+        self.assertIn("--max-model-len 8192", script)
+        self.assertIn("--enable-auto-tool-choice", script)
+        self.assertIn("--tool-call-parser glm47", script)
+        self.assertIn("--reasoning-parser glm45", script)
+        self.assertNotIn("--kv-cache-dtype", script)
         self.assertIn("--source-ranges=35.235.240.0/20", text)
         self.assertIn("--action=DENY", text)
         self.assertIn("--target-tags=thesis-iap", text)
         self.assertIn("--host 127.0.0.1", text)
         self.assertNotIn("--host 0.0.0.0", text)
         self.assertNotIn("course-", text)
+
+    def test_machine_type_and_tensor_parallel_size_are_configurable(self):
+        env = os.environ.copy()
+        env.pop("VM_NAME", None)
+        env.pop("ALLOW_OTHER_MACHINE", None)
+        env["MACHINE_TYPE"] = "a2-highgpu-2g"
+        env["TENSOR_PARALLEL_SIZE"] = "2"
+        proc = subprocess.run(
+            ["bash", "thesis/gcp/create-vllm-vm.sh", "--dry-run"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--machine-type=a2-highgpu-2g", proc.stdout)
+        script = proc.stdout.split("----- startup-script -----\n", 1)[1]
+        self.assertIn("--tensor-parallel-size 2", script)
+        self.assertNotIn("--machine-type=g2-standard-24", proc.stdout)
 
     def test_create_refuses_name_without_thesis_prefix(self):
         env = os.environ.copy()
