@@ -134,13 +134,9 @@ def _has_anthropic_oauth():
 # Wired via a custom provider passed through OPENCODE_CONFIG_CONTENT (inline
 # JSON env var) so nothing touches the user's opencode config and the temp
 # workspace stays clean. apiKey uses opencode's {env:VAR} interpolation. Base
-# URLs verified from official docs 2026-07. Key-gated in run().
-#
-# Thinking parity: run every open model with opencode's `--variant` selector.
-# GLM-5.2 maps medium-equivalent to Z.ai's `high`; the other open models use
-# `medium` as the portable thinking-on request and rely on the provider/default
-# to clamp or ignore unsupported effort levels.
-# (Duplicated across pi/opencode/codex so each adapter stays self-contained.)
+# URLs verified from official docs 2026-07.
+# GLM-5.2 maps medium-equivalent to Z.ai's high. opencode has no medium variant for that model.
+# Hosted rows are duplicated across pi, opencode, and codex.
 OPEN_MODELS = {
     "glm-5.2":           {"provider": "zai",      "model_id": "glm-5.2",           "base_url": "https://api.z.ai/api/paas/v4", "env_key": "ZAI_API_KEY",      "display": "Z.ai GLM",      "variant": "high"},
     "glm-4.7-flash":     {"provider": "zai",      "model_id": "glm-4.7-flash",     "base_url": "https://api.z.ai/api/paas/v4", "env_key": "ZAI_API_KEY",      "display": "Z.ai GLM",      "variant": "medium"},
@@ -149,6 +145,17 @@ OPEN_MODELS = {
     "kimi-k3":    {"provider": "moonshot", "model_id": "kimi-k3",    "base_url": "https://api.moonshot.ai/v1",   "env_key": "MOONSHOT_API_KEY", "display": "Moonshot Kimi K3", "variant": "medium"},
     "laguna-s-2.1": {"provider": "openrouter", "model_id": "poolside/laguna-s-2.1", "base_url": "https://openrouter.ai/api/v1", "env_key": "OPENROUTER_API_KEY", "display": "OpenRouter Poolside Laguna S 2.1", "variant": "medium"},
     "inkling": {"provider": "openrouter", "model_id": "thinkingmachines/inkling", "base_url": "https://openrouter.ai/api/v1", "env_key": "OPENROUTER_API_KEY", "display": "OpenRouter Thinking Machines Inkling", "variant": "medium"},
+    "gcp-vllm/glm-4.7-flash": {
+        "provider": "gcp-vllm",
+        "model_id": "",
+        "model_id_env": "OPENBENCH_GCP_VLLM_MODEL",
+        "base_url": "",
+        "base_url_env": "OPENBENCH_GCP_VLLM_BASE_URL",
+        "env_key": "OPENBENCH_GCP_VLLM_API_KEY",
+        "env_key_optional": True,
+        "display": "GCP vLLM",
+        "variant": None,
+    },
 }
 
 
@@ -159,25 +166,64 @@ def _unsupported(model):
             **_empty_token_usage()}
 
 
-def _setup_needed(env_key, model):
+def _setup_needed(env_key, model, detail=None):
+    message = detail or f"export {env_key} to use {model}"
+    if not str(message).startswith("SETUP-NEEDED"):
+        message = f"SETUP-NEEDED: {message}"
     return {"completed": False,
-            "error": f"SETUP-NEEDED: export {env_key} to use {model}",
+            "error": message,
             "output_tail": "", "tokens": None, "turns": None, "cmd": None,
             **_empty_token_usage()}
+
+
+def _validate_base_url(url):
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url or "")
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return "base URL must be an absolute http(s) URL"
+    if parsed.username is not None or parsed.password is not None:
+        return "base URL must not contain credentials"
+    return None
+
+
+def _resolve_open_spec(model, spec):
+    resolved = dict(spec)
+    missing = []
+    if spec.get("base_url_env"):
+        resolved["base_url"] = os.environ.get(spec["base_url_env"], "").strip()
+        if not resolved["base_url"]:
+            missing.append(spec["base_url_env"])
+    if spec.get("model_id_env"):
+        resolved["model_id"] = os.environ.get(spec["model_id_env"], "").strip()
+        if not resolved["model_id"]:
+            missing.append(spec["model_id_env"])
+    if not spec.get("env_key_optional") and spec.get("env_key"):
+        if not os.environ.get(spec["env_key"]):
+            missing.append(spec["env_key"])
+    if missing:
+        return None, f"export {' and '.join(missing)} to use {model}"
+    problem = _validate_base_url(resolved.get("base_url") or "")
+    if problem:
+        return None, f"{problem} for {model}"
+    if not str(resolved.get("model_id") or "").strip():
+        return None, f"model id is empty for {model}"
+    return resolved, None
 
 
 def _open_config_content(spec):
     """Inline OPENCODE_CONFIG_CONTENT JSON registering the open provider."""
     prov = spec["provider"]
+    options = {"baseURL": _proxied_base_url(spec)}
+    if spec.get("env_key") and (
+        not spec.get("env_key_optional") or os.environ.get(spec["env_key"])
+    ):
+        options["apiKey"] = "{env:" + spec["env_key"] + "}"
     return json.dumps({
         "provider": {
             prov: {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": spec["display"],
-                "options": {
-                    "baseURL": _proxied_base_url(spec),
-                    "apiKey": "{env:" + spec["env_key"] + "}",
-                },
+                "options": options,
                 "models": {spec["model_id"]: {}},
             }
         }
@@ -349,20 +395,23 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         if model == "claude-opus-4-8":
             env.pop("ANTHROPIC_API_KEY", None)  # force Anthropic OAuth route
     elif model in OPEN_MODELS:
-        spec = OPEN_MODELS[model]
-        if not os.environ.get(spec["env_key"]):
+        spec, detail = _resolve_open_spec(model, OPEN_MODELS[model])
+        if detail:
             shutil.rmtree(iso_home, ignore_errors=True)
-            return _setup_needed(spec["env_key"], model)
+            return _setup_needed(OPEN_MODELS[model].get("env_key") or "", model, detail)
         cmd = [
             "opencode", "run",
             "--dir", workdir,
             "-m", f'{spec["provider"]}/{spec["model_id"]}',
-            "--variant", spec["variant"],
+        ]
+        if spec.get("variant"):
+            cmd.extend(["--variant", spec["variant"]])
+        cmd.extend([
             "--auto",
             "--format", "json",
             "--title", "openbench",
             instruction,
-        ]
+        ])
         env["OPENCODE_CONFIG_CONTENT"] = _open_config_content(spec)
     else:
         shutil.rmtree(iso_home, ignore_errors=True)
