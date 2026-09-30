@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Run OpenCode on the three hard tasks against the self-hosted vLLM endpoint.
-# The operator runs this script after the IAP tunnel is up. It does not call gcloud.
-
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

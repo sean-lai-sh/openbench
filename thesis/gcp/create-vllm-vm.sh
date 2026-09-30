@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# Create one GCE VM that serves zai-org/GLM-4.7-Flash through vLLM.
-# The operator runs this script. Nothing in the repo invokes it.
-#
-# The VM name, firewall rule names, and network tag all start with thesis-.
-# The script refuses any other name. This project is shared.
-
 set -euo pipefail
 
 PROJECT="${PROJECT:-nyu-rdg-fy26-js11531-a68d}"
@@ -58,10 +52,12 @@ fi
 
 extra_quoted=""
 if [[ -n "$VLLM_EXTRA_ARGS" ]]; then
-  # Word-split is intentional. The operator passes extra vLLM flags as a string.
-  # shellcheck disable=SC2206
-  extra_words=($VLLM_EXTRA_ARGS)
+  extra_words=()
+  IFS=' ' read -r -a extra_words <<< "$VLLM_EXTRA_ARGS"
   for word in "${extra_words[@]}"; do
+    if [[ -z "$word" ]]; then
+      continue
+    fi
     extra_quoted+=" $(printf '%q' "$word")"
   done
 fi

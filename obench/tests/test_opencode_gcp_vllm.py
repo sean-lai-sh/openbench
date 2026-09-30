@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""OpenCode self-hosted vLLM route and the thesis operator scripts.
-
-No live opencode, gcloud, or model calls. subprocess.run is stubbed, and the
-shell scripts run with --dry-run or with fake curl and obench binaries.
-"""
-
 import importlib.util
 import json
 import os
@@ -222,6 +216,34 @@ class TestDoctorSelfHosted(unittest.TestCase):
         self.assertIn("OPENBENCH_GCP_VLLM_MODEL", auth["detail"])
         self.assertNotIn("oauth", auth["detail"])
 
+    def test_import_failure_does_not_fall_through_to_oauth(self):
+        class Broken:
+            def which(self, cli):
+                return "/bin/opencode"
+
+            def run(self, argv, timeout=15):
+                return 0, "1.18.3"
+
+            def getenv(self, name):
+                return None
+
+            def exists(self, path):
+                return False
+
+            def read_text(self, path):
+                return None
+
+            def import_adapter(self, name):
+                raise RuntimeError("boom")
+
+        rows, ok = doctor.evaluate(["opencode"], MODEL, Broken())
+        self.assertFalse(ok)
+        auth = next(row for row in rows if row["check"] == "AUTH")
+        self.assertFalse(auth["ok"])
+        self.assertIn("import failed", auth["detail"])
+        self.assertIn("boom", auth["detail"])
+        self.assertNotIn("oauth", auth["detail"])
+
 
 def _write_executable(path, body):
     with open(path, "w", encoding="utf-8") as fh:
@@ -292,6 +314,22 @@ class TestThesisScripts(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("thesis-", proc.stderr)
         self.assertNotIn("gcloud compute instances create", proc.stdout)
+
+    def test_extra_args_are_not_expanded_as_globs(self):
+        env = os.environ.copy()
+        env.pop("VM_NAME", None)
+        env["VLLM_EXTRA_ARGS"] = "--chat-template *.md"
+        proc = subprocess.run(
+            ["bash", "thesis/gcp/create-vllm-vm.sh", "--dry-run"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("AGENTS.md", proc.stdout)
+        self.assertIn("*.md", proc.stdout.replace("\\*", "*"))
 
     def test_teardown_stop_and_delete_name_only_thesis_resources(self):
         env = os.environ.copy()

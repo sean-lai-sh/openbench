@@ -134,16 +134,9 @@ def _has_anthropic_oauth():
 # Wired via a custom provider passed through OPENCODE_CONFIG_CONTENT (inline
 # JSON env var) so nothing touches the user's opencode config and the temp
 # workspace stays clean. apiKey uses opencode's {env:VAR} interpolation. Base
-# URLs verified from official docs 2026-07. Key-gated in run().
-#
-# Thinking parity: run every hosted open model with opencode's `--variant`
-# selector. GLM-5.2 maps medium-equivalent to Z.ai's `high`; the other hosted
-# open models use `medium`. A self-hosted row leaves `variant` empty because
-# vLLM rejects effort fields it does not implement.
-# (Duplicated across pi/opencode/codex so each adapter stays self-contained.)
-#
-# gcp-vllm/glm-4.7-flash reads the endpoint from the environment at run time.
-# Nothing in this row is a URL, a served model name, or an API key.
+# URLs verified from official docs 2026-07.
+# GLM-5.2 maps medium-equivalent to Z.ai's high. opencode has no medium variant for that model.
+# Hosted rows are duplicated across pi, opencode, and codex.
 OPEN_MODELS = {
     "glm-5.2":           {"provider": "zai",      "model_id": "glm-5.2",           "base_url": "https://api.z.ai/api/paas/v4", "env_key": "ZAI_API_KEY",      "display": "Z.ai GLM",      "variant": "high"},
     "glm-4.7-flash":     {"provider": "zai",      "model_id": "glm-4.7-flash",     "base_url": "https://api.z.ai/api/paas/v4", "env_key": "ZAI_API_KEY",      "display": "Z.ai GLM",      "variant": "medium"},
@@ -184,7 +177,6 @@ def _setup_needed(env_key, model, detail=None):
 
 
 def _validate_base_url(url):
-    """Reject a base URL that is not absolute http(s) or that embeds a secret."""
     from urllib.parse import urlsplit
     parsed = urlsplit(url or "")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -195,7 +187,6 @@ def _validate_base_url(url):
 
 
 def _resolve_open_spec(model, spec):
-    """Fill env-backed endpoint fields. Hosted rows pass through unchanged."""
     resolved = dict(spec)
     missing = []
     if spec.get("base_url_env"):
@@ -223,8 +214,6 @@ def _open_config_content(spec):
     """Inline OPENCODE_CONFIG_CONTENT JSON registering the open provider."""
     prov = spec["provider"]
     options = {"baseURL": _proxied_base_url(spec)}
-    # Optional keys stay out of the config when unset so vLLM can run with no
-    # Authorization header. A set key is referenced, not copied into the JSON.
     if spec.get("env_key") and (
         not spec.get("env_key_optional") or os.environ.get(spec["env_key"])
     ):

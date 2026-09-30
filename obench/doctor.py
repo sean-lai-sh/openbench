@@ -65,7 +65,7 @@ DOCKER_ENV_CHECKS = ("BUILDX", "CPUS", "MEMORY", "IMAGES", "AUTH")
 
 # M4 open canonical model -> the env key its provider needs. When --model is one
 # of these, the AUTH check becomes "is this key exported?" instead of the
-# harness's own subscription-login check. Mirrors the adapters' OPEN_MODELS.
+# harness's own subscription-login check.
 OPEN_MODEL_ENV = {
     "glm-5.2": "ZAI_API_KEY",
     "glm-4.7-flash": "ZAI_API_KEY",
@@ -417,11 +417,15 @@ def check_open_key(p, env_key, *, keys_env_ok=False):
     return False, f"SETUP-NEEDED: export {env_key}"
 
 
-def _imported_open_spec(p, harness, model):
-    """Return one OPEN_MODELS row, or None when the adapter has no such row."""
+def _load_adapter(p, harness):
     try:
-        mod = p.import_adapter(harness)
-    except Exception:  # noqa: BLE001 - caller falls through to the stock auth check
+        return p.import_adapter(harness), None
+    except Exception as exc:
+        return None, exc
+
+
+def _open_spec_from_module(mod, model):
+    if mod is None:
         return None
     open_models = getattr(mod, "OPEN_MODELS", None)
     if not isinstance(open_models, dict):
@@ -431,7 +435,6 @@ def _imported_open_spec(p, harness, model):
 
 
 def check_self_hosted_env(p, spec):
-    """AUTH for an env-backed endpoint. The API key is optional when declared so."""
     missing = []
     for key in (spec.get("base_url_env"), spec.get("model_id_env")):
         if key and not p.getenv(key):
@@ -938,8 +941,11 @@ def _evaluate_config_variant(candidate, model, probes, pins):
 
     cli_ok, cli_detail = check_cli(probes, spec["cli"])
     version_ok, version_detail = check_version(probes, base, spec["cli"], pins)
-    open_spec = _imported_open_spec(probes, base, model)
-    if base == "grokbuild" and model == "gpt-5.6":
+    mod, import_error = _load_adapter(probes, base)
+    open_spec = _open_spec_from_module(mod, model)
+    if import_error is not None:
+        auth_ok, auth_detail = False, f"adapter import failed: {import_error}"
+    elif base == "grokbuild" and model == "gpt-5.6":
         auth_ok, auth_detail = check_subbridge(probes)
     elif isinstance(open_spec, dict) and open_spec.get("base_url_env"):
         auth_ok, auth_detail = check_self_hosted_env(probes, open_spec)
@@ -1002,8 +1008,11 @@ def evaluate(harnesses, model, probes, pins=None, candidates=None):
 
         cli_ok, cli_detail = check_cli(probes, spec["cli"])
         version_ok, version_detail = check_version(probes, name, spec["cli"], pins)
-        open_spec = _imported_open_spec(probes, name, model)
-        if name == "grokbuild" and model == "gpt-5.6":
+        mod, import_error = _load_adapter(probes, name)
+        open_spec = _open_spec_from_module(mod, model)
+        if import_error is not None:
+            auth_ok, auth_detail = False, f"adapter import failed: {import_error}"
+        elif name == "grokbuild" and model == "gpt-5.6":
             auth_ok, auth_detail = check_subbridge(probes)
         elif isinstance(open_spec, dict) and open_spec.get("base_url_env"):
             auth_ok, auth_detail = check_self_hosted_env(probes, open_spec)

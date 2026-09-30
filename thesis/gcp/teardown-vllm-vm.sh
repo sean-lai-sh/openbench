@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# Stop or delete the thesis vLLM VM.
-# The operator runs this script. Nothing in the repo invokes it.
-#
-# stop keeps the disk and the firewall rules.
-# delete removes the named VM, then removes the thesis- firewall rules only
-# when no other instance still carries the thesis-iap tag.
-
 set -euo pipefail
 
 PROJECT="${PROJECT:-nyu-rdg-fy26-js11531-a68d}"
