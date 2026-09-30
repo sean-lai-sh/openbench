@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 export OPENBENCH_GCP_VLLM_BASE_URL="${OPENBENCH_GCP_VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
-export OPENBENCH_GCP_VLLM_MODEL="${OPENBENCH_GCP_VLLM_MODEL:-zai-org/GLM-4.7-Flash}"
+export OPENBENCH_GCP_VLLM_MODEL="${OPENBENCH_GCP_VLLM_MODEL:-unsloth/GLM-4.7-Flash-FP8-Dynamic}"
 
 results_dir="$ROOT/results"
 results_path="$results_dir/thesis-opencode-glm-4.7-flash.jsonl"

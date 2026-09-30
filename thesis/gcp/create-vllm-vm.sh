@@ -4,13 +4,18 @@ set -euo pipefail
 PROJECT="${PROJECT:-nyu-rdg-fy26-js11531-a68d}"
 ZONE="${ZONE:-us-central1-a}"
 VM_NAME="${VM_NAME:-thesis-vllm-glm47}"
-MACHINE_TYPE="${MACHINE_TYPE:-a2-highgpu-1g}"
+MACHINE_TYPE="${MACHINE_TYPE:-g2-standard-24}"
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-2}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-deeplearning-platform-release}"
-IMAGE_FAMILY="${IMAGE_FAMILY:-common-cu128-ubuntu-2204-nvidia-570}"
+IMAGE_FAMILY="${IMAGE_FAMILY:-common-cu129-ubuntu-2204-nvidia-580}"
 BOOT_DISK_SIZE="${BOOT_DISK_SIZE:-200GB}"
-VLLM_MODEL="${VLLM_MODEL:-zai-org/GLM-4.7-Flash}"
+VLLM_MODEL="${VLLM_MODEL:-unsloth/GLM-4.7-Flash-FP8-Dynamic}"
 VLLM_PORT="${VLLM_PORT:-8000}"
-VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
+VLLM_DTYPE="${VLLM_DTYPE:-bfloat16}"
+VLLM_TOOL_CALL_PARSER="${VLLM_TOOL_CALL_PARSER:-glm47}"
+VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER:-glm45}"
+VLLM_VERSION="${VLLM_VERSION:-0.30.0}"
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 
 ALLOW_IAP_RULE="thesis-allow-iap-ssh"
@@ -37,8 +42,11 @@ fi
 if [[ ! "$ZONE" =~ ^us-central1-[a-z]$ ]]; then
   refuse "zone ${ZONE} must be a us-central1 zone such as us-central1-a"
 fi
-if [[ "$MACHINE_TYPE" != "a2-highgpu-1g" && "${ALLOW_OTHER_MACHINE:-}" != "1" ]]; then
-  refuse "machine type ${MACHINE_TYPE} is not a2-highgpu-1g"
+if [[ ! "$MACHINE_TYPE" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)+$ ]]; then
+  refuse "machine type ${MACHINE_TYPE} is not a Compute Engine machine type"
+fi
+if [[ ! "$TENSOR_PARALLEL_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+  refuse "TENSOR_PARALLEL_SIZE must be a positive integer"
 fi
 if [[ ! "$VLLM_PORT" =~ ^[0-9]+$ ]]; then
   refuse "VLLM_PORT must be a number"
@@ -48,6 +56,18 @@ if [[ ! "$VLLM_MAX_MODEL_LEN" =~ ^[0-9]+$ ]]; then
 fi
 if [[ ! "$VLLM_MODEL" =~ ^[A-Za-z0-9_./:-]+$ ]]; then
   refuse "VLLM_MODEL contains characters this script will not embed"
+fi
+if [[ ! "$VLLM_DTYPE" =~ ^(auto|bfloat16|float16|float32)$ ]]; then
+  refuse "VLLM_DTYPE must be auto, bfloat16, float16, or float32"
+fi
+if [[ ! "$VLLM_TOOL_CALL_PARSER" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  refuse "VLLM_TOOL_CALL_PARSER contains characters this script will not embed"
+fi
+if [[ ! "$VLLM_REASONING_PARSER" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  refuse "VLLM_REASONING_PARSER contains characters this script will not embed"
+fi
+if [[ ! "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  refuse "VLLM_VERSION must be a dotted release such as 0.30.0"
 fi
 
 extra_quoted=""
@@ -93,7 +113,7 @@ if [[ ! -x /opt/thesis-vllm/bin/vllm ]]; then
     python3 -m venv /opt/thesis-vllm
   fi
   /opt/thesis-vllm/bin/pip install -U pip
-  /opt/thesis-vllm/bin/pip install -U vllm
+  /opt/thesis-vllm/bin/pip install "vllm==$(printf '%q' "$VLLM_VERSION")"
 fi
 
 if curl -fsS -H "Metadata-Flavor: Google" \\
@@ -115,9 +135,14 @@ fi
 exec /opt/thesis-vllm/bin/vllm serve $(printf '%q' "$VLLM_MODEL") \\
   --host 127.0.0.1 \\
   --port $(printf '%q' "$VLLM_PORT") \\
-  --dtype auto \\
+  --dtype $(printf '%q' "$VLLM_DTYPE") \\
+  --tensor-parallel-size $(printf '%q' "$TENSOR_PARALLEL_SIZE") \\
   --max-model-len $(printf '%q' "$VLLM_MAX_MODEL_LEN") \\
-  --gpu-memory-utilization 0.90${extra_quoted}
+  --gpu-memory-utilization 0.90 \\
+  --enable-auto-tool-choice \\
+  --tool-call-parser $(printf '%q' "$VLLM_TOOL_CALL_PARSER") \\
+  --reasoning-parser $(printf '%q' "$VLLM_REASONING_PARSER") \\
+  --served-model-name $(printf '%q' "$VLLM_MODEL")${extra_quoted}
 SERVE
 chmod 755 /opt/thesis-vllm/serve.sh
 
