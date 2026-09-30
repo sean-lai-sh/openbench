@@ -377,7 +377,12 @@ def check_model(p, harness, model):
         return True, f"{model} -> {models[model]}"
     open_models = getattr(mod, "OPEN_MODELS", None)
     if isinstance(open_models, dict) and model in open_models:
-        return True, f"{model} -> {open_models[model]['model_id']} (open)"
+        spec = open_models[model]
+        shown = spec["model_id"]
+        env_name = spec.get("model_id_env")
+        if env_name:
+            shown = p.getenv(env_name) or f"${env_name}"
+        return True, f"{model} -> {shown} (open)"
     known = list(models) + (list(open_models) if isinstance(open_models, dict) else [])
     return False, f"{model} not in MODELS/OPEN_MODELS {known}"
 
@@ -410,6 +415,39 @@ def check_open_key(p, env_key, *, keys_env_ok=False):
     if keys_env_ok:
         return False, f"SETUP-NEEDED: export {env_key} or add it to {os.path.expanduser(KEYS_ENV)}"
     return False, f"SETUP-NEEDED: export {env_key}"
+
+
+def _imported_open_spec(p, harness, model):
+    """Return one OPEN_MODELS row, or None when the adapter has no such row."""
+    try:
+        mod = p.import_adapter(harness)
+    except Exception:  # noqa: BLE001 - caller falls through to the stock auth check
+        return None
+    open_models = getattr(mod, "OPEN_MODELS", None)
+    if not isinstance(open_models, dict):
+        return None
+    spec = open_models.get(model)
+    return spec if isinstance(spec, dict) else None
+
+
+def check_self_hosted_env(p, spec):
+    """AUTH for an env-backed endpoint. The API key is optional when declared so."""
+    missing = []
+    for key in (spec.get("base_url_env"), spec.get("model_id_env")):
+        if key and not p.getenv(key):
+            missing.append(key)
+    if missing:
+        return False, "SETUP-NEEDED: export " + " and ".join(missing)
+    detail = f"{spec['base_url_env']} and {spec['model_id_env']} present"
+    env_key = spec.get("env_key")
+    if spec.get("env_key_optional") and env_key:
+        if p.getenv(env_key):
+            detail += f"; {env_key} present"
+        else:
+            detail += f"; {env_key} optional and unset"
+    elif env_key and not p.getenv(env_key):
+        return False, f"SETUP-NEEDED: export {env_key}"
+    return True, detail
 
 
 def check_subbridge(p):
@@ -900,8 +938,11 @@ def _evaluate_config_variant(candidate, model, probes, pins):
 
     cli_ok, cli_detail = check_cli(probes, spec["cli"])
     version_ok, version_detail = check_version(probes, base, spec["cli"], pins)
+    open_spec = _imported_open_spec(probes, base, model)
     if base == "grokbuild" and model == "gpt-5.6":
         auth_ok, auth_detail = check_subbridge(probes)
+    elif isinstance(open_spec, dict) and open_spec.get("base_url_env"):
+        auth_ok, auth_detail = check_self_hosted_env(probes, open_spec)
     elif model in FRONTIER_MODEL_ENV:
         auth_ok, auth_detail = _auth_frontier(probes, base, model)
     elif model in OPEN_MODEL_ENV:
@@ -961,8 +1002,11 @@ def evaluate(harnesses, model, probes, pins=None, candidates=None):
 
         cli_ok, cli_detail = check_cli(probes, spec["cli"])
         version_ok, version_detail = check_version(probes, name, spec["cli"], pins)
+        open_spec = _imported_open_spec(probes, name, model)
         if name == "grokbuild" and model == "gpt-5.6":
             auth_ok, auth_detail = check_subbridge(probes)
+        elif isinstance(open_spec, dict) and open_spec.get("base_url_env"):
+            auth_ok, auth_detail = check_self_hosted_env(probes, open_spec)
         elif model in FRONTIER_MODEL_ENV:
             auth_ok, auth_detail = _auth_frontier(probes, name, model)
         elif model in OPEN_MODEL_ENV:
