@@ -10,13 +10,17 @@ From the repo root, with `gcloud` authenticated to project `nyu-rdg-fy26-js11531
 bash thesis/gcp/create-vllm-vm.sh
 ```
 
-The script creates `thesis-vllm-glm47` in `us-central1-a` as machine type `g2-standard-24`. That machine has two NVIDIA L4 GPUs, 48GB of GPU memory in total. The image family is `common-cu129-ubuntu-2204-nvidia-580` from project `deeplearning-platform-release`. Google's Deep Learning VM image page, updated 2026-09-24, lists that family as the CUDA 12.9 GPU base image with driver 580. The previous family, `common-cu128-ubuntu-2204-nvidia-570`, reached end of patch on 2026-04-13.
+The script creates `thesis-vllm-glm47` as machine type `g2-standard-24` and tries `us-central1-a` first. That machine has two NVIDIA L4 GPUs, 48GB of GPU memory in total. The image family is `common-cu129-ubuntu-2204-nvidia-580` from project `deeplearning-platform-release`. Google's Deep Learning VM image page, updated 2026-09-24, lists that family as the CUDA 12.9 GPU base image with driver 580. The previous family, `common-cu128-ubuntu-2204-nvidia-570`, reached end of patch on 2026-04-13.
 
-If `us-central1-a` has no L4 capacity, set `ZONE` to another `us-central1` zone and run the script again. The script rejects zones outside `us-central1`.
+If you set neither `ZONE` nor `ZONES`, the script tries `us-central1-a`, then `us-central1-b`, then `us-central1-c`. It moves to the next zone only when `gcloud` reports that the zone has no capacity. Any other error stops the script. On the first run, `us-central1-a` and `us-central1-b` had no L4 capacity and `us-central1-c` worked. Set `ZONE=us-central1-c` to pin one zone. Set `ZONES` to a space-separated list when you want a different order. The script rejects zones outside `us-central1`.
 
-The VM has an external address so it can download vLLM and the model weights. Two firewall rules, `thesis-allow-iap-ssh` and `thesis-deny-ingress`, apply only to the `thesis-iap` tag. SSH is allowed from the IAP range `35.235.240.0/20`. Every other ingress source is denied. vLLM binds to `127.0.0.1:8000` inside the guest, so the API is not on the external address.
+This project has no network named `default`. Organization policy `constraints/compute.vmExternalIpAccess` bans external IPs on VMs. Leave `NETWORK` unset. The script creates `thesis-vpc`, subnet `thesis-subnet-usc1` in `us-central1` (`10.10.0.0/20`), `thesis-router`, and `thesis-nat` when they are missing. Cloud NAT is how the VM downloads pip packages and model weights without an external address. The script refuses `NETWORK=default` and refuses the shared network `nyu-rdg-fy26-js11531-net`. Set `NETWORK` and `SUBNET` when you already operate a different VPC. `NO_ADDRESS` defaults to `1`, which passes `--no-address`. Set `NO_ADDRESS=0` only when that VPC is allowed to give the VM an external address. Set `SUBNET_RANGE` to change the `thesis-subnet-usc1` CIDR before the subnet exists.
 
-Startup installs vLLM `0.30.0` into `/opt/thesis-vllm` and starts `thesis-vllm.service`. The log is `/var/log/thesis-vllm.log`. The first boot downloads the model, so the API can take a long time to answer. A later boot does not reinstall vLLM when `/opt/thesis-vllm/bin/vllm` already exists. Delete the VM and create it again after you change the install pin.
+Firewall rules `thesis-allow-iap-ssh` and `thesis-deny-ingress` are created on the network you chose. They apply only to the `thesis-iap` tag. SSH is allowed from the IAP range `35.235.240.0/20` on `tcp:22`. Every other ingress source is denied. The operator tunnel is an SSH local forward, so port 8000 does not need its own rule. vLLM binds to `127.0.0.1:8000` inside the guest.
+
+The instance metadata sets `block-project-ssh-keys=TRUE`. `gcloud compute ssh` then writes your key onto this VM. It does not write project-wide `ssh-keys` metadata. Do not run `gcloud compute config-ssh` in this shared project. That command adds a key for every VM. OS Login is the other way to keep keys off project metadata. This script does not enable OS Login, because the VM would then require `roles/compute.osLogin`.
+
+Startup installs vLLM `0.30.0` into `/opt/thesis-vllm` and starts `thesis-vllm.service`. The unit sets `PATH` to `/opt/thesis-vllm/bin` and `/usr/local/cuda/bin` ahead of the default directories. Without that, systemd does not find `ninja`. The log is `/var/log/thesis-vllm.log`. The first boot downloads the model, so the API can take a long time to answer. A later boot does not reinstall vLLM when `/opt/thesis-vllm/bin/vllm` already exists. Delete the VM and create it again after you change the install pin.
 
 If Hugging Face requires a token, export `HF_TOKEN` before create. The script passes it as instance metadata. Anyone who can read instances in this project can read that metadata.
 
@@ -26,11 +30,11 @@ On-demand price for `g2-standard-24` in `us-central1` is about $2.00 per hour. C
 
 The default checkpoint is `unsloth/GLM-4.7-Flash-FP8-Dynamic`. Hugging Face reports that file at 30.29 GiB. The official BF16 checkpoint `zai-org/GLM-4.7-Flash` is 31B parameters and 58.16 GiB of safetensors, which does not fit one 40GB A100. There is no official FP8 of the Flash model. `zai-org/GLM-4.7-FP8` is the 358B model. A100 80GB, machine type `a2-ultragpu-1g`, is not in the stated `us-central1` quota, which lists 16 A100 40GB, 32 L4, 16 T4, and 8 V100. One L4 is 24GB, so the 30.29 GiB file does not fit one L4 either.
 
-`vllm serve` runs with `--tensor-parallel-size 2`, `--max-model-len 8192`, `--dtype bfloat16`, `--enable-auto-tool-choice`, `--tool-call-parser glm47`, and `--reasoning-parser glm45`. vLLM `0.30.0` registers the parser name `glm47`, and its tool-calling doc lists `zai-org/GLM-4.7-Flash` under that parser. The same release registers `glm45` as a reasoning parser. The Hugging Face card for `zai-org/GLM-4.7-Flash` uses those two flags. OpenCode edits files through tool calls, so the server has to parse them.
+`vllm serve` runs with `--tensor-parallel-size 2`, `--max-model-len 32768`, `--dtype bfloat16`, `--enable-auto-tool-choice`, `--tool-call-parser glm47`, and `--reasoning-parser glm45`. vLLM `0.30.0` registers the parser name `glm47`, and its tool-calling doc lists `zai-org/GLM-4.7-Flash` under that parser. The same release registers `glm45` as a reasoning parser. The Hugging Face card for `zai-org/GLM-4.7-Flash` uses those two flags. OpenCode edits files through tool calls, so the server has to parse them.
 
 `--served-model-name` is the checkpoint id. `thesis/run-hard-tasks.sh` sends that same id unless you set `OPENBENCH_GCP_VLLM_MODEL`.
 
-8192 is the default context because `marksverdhei/GLM-4.7-Flash-FP8` published a run on two 24GB GPUs at that length, about 14.7GB per GPU, with vLLM 0.13.0. The Unsloth file is a different checkpoint of about the same size. This change did not boot the VM, so the fit on `g2-standard-24` is inferred from that VRAM class. At `--gpu-memory-utilization 0.90` the two L4 GPUs budget about 43GB. The 30.29 GiB file leaves about 13GB for activations and the KV cache. A longer context spends that remainder. If `/var/log/thesis-vllm.log` shows free GPU memory after load, raise `VLLM_MAX_MODEL_LEN` and create the VM again. Do not add `--kv-cache-dtype fp8`. vLLM issue 38652 reports garbage output on this model when that flag is set.
+`VLLM_MAX_MODEL_LEN` defaults to 32768. On the first 2x L4 run, OpenCode's system prompt was about 7.2k tokens and turns reached about 14.6k. The KV cache fit about 38.9k tokens, so 32768 stays under that fit. The earlier default of 8192 came from a published run of `marksverdhei/GLM-4.7-Flash-FP8` on two 24GB GPUs, about 14.7GB per GPU, with vLLM 0.13.0. The Unsloth file is a different checkpoint of about the same size. At `--gpu-memory-utilization 0.90` the two L4 GPUs budget about 43GB. If `/var/log/thesis-vllm.log` shows the model does not fit, lower `VLLM_MAX_MODEL_LEN` and create the VM again. Do not add `--kv-cache-dtype fp8`. vLLM issue 38652 reports garbage output on this model when that flag is set.
 
 The model card also passes speculative MTP. This script leaves it off so that memory stays available for the KV cache.
 
@@ -63,7 +67,7 @@ Other knobs, exported in the same shell:
 
 ## Open the tunnel
 
-Leave this running in its own terminal. Replace the zone if you did not use `us-central1-a`.
+Leave this running in its own terminal. The example uses `us-central1-a`. Replace `--zone` with the zone create printed. `thesis/run-hard-tasks.sh` uses `$ZONE` in its tunnel hint, and that variable defaults to `us-central1-a`.
 
 ```bash
 gcloud compute ssh thesis-vllm-glm47 \
@@ -84,12 +88,24 @@ The adapter `gcp-vllm/glm-4.7-flash` reads these variables and stores no endpoin
 | `OPENBENCH_GCP_VLLM_BASE_URL` | yes | OpenAI-compatible base URL, for example `http://127.0.0.1:8000/v1` |
 | `OPENBENCH_GCP_VLLM_MODEL` | yes | Model id the server reports, for example `unsloth/GLM-4.7-Flash-FP8-Dynamic` |
 | `OPENBENCH_GCP_VLLM_API_KEY` | no | Sent only when vLLM was started with an API key |
+| `OPENBENCH_GCP_VLLM_CONTEXT` | no | OpenCode context limit. Default 32768 when unset |
+| `OPENBENCH_GCP_VLLM_MAX_OUTPUT` | no | OpenCode output limit. Default 8192 when unset |
 
 `thesis/run-hard-tasks.sh` fills the base URL and model name with those examples when you leave them unset. Set them yourself when the tunnel port or the served name differs.
 
+OpenCode sends `max_tokens=32000` for a model it does not know. vLLM returns HTTP 400 when that request is larger than `--max-model-len` minus the prompt. The adapter always writes a model `limit` for `gcp-vllm/glm-4.7-flash`. Unset variables use 32768 context and 8192 output. Output cannot be larger than context. A prompt of about 14.6k tokens plus an 8192 output cap fits in 32768.
+
 ## Run the three hard tasks
 
-`obench` must be on `PATH`, or `python3 -m obench` must work from a checkout where the package is installed. OpenCode must be on `PATH`. The tunnel must already answer `/v1/models`.
+Install OpenBench into a virtualenv and activate it before the run.
+
+```bash
+uv venv
+uv pip install -e .
+source .venv/bin/activate
+```
+
+`obench` must then be on `PATH`, or `python3 -m obench` must work from that checkout. OpenCode must be on `PATH`. The tunnel must already answer `/v1/models`.
 
 ```bash
 bash thesis/run-hard-tasks.sh
@@ -110,7 +126,11 @@ obench legacy run \
 
 `--task` takes a comma-separated list. `--exec local` runs the harness on this machine. `--exec docker` does not receive `OPENBENCH_GCP_VLLM_BASE_URL` or `OPENBENCH_GCP_VLLM_MODEL`. `--allow-version-drift` is there because `obench legacy run` refuses a host `opencode` whose version differs from `obench/docker/Dockerfile`. Rows then record `version_drift=true`. `--timeout 7200` is the per-task adapter budget in seconds.
 
-Results land in `results/thesis-opencode-glm-4.7-flash.jsonl`. That directory is gitignored. A second run of the same file skips a cell that already has a row for that harness, task, model, and trial. Pass `--force` to `obench legacy run` when you change the endpoint or the checkpoint and want those cells again. The run script does not forward extra arguments, so add `--force` by editing the script or by calling `obench` yourself.
+Results land in `results/thesis-opencode-glm-4.7-flash.jsonl`. That directory is gitignored. A second run of the same file skips a cell that already has a row for that harness, task, model, and trial. The script appends its extra arguments to `obench legacy run`. Pass `--force` when you change the endpoint or the checkpoint and want those cells again.
+
+```bash
+bash thesis/run-hard-tasks.sh --force
+```
 
 The run script does not pass `--proxy`. Token counts come from OpenCode's JSONL stream, not the counting proxy.
 
@@ -122,17 +142,18 @@ Stop the VM when you want to keep the disk and halt GPU billing:
 bash thesis/gcp/teardown-vllm-vm.sh stop
 ```
 
-Delete the VM, and delete the two `thesis-` firewall rules when no other `thesis-iap` instance remains:
+Delete the VM. When no other `thesis-iap` instance remains, the script deletes the two `thesis-` firewall rules. It then deletes `thesis-nat`, `thesis-router`, `thesis-subnet-usc1`, and `thesis-vpc` when no instance still uses that network. The check lists instances and reads tags in the shell. It does not use a `gcloud` tag filter. Pass `--keep-network` to leave the VPC, subnet, router, and NAT in place.
 
 ```bash
 bash thesis/gcp/teardown-vllm-vm.sh delete
+bash thesis/gcp/teardown-vllm-vm.sh --keep-network delete
 ```
 
-Both commands refuse a `VM_NAME` that does not start with `thesis-`. Set `VM_NAME` and `ZONE` to the same values you used at create time.
+Both commands refuse a `VM_NAME` that does not start with `thesis-`. Set `VM_NAME` and `ZONE` to the values create printed. `ZONE` still defaults to `us-central1-a`. Teardown only deletes names that start with `thesis-`.
 
 ## What this guide does not verify
 
-`gcloud` was not run against project `nyu-rdg-fy26-js11531-a68d`. The image family comes from the public Deep Learning VM docs, not from `gcloud compute images list` in that project. Confirm the family if create fails on the image.
+`gcloud` was not run against project `nyu-rdg-fy26-js11531-a68d` for this change. The image family comes from the public Deep Learning VM docs, not from `gcloud compute images list` in that project. Confirm the family if create fails on the image. Cloud NAT address quota was not checked here. If NAT creation fails, the organization may also restrict NAT IPs.
 
 The vLLM `0.30.0` wheel was not installed on this image. If the guest driver rejects the wheel, read `/var/log/thesis-vllm.log`. PyPI lists that release as of 2026-09-22, with a dependency on `transformers>=5.10.4`. The model card's older nightly install is not the default.
 
