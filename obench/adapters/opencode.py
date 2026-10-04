@@ -31,9 +31,13 @@ Notes / quirks:
 
 import json
 import os
+import re
+import select
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 
 try:
     from obench.auth_persist import try_persist_auth_file
@@ -97,6 +101,8 @@ MODELS = {
     # Thinking parity for the opus frontier lane: Anthropic's opencode provider
     # gets the same medium-equivalent request via `--variant medium`.
     "claude-opus-4-8": "anthropic/claude-opus-4-8",
+    # Vertex ADC route. Not the Anthropic OAuth provider.
+    "claude-opus-5-5": "google-vertex-anthropic/claude-opus-5-5@default",
     "grok-4.5": "xai/grok-4.5",
 }
 
@@ -107,6 +113,7 @@ _VARIANT = {
     "gpt-5.6-terra": "medium",
     "gpt-5.6-luna": "medium",
     "claude-opus-4-8": "medium",
+    "claude-opus-5-5": "medium",
     "grok-4.5": None,  # xai serves grok-4.5 without an effort selector
 }
 
@@ -230,14 +237,227 @@ def _open_config_content(spec):
     })
 
 
+def _exe():
+    """Binary for this call. ``OBENCH_OPENCODE_BIN`` wins, otherwise ``_EXE``.
+
+    ``candidate_gate`` replaces ``_EXE`` with a stall script and then calls
+    ``run``. Reading ``_EXE`` here is what makes that probe time out.
+    """
+    override = os.environ.get("OBENCH_OPENCODE_BIN", "").strip()
+    return override or _EXE
+
+
+_HELP_CACHE = {}
+_PROMPT_RE = re.compile(
+    r"(?i)(permission required|waiting for permission|"
+    r"do you want to (?:allow|proceed)|yes\s*/\s*no)"
+)
+_PROMPT_IDLE_S = 8
+_ALLOW_PERMISSIONS = {
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "read": "allow",
+    "write": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "task": "allow",
+    "external_directory": "allow",
+    "todowrite": "allow",
+    "todoread": "allow",
+}
+
+
+def _flag_present(help_text, flag):
+    return re.search(
+        rf"(?:^|\s){re.escape(flag)}(?:,|\s|\[|$)", help_text or ""
+    ) is not None
+
+
+def _run_help(exe, timeout_s):
+    key = (exe, timeout_s)
+    if key in _HELP_CACHE:
+        return _HELP_CACHE[key]
+    limit = max(1, min(5, int(timeout_s)))
+    try:
+        proc = subprocess.run(
+            [exe, "run", "--help"],
+            capture_output=True, text=True, timeout=limit,
+            stdin=subprocess.DEVNULL,
+        )
+        text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    except Exception:  # noqa: BLE001 - a missing binary falls back to modern flags
+        text = ""
+    _HELP_CACHE[key] = text
+    return text
+
+
+def _build_cmd(exe, model_id, variant, workdir, instruction, help_text):
+    """Build argv from ``run --help`` when we have it.
+
+    An empty help text means the probe failed. Keep the modern flag set so a
+    stall script or a broken ``--help`` does not drop ``--auto``.
+    """
+    modern = not (help_text or "").strip()
+
+    def has(flag):
+        if modern:
+            return flag in {
+                "--dir", "--format", "--title", "--variant", "--auto",
+                "--model", "-m",
+            }
+        return _flag_present(help_text, flag)
+
+    if not (has("--model") or has("-m")):
+        return None, False
+    cmd = [exe, "run"]
+    if has("--dir"):
+        cmd.extend(["--dir", workdir])
+    cmd.extend(["-m", model_id])
+    if variant and has("--variant"):
+        cmd.extend(["--variant", variant])
+    # Prefer --auto. Builds that still accept the older skip flag error on --auto.
+    if has("--auto"):
+        cmd.append("--auto")
+    elif has("--dangerously-skip-permissions"):
+        cmd.append("--dangerously-skip-permissions")
+    if has("--format"):
+        cmd.extend(["--format", "json"])
+    if has("--title"):
+        cmd.extend(["--title", "openbench"])
+    cmd.append(instruction)
+    watched = (
+        not modern
+        and "--auto" not in cmd
+        and "--dangerously-skip-permissions" not in cmd
+    )
+    return cmd, watched
+
+
+def _config_body(include_permissions):
+    body = {}
+    raw = os.environ.get("OBENCH_OPENCODE_CONFIG_JSON", "").strip()
+    if raw:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("OBENCH_OPENCODE_CONFIG_JSON must be a JSON object")
+        body.update(parsed)
+    flag = os.environ.get("OBENCH_OPENCODE_PERMISSION_CONFIG", "").strip()
+    write_permissions = include_permissions and flag != "0"
+    if flag == "1":
+        write_permissions = True
+    if write_permissions:
+        body.setdefault("permission", dict(_ALLOW_PERMISSIONS))
+    return body
+
+
+def _install_config(env, body):
+    if not body:
+        return
+    cfg_dir = os.path.join(env["XDG_CONFIG_HOME"], "opencode")
+    os.makedirs(cfg_dir, exist_ok=True)
+    text = json.dumps(body)
+    path = os.path.join(cfg_dir, "opencode.json")
+    for name in ("opencode.json", "config.json"):
+        with open(os.path.join(cfg_dir, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+    # Set after _isolated_env pops OPENCODE_CONFIG. Old builds read config.json.
+    env["OPENCODE_CONFIG"] = path
+
+
+class _PromptWait(Exception):
+    def __init__(self, output):
+        super().__init__("waiting on a permission prompt")
+        self.output = output
+
+
+def _kill_process_group(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
+
+
+def _invoke(cmd, cwd, env, timeout_s, watch_prompt):
+    if not watch_prompt:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        env=env,
+        text=True,
+        start_new_session=True,
+    )
+    pipe = proc.stdout
+    fd = pipe.fileno()
+    os.set_blocking(fd, False)
+    chunks = []
+    start = time.monotonic()
+    last_output = start
+    prompted = False
+    try:
+        while True:
+            ready, _, _ = select.select([pipe], [], [], 0.2)
+            now = time.monotonic()
+            if ready:
+                try:
+                    piece = os.read(fd, 65536)
+                except BlockingIOError:
+                    piece = b""
+                if piece:
+                    chunks.append(piece.decode("utf-8", "replace"))
+                    last_output = now
+                    if _PROMPT_RE.search("".join(chunks)):
+                        prompted = True
+            if prompted and now - last_output >= _PROMPT_IDLE_S:
+                _kill_process_group(proc)
+                raise _PromptWait("".join(chunks))
+            if now - start >= timeout_s:
+                _kill_process_group(proc)
+                raise subprocess.TimeoutExpired(
+                    cmd, timeout_s, output="".join(chunks)
+                )
+            if proc.poll() is not None:
+                try:
+                    rest = os.read(fd, 65536)
+                except (BlockingIOError, OSError):
+                    rest = b""
+                if rest:
+                    chunks.append(rest.decode("utf-8", "replace"))
+                break
+    finally:
+        if proc.poll() is None:
+            _kill_process_group(proc)
+        proc.wait(timeout=5)
+        pipe.close()
+    text = "".join(chunks)
+    proc.stdout = text
+    proc.stderr = ""
+    return proc
+
+
 def version():
     """Return the CLI version string (with binary path), or None on failure.
 
     Cheap `opencode --version`; never raises (the runner calls this defensively).
     """
+    exe = _exe()
     try:
         proc = subprocess.run(
-            [_EXE, "--version"],
+            [exe, "--version"],
             capture_output=True, text=True, timeout=5,
             stdin=subprocess.DEVNULL,
         )
@@ -246,7 +466,7 @@ def version():
     out = (proc.stdout or proc.stderr or "").strip()
     if not out:
         return None
-    path = shutil.which(_EXE)
+    path = exe if os.path.isfile(exe) else shutil.which(exe)
     return f"{out} ({path})" if path else out
 
 
@@ -372,6 +592,9 @@ def _isolated_env():
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     auth_source = next((path for path in _AUTH_CANDIDATES if os.path.isfile(path)), None)
     env, iso_home = _isolated_env()
+    exe = _exe()
+    probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model == "claude-opus-5-5"
+    watch_prompt = False
     if model in MODELS:
         if model == "claude-opus-4-8" and not _has_anthropic_oauth():
             shutil.rmtree(iso_home, ignore_errors=True)
@@ -379,55 +602,98 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                     "error": f"SETUP-NEEDED: run `opencode auth login -p anthropic` (missing {_ANTHROPIC_AUTH})",
                     "output_tail": "", "tokens": None, "turns": None, "cmd": None,
                     **_empty_token_usage()}
-        cmd = [
-            "opencode", "run",
-            "--dir", workdir,
-            "-m", MODELS[model],
-            # xai rejects --variant with a server error (grok-4.5 has no
-            # selectable effort); omit the flag when the map holds None.
-            *(["--variant", _VARIANT[model]] if _VARIANT.get(model) else []),
-            "--auto",
-            "--format", "json",
-            "--title", "openbench",
-            instruction,
-        ]
+        variant = _VARIANT.get(model)
+        if probe:
+            cmd, watch_prompt = _build_cmd(
+                exe, MODELS[model], variant, workdir, instruction,
+                _run_help(exe, timeout_s),
+            )
+        else:
+            cmd = [
+                exe, "run",
+                "--dir", workdir,
+                "-m", MODELS[model],
+                # xai rejects --variant with a server error (grok-4.5 has no
+                # selectable effort); omit the flag when the map holds None.
+                *(["--variant", variant] if variant else []),
+                "--auto",
+                "--format", "json",
+                "--title", "openbench",
+                instruction,
+            ]
+        if cmd is None:
+            shutil.rmtree(iso_home, ignore_errors=True)
+            return {"completed": False,
+                    "error": "opencode run has no model flag",
+                    "output_tail": "", "tokens": None, "turns": None, "cmd": None,
+                    **_empty_token_usage()}
         env.pop("OPENAI_API_KEY", None)  # force subscription OAuth route
         if model == "claude-opus-4-8":
             env.pop("ANTHROPIC_API_KEY", None)  # force Anthropic OAuth route
+        if model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
+            env["VERTEX_LOCATION"] = "global"
+        try:
+            _install_config(env, _config_body(watch_prompt))
+        except ValueError as exc:
+            shutil.rmtree(iso_home, ignore_errors=True)
+            return {"completed": False, "error": str(exc),
+                    "output_tail": "", "tokens": None, "turns": None, "cmd": cmd,
+                    **_empty_token_usage()}
     elif model in OPEN_MODELS:
         spec, detail = _resolve_open_spec(model, OPEN_MODELS[model])
         if detail:
             shutil.rmtree(iso_home, ignore_errors=True)
             return _setup_needed(OPEN_MODELS[model].get("env_key") or "", model, detail)
-        cmd = [
-            "opencode", "run",
-            "--dir", workdir,
-            "-m", f'{spec["provider"]}/{spec["model_id"]}',
-        ]
-        if spec.get("variant"):
-            cmd.extend(["--variant", spec["variant"]])
-        cmd.extend([
-            "--auto",
-            "--format", "json",
-            "--title", "openbench",
-            instruction,
-        ])
+        model_id = f'{spec["provider"]}/{spec["model_id"]}'
+        variant = spec.get("variant")
+        if probe:
+            cmd, watch_prompt = _build_cmd(
+                exe, model_id, variant, workdir, instruction,
+                _run_help(exe, timeout_s),
+            )
+        else:
+            cmd = [exe, "run", "--dir", workdir, "-m", model_id]
+            if variant:
+                cmd.extend(["--variant", variant])
+            cmd.extend([
+                "--auto",
+                "--format", "json",
+                "--title", "openbench",
+                instruction,
+            ])
+        if cmd is None:
+            shutil.rmtree(iso_home, ignore_errors=True)
+            return {"completed": False,
+                    "error": "opencode run has no model flag",
+                    "output_tail": "", "tokens": None, "turns": None, "cmd": None,
+                    **_empty_token_usage()}
         env["OPENCODE_CONFIG_CONTENT"] = _open_config_content(spec)
+        try:
+            _install_config(env, _config_body(watch_prompt))
+        except ValueError as exc:
+            shutil.rmtree(iso_home, ignore_errors=True)
+            return {"completed": False, "error": str(exc),
+                    "output_tail": "", "tokens": None, "turns": None, "cmd": cmd,
+                    **_empty_token_usage()}
     else:
         shutil.rmtree(iso_home, ignore_errors=True)
         return _unsupported(model)
 
     try:
         try:
-            proc = subprocess.run(
-                cmd,
-                cwd=workdir,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                stdin=subprocess.DEVNULL,
-                env=env,
-            )
+            proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
+        except _PromptWait as e:
+            full_output = e.output or ""
+            return {
+                "completed": False,
+                "error": "waiting on a permission prompt",
+                "output_tail": full_output[-2000:],
+                "full_output": full_output,
+                "tokens": None,
+                "turns": None,
+                "cmd": cmd,
+                **_empty_token_usage(),
+            }
         except subprocess.TimeoutExpired as e:
             full_output = _err_tail(e, limit=None)
             return {
