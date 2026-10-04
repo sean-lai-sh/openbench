@@ -139,6 +139,7 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
     interval = bootstrap_ci(deltas)
     return {
         "pr": pr.pr,
+        "repo": pr.repo,
         "title": pr.title,
         "category": pr.category,
         "harness_change": pr.harness_change,
@@ -165,7 +166,8 @@ def render_markdown(records: list[dict]) -> str:
         records,
         key=lambda item: (item["delta_score"] is None, -(item["delta_score"] or 0)),
     )
-    lines = ["# OpenCode harness A/B", "", "## Ranked by mean per-task score delta", ""]
+    heading = "# Harness A/B" if any(item.get("repo") for item in records) else "# OpenCode harness A/B"
+    lines = [heading, "", "## Ranked by mean per-task score delta", ""]
     lines.append("| PR | Category | Delta score | 95% CI | Paired tasks |")
     lines.append("| --- | --- | --- | --- | --- |")
     for item in ranked:
@@ -188,6 +190,8 @@ def render_markdown(records: list[dict]) -> str:
     for item in ranked:
         lines.append(f"## PR {item['pr']}")
         lines.append("")
+        if item.get("repo"):
+            lines.append(f"Repo: {item['repo']}")
         lines.append(f"Title: {item['title']}")
         lines.append(f"Category: {item['category']}")
         lines.append(f"Harness change: {item['harness_change']}")
@@ -215,7 +219,7 @@ def render_csv(records: list[dict]) -> str:
     import io
     buf = io.StringIO()
     fields = [
-        "pr", "title", "category", "harness_change",
+        "pr", "repo", "title", "category", "harness_change",
         "without_pass_rate", "with_pass_rate",
         "without_mean_score", "with_mean_score", "delta_score",
         "delta_ci_low", "delta_ci_high", "paired_tasks",
@@ -229,6 +233,7 @@ def render_csv(records: list[dict]) -> str:
         ci = item["delta_ci"] or (None, None)
         writer.writerow({
             "pr": item["pr"],
+            "repo": item.get("repo") or "",
             "title": item["title"],
             "category": item["category"],
             "harness_change": item["harness_change"],

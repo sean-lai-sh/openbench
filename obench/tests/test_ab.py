@@ -127,7 +127,7 @@ class TestSchedule(unittest.TestCase):
         return parse_prs(path)
 
     def test_dry_run_does_not_build(self):
-        def build_fn(sha, cache):
+        def build_fn(sha, cache, repo=""):
             raise AssertionError("build")
 
         plan, launched, stopped = drive(
@@ -155,7 +155,7 @@ class TestSchedule(unittest.TestCase):
                 "tokens_cache_read": 0, "tokens_cache_write": 0,
             }))
 
-        def build_fn(sha, cache):
+        def build_fn(sha, cache, repo=""):
             return Path("/tmp") / sha
 
         def assess_fn(binary):
@@ -187,7 +187,7 @@ class TestSchedule(unittest.TestCase):
                 "trial": spec["trial"],
             }))
 
-        def build_fn(sha, cache):
+        def build_fn(sha, cache, repo=""):
             return Path("/tmp") / sha
 
         def assess_fn(binary):
@@ -211,7 +211,7 @@ class TestSchedule(unittest.TestCase):
             calls.append(spec["trial"])
             publish_text(Path(spec["cell_path"]), json.dumps({"task": spec["task"], "trial": spec["trial"]}))
 
-        def build_fn(sha, cache):
+        def build_fn(sha, cache, repo=""):
             return Path("/tmp") / sha
 
         def assess_fn(binary):
@@ -240,7 +240,7 @@ class TestSchedule(unittest.TestCase):
                 "wall_time_s": 2, "failure_class": None,
             }))
 
-        def build_fn(sha, cache):
+        def build_fn(sha, cache, repo=""):
             return Path("/tmp") / sha
 
         def assess_fn(binary):

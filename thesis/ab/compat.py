@@ -39,6 +39,8 @@ class Assessment:
     reason: str
     config: dict
     permission_config: bool
+    vertex: dict | None = None
+    harness: str = "opencode"
 
 
 def help_text(binary: str, timeout_s: int = 15) -> str:
