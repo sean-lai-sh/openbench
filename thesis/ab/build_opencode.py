@@ -20,13 +20,10 @@ import zipfile
 from pathlib import Path
 
 from thesis.ab.durable import exclusive_lock
+from thesis.ab.errors import BuildError
 
 UPSTREAM = "https://github.com/anomalyco/opencode.git"
 FALLBACK_UPSTREAM = "https://github.com/sst/opencode.git"
-
-
-class BuildError(RuntimeError):
-    pass
 
 
 def _run(cmd: list[str], cwd: Path, env: dict | None = None) -> None:
@@ -286,7 +283,8 @@ def binary(sha: str, cache: Path) -> Path:
     sha = sha.strip().lower()
     if len(sha) != 40:
         raise BuildError(f"expected a 40-character SHA, got {sha!r}")
-    cache = Path(cache)
+    # Git resolves a relative dest against ``cwd``. Callers pass ``results/...``.
+    cache = Path(cache).resolve()
     published = cache / "bin" / sha / "opencode"
     if published.is_file() and os.access(published, os.X_OK):
         return published
