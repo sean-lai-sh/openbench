@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import re
 import shlex
 import subprocess
 import sys
+import tarfile
+import tempfile
 from pathlib import Path
 
 from thesis.ab.checkout import checkout
@@ -81,20 +82,73 @@ def _fill_missing_catalogs(root: Path) -> None:
             dest.write_text("{}\n", encoding="utf-8")
 
 
-def _ensure_tsgo_platform(root: Path, env: dict) -> None:
-    pkg_path = root / "node_modules" / "@typescript" / "native-preview" / "package.json"
-    if not pkg_path.is_file():
-        return
-    optional = json.loads(pkg_path.read_text(encoding="utf-8")).get("optionalDependencies") or {}
-    machine = platform.machine()
-    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64"}.get(machine, machine)
-    name = f"@typescript/native-preview-{sys.platform}-{arch}"
-    version = optional.get(name)
-    if not version:
-        return
-    if (root / "node_modules" / "@typescript" / name.split("/", 1)[1]).is_dir():
-        return
-    _run(["npm", "install", "--no-save", "--no-package-lock", f"{name}@{version}"], root, env)
+def _extract_packed(tarball: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tarball) as archive:
+        for member in archive.getmembers():
+            if not member.name.startswith("package/") or member.issym() or member.islnk():
+                continue
+            relative = member.name[len("package/"):]
+            if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+                continue
+            target = dest / relative
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(extracted.read())
+            target.chmod(member.mode & 0o777)
+
+
+def _linux_x64(name: str) -> bool:
+    lowered = name.lower()
+    if "linux" not in lowered or "x64" not in lowered:
+        return False
+    if "musl" in lowered:
+        return False
+    return True
+
+
+def _optional_dest(root: Path, name: str) -> Path:
+    if name.startswith("@"):
+        scope, pkg = name.split("/", 1)
+        return root / "node_modules" / scope / pkg
+    return root / "node_modules" / name
+
+
+def _pack_into(root: Path, env: dict, name: str, version: str, dest: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="npm-pack-") as tmp:
+        _run(["npm", "pack", f"{name}@{version}", "--pack-destination", tmp], root, env)
+        balls = list(Path(tmp).glob("*.tgz"))
+        if len(balls) != 1:
+            raise BuildError(f"npm pack {name}@{version} produced {len(balls)} tarballs")
+        _extract_packed(balls[0], dest)
+
+
+def _install_missing_optionals(root: Path, env: dict) -> None:
+    node_modules = root / "node_modules"
+    manifests = list(node_modules.glob("*/package.json"))
+    manifests.extend(node_modules.glob("@*/*/package.json"))
+    wanted: list[tuple[str, str]] = []
+    for manifest in manifests:
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for name, version in (data.get("optionalDependencies") or {}).items():
+            if not isinstance(name, str) or not isinstance(version, str):
+                continue
+            if not _linux_x64(name):
+                continue
+            dest = _optional_dest(root, name)
+            if (dest / "package.json").is_file():
+                continue
+            wanted.append((name, version))
+    for name, version in wanted:
+        _pack_into(root, env, name, version, _optional_dest(root, name))
 
 
 def compile_tree(root: Path, node: Path) -> Path:
@@ -103,7 +157,7 @@ def compile_tree(root: Path, node: Path) -> Path:
     env["CI"] = "1"
     _run(["git", "-C", str(root), "checkout", "--", "."], root, env)
     _run(["npm", "ci"], root, env)
-    _ensure_tsgo_platform(root, env)
+    _install_missing_optionals(root, env)
     _fill_missing_catalogs(root)
     ai_package = root / "packages" / "ai" / "package.json"
     if ai_package.is_file():
