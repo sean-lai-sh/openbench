@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+PROJECT="${PROJECT:-nyu-rdg-fy26-js11531-a68d}"
+ZONE="${ZONE:-us-central1-a}"
+VM_NAME="${VM_NAME:-thesis-vllm-glm47}"
+VLLM_PORT="${VLLM_PORT:-8000}"
+
 export OPENBENCH_GCP_VLLM_BASE_URL="${OPENBENCH_GCP_VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
 export OPENBENCH_GCP_VLLM_MODEL="${OPENBENCH_GCP_VLLM_MODEL:-unsloth/GLM-4.7-Flash-FP8-Dynamic}"
 
@@ -22,7 +27,7 @@ if [[ -n "${OPENBENCH_GCP_VLLM_API_KEY:-}" ]]; then
 fi
 if ! curl "${curl_args[@]}" >/dev/null; then
   echo "Cannot reach ${OPENBENCH_GCP_VLLM_BASE_URL}. Open the IAP tunnel first." >&2
-  echo "  gcloud compute ssh thesis-vllm-glm47 --project=nyu-rdg-fy26-js11531-a68d --zone=us-central1-a --tunnel-through-iap -- -N -L 8000:127.0.0.1:8000" >&2
+  echo "  gcloud compute ssh ${VM_NAME} --project=${PROJECT} --zone=${ZONE} --tunnel-through-iap -- -N -L ${VLLM_PORT}:127.0.0.1:${VLLM_PORT}" >&2
   exit 1
 fi
 
@@ -40,4 +45,5 @@ echo "Writing rows to ${results_path}"
   --task make-ci-green,add-feature,misleading-error \
   --results-path "$results_path" \
   --timeout 7200 \
-  --allow-version-drift
+  --allow-version-drift \
+  "$@"

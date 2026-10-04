@@ -162,6 +162,12 @@ OPEN_MODELS = {
         "env_key_optional": True,
         "display": "GCP vLLM",
         "variant": None,
+        "limit": {
+            "context_env": "OPENBENCH_GCP_VLLM_CONTEXT",
+            "output_env": "OPENBENCH_GCP_VLLM_MAX_OUTPUT",
+            "context_default": 32768,
+            "output_default": 8192,
+        },
     },
 }
 
@@ -217,6 +223,31 @@ def _resolve_open_spec(model, spec):
     return resolved, None
 
 
+def _optional_positive_int(name, default):
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    text = str(raw).strip()
+    if not text.isdecimal() or int(text) <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(text)
+
+
+def _open_model_entry(spec):
+    """OpenCode defaults max_tokens to 32000 for a model it does not know."""
+    declared = spec.get("limit")
+    if not declared:
+        return {}
+    context = _optional_positive_int(declared["context_env"], declared["context_default"])
+    output = _optional_positive_int(declared["output_env"], declared["output_default"])
+    if output > context:
+        raise ValueError(
+            f"{declared['output_env']} ({output}) exceeds "
+            f"{declared['context_env']} ({context})"
+        )
+    return {"limit": {"context": context, "output": output}}
+
+
 def _open_config_content(spec):
     """Inline OPENCODE_CONFIG_CONTENT JSON registering the open provider."""
     prov = spec["provider"]
@@ -231,7 +262,7 @@ def _open_config_content(spec):
                 "npm": "@ai-sdk/openai-compatible",
                 "name": spec["display"],
                 "options": options,
-                "models": {spec["model_id"]: {}},
+                "models": {spec["model_id"]: _open_model_entry(spec)},
             }
         }
     })
@@ -729,8 +760,8 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                     "error": "opencode run has no model flag",
                     "output_tail": "", "tokens": None, "turns": None, "cmd": None,
                     **_empty_token_usage()}
-        env["OPENCODE_CONFIG_CONTENT"] = _open_config_content(spec)
         try:
+            env["OPENCODE_CONFIG_CONTENT"] = _open_config_content(spec)
             _install_config(env, _config_body(watch_prompt))
         except ValueError as exc:
             shutil.rmtree(iso_home, ignore_errors=True)

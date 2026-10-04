@@ -74,6 +74,8 @@ class TestOpenCodeGcpVllm(unittest.TestCase):
                     "OPENBENCH_GCP_VLLM_BASE_URL",
                     "OPENBENCH_GCP_VLLM_MODEL",
                     "OPENBENCH_GCP_VLLM_API_KEY",
+                    "OPENBENCH_GCP_VLLM_CONTEXT",
+                    "OPENBENCH_GCP_VLLM_MAX_OUTPUT",
                     "ZAI_API_KEY",
                 ):
                     env.pop(key, None)
@@ -107,7 +109,10 @@ class TestOpenCodeGcpVllm(unittest.TestCase):
         options = config["provider"]["gcp-vllm"]["options"]
         self.assertEqual(options["baseURL"], BASE_URL)
         self.assertNotIn("apiKey", options)
-        self.assertIn(SERVED, config["provider"]["gcp-vllm"]["models"])
+        self.assertEqual(
+            config["provider"]["gcp-vllm"]["models"][SERVED]["limit"],
+            {"context": 32768, "output": 8192},
+        )
         self.assertNotIn("OPENBENCH_GCP_VLLM_API_KEY", kwargs["env"])
 
     def test_api_key_is_referenced_not_copied_into_config(self):
@@ -154,6 +159,40 @@ class TestOpenCodeGcpVllm(unittest.TestCase):
             "https://api.z.ai/api/paas/v4",
         )
         self.assertNotIn("zai-secret", kwargs["env"]["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(config["provider"]["zai"]["models"]["glm-4.7-flash"], {})
+
+    def test_gcp_vllm_limit_env_overrides_defaults(self):
+        result, calls = self._run(MODEL, {
+            "OPENBENCH_GCP_VLLM_BASE_URL": BASE_URL,
+            "OPENBENCH_GCP_VLLM_MODEL": SERVED,
+            "OPENBENCH_GCP_VLLM_CONTEXT": "16384",
+            "OPENBENCH_GCP_VLLM_MAX_OUTPUT": "4096",
+        })
+        self.assertTrue(result["completed"])
+        config = json.loads(calls[0][1]["env"]["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(
+            config["provider"]["gcp-vllm"]["models"][SERVED]["limit"],
+            {"context": 16384, "output": 4096},
+        )
+
+    def test_gcp_vllm_limit_rejects_bad_values_without_launching(self):
+        bad, calls = self._run(MODEL, {
+            "OPENBENCH_GCP_VLLM_BASE_URL": BASE_URL,
+            "OPENBENCH_GCP_VLLM_MODEL": SERVED,
+            "OPENBENCH_GCP_VLLM_CONTEXT": "nope",
+        })
+        self.assertEqual(calls, [])
+        self.assertFalse(bad["completed"])
+        self.assertIn("OPENBENCH_GCP_VLLM_CONTEXT", bad["error"])
+
+        oversized, calls = self._run(MODEL, {
+            "OPENBENCH_GCP_VLLM_BASE_URL": BASE_URL,
+            "OPENBENCH_GCP_VLLM_MODEL": SERVED,
+            "OPENBENCH_GCP_VLLM_MAX_OUTPUT": "40000",
+        })
+        self.assertEqual(calls, [])
+        self.assertFalse(oversized["completed"])
+        self.assertIn("OPENBENCH_GCP_VLLM_MAX_OUTPUT", oversized["error"])
 
 
 class _DoctorProbes:
@@ -276,6 +315,13 @@ class TestThesisScripts(unittest.TestCase):
             "VLLM_VERSION",
             "IMAGE_FAMILY",
             "ALLOW_OTHER_MACHINE",
+            "ZONE",
+            "ZONES",
+            "NETWORK",
+            "SUBNET",
+            "NO_ADDRESS",
+            "SUBNET_RANGE",
+            "PROJECT",
         ):
             env.pop(key, None)
         proc = subprocess.run(
@@ -309,7 +355,22 @@ class TestThesisScripts(unittest.TestCase):
         self.assertIn("vllm==0.30.0", script)
         self.assertIn("unsloth/GLM-4.7-Flash-FP8-Dynamic", script)
         self.assertIn("--tensor-parallel-size 2", script)
-        self.assertIn("--max-model-len 8192", script)
+        self.assertIn("--max-model-len 32768", script)
+        self.assertIn(
+            "Environment=PATH=/opt/thesis-vllm/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            script,
+        )
+        self.assertIn("networks create thesis-vpc", text)
+        self.assertIn("subnets create thesis-subnet-usc1", text)
+        self.assertIn("--range=10.10.0.0/20", text)
+        self.assertIn("routers create thesis-router", text)
+        self.assertIn("nats create thesis-nat", text)
+        self.assertIn("--network=thesis-vpc", text)
+        self.assertIn("--subnet=thesis-subnet-usc1", text)
+        self.assertIn("--no-address", text)
+        self.assertIn("block-project-ssh-keys=TRUE", text)
+        self.assertIn("# zones: us-central1-a us-central1-b us-central1-c", text)
+        self.assertNotIn("nyu-rdg-fy26-js11531-net", text)
         self.assertIn("--enable-auto-tool-choice", script)
         self.assertIn("--tool-call-parser glm47", script)
         self.assertIn("--reasoning-parser glm45", script)
@@ -372,6 +433,138 @@ class TestThesisScripts(unittest.TestCase):
         self.assertNotIn("AGENTS.md", proc.stdout)
         self.assertIn("*.md", proc.stdout.replace("\\*", "*"))
 
+    def test_create_refuses_the_shared_network_and_default(self):
+        for network in ("nyu-rdg-fy26-js11531-net", "default"):
+            env = os.environ.copy()
+            env.pop("ZONE", None)
+            env.pop("ZONES", None)
+            env["NETWORK"] = network
+            proc = subprocess.run(
+                ["bash", "thesis/gcp/create-vllm-vm.sh", "--dry-run"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1, network)
+            self.assertIn("refusing", proc.stderr)
+            self.assertNotIn("instances create", proc.stdout)
+
+    def test_custom_network_skips_thesis_vpc_creation(self):
+        env = os.environ.copy()
+        env.pop("VM_NAME", None)
+        env.pop("ZONES", None)
+        env["NETWORK"] = "lab-net"
+        env["SUBNET"] = "lab-subnet"
+        env["NO_ADDRESS"] = "0"
+        env["ZONE"] = "us-central1-c"
+        proc = subprocess.run(
+            ["bash", "thesis/gcp/create-vllm-vm.sh", "--dry-run"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--network=lab-net", proc.stdout)
+        self.assertIn("--subnet=lab-subnet", proc.stdout)
+        self.assertIn("--zone=us-central1-c", proc.stdout)
+        self.assertIn("# zones: us-central1-c", proc.stdout)
+        self.assertNotIn("us-central1-a", proc.stdout)
+        self.assertNotIn("--no-address", proc.stdout)
+        self.assertNotIn("networks create thesis-vpc", proc.stdout)
+
+    def test_zone_fallback_retries_only_capacity_errors(self):
+        bindir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, bindir, True)
+        log = os.path.join(bindir, "gcloud-log")
+        _write_executable(
+            os.path.join(bindir, "gcloud"),
+            "#!/bin/bash\n"
+            "printf '%s\\n' \"$*\" >> \"$GCLOUD_LOG\"\n"
+            "joined=\"$*\"\n"
+            "if [[ \"$joined\" == *\"instances create\"* ]]; then\n"
+            "  if [[ \"$joined\" == *\"us-central1-a\"* ]]; then\n"
+            "    echo 'ERROR: ZONE_RESOURCE_POOL_EXHAUSTED: does not have enough resources' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  if [[ \"$joined\" == *\"us-central1-b\"* ]]; then\n"
+            "    echo 'ERROR: The zone does not have enough resources available to fulfill the request.' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  if [[ \"$joined\" == *\"us-central1-c\"* ]]; then\n"
+            "    exit 0\n"
+            "  fi\n"
+            "  echo 'unexpected zone' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "if [[ \"$joined\" == *describe* ]]; then\n"
+            "  exit 1\n"
+            "fi\n"
+            "exit 0\n",
+        )
+        env = os.environ.copy()
+        env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
+        env["GCLOUD_LOG"] = log
+        env.pop("HF_TOKEN", None)
+        for key in ("ZONE", "ZONES", "NETWORK", "SUBNET", "NO_ADDRESS", "VM_NAME"):
+            env.pop(key, None)
+        proc = subprocess.run(
+            ["bash", "thesis/gcp/create-vllm-vm.sh"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Created thesis-vllm-glm47 in us-central1-c.", proc.stdout)
+        with open(log, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        creates = [line for line in lines if "instances create" in line]
+        self.assertEqual(len(creates), 3)
+        self.assertIn("--zone=us-central1-a", creates[0])
+        self.assertIn("--zone=us-central1-b", creates[1])
+        self.assertIn("--zone=us-central1-c", creates[2])
+        self.assertIn("--no-address", creates[2])
+        self.assertIn("--network=thesis-vpc", creates[2])
+
+        log2 = os.path.join(bindir, "gcloud-log-denied")
+        _write_executable(
+            os.path.join(bindir, "gcloud"),
+            "#!/bin/bash\n"
+            "printf '%s\\n' \"$*\" >> \"$GCLOUD_LOG\"\n"
+            "joined=\"$*\"\n"
+            "if [[ \"$joined\" == *\"instances create\"* ]]; then\n"
+            "  echo 'ERROR: permission denied' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "if [[ \"$joined\" == *describe* ]]; then\n"
+            "  exit 1\n"
+            "fi\n"
+            "exit 0\n",
+        )
+        env["GCLOUD_LOG"] = log2
+        denied = subprocess.run(
+            ["bash", "thesis/gcp/create-vllm-vm.sh"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("permission denied", denied.stderr)
+        with open(log2, encoding="utf-8") as fh:
+            denied_creates = [
+                line for line in fh.read().splitlines() if "instances create" in line
+            ]
+        self.assertEqual(len(denied_creates), 1)
+        self.assertIn("--zone=us-central1-a", denied_creates[0])
+        self.assertNotIn("us-central1-b", denied_creates[0])
+
     def test_teardown_stop_and_delete_name_only_thesis_resources(self):
         env = os.environ.copy()
         env.pop("VM_NAME", None)
@@ -399,6 +592,26 @@ class TestThesisScripts(unittest.TestCase):
         self.assertEqual(delete.returncode, 0, delete.stderr)
         self.assertIn("instances delete thesis-vllm-glm47", delete.stdout)
         self.assertIn("firewall-rules delete thesis-allow-iap-ssh thesis-deny-ingress", delete.stdout)
+        self.assertIn("routers nats delete thesis-nat", delete.stdout)
+        self.assertIn("routers delete thesis-router", delete.stdout)
+        self.assertIn("subnets delete thesis-subnet-usc1", delete.stdout)
+        self.assertIn("networks delete thesis-vpc", delete.stdout)
+        self.assertNotIn("tags.items", delete.stdout)
+        self.assertNotIn("nyu-rdg-fy26-js11531-net", delete.stdout)
+
+        kept = subprocess.run(
+            ["bash", "thesis/gcp/teardown-vllm-vm.sh", "--dry-run", "--keep-network", "delete"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(kept.returncode, 0, kept.stderr)
+        self.assertIn("firewall-rules delete thesis-allow-iap-ssh thesis-deny-ingress", kept.stdout)
+        self.assertIn("--keep-network leaves thesis-vpc", kept.stdout)
+        self.assertNotIn("networks delete", kept.stdout)
+        self.assertNotIn("nats delete", kept.stdout)
 
         env["VM_NAME"] = "other-people-gpu"
         refused = subprocess.run(
@@ -411,6 +624,80 @@ class TestThesisScripts(unittest.TestCase):
         )
         self.assertEqual(refused.returncode, 1)
         self.assertNotIn("gcloud", refused.stdout)
+
+    def test_teardown_keeps_rules_when_another_tagged_instance_remains(self):
+        bindir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, bindir, True)
+        log = os.path.join(bindir, "gcloud-log")
+        listed = os.path.join(bindir, "list.json")
+        _write_executable(
+            os.path.join(bindir, "gcloud"),
+            "#!/bin/bash\n"
+            "printf '%s\\n' \"$*\" >> \"$GCLOUD_LOG\"\n"
+            "joined=\"$*\"\n"
+            "if [[ \"$joined\" == *filter* ]]; then\n"
+            "  echo 'ERROR: filter keys were not present: tags.items' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "if [[ \"$joined\" == *\"instances describe\"* ]]; then\n"
+            "  echo thesis-vllm-glm47\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [[ \"$joined\" == *\"instances list\"* ]]; then\n"
+            "  cat \"$LIST_JSON\"\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+        )
+        env = os.environ.copy()
+        env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
+        env["GCLOUD_LOG"] = log
+        env["LIST_JSON"] = listed
+        env.pop("VM_NAME", None)
+        env.pop("ZONE", None)
+        with open(listed, "w", encoding="utf-8") as fh:
+            json.dump([{
+                "name": "thesis-other",
+                "tags": {"items": ["thesis-iap"]},
+                "networkInterfaces": [{
+                    "network": "https://www.googleapis.com/compute/v1/projects/p/global/networks/thesis-vpc",
+                }],
+            }], fh)
+        kept = subprocess.run(
+            ["bash", "thesis/gcp/teardown-vllm-vm.sh", "delete"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(kept.returncode, 0, kept.stderr)
+        self.assertIn("thesis-other", kept.stdout)
+        with open(log, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("instances delete thesis-vllm-glm47", text)
+        self.assertNotIn("firewall-rules delete", text)
+        self.assertNotIn("filter=", text)
+        self.assertNotIn("tags.items", text)
+
+        os.remove(log)
+        with open(listed, "w", encoding="utf-8") as fh:
+            fh.write("[]\n")
+        removed = subprocess.run(
+            ["bash", "thesis/gcp/teardown-vllm-vm.sh", "delete"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        with open(log, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("firewall-rules delete thesis-allow-iap-ssh thesis-deny-ingress", text)
+        self.assertIn("routers nats delete thesis-nat", text)
+        self.assertIn("networks delete thesis-vpc", text)
+        self.assertNotIn("filter=", text)
 
     def test_run_script_calls_legacy_run_for_the_three_tasks(self):
         bindir = tempfile.mkdtemp()
@@ -432,8 +719,10 @@ class TestThesisScripts(unittest.TestCase):
         env["OPENBENCH_GCP_VLLM_BASE_URL"] = BASE_URL
         env["OPENBENCH_GCP_VLLM_MODEL"] = SERVED
         env["OPENBENCH_GCP_VLLM_API_KEY"] = "run-secret"
+        env.pop("ZONE", None)
+        env.pop("PROJECT", None)
         proc = subprocess.run(
-            ["bash", "thesis/run-hard-tasks.sh"],
+            ["bash", "thesis/run-hard-tasks.sh", "--force"],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
@@ -453,12 +742,14 @@ class TestThesisScripts(unittest.TestCase):
         )
         self.assertTrue(args[args.index("--results-path") + 1].endswith(
             "results/thesis-opencode-glm-4.7-flash.jsonl"))
+        self.assertEqual(args[-1], "--force")
         with open(curl_log, encoding="utf-8") as fh:
             curl_args = fh.read()
         self.assertIn(BASE_URL + "/models", curl_args)
         self.assertIn("run-secret", curl_args)
 
         env.pop("OPENBENCH_GCP_VLLM_API_KEY")
+        env["ZONE"] = "us-central1-c"
         _write_executable(
             os.path.join(bindir, "curl"),
             "#!/bin/sh\nexit 1\n",
@@ -475,6 +766,8 @@ class TestThesisScripts(unittest.TestCase):
         self.assertEqual(failed.returncode, 1)
         self.assertFalse(os.path.exists(recorded))
         self.assertIn("IAP tunnel", failed.stderr)
+        self.assertIn("--zone=us-central1-c", failed.stderr)
+        self.assertNotIn("us-central1-a", failed.stderr)
 
 
 if __name__ == "__main__":
