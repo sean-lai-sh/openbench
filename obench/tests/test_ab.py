@@ -2,6 +2,7 @@
 """PR list parsing, A/B scheduling, and the summary table."""
 
 import csv
+import io
 import json
 import os
 import stat
@@ -13,9 +14,16 @@ from pathlib import Path
 from thesis.ab.build_opencode import build_plan
 from thesis.ab.compat import Assessment
 from thesis.ab.durable import publish_text
-from thesis.ab.prs import PrListError, parse_prs, select_prs
+from thesis.ab.prs import PrListError, PullRequest, parse_prs, select_prs
 from thesis.ab.run_ab import cell_file, drive, over_budget, read_cell
-from thesis.ab.summarize import bootstrap_ci, pr_record, render_markdown, row_cost
+from thesis.ab.summarize import (
+    bootstrap_ci,
+    bootstrap_mean_diff,
+    pr_record,
+    render_csv,
+    render_markdown,
+    row_cost,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "thesis" / "ab" / "fixtures" / "opencode-harness-prs.csv"
@@ -281,7 +289,84 @@ class TestSchedule(unittest.TestCase):
         }), 29.2)
         self.assertEqual(bootstrap_ci([0.5, 0.5]), (0.5, 0.5))
         self.assertEqual(bootstrap_ci([0.0, 1.0], draws=1, seed=0), (1.0, 1.0))
+        self.assertEqual(
+            bootstrap_mean_diff([10.0, 30.0], [20.0, 40.0], draws=2, seed=0),
+            (0.0, 10.0),
+        )
         self.assertIsNone(over_budget(Path(tempfile.mkdtemp()), None))
+
+    def test_per_task_deltas_and_headroom_pass_rate(self):
+        out = Path(tempfile.mkdtemp())
+        root = out / "9"
+        root.mkdir()
+
+        def row(task, score, success, wall, turns, uncached, failure=None):
+            return {
+                "task": task,
+                "score": score,
+                "success": success,
+                "wall_time_s": wall,
+                "turns": turns,
+                "tokens_input_uncached": uncached,
+                "tokens_output": 0,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+                "failure_class": failure,
+            }
+
+        without = [
+            row("ceiling", 1, True, 10, 2, 1_000_000),
+            row("ceiling", 1, True, 10, 2, 1_000_000),
+            row("open", 0, False, 30, 1, 1_000_000),
+            row("open", 0, False, 30, 1, 1_000_000),
+            row("open", 0, False, 9999, 99, 9_000_000, "infra"),
+            row("solo", 0, False, 1, 1, 1),
+        ]
+        with_rows = [
+            row("ceiling", 1, True, 20, 4, 2_000_000),
+            row("ceiling", 1, True, 20, 4, 2_000_000),
+            row("open", 1, True, 10, 3, 1_000_000),
+            row("open", 1, True, 10, 3, 1_000_000),
+        ]
+        (root / "without.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in without) + "\n", encoding="utf-8")
+        (root / "with.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in with_rows) + "\n", encoding="utf-8")
+        pr = PullRequest(
+            pr="9", title="Limit", merged="yes", with_sha=SHA_B, without_sha=SHA_A,
+            nearest_release="", category="tool", files_changed="", key_paths="",
+            one_line="", harness_change="Adds a limit.", bugfix_check="",
+        )
+        text = render_markdown([pr_record(pr, out)])
+        per_task, _, headroom = text.partition("### Headroom")
+        self.assertIn(
+            "| ceiling | 10.000 | 10.000 to 10.000 | 2.000 | 2.000 to 2.000 "
+            "| 1000000.0 | 1000000.0 to 1000000.0 | 4.000 | 4.000 to 4.000 |",
+            per_task,
+        )
+        self.assertIn(
+            "| open | -20.000 | -20.000 to -20.000 | 2.000 | 2.000 to 2.000 "
+            "| 0.0 | 0.0 to 0.0 | 0.000 | 0.000 to 0.000 |",
+            per_task,
+        )
+        self.assertNotIn("solo", text)
+        self.assertNotIn("| ceiling |", headroom)
+        self.assertIn(
+            "| open | 0.000 | 1.000 | 0.000 | 1.000 |",
+            headroom,
+        )
+        self.assertIn(
+            "Pass-rate delta on headroom tasks (with minus without): 1.000 on 1 task. "
+            "95% bootstrap interval: 1.000 to 1.000.",
+            headroom,
+        )
+        self.assertIn("Score delta (with minus without): 0.500 on 2 paired tasks.", text)
+        parsed = list(csv.DictReader(io.StringIO(render_csv([pr_record(pr, out)]))))
+        self.assertEqual(parsed[0]["headroom_tasks"], "open")
+        self.assertEqual(parsed[0]["headroom_n"], "1")
+        self.assertEqual(parsed[0]["headroom_pass_delta"], "1.000")
+        self.assertEqual(parsed[0]["headroom_pass_ci_low"], "1.000")
+        self.assertEqual(parsed[0]["headroom_pass_ci_high"], "1.000")
 
 
 class TestBuildPlan(unittest.TestCase):

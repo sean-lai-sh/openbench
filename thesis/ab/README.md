@@ -46,7 +46,7 @@ The default config points the stock `anthropic` provider at the proxy. The model
 
 Finished cells are `results/ab/<pr>/cells/<side>/<task>/<trial>.json`. The runner rewrites `results/ab/<pr>/without.jsonl` and `with.jsonl` from those files. An incompatible side writes `results/ab/<pr>/<side>.incompatible.json`.
 
-Summarize pass rate, score, time, tokens, and the per-task score delta:
+Summarize pass rate, score, time, turns, tokens, and cost. Each PR lists per-task deltas for time, turns, tokens, and cost, with a bootstrap interval. The headroom section lists tasks whose mean score is below 1.0 on either side and gives the pass-rate delta on only those tasks.
 
 ```bash
 python -m thesis.ab.summarize thesis/ab/fixtures/opencode-harness-prs.csv --results results/ab
