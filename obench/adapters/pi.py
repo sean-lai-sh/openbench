@@ -156,15 +156,21 @@ def _proxied_base_url(route, original_url=None):
     return _proxy_cell_url("chat", vendor, tail)
 
 
+def _exe():
+    override = os.environ.get("OBENCH_PI_BIN", "").strip()
+    return override or _EXE
+
+
 def version():
     """Return the CLI version string (with binary path), or None on failure.
 
     Cheap `pi --version` (short-circuits before extensions load, so no isolated
     HOME needed); never raises (the runner calls this defensively).
     """
+    exe = _exe()
     try:
         proc = subprocess.run(
-            [_EXE, "--version"],
+            [exe, "--version"],
             capture_output=True, text=True, timeout=5,
             stdin=subprocess.DEVNULL,
         )
@@ -173,14 +179,22 @@ def version():
     out = (proc.stdout or proc.stderr or "").strip()
     if not out:
         return None
-    path = shutil.which(_EXE)
+    path = exe if os.path.isabs(exe) else shutil.which(exe)
     return f"{out} ({path})" if path else out
 
 
 _DELTA_MARKER = '"type":"message_update"'
+_INPUT_MARKERS = (
+    "Do you trust",
+    "trust this project",
+    "Trust this project",
+    "Waiting for approval",
+    "waiting for approval",
+    "Approval required",
+)
 
 
-def _run_streaming(cmd, cwd, timeout_s, env):
+def _run_streaming(cmd, cwd, timeout_s, env, stop_box=None):
     """Run pi consuming stdout line-by-line, dropping per-token delta events.
 
     ``--mode json`` re-emits the FULL accumulated partial message inside every
@@ -200,14 +214,27 @@ def _run_streaming(cmd, cwd, timeout_s, env):
     )
     out_lines, err_chunks = [], []
 
+    def _stop(line):
+        if stop_box is None:
+            return False
+        if any(marker in line for marker in _INPUT_MARKERS):
+            stop_box.append("waiting for input")
+            proc.kill()
+            return True
+        return False
+
     def _drain_stdout():
         for line in proc.stdout:
+            if _stop(line):
+                break
             if _DELTA_MARKER not in line:
                 out_lines.append(line)
         proc.stdout.close()
 
     def _drain_stderr():
         for chunk in proc.stderr:
+            if _stop(chunk):
+                break
             err_chunks.append(chunk)
         proc.stderr.close()
 
@@ -790,7 +817,76 @@ def run_routed(
         shutil.rmtree(iso_home, ignore_errors=True)
 
 
+def _vertex_spec():
+    raw = os.environ.get("OBENCH_PI_VERTEX")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _run_vertex(instruction, workdir, timeout_s, spec):
+    iso_home = tempfile.mkdtemp(prefix="pi_vertex_home_")
+    stop_box = []
+    try:
+        env = dict(os.environ)
+        env["HOME"] = iso_home
+        home_dir = str(spec.get("home_dir") or ".pi").strip("/")
+        agent_dir = os.path.join(iso_home, home_dir, "agent")
+        os.makedirs(agent_dir, exist_ok=True)
+        env[str(spec.get("agent_env") or "PI_CODING_AGENT_DIR")] = agent_dir
+        env.pop("PI_CODING_AGENT_SESSION_DIR", None)
+        env.pop("PI_PACKAGE_DIR", None)
+        filename = str(spec.get("models_filename") or "models.json")
+        with open(os.path.join(agent_dir, filename), "w", encoding="utf-8") as fh:
+            fh.write(spec.get("models_body") or "")
+        extra = spec.get("extra_args") or []
+        cmd = [
+            spec.get("bin") or _exe(),
+            "-p", instruction,
+            "--mode", "json",
+            "--provider", spec.get("provider") or "vertex-anthropic",
+            "--model", spec.get("model_id") or "claude-opus-5-5",
+            *list(extra),
+        ]
+        stdout_text, stderr_text, returncode, timed_out = _run_streaming(
+            cmd, workdir, timeout_s, env, stop_box=stop_box)
+        combined = stdout_text + stderr_text
+        if stop_box:
+            error = stop_box[0]
+            completed = False
+        elif timed_out:
+            error = f"timeout after {timeout_s}s"
+            completed = False
+        else:
+            error = None if returncode == 0 else f"exit {returncode}"
+            completed = returncode == 0
+        tokens, turns, tail, token_usage = _parse_json_with_usage(stdout_text)
+        if not tail:
+            tail = combined[-2000:]
+        return {
+            "completed": completed,
+            "error": error,
+            "output_tail": tail,
+            "full_output": combined,
+            "tokens": tokens,
+            "turns": turns,
+            "cmd": cmd,
+            "model_context_window": 1000000,
+            "model_max_tokens": 128000,
+            **token_usage,
+        }
+    finally:
+        shutil.rmtree(iso_home, ignore_errors=True)
+
+
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
+    vertex = _vertex_spec()
+    if model == "claude-opus-5-5" and vertex:
+        return _run_vertex(instruction, workdir, timeout_s, vertex)
     if model in MODELS:
         provider = MODELS[model]["provider"]
         if not _has_subscription_auth(provider):
