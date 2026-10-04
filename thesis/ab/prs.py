@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from thesis.ab.harness import harness_name
+
 
 class PrListError(ValueError):
     """The PR file is not a usable list."""
@@ -41,6 +43,8 @@ class PullRequest:
     one_line: str
     harness_change: str
     bugfix_check: str
+    repo: str = ""
+    number: str = ""
 
     def sha_for(self, side: Side) -> str:
         if side is Side.WITHOUT:
@@ -69,9 +73,24 @@ def _cell(row: dict, *names: str) -> str:
     return ""
 
 
+def _identity(row: dict, source: str) -> tuple[str, str, str]:
+    repo = _cell(row, "Repo", "repo")
+    number = _cell(row, "#", "number")
+    if not repo:
+        return "", "", number
+    try:
+        name = harness_name(repo)
+    except KeyError:
+        raise PrListError(f"{source}: unknown repo {repo!r}") from None
+    if not number.isdigit():
+        raise PrListError(f"{source}: expected a row number in #, got {number!r}")
+    return f"{name}-{int(number)}", repo, str(int(number))
+
+
 def _from_primary(row: dict, source: str) -> PullRequest:
+    run_id, repo, number = _identity(row, source)
     return PullRequest(
-        pr=_pr(_cell(row, PRIMARY_PR), f"{source} PR"),
+        pr=run_id or _pr(_cell(row, PRIMARY_PR), f"{source} PR"),
         title=_cell(row, "Title"),
         merged=_cell(row, "Merged"),
         with_sha=_sha(_cell(row, PRIMARY_WITH), f"{source} {PRIMARY_WITH}"),
@@ -83,12 +102,15 @@ def _from_primary(row: dict, source: str) -> PullRequest:
         one_line=_cell(row, "One-line behavior change"),
         harness_change=_cell(row, "Harness change"),
         bugfix_check=_cell(row, "Bug-fix check"),
+        repo=repo,
+        number=number,
     )
 
 
 def _from_fallback(row: dict, source: str) -> PullRequest:
+    run_id, repo, number = _identity(row, source)
     return PullRequest(
-        pr=_pr(_cell(row, "pr"), f"{source} pr"),
+        pr=run_id or _pr(_cell(row, "pr"), f"{source} pr"),
         title=_cell(row, "title", "Title"),
         merged=_cell(row, "merged", "Merged"),
         with_sha=_sha(_cell(row, "after_sha"), f"{source} after_sha"),
@@ -100,6 +122,8 @@ def _from_fallback(row: dict, source: str) -> PullRequest:
         one_line=_cell(row, "one_line", "One-line behavior change"),
         harness_change=_cell(row, "harness_change", "Harness change"),
         bugfix_check=_cell(row, "bugfix_check", "Bug-fix check"),
+        repo=repo,
+        number=number,
     )
 
 

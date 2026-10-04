@@ -66,6 +66,7 @@ FAKE = textwrap.dedent("""\
             "creds": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
             "project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
             "location": os.environ.get("VERTEX_LOCATION"),
+            "base_url": os.environ.get("ANTHROPIC_BASE_URL"),
         }
         cfg = os.environ.get("OPENCODE_CONFIG")
         if cfg and os.path.isfile(cfg):
@@ -186,6 +187,23 @@ class TestVertexFlags(unittest.TestCase):
         self.assertNotIn("permission", body)
         self.assertIn("google-vertex-anthropic", body["provider"])
 
+    def test_proxy_route_uses_the_anthropic_model_and_dummy_key(self):
+        res = self._run(HELP_MODERN, {
+            "OBENCH_OPENCODE_PROXY": json.dumps({
+                "model_ref": "anthropic/claude-opus-5-5",
+                "api_key": "proxy",
+                "base_url": "http://127.0.0.1:9",
+                "base_url_env": True,
+            }),
+        })
+        self.assertTrue(res["completed"], res.get("error"))
+        cmd = res["cmd"]
+        self.assertEqual(cmd[cmd.index("-m") + 1], "anthropic/claude-opus-5-5")
+        dumped = self._dump()
+        self.assertEqual(dumped["anthropic"], "proxy")
+        self.assertEqual(dumped["base_url"], "http://127.0.0.1:9")
+        self.assertIsNone(dumped["location"])
+
     def test_prompt_fails_fast(self):
         started = time.monotonic()
         res = self._run(HELP_BARE, {"FAKE_PROMPT": "1"})
@@ -248,6 +266,66 @@ class TestAssessment(unittest.TestCase):
         self.assertEqual(result.status, "configured")
         self.assertNotIn("permission", result.config)
         self.assertFalse(result.permission_config)
+
+    def test_proxy_route_keeps_provider_options_when_the_model_is_listed(self):
+        from thesis.ab.compat import PROXY_MODEL_REF, assess
+        binary = self._binary()
+        with EnvPatch() as env:
+            env["FAKE_HELP"] = HELP_MODERN
+            env["FAKE_MODELS"] = PROXY_MODEL_REF + "\n"
+            env["FAKE_PERM"] = "ok"
+            result = assess(str(binary), route="proxy", proxy_url="http://127.0.0.1:9")
+        self.assertEqual(result.status, "configured")
+        provider = result.config["provider"]["anthropic"]
+        self.assertEqual(provider["options"]["baseURL"], "http://127.0.0.1:9/v1")
+        self.assertEqual(provider["models"]["claude-opus-5-5"]["limit"], {"context": 1000000, "output": 128000})
+        self.assertEqual(result.proxy["model_ref"], PROXY_MODEL_REF)
+        self.assertFalse(result.proxy["base_url_env"])
+
+    def test_proxy_route_falls_back_to_the_base_url_env(self):
+        from thesis.ab.compat import assess
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "opencode"
+        path.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import os, sys
+            args = sys.argv[1:]
+            if args[:2] == ["run", "--help"]:
+                sys.stdout.write("-m, --model\\n")
+                raise SystemExit(0)
+            if args[:1] == ["models"] and "--print-logs" in args:
+                sys.stdout.write("ok")
+                raise SystemExit(0)
+            if args[:1] == ["models"]:
+                cfg = os.environ.get("OPENCODE_CONFIG", "")
+                body = open(cfg, encoding="utf-8").read() if cfg and os.path.isfile(cfg) else ""
+                if "baseURL" in body:
+                    sys.stdout.write("ConfigInvalidError Unrecognized key: 'api'")
+                elif os.environ.get("ANTHROPIC_BASE_URL"):
+                    sys.stdout.write("anthropic/claude-opus-5-5\\n")
+                raise SystemExit(0)
+        """), encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        with EnvPatch() as env:
+            env["FAKE_HELP"] = HELP_MODERN
+            result = assess(str(path), route="proxy", proxy_url="http://127.0.0.1:9")
+        self.assertEqual(result.status, "configured")
+        self.assertNotIn("options", result.config["provider"]["anthropic"])
+        self.assertTrue(result.proxy["base_url_env"])
+        self.assertEqual(result.proxy["base_url"], "http://127.0.0.1:9/v1")
+
+    def test_proxy_route_is_incompatible_when_the_model_is_absent(self):
+        from thesis.ab.compat import assess
+        binary = self._binary()
+        with EnvPatch() as env:
+            env["FAKE_HELP"] = HELP_BARE
+            env["FAKE_MODELS"] = ""
+            env["FAKE_PERM"] = "ok"
+            result = assess(str(binary), route="proxy", proxy_url="http://127.0.0.1:9")
+        self.assertEqual(result.status, "incompatible")
+        self.assertIn("anthropic/claude-opus-5-5", result.reason)
+        self.assertEqual(result.config, {})
 
     def test_listed_model_is_native(self):
         from thesis.ab.compat import MODEL_ID, assess
