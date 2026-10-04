@@ -14,7 +14,7 @@ python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
   --out results/ab
 ```
 
-The model is `claude-opus-5-5` on Vertex. `VERTEX_LOCATION` defaults to `global` when it is unset. The run calls Vertex from this machine. It does not start a GCP VM.
+The model is `claude-opus-5-5`. The default route is one local proxy that speaks Anthropic `POST /v1/messages` and forwards it to Vertex on the global endpoint. OpenCode, Pi, and Oh My Pi share that proxy. `--model-route vertex` keeps OpenCode on the native `google-vertex-anthropic` provider. Set `GOOGLE_CLOUD_PROJECT` and application-default credentials before a real run.
 
 PR 23771 in the fixture is a commit on the development branch, not GitHub's merge commit. The runner uses the SHAs in the CSV.
 
@@ -38,7 +38,9 @@ Pass a subset with `--tasks make-it-run,fix-failing-test`. Repeat the flag or se
 
 The runner reads `opencode run --help` on that binary. It passes `--auto` when the help text lists it, and otherwise `--dangerously-skip-permissions` when that flag is listed. When neither flag exists and the config schema accepts a `permission` object, the per-run config sets edit, bash, webfetch, and the other tools to `allow`. A run that still sits on a permission prompt fails with `waiting on a permission prompt` instead of waiting out the task timeout.
 
-When the binary does not already know `google-vertex-anthropic/claude-opus-5-5@default`, the same config defines that provider and a model entry with a 1,000,000 token context limit and a 128,000 token output limit. A binary that still cannot load the provider is recorded as incompatible, with the reason, and that side is not scored.
+The default config points the stock `anthropic` provider at the proxy. The model id is `claude-opus-5-5`, with a 1,000,000 token context limit and a 128,000 token output limit. Old trees read the base URL from `provider.anthropic.api`. Later trees read `options.baseURL`. A tree that rejects both gets `ANTHROPIC_BASE_URL` instead. The API key is the dummy value `proxy`. The proxy holds the Vertex credential.
+
+`--model-route vertex` is the previous path. The config defines `google-vertex-anthropic/claude-opus-5-5@default` when the binary does not already list it. A binary that still cannot load that provider is recorded as incompatible, with the reason, and that side is not scored.
 
 ## Results
 
@@ -70,7 +72,7 @@ python -m thesis.ab.build_opencode <40-character-sha> --cache results/opencode-s
 
 Pi is the `pi` command from `badlogic/pi-mono`. Oh My Pi is the `omp` command from `can1357/oh-my-pi`. Both use the same runner. The `Repo` column makes the run id `pi-3` or `omp-14`. The results record the two as separate harnesses.
 
-Every Pi cell and every Oh My Pi cell, on both sides, talks to one local proxy. The proxy accepts Anthropic `POST /v1/messages` and forwards it to Vertex `claude-opus-5-5` on the global endpoint. The runner starts that proxy once and shares it across jobs. Set `GOOGLE_CLOUD_PROJECT` and application-default credentials before a real run.
+Pi, Oh My Pi, and OpenCode use the same proxy. The runner starts it once and shares it across jobs.
 
 ```bash
 python -m thesis.ab.run_ab thesis/ab/fixtures/pi-harness-prs.csv \
@@ -94,7 +96,9 @@ The pilot is three Pi rows and three Oh My Pi rows, plus one Pi control.
 
 The CSV stores full SHAs. The runner uses those SHAs. It does not look up old Oh My Pi tags, because that history was rewritten. Builds are cached under `results/harness-src` by repo and SHA.
 
-The Pi build compiles the TypeScript committed at that SHA. It does not refetch the live model list, because that list drops providers the commit still imports. A lockfile that omits the Linux `tsgo` package gets that package installed before the compile.
+The Pi build compiles the TypeScript committed at that SHA. It does not refetch the live model list, because that list drops providers the commit still imports. A lockfile that names a version and omits the tarball URL still installs that version under `npm ci`. Linux packages the lockfile skipped, including `tsgo` and `@parcel/watcher`, are unpacked from their own tarballs. An `npm install` of those packages is not used, because it moves `@google/genai` off the locked 1.30.0 and the committed `FinishReason` switch no longer typechecks.
+
+`0397dd44c838f5dba88a315c784976cb975c62cc`, the parent of `pi-3`, builds with that pin. `pi --version` opens the v0.10.1 banner. `pi-4` has the same exhaustive switch. `pi-1` and `pi-2` have it too, and they are still incompatible before compile because they have no models file. `pi-5` and later no longer use that switch.
 
 Build one SHA on its own with either command.
 
@@ -108,4 +112,8 @@ python -m thesis.ab.build_omp <40-character-sha> --cache results/harness-src
 
 ## Oldest OpenCode commit in the fixture
 
-The oldest parent SHA is `b99565959bb7a094e339802076d6ad6fd7d7f83c`, the parent of PR 623 (nearest tag v0.1.180). `python -m thesis.ab.build_opencode` compiles that commit with the `package.json` Bun (1.2.14) and Go 1.24.6. The binary runs, and `opencode --version` prints `openbench`. `opencode run --help` lists `-m` / `--model` and does not list `--auto` or `--dangerously-skip-permissions`. The config schema rejects a `permission` key, so the runner does not write one. Loading `google-vertex-anthropic/claude-opus-5-5@default` fails with `ProviderInitError` because the process cannot resolve `@ai-sdk/google-vertex/anthropic`. That failure happens before any Vertex request. The runner records the side as incompatible and does not score it.
+The oldest parent SHA is `b99565959bb7a094e339802076d6ad6fd7d7f83c`, the parent of PR 623 (nearest tag v0.1.180). `python -m thesis.ab.build_opencode` compiles that commit with the `package.json` Bun (1.2.14) and Go 1.24.6. The binary runs, and `opencode --version` prints `openbench`. `opencode run --help` lists `-m` / `--model` and does not list `--auto` or `--dangerously-skip-permissions`. The config schema rejects a `permission` key, so the runner does not write one.
+
+`opencode models` lists `anthropic/claude-opus-5-5` after the proxy config is installed. A `run` against a stub upstream posts `POST /v1/messages` with `"model":"claude-opus-5-5"` and `"max_tokens":128000`. The compiled binary treats `bun install` as its own help text and exits 0, so the runner installs `@ai-sdk/anthropic` with the build's Bun before the run.
+
+PRs 623, 913, 984, 1248, 2334, and 2367 do not mention `@ai-sdk/google-vertex/anthropic` under `packages/opencode`. Those are the rows the native Vertex route cannot load. Every SHA in the fixture, including those six, has the custom `provider` field in `config.ts`. The proxy route uses that field. This check is the source tree, not a build of all 34 rows. `--model-route vertex` still records a side as incompatible when that provider package does not resolve.

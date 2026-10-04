@@ -1,8 +1,11 @@
 """Build both sides of each pull request and run the same tasks on each binary.
 
 Cells land in their own files. The parent rewrites each side's JSONL from
-those files after a cell finishes. A binary that cannot load the Vertex model
-records ``<side>.incompatible.json`` and does not produce a score.
+those files after a cell finishes. The default model route points every
+harness at one local Anthropic proxy. ``--model-route vertex`` keeps
+OpenCode on the native Vertex provider. A binary that cannot load the
+chosen model records ``<side>.incompatible.json`` and does not produce a
+score.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
@@ -171,6 +175,7 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_BIN",
         "OBENCH_OPENCODE_CONFIG_JSON",
         "OBENCH_OPENCODE_PERMISSION_CONFIG",
+        "OBENCH_OPENCODE_PROXY",
         "OBENCH_PI_VERTEX",
         "OBENCH_PI_BIN",
     )
@@ -185,12 +190,17 @@ def execute_cell(spec: dict) -> None:
             os.environ["OBENCH_OPENCODE_PERMISSION_CONFIG"] = (
                 "1" if spec.get("permission_config") else "0"
             )
+            if spec.get("proxy"):
+                os.environ["OBENCH_OPENCODE_PROXY"] = json.dumps(spec["proxy"])
+            else:
+                os.environ.pop("OBENCH_OPENCODE_PROXY", None)
             os.environ.pop("OBENCH_PI_VERTEX", None)
             os.environ.pop("OBENCH_PI_BIN", None)
         else:
             os.environ.pop("OBENCH_OPENCODE_BIN", None)
             os.environ.pop("OBENCH_OPENCODE_CONFIG_JSON", None)
             os.environ.pop("OBENCH_OPENCODE_PERMISSION_CONFIG", None)
+            os.environ.pop("OBENCH_OPENCODE_PROXY", None)
             vertex = spec.get("vertex") or {}
             os.environ["OBENCH_PI_VERTEX"] = json.dumps(vertex)
             os.environ["OBENCH_PI_BIN"] = vertex.get("bin") or spec["binary"]
@@ -233,6 +243,7 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "permission_config": prepared["permission_config"],
         "harness": prepared.get("harness") or "opencode",
         "vertex": prepared.get("vertex"),
+        "proxy": prepared.get("proxy"),
         "cell_path": str(cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])),
         "tasks_dir": tasks_dir,
         "adapters_dir": adapters,
@@ -240,6 +251,13 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "timeout_s": timeout_s,
     })
     return filled
+
+
+def _host_bun(cache: Path) -> str:
+    found = [path for path in Path(cache).glob("bun/*/bun") if os.access(path, os.X_OK)]
+    if found:
+        return str(sorted(found)[-1])
+    return shutil.which("bun") or ""
 
 
 def _default_build(sha, cache, repo=""):
@@ -253,22 +271,26 @@ def _default_build(sha, cache, repo=""):
     return build_opencode(sha, cache)
 
 
-def _default_assess(binary_path, repo, cache, sha, proxy_url):
+def _default_assess(binary_path, repo, cache, sha, proxy_url, model_route):
     name = harness_name(repo) if repo else "opencode"
     if name == "opencode":
-        return assess(str(binary_path))
+        if model_route == "proxy":
+            return assess(str(binary_path), route="proxy", proxy_url=proxy_url or "")
+        return assess(str(binary_path), route="vertex")
     from thesis.ab.compat_cli import assess_cli
     root = Path(cache) / "worktrees" / name / sha.strip().lower()
     return assess_cli(str(binary_path), root, name, proxy_url)
 
 
-def _needs_proxy(prs) -> bool:
+def _needs_proxy(prs, model_route: str) -> bool:
+    if model_route == "proxy":
+        return True
     return any(harness_name(pr.repo) in {"pi", "omp"} for pr in prs if pr.repo)
 
 
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
-          worker=None, proxy_url=None):
+          worker=None, proxy_url=None, model_route="proxy"):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``."""
     out_dir = Path(out_dir)
     tasks = tuple(tasks)
@@ -290,7 +312,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     prepared: dict[tuple[str, str], dict] = {}
     announced: set[tuple[str, str, str]] = set()
     server = None
-    if own_assess and proxy_url is None and _needs_proxy(prs):
+    if own_assess and proxy_url is None and _needs_proxy(prs, model_route):
         from thesis.ab.vertex_anthropic_proxy import ProxyError, start_from_env
         try:
             server = start_from_env()
@@ -311,7 +333,9 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                 prepared[key] = {"ok": False, "reason": f"build failed: {exc}"}
             else:
                 if own_assess:
-                    assessment = _default_assess(built, repo, cache, sha, proxy_url or "")
+                    assessment = _default_assess(
+                        built, repo, cache, sha, proxy_url or "", model_route,
+                    )
                 else:
                     assessment = assess_fn(str(built))
                 if assessment.status == "incompatible":
@@ -324,6 +348,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                         "permission_config": assessment.permission_config,
                         "harness": harness_name(repo) if repo else assessment.harness,
                         "vertex": assessment.vertex,
+                        "proxy": assessment.proxy,
                         "reason": assessment.reason,
                     }
         state = prepared[key]
@@ -354,7 +379,12 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         state = materialize(spec)
         if state is None:
             return None
-        return _fill(spec, state, out_dir, tasks_dir_s, adapters, model, timeout_s)
+        filled = _fill(spec, state, out_dir, tasks_dir_s, adapters, model, timeout_s)
+        if filled.get("proxy"):
+            proxy = dict(filled["proxy"])
+            proxy.setdefault("bun", _host_bun(Path(cache)))
+            filled["proxy"] = proxy
+        return filled
 
     try:
         if jobs <= 1:
@@ -425,6 +455,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--model", default="claude-opus-5-5")
+    parser.add_argument(
+        "--model-route",
+        choices=("proxy", "vertex"),
+        default="proxy",
+        help="OpenCode model path. proxy is the shared Anthropic proxy. vertex is the native provider.",
+    )
     parser.add_argument("--timeout", type=int, default=2400)
     parser.add_argument("--out", type=Path, default=Path("results/ab"))
     parser.add_argument("--cache", type=Path, default=None)
@@ -454,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             prs, tasks, args.trials, args.out,
             jobs=args.jobs, model=args.model, timeout_s=args.timeout,
             cache=cache, max_cost_usd=args.max_cost_usd, dry_run=args.dry_run,
-            tasks_dir=tasks_dir,
+            tasks_dir=tasks_dir, model_route=args.model_route,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

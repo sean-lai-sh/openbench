@@ -1,4 +1,4 @@
-"""Per-binary permission flags and Vertex model support.
+"""Per-binary permission flags and the Opus model route.
 
 Old OpenCode builds do not share one non-interactive flag. ``--auto`` is the
 recent flag. ``--dangerously-skip-permissions`` is the one before it. Builds
@@ -22,6 +22,9 @@ from obench.adapters.opencode import _ALLOW_PERMISSIONS, _flag_present
 MODEL_ID = "google-vertex-anthropic/claude-opus-5-5@default"
 PROVIDER_ID = "google-vertex-anthropic"
 NPM_SPEC = "@ai-sdk/google-vertex/anthropic"
+PROXY_MODEL_REF = "anthropic/claude-opus-5-5"
+PROXY_MODEL_ID = "claude-opus-5-5"
+PROXY_API_KEY = "proxy"
 
 _INCOMPATIBLE_MARKERS = (
     "ProviderModelNotFoundError",
@@ -41,6 +44,7 @@ class Assessment:
     permission_config: bool
     vertex: dict | None = None
     harness: str = "opencode"
+    proxy: dict | None = None
 
 
 def help_text(binary: str, timeout_s: int = 15) -> str:
@@ -61,6 +65,44 @@ def permission_args(help_text_value: str) -> list[str]:
     if _flag_present(help_text_value, "--dangerously-skip-permissions"):
         return ["--dangerously-skip-permissions"]
     return []
+
+
+def sdk_base_url(proxy_url: str) -> str:
+    base = proxy_url.rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return base + "/v1"
+
+
+def _needs_host_sdk(binary: str) -> bool:
+    try:
+        proc = subprocess.run(
+            [binary, "install", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "BUN_BE_BUN": "1"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    text = (proc.stdout or "") + (proc.stderr or "")
+    return "opencode run" in text or "start opencode" in text
+
+
+def anthropic_proxy_config(base_url: str, *, include_endpoint: bool) -> dict:
+    provider = {
+        "models": {
+            PROXY_MODEL_ID: {
+                "name": "Claude Opus 5.5",
+                "limit": {"context": 1000000, "output": 128000},
+            }
+        }
+    }
+    if include_endpoint:
+        provider["api"] = base_url
+        provider["options"] = {"apiKey": PROXY_API_KEY, "baseURL": base_url}
+    return {"provider": {"anthropic": provider}}
 
 
 def vertex_provider_config() -> dict:
@@ -152,15 +194,89 @@ def _marked_incompatible(text: str) -> str | None:
     return None
 
 
-def assess(binary: str) -> Assessment:
-    """Decide whether this binary can target the Vertex Opus model.
+def _with_permission(config: dict, permission_ok: bool) -> dict:
+    if not permission_ok:
+        return config
+    body = dict(config)
+    body["permission"] = dict(_ALLOW_PERMISSIONS)
+    return body
 
-    Credentials are stripped for the probe. A missing-credentials failure after
-    the provider loads is compatible. A model-lookup or package-install failure
-    is not, and it happens before a Vertex request on the builds we checked.
+
+def _models_text(binary: str, root: Path, config: dict, extra_env: dict) -> str:
+    env = _isolated_env(root, config or None)
+    env.pop("ANTHROPIC_BASE_URL", None)
+    env.update(extra_env)
+    _code, text = _run(binary, ["models"], env, 40)
+    return text
+
+
+def _model_listed(text: str) -> bool:
+    return PROXY_MODEL_REF in text and _marked_incompatible(text) is None
+
+
+def _proxy_assessment(config: dict, permission_ok: bool, proxy_url: str, base_url_env: bool, how: str, needs_sdk: bool) -> Assessment:
+    return Assessment(
+        status="configured",
+        reason=f"anthropic provider uses {how}",
+        config=config,
+        permission_config=permission_ok and "permission" in config,
+        proxy={
+            "model_ref": PROXY_MODEL_REF,
+            "api_key": PROXY_API_KEY,
+            "base_url": sdk_base_url(proxy_url),
+            "base_url_env": base_url_env,
+            "needs_sdk": needs_sdk,
+        },
+    )
+
+
+def _assess_proxy(binary: str, permission_ok: bool, proxy_url: str) -> Assessment:
+    if not proxy_url:
+        return Assessment(
+            status="incompatible",
+            reason="proxy route has no base URL",
+            config={},
+            permission_config=False,
+        )
+    endpoint = sdk_base_url(proxy_url)
+    needs_sdk = _needs_host_sdk(binary)
+    full = _with_permission(anthropic_proxy_config(endpoint, include_endpoint=True), permission_ok)
+    key_env = {"ANTHROPIC_API_KEY": PROXY_API_KEY}
+    with tempfile.TemporaryDirectory(prefix="opencode-proxy-") as tmp:
+        root = Path(tmp)
+        first = _models_text(binary, root / "full", full, key_env)
+        if _model_listed(first):
+            return _proxy_assessment(full, permission_ok, proxy_url, False, "provider options", needs_sdk)
+        models_only = _with_permission(
+            anthropic_proxy_config(endpoint, include_endpoint=False), permission_ok,
+        )
+        second = _models_text(
+            binary, root / "env", models_only,
+            {**key_env, "ANTHROPIC_BASE_URL": endpoint},
+        )
+        if _model_listed(second):
+            return _proxy_assessment(models_only, permission_ok, proxy_url, True, "ANTHROPIC_BASE_URL", needs_sdk)
+    marker = _marked_incompatible(second) or _marked_incompatible(first) or "not listed"
+    return Assessment(
+        status="incompatible",
+        reason=f"{marker} while loading {PROXY_MODEL_REF}",
+        config={},
+        permission_config=False,
+    )
+
+
+def assess(binary: str, *, route: str = "vertex", proxy_url: str = "") -> Assessment:
+    """Decide whether this binary can run Claude Opus 5.5.
+
+    ``route="proxy"`` lists models with the stock anthropic provider pointed at
+    ``proxy_url``. ``route="vertex"`` probes the native Vertex id. A
+    missing-credentials failure after the provider loads is compatible. A
+    model-lookup or package-install failure is not.
     """
     flags = permission_args(help_text(binary))
     permission_ok = False if flags else permission_schema_accepts(binary)
+    if route == "proxy":
+        return _assess_proxy(binary, permission_ok, proxy_url)
     with tempfile.TemporaryDirectory(prefix="opencode-assess-") as tmp:
         root = Path(tmp)
         bare_env = _isolated_env(root / "bare")

@@ -237,6 +237,52 @@ def _open_config_content(spec):
     })
 
 
+def _ensure_provider_sdk(env, proxy):
+    if not proxy.get("needs_sdk"):
+        return
+    bun = str(proxy.get("bun") or "").strip() or shutil.which("bun")
+    if not bun:
+        return
+    cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
+    os.makedirs(cache, exist_ok=True)
+    module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
+    if not os.path.isfile(module):
+        subprocess.run(
+            [bun, "add", "@ai-sdk/anthropic@latest"],
+            cwd=cache,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    pkg_path = os.path.join(cache, "package.json")
+    parsed = {}
+    if os.path.isfile(pkg_path):
+        try:
+            with open(pkg_path, encoding="utf-8") as fh:
+                parsed = json.loads(fh.read())
+        except (OSError, json.JSONDecodeError):
+            parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    deps = parsed.get("dependencies")
+    if not isinstance(deps, dict):
+        deps = {}
+    deps["@ai-sdk/anthropic"] = "latest"
+    parsed["dependencies"] = deps
+    with open(pkg_path, "w", encoding="utf-8") as fh:
+        json.dump(parsed, fh)
+
+
+def _proxy_override():
+    raw = os.environ.get("OBENCH_OPENCODE_PROXY", "").strip()
+    if not raw:
+        return None
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict) or not str(parsed.get("model_ref") or "").strip():
+        raise ValueError("OBENCH_OPENCODE_PROXY must name model_ref")
+    return parsed
+
+
 def _exe():
     """Binary for this call. ``OBENCH_OPENCODE_BIN`` wins, otherwise ``_EXE``.
 
@@ -603,16 +649,24 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                     "output_tail": "", "tokens": None, "turns": None, "cmd": None,
                     **_empty_token_usage()}
         variant = _VARIANT.get(model)
+        try:
+            proxy = _proxy_override() if model == "claude-opus-5-5" else None
+        except ValueError as exc:
+            shutil.rmtree(iso_home, ignore_errors=True)
+            return {"completed": False, "error": str(exc),
+                    "output_tail": "", "tokens": None, "turns": None, "cmd": None,
+                    **_empty_token_usage()}
+        model_flag = proxy["model_ref"] if proxy else MODELS[model]
         if probe:
             cmd, watch_prompt = _build_cmd(
-                exe, MODELS[model], variant, workdir, instruction,
+                exe, model_flag, variant, workdir, instruction,
                 _run_help(exe, timeout_s),
             )
         else:
             cmd = [
                 exe, "run",
                 "--dir", workdir,
-                "-m", MODELS[model],
+                "-m", model_flag,
                 # xai rejects --variant with a server error (grok-4.5 has no
                 # selectable effort); omit the flag when the map holds None.
                 *(["--variant", variant] if variant else []),
@@ -630,7 +684,15 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         env.pop("OPENAI_API_KEY", None)  # force subscription OAuth route
         if model == "claude-opus-4-8":
             env.pop("ANTHROPIC_API_KEY", None)  # force Anthropic OAuth route
-        if model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
+        if proxy:
+            env["ANTHROPIC_API_KEY"] = str(proxy.get("api_key") or "proxy")
+            if proxy.get("base_url_env"):
+                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url") or "")
+            else:
+                env.pop("ANTHROPIC_BASE_URL", None)
+            env.pop("VERTEX_LOCATION", None)
+            _ensure_provider_sdk(env, proxy)
+        elif model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
             env["VERTEX_LOCATION"] = "global"
         try:
             _install_config(env, _config_body(watch_prompt))
