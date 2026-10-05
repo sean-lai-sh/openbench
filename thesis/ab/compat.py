@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from obench.adapters.opencode import _ALLOW_PERMISSIONS, _flag_present
 
@@ -25,6 +27,8 @@ NPM_SPEC = "@ai-sdk/google-vertex/anthropic"
 PROXY_MODEL_REF = "anthropic/claude-opus-5-5"
 PROXY_MODEL_ID = "claude-opus-5-5"
 PROXY_API_KEY = "proxy"
+
+_EXEC_RE = re.compile(r"\[Errno \d+\]")
 
 _INCOMPATIBLE_MARKERS = (
     "ProviderModelNotFoundError",
@@ -38,7 +42,7 @@ _INCOMPATIBLE_MARKERS = (
 
 @dataclass(frozen=True)
 class Assessment:
-    status: str  # native, configured, incompatible
+    status: Literal["native", "configured", "incompatible", "infra"]
     reason: str
     config: dict
     permission_config: bool
@@ -202,12 +206,27 @@ def _with_permission(config: dict, permission_ok: bool) -> dict:
     return body
 
 
-def _models_text(binary: str, root: Path, config: dict, extra_env: dict) -> str:
+def _exec_reason(code: int, text: str) -> str | None:
+    if code != 127 or not _EXEC_RE.search(text):
+        return None
+    line = next((item.strip() for item in text.splitlines() if _EXEC_RE.search(item)), text.strip())
+    return f"exec failed: {line[:180]}"
+
+
+def _infra(reason: str) -> Assessment:
+    return Assessment(
+        status="infra",
+        reason=reason,
+        config={},
+        permission_config=False,
+    )
+
+
+def _models_text(binary: str, root: Path, config: dict, extra_env: dict) -> tuple[int, str]:
     env = _isolated_env(root, config or None)
     env.pop("ANTHROPIC_BASE_URL", None)
     env.update(extra_env)
-    _code, text = _run(binary, ["models"], env, 40)
-    return text
+    return _run(binary, ["models"], env, 40)
 
 
 def _model_listed(text: str) -> bool:
@@ -244,16 +263,22 @@ def _assess_proxy(binary: str, permission_ok: bool, proxy_url: str) -> Assessmen
     key_env = {"ANTHROPIC_API_KEY": PROXY_API_KEY}
     with tempfile.TemporaryDirectory(prefix="opencode-proxy-") as tmp:
         root = Path(tmp)
-        first = _models_text(binary, root / "full", full, key_env)
+        code, first = _models_text(binary, root / "full", full, key_env)
+        failed = _exec_reason(code, first)
+        if failed:
+            return _infra(failed)
         if _model_listed(first):
             return _proxy_assessment(full, permission_ok, proxy_url, False, "provider options", needs_sdk)
         models_only = _with_permission(
             anthropic_proxy_config(endpoint, include_endpoint=False), permission_ok,
         )
-        second = _models_text(
+        code, second = _models_text(
             binary, root / "env", models_only,
             {**key_env, "ANTHROPIC_BASE_URL": endpoint},
         )
+        failed = _exec_reason(code, second)
+        if failed:
+            return _infra(failed)
         if _model_listed(second):
             return _proxy_assessment(models_only, permission_ok, proxy_url, True, "ANTHROPIC_BASE_URL", needs_sdk)
     marker = _marked_incompatible(second) or _marked_incompatible(first) or "not listed"
@@ -280,19 +305,25 @@ def assess(binary: str, *, route: str = "vertex", proxy_url: str = "") -> Assess
     with tempfile.TemporaryDirectory(prefix="opencode-assess-") as tmp:
         root = Path(tmp)
         bare_env = _isolated_env(root / "bare")
-        _code, listed = _run(binary, ["models"], bare_env, 30)
+        code, listed = _run(binary, ["models"], bare_env, 30)
+        failed = _exec_reason(code, listed)
+        if failed:
+            return _infra(failed)
         native = MODEL_ID in listed
         config = {} if native else vertex_provider_config()
         if permission_ok:
             config = dict(config)
             config["permission"] = dict(_ALLOW_PERMISSIONS)
         probe_env = _isolated_env(root / "probe", config or None)
-        _code, ran = _run(
+        code, ran = _run(
             binary,
             ["run", "--print-logs", "-m", MODEL_ID, "ping"],
             probe_env,
             25,
         )
+    failed = _exec_reason(code, ran)
+    if failed:
+        return _infra(failed)
     marker = _marked_incompatible(ran)
     if marker:
         return Assessment(

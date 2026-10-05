@@ -271,15 +271,54 @@ def _task_word(n: int) -> str:
     return "task" if n == 1 else "tasks"
 
 
+SDK_CHANGED = "SDK changed: harness delta may be confounded"
+_TOOLCHAIN_KEYS = ("ai", "anthropic", "bun")
+
+
+def toolchain_from(body) -> dict:
+    if not isinstance(body, dict):
+        return {}
+    parsed = {}
+    for key in _TOOLCHAIN_KEYS:
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            parsed[key] = value.strip()
+    return parsed
+
+
+def _load_toolchain(root: Path, side: str, rows: list[dict]) -> dict:
+    path = root / f"{side}.toolchain.json"
+    if path.is_file():
+        try:
+            return toolchain_from(json.loads(path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            return {}
+    for row in rows:
+        found = toolchain_from(row.get("toolchain") if isinstance(row, dict) else None)
+        if found:
+            return found
+    return {}
+
+
+def sdk_versions_differ(left: dict, right: dict) -> bool:
+    without = left.get("anthropic")
+    with_side = right.get("anthropic")
+    return bool(without and with_side and without != with_side)
+
+
 def pr_record(pr: PullRequest, out_dir: Path) -> dict:
     root = out_dir / pr.pr
     incompatible = {}
     for side in (Side.WITHOUT, Side.WITH):
-        path = root / f"{side.value}.incompatible.json"
-        if path.is_file():
-            incompatible[side.value] = json.loads(path.read_text(encoding="utf-8"))
-    without_rows = load_jsonl(root / "without.jsonl")
-    with_rows = load_jsonl(root / "with.jsonl")
+        for kind in ("incompatible", "infra"):
+            path = root / f"{side.value}.{kind}.json"
+            if path.is_file():
+                incompatible[side.value] = json.loads(path.read_text(encoding="utf-8"))
+                break
+    without_rows = [] if "without" in incompatible else load_jsonl(root / "without.jsonl")
+    with_rows = [] if "with" in incompatible else load_jsonl(root / "with.jsonl")
+    left_tool = _load_toolchain(root, "without", without_rows)
+    right_tool = _load_toolchain(root, "with", with_rows)
     left = side_stats(without_rows)
     right = side_stats(with_rows)
     deltas = paired_deltas(without_rows, with_rows)
@@ -292,6 +331,8 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         "category": pr.category,
         "harness_change": pr.harness_change,
         "incompatible": incompatible,
+        "toolchain": {"without": left_tool, "with": right_tool},
+        "sdk_changed": sdk_versions_differ(left_tool, right_tool),
         "without": left,
         "with": right,
         "delta_score": point,
@@ -300,6 +341,19 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         "task_deltas": task_metric_deltas(without_rows, with_rows),
         "headroom": headroom_report(without_rows, with_rows),
     }
+
+
+def _toolchain_line(side: str, tool: dict) -> str:
+    parts = []
+    if tool.get("bun"):
+        parts.append(f"bun {tool['bun']}")
+    if tool.get("ai"):
+        parts.append(f"ai {tool['ai']}")
+    if tool.get("anthropic"):
+        parts.append(f"@ai-sdk/anthropic {tool['anthropic']}")
+    if not parts:
+        return ""
+    return f"{side} toolchain: " + ", ".join(parts)
 
 
 def _side_cells(stats: dict) -> list[str]:
@@ -327,6 +381,8 @@ def render_markdown(records: list[dict]) -> str:
             reason = "; ".join(
                 f"{side}: {body.get('reason', '')}" for side, body in item["incompatible"].items()
             )
+        if item.get("sdk_changed"):
+            reason = " ".join(part for part in (reason, SDK_CHANGED) if part)
         delta = reason or _fmt(item["delta_score"])
         lines.append(
             f"| {item['pr']} | {item['category']} | {delta} | {ci_text} | {item['paired_tasks']} |"
@@ -353,9 +409,18 @@ def render_markdown(records: list[dict]) -> str:
         lines.append(f"Category: {item['category']}")
         lines.append(f"Harness change: {item['harness_change']}")
         lines.append("")
+        for side in ("without", "with"):
+            text = _toolchain_line(side, item.get("toolchain", {}).get(side) or {})
+            if text:
+                lines.append(text)
+        if item.get("sdk_changed"):
+            lines.append(SDK_CHANGED)
+        if item.get("toolchain") and any(item["toolchain"].values()):
+            lines.append("")
         if item["incompatible"]:
             for side, body in item["incompatible"].items():
-                lines.append(f"{side} is incompatible: {body.get('reason', '')}")
+                status = body.get("status") or "incompatible"
+                lines.append(f"{side} is {status}: {body.get('reason', '')}")
             lines.append("")
         lines.append("| Side | Pass rate | Mean score | Median seconds | Mean tokens |")
         lines.append("| --- | --- | --- | --- | --- |")
@@ -438,6 +503,9 @@ def render_csv(records: list[dict]) -> str:
         "headroom_tasks", "headroom_n", "headroom_pass_delta",
         "headroom_pass_ci_low", "headroom_pass_ci_high",
         "incompatible",
+        "without_bun", "without_ai", "without_anthropic",
+        "with_bun", "with_ai", "with_anthropic",
+        "sdk_changed",
     ]
     writer = csv.DictWriter(buf, fieldnames=fields)
     writer.writeheader()
@@ -469,6 +537,13 @@ def render_csv(records: list[dict]) -> str:
             "headroom_pass_ci_low": _fmt(head_ci[0]),
             "headroom_pass_ci_high": _fmt(head_ci[1]),
             "incompatible": json.dumps(item["incompatible"]),
+            "without_bun": (item.get("toolchain") or {}).get("without", {}).get("bun", ""),
+            "without_ai": (item.get("toolchain") or {}).get("without", {}).get("ai", ""),
+            "without_anthropic": (item.get("toolchain") or {}).get("without", {}).get("anthropic", ""),
+            "with_bun": (item.get("toolchain") or {}).get("with", {}).get("bun", ""),
+            "with_ai": (item.get("toolchain") or {}).get("with", {}).get("ai", ""),
+            "with_anthropic": (item.get("toolchain") or {}).get("with", {}).get("anthropic", ""),
+            "sdk_changed": "yes" if item.get("sdk_changed") else "",
         })
     return buf.getvalue()
 

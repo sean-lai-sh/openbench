@@ -340,5 +340,61 @@ class TestAssessment(unittest.TestCase):
         self.assertFalse(result.permission_config)
 
 
+class TestProviderSdkPin(unittest.TestCase):
+    def test_install_uses_the_pin_and_an_absolute_bun(self):
+        import obench.adapters.opencode as opencode
+        origin = Path.cwd()
+        repo = Path(tempfile.mkdtemp())
+        os.chdir(repo)
+        self.addCleanup(os.chdir, origin)
+        args_file = repo / "args.txt"
+        bun = repo / "results" / "opencode-src" / "bun" / "1.2.14" / "bun"
+        bun.parent.mkdir(parents=True)
+        bun.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import os, pathlib, sys
+            args = sys.argv[1:]
+            dest = pathlib.Path(os.environ["BUN_ARGS"])
+            previous = dest.read_text(encoding="utf-8") if dest.is_file() else ""
+            dest.write_text(previous + "\\n".join(args) + "\\n", encoding="utf-8")
+            for arg in args:
+                if arg.startswith("@ai-sdk/anthropic@"):
+                    version = arg.rsplit("@", 1)[1]
+                    module = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_text('{"version": "%s"}' % version, encoding="utf-8")
+        """), encoding="utf-8")
+        bun.chmod(0o755)
+        home = Path(tempfile.mkdtemp())
+        env = os.environ.copy()
+        env["XDG_CACHE_HOME"] = str(home)
+        env["BUN_ARGS"] = str(args_file)
+        proxy = {
+            "needs_sdk": True,
+            "bun": "results/opencode-src/bun/1.2.14/bun",
+            "anthropic_sdk": "1.2.12",
+        }
+        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
+        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
+        self.assertEqual(
+            args_file.read_text(encoding="utf-8").splitlines(),
+            ["add", "@ai-sdk/anthropic@1.2.12"],
+        )
+        saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "latest")
+        installed = json.loads(
+            (home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(installed["version"], "1.2.12")
+
+    def test_exec_failure_is_infra_not_incompatible(self):
+        from thesis.ab.compat import assess
+        missing = Path(tempfile.mkdtemp()) / "opencode"
+        result = assess(str(missing), route="proxy", proxy_url="http://127.0.0.1:9")
+        self.assertEqual(result.status, "infra")
+        self.assertIn("Errno", result.reason)
+        self.assertNotIn("not listed", result.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

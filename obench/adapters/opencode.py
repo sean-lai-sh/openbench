@@ -268,21 +268,47 @@ def _open_config_content(spec):
     })
 
 
+def _resolve_bun(bun):
+    text = str(bun or "").strip()
+    if not text:
+        return shutil.which("bun") or ""
+    if os.path.isabs(text):
+        return text
+    return os.path.abspath(text)
+
+
+def _installed_sdk_version(module_path):
+    if not os.path.isfile(module_path):
+        return ""
+    try:
+        with open(module_path, encoding="utf-8") as fh:
+            parsed = json.loads(fh.read())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    return str(parsed.get("version") or "")
+
+
 def _ensure_provider_sdk(env, proxy):
     if not proxy.get("needs_sdk"):
-        return
-    bun = str(proxy.get("bun") or "").strip() or shutil.which("bun")
+        return ""
+    pin = str(proxy.get("anthropic_sdk") or "").strip()
+    if not pin or pin == "latest":
+        return ""
+    bun = _resolve_bun(proxy.get("bun"))
     if not bun:
-        return
+        return ""
     cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
     os.makedirs(cache, exist_ok=True)
     module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
-    if not os.path.isfile(module):
+    if _installed_sdk_version(module) != pin:
         subprocess.run(
-            [bun, "add", "@ai-sdk/anthropic@latest"],
+            [bun, "add", f"@ai-sdk/anthropic@{pin}"],
             cwd=cache,
             env=env,
             stdin=subprocess.DEVNULL,
+            timeout=120,
             check=False,
         )
     pkg_path = os.path.join(cache, "package.json")
@@ -298,10 +324,15 @@ def _ensure_provider_sdk(env, proxy):
     deps = parsed.get("dependencies")
     if not isinstance(deps, dict):
         deps = {}
-    deps["@ai-sdk/anthropic"] = "latest"
+    # Compiled OpenCode calls BunProc.install(pkg, "latest") and skips the
+    # install only when package.json already says "latest". The files in
+    # node_modules stay on the pin.
+    recorded = "latest" if _installed_sdk_version(module) == pin else pin
+    deps["@ai-sdk/anthropic"] = recorded
     parsed["dependencies"] = deps
     with open(pkg_path, "w", encoding="utf-8") as fh:
         json.dump(parsed, fh)
+    return _installed_sdk_version(module)
 
 
 def _proxy_override():
@@ -669,6 +700,12 @@ def _isolated_env():
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     auth_source = next((path for path in _AUTH_CANDIDATES if os.path.isfile(path)), None)
     env, iso_home = _isolated_env()
+    installed_anthropic = ""
+
+    def _stamp(row):
+        if installed_anthropic:
+            row["installed_anthropic"] = installed_anthropic
+        return row
     exe = _exe()
     probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model == "claude-opus-5-5"
     watch_prompt = False
@@ -722,16 +759,16 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             else:
                 env.pop("ANTHROPIC_BASE_URL", None)
             env.pop("VERTEX_LOCATION", None)
-            _ensure_provider_sdk(env, proxy)
+            installed_anthropic = _ensure_provider_sdk(env, proxy) or ""
         elif model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
             env["VERTEX_LOCATION"] = "global"
         try:
             _install_config(env, _config_body(watch_prompt))
         except ValueError as exc:
             shutil.rmtree(iso_home, ignore_errors=True)
-            return {"completed": False, "error": str(exc),
+            return _stamp({"completed": False, "error": str(exc),
                     "output_tail": "", "tokens": None, "turns": None, "cmd": cmd,
-                    **_empty_token_usage()}
+                    **_empty_token_usage()})
     elif model in OPEN_MODELS:
         spec, detail = _resolve_open_spec(model, OPEN_MODELS[model])
         if detail:
@@ -777,7 +814,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
         except _PromptWait as e:
             full_output = e.output or ""
-            return {
+            return _stamp({
                 "completed": False,
                 "error": "waiting on a permission prompt",
                 "output_tail": full_output[-2000:],
@@ -786,10 +823,10 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 "turns": None,
                 "cmd": cmd,
                 **_empty_token_usage(),
-            }
+            })
         except subprocess.TimeoutExpired as e:
             full_output = _err_tail(e, limit=None)
-            return {
+            return _stamp({
                 "completed": False,
                 "error": f"timeout after {timeout_s}s",
                 "output_tail": full_output[-2000:],
@@ -798,7 +835,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 "turns": None,
                 "cmd": cmd,
                 **_empty_token_usage(),
-            }
+            })
     finally:
         if model in MODELS and auth_source is not None:
             isolated_auth = os.path.join(env["XDG_DATA_HOME"], "opencode", "auth.json")
@@ -813,7 +850,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     if not tail:
         tail = combined[-2000:]
 
-    return {
+    return _stamp({
         "completed": proc.returncode == 0,
         "error": None if proc.returncode == 0 else f"exit {proc.returncode}",
         "output_tail": tail,
@@ -824,4 +861,4 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         "turns": turns,
         "cmd": cmd,
         **token_usage,
-    }
+    })
