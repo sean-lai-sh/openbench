@@ -196,6 +196,181 @@ class TestProxy(unittest.TestCase):
         self.assertIn(b'"cache_read_input_tokens":6', whole)
         self.assertTrue(httpd.seen[-1]["path"].endswith(":streamRawPredict"))
 
+    def test_concurrent_cells_meter_old_and_beta_streams(self):
+        import io
+        import socket
+        import struct
+        from contextlib import redirect_stderr
+        from thesis.ab.run_ab import apply_cell_meter
+        from thesis.ab.vertex_anthropic_proxy import parse_sse_usages, start_proxy
+
+        fixture = ROOT / "thesis" / "ab" / "fixtures" / "anthropic"
+        old = (fixture / "sdk-1.2-message-stream.sse").read_bytes()
+        beta = (fixture / "sdk-2.0-beta-message-stream.sse").read_bytes()
+        raw_json = (fixture / "messages.json").read_bytes()
+        self.assertEqual(parse_sse_usages(old), {
+            "input_tokens": 100,
+            "output_tokens": 42,
+            "cache_creation_input_tokens": 3,
+            "cache_read_input_tokens": 7,
+        })
+        self.assertEqual(parse_sse_usages(beta)["input_tokens"], 8)
+        self.assertEqual(parse_sse_usages(beta)["output_tokens"], 6)
+        self.assertEqual(parse_sse_usages(beta)["cache_read_input_tokens"], 12)
+        self.assertEqual(parse_sse_usages(beta)["cache_creation_input_tokens"], 3)
+
+        class Chunked(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
+                if self.path.endswith(":countTokens"):
+                    payload = b'{"input_tokens":1}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                stream = self.path.endswith(":streamRawPredict")
+                if not stream:
+                    payload = raw_json
+                elif b'"fixture": "beta"' in raw or b'"fixture":"beta"' in raw:
+                    payload = beta
+                else:
+                    payload = old
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream" if stream else "application/json")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                step = 17
+                try:
+                    for index in range(0, len(payload), step):
+                        part = payload[index:index + step]
+                        self.wfile.write(f"{len(part):X}\r\n".encode("ascii") + part + b"\r\n")
+                        self.wfile.flush()
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                    return
+
+            def log_message(self, fmt, *args):
+                return
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Chunked)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        host, port = httpd.server_address
+        ledger = Path(tempfile.mkdtemp())
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            proxy = start_proxy(
+                "proj", token="tok", upstream=f"http://{host}:{port}", ledger_dir=ledger,
+            )
+            self.addCleanup(proxy.close)
+            self.addCleanup(httpd.shutdown)
+            self.addCleanup(httpd.server_close)
+            self.addCleanup(lambda: thread.join(timeout=2))
+
+            def post(cell, body):
+                request = urllib.request.Request(
+                    proxy.base_url + f"/c/{cell}/v1/messages",
+                    data=body,
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    return response.status, response.read()
+
+            errors = []
+
+            def run_cell(cell, body):
+                try:
+                    status, payload = post(cell, body)
+                    if status != 200 or (b"output_tokens" not in payload and b"input_tokens" not in payload):
+                        errors.append((cell, status, payload[:80]))
+                except Exception as exc:
+                    errors.append((cell, type(exc).__name__, str(exc)))
+
+            workers = []
+            for index in range(4):
+                body = b'{"model":"claude-opus-5-5","stream":true,"messages":[]}'
+                worker = threading.Thread(target=run_cell, args=(f"old{index}", body))
+                workers.append(worker)
+                worker.start()
+            beta_worker = threading.Thread(
+                target=run_cell,
+                args=("beta0", b'{"model":"claude-opus-5-5","stream":true,"fixture":"beta","messages":[]}'),
+            )
+            workers.append(beta_worker)
+            beta_worker.start()
+            json_worker = threading.Thread(
+                target=run_cell,
+                args=("json0", b'{"model":"claude-opus-5-5","messages":[]}'),
+            )
+            workers.append(json_worker)
+            json_worker.start()
+
+            def reset_client():
+                sock = socket.create_connection(proxy._httpd.server_address, timeout=1)
+                try:
+                    body = b'{"model":"claude-opus-5-5","stream":true,"messages":[]}'
+                    head = (
+                        b"POST /c/reset1/v1/messages HTTP/1.1\r\n"
+                        b"Host: 127.0.0.1\r\n"
+                        b"Content-Type: application/json\r\n"
+                        b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                        b"Connection: keep-alive\r\n\r\n"
+                    )
+                    sock.sendall(head + body)
+                    try:
+                        sock.recv(8)
+                    except (TimeoutError, socket.timeout):
+                        pass
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                finally:
+                    sock.close()
+
+            reset = threading.Thread(target=reset_client)
+            workers.append(reset)
+            reset.start()
+            for worker in workers:
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertNotIn("ConnectionResetError", stderr.getvalue())
+        for index in range(4):
+            row = apply_cell_meter({
+                "tokens": None, "usage_raw": None, "token_basis": None, "turns": None,
+            }, {
+                "ledger_dir": str(ledger),
+                "cell_id": f"old{index}",
+            })
+            self.assertEqual(row["tokens_input_uncached"], 100)
+            self.assertEqual(row["tokens_output"], 42)
+            self.assertEqual(row["tokens_cache_read"], 7)
+            self.assertEqual(row["tokens_cache_write"], 3)
+            self.assertEqual(row["token_basis"], "proxy_measured")
+            self.assertEqual(row["tokens"], 142)
+            self.assertIsNone(row["turns"])
+        beta_row = apply_cell_meter({"tokens": None, "usage_raw": None, "token_basis": None}, {
+            "ledger_dir": str(ledger),
+            "cell_id": "beta0",
+        })
+        self.assertEqual(beta_row["tokens_input_uncached"], 8)
+        self.assertEqual(beta_row["tokens_output"], 6)
+        self.assertEqual(beta_row["tokens_cache_read"], 12)
+        self.assertEqual(beta_row["tokens_cache_write"], 3)
+        self.assertEqual(beta_row["token_basis"], "proxy_measured")
+        json_row = apply_cell_meter({"tokens": None, "usage_raw": None, "token_basis": None}, {
+            "ledger_dir": str(ledger),
+            "cell_id": "json0",
+        })
+        self.assertEqual(json_row["tokens_input_uncached"], 5)
+        self.assertEqual(json_row["tokens_output"], 2)
+        self.assertEqual(json_row["tokens_cache_read"], 1)
+        self.assertEqual(json_row["tokens_cache_write"], 0)
+
 
 class TestModelFile(unittest.TestCase):
     def test_json_and_yaml_follow_the_checkout(self):

@@ -146,6 +146,22 @@ def ai_version_for_tree(root: Path) -> str | None:
     return version
 
 
+_INSTALL_ALIAS = re.compile(
+    r"""BunProc\.install\(\s*pkg\s*,\s*["']([^"']+)["']\s*\)"""
+)
+
+
+def install_alias_for_tree(root: Path) -> str:
+    root = Path(root)
+    path = root / "packages" / "opencode" / "src" / "provider" / "provider.ts"
+    if not path.is_file():
+        return "latest"
+    match = _INSTALL_ALIAS.search(path.read_text(encoding="utf-8", errors="replace"))
+    if match is None:
+        return "latest"
+    return match.group(1)
+
+
 def anthropic_pin_for_tree(root: Path, registry: dict[str, str] | None = None) -> str | None:
     """Read `bun.lock` when it exists. Fall back to an exact package.json pin."""
     root = Path(root)

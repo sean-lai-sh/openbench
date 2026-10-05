@@ -25,14 +25,41 @@ RATES = {
 }
 
 
+_PROXY_FIELDS = (
+    "tokens_proxy_input_uncached",
+    "tokens_proxy_output",
+    "tokens_proxy_cache_read",
+    "tokens_proxy_cache_write",
+)
+
+
+def _number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def billable_tokens(row: dict) -> dict[str, float] | None:
+    vendor = [_number(row.get(field)) for field in TOKEN_FIELDS]
+    if all(value is not None for value in vendor) and any(value > 0 for value in vendor):
+        return dict(zip(TOKEN_FIELDS, vendor))
+    if row.get("token_basis_proxy") == "proxy_measured":
+        proxy = [_number(row.get(field)) for field in _PROXY_FIELDS]
+        if all(value is not None for value in proxy):
+            return dict(zip(TOKEN_FIELDS, proxy))
+    if all(value is not None for value in vendor):
+        return dict(zip(TOKEN_FIELDS, vendor))
+    return None
+
+
 def row_cost(row: dict) -> float | None:
-    """USD from the four token fields. None when any field is missing."""
+    """USD for one cell. None when the token split is incomplete."""
+    split = billable_tokens(row)
+    if split is None:
+        return None
     total = 0.0
     for field, rate in RATES.items():
-        value = row.get(field)
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return None
-        total += (float(value) / 1_000_000.0) * rate
+        total += (split[field] / 1_000_000.0) * rate
     return total
 
 
@@ -70,8 +97,9 @@ def side_stats(rows: list[dict]) -> dict:
     times = [float(row["wall_time_s"]) for row in kept if isinstance(row.get("wall_time_s"), (int, float))]
     tokens = []
     for row in kept:
-        if all(isinstance(row.get(field), (int, float)) and not isinstance(row.get(field), bool) for field in TOKEN_FIELDS):
-            tokens.append(sum(float(row[field]) for field in TOKEN_FIELDS))
+        total = _token_total(row)
+        if total is not None:
+            tokens.append(total)
     n = len(kept)
     return {
         "n": n,
@@ -80,12 +108,6 @@ def side_stats(rows: list[dict]) -> dict:
         "median_time_s": _median(times),
         "mean_tokens": _mean(tokens),
     }
-
-
-def _number(value) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
 
 
 def _score(row: dict) -> float | None:
@@ -101,13 +123,10 @@ def _turns(row: dict) -> float | None:
 
 
 def _token_total(row: dict) -> float | None:
-    parts = []
-    for field in TOKEN_FIELDS:
-        value = _number(row.get(field))
-        if value is None:
-            return None
-        parts.append(value)
-    return sum(parts)
+    split = billable_tokens(row)
+    if split is None:
+        return None
+    return sum(split.values())
 
 
 TASK_DELTAS = (

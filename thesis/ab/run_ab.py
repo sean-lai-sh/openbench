@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -27,9 +28,10 @@ from thesis.ab.durable import exclusive_lock, publish_text
 from thesis.ab.errors import BuildError, Incompatible
 from thesis.ab.harness import harness_name
 from thesis.ab.prs import PrListError, Side, parse_prs, select_prs
-from thesis.ab.sdk_pin import ai_version_for_tree, anthropic_pin_for_tree
-from thesis.ab.summarize import row_cost
+from thesis.ab.sdk_pin import ai_version_for_tree, anthropic_pin_for_tree, install_alias_for_tree
+from thesis.ab.summarize import billable_tokens, row_cost
 from thesis.ab.toolchain import bun_requirement
+from thesis.ab.vertex_anthropic_proxy import cell_proxy_base
 
 CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
@@ -256,6 +258,8 @@ def execute_cell(spec: dict) -> None:
         )
         installed = row.pop("installed_anthropic", None) if isinstance(row, dict) else None
         installed_text = installed if isinstance(installed, str) else None
+        if isinstance(row, dict):
+            apply_cell_meter(row, spec.get("proxy"))
         apply_toolchain(row, spec.get("toolchain"), installed_text)
         toolchain_path = spec.get("toolchain_path")
         if toolchain_path:
@@ -380,7 +384,91 @@ def zero_metered(row: dict) -> bool:
             return False
         if isinstance(value, (int, float)) and value > 0:
             return False
+    split = billable_tokens(row)
+    if split and any(value > 0 for value in split.values()):
+        return False
     return True
+
+
+def promote_proxy_meter(row: dict) -> dict:
+    if row.get("token_basis_proxy") != "proxy_measured":
+        return row
+    if any(
+        isinstance(row.get(field), (int, float)) and not isinstance(row.get(field), bool) and row.get(field) > 0
+        for field in _METERED
+    ):
+        return row
+    split = billable_tokens(row)
+    if split is None or not any(value > 0 for value in split.values()):
+        return row
+    for field in _METERED:
+        value = split[field]
+        row[field] = int(value) if float(value).is_integer() else value
+    if row.get("tokens") is None:
+        fresh = split["tokens_input_uncached"] + split["tokens_output"]
+        row["tokens"] = int(fresh) if float(fresh).is_integer() else fresh
+    if not row.get("token_basis"):
+        row["token_basis"] = "proxy_measured"
+    return row
+
+
+def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
+    if not isinstance(row, dict) or not isinstance(proxy, dict):
+        return row
+    ledger = proxy.get("ledger_dir")
+    cell = proxy.get("cell_id")
+    if not ledger or not cell:
+        return row
+    from obench.run import apply_proxy_ledger, read_proxy_ledger
+    records = read_proxy_ledger(str(ledger), str(cell))
+    if not records:
+        return row
+    apply_proxy_ledger(row, records)
+    promote_proxy_meter(row)
+    if row.get("usage_raw") is None:
+        usages = [
+            record.get("usage")
+            for record in records
+            if isinstance(record, dict) and isinstance(record.get("usage"), dict)
+        ]
+        if usages:
+            row["usage_raw"] = usages
+    return row
+
+
+def bind_cell_proxy(filled: dict, ledger_dir: Path) -> dict:
+    proxy = filled.get("proxy")
+    if not isinstance(proxy, dict):
+        return filled
+    base = str(proxy.get("base_url") or "")
+    if not base:
+        return filled
+    cell_id = secrets.token_hex(8)
+    rewritten = cell_proxy_base(base, cell_id)
+    filled = dict(filled)
+    proxy = dict(proxy)
+    config = filled.get("config")
+    if isinstance(config, dict):
+        filled["config"] = json.loads(json.dumps(config).replace(base, rewritten))
+    proxy["base_url"] = rewritten
+    proxy["cell_id"] = cell_id
+    proxy["ledger_dir"] = str(ledger_dir)
+    filled["proxy"] = proxy
+    return filled
+
+
+def preflight_stop_reason(row: dict | None) -> str | None:
+    reason = provider_stream_failure(row)
+    if reason:
+        return reason
+    if not isinstance(row, dict) or row.get("completed") or not zero_metered(row):
+        return None
+    err = str(row.get("error") or "")
+    if not re.fullmatch(r"exit \d+", err):
+        return None
+    tail = " ".join(str(row.get("output_tail") or "").split())
+    detail = f"{err}: {tail[:180]}" if tail else err
+    return f"preflight exited before any metered call: {detail}"
 
 
 def provider_stream_failure(row: dict | None) -> str | None:
@@ -473,6 +561,7 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     pin = anthropic_pin_for_tree(checkout)
     if pin:
         proxy["anthropic_sdk"] = pin
+    proxy["sdk_install_alias"] = install_alias_for_tree(checkout)
     state = dict(state)
     state["proxy"] = proxy
     state["toolchain"] = toolchain_for_checkout(checkout)
@@ -514,7 +603,7 @@ def _default_preflight(binary: str, state: dict) -> str | None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-    return provider_stream_failure(row)
+    return preflight_stop_reason(row)
 
 
 def _default_build(sha, cache, repo=""):
@@ -572,10 +661,11 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         pending.append(spec)
     announced: set[tuple[str, str, str]] = set()
     server = None
+    ledger_dir = (out_dir / "proxy-ledger").resolve()
     if own_assess and proxy_url is None and _needs_proxy(prs, model_route):
         from thesis.ab.vertex_anthropic_proxy import ProxyError, start_from_env
         try:
-            server = start_from_env()
+            server = start_from_env(ledger_dir=ledger_dir)
         except ProxyError as exc:
             raise RunError(str(exc)) from exc
         proxy_url = server.base_url
@@ -664,6 +754,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         if state is None:
             return None
         filled = _fill(spec, state, out_dir, tasks_dir_s, adapters, model, timeout_s)
+        if server is not None:
+            filled = bind_cell_proxy(filled, ledger_dir)
         return filled
 
     try:

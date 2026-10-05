@@ -15,7 +15,7 @@ from thesis.ab.build_opencode import build_plan
 from thesis.ab.compat import Assessment
 from thesis.ab.durable import publish_text
 from thesis.ab.prs import PrListError, PullRequest, parse_prs, select_prs
-from thesis.ab.run_ab import cell_file, drive, over_budget, read_cell
+from thesis.ab.run_ab import cell_file, drive, over_budget, read_cell, unmetered_side, zero_metered
 from thesis.ab.summarize import (
     bootstrap_ci,
     bootstrap_mean_diff,
@@ -234,6 +234,101 @@ class TestSchedule(unittest.TestCase):
         self.assertEqual(calls, [1])
         self.assertEqual(launched, 1)
         self.assertEqual(stopped, "unmetered tokens in a finished cell; not launching more cells")
+
+    def test_proxy_metered_score_is_not_infra(self):
+        metered = {
+            "score": 1.0,
+            "success": True,
+            "failure_class": None,
+            "tokens": 142,
+            "turns": None,
+            "usage_raw": [{"input_tokens": 100, "output_tokens": 42}],
+            "token_basis": "proxy_measured",
+            "tokens_input_uncached": 100,
+            "tokens_output": 42,
+            "tokens_cache_read": 7,
+            "tokens_cache_write": 3,
+            "tokens_proxy_input_uncached": 100,
+            "tokens_proxy_output": 42,
+            "tokens_proxy_cache_read": 7,
+            "tokens_proxy_cache_write": 3,
+            "token_basis_proxy": "proxy_measured",
+        }
+        self.assertFalse(zero_metered(metered))
+        self.assertIsNone(unmetered_side([metered, dict(metered)]))
+        self.assertAlmostEqual(row_cost(metered), 0.0012564)
+        bare = {
+            "score": 1.0,
+            "success": True,
+            "tokens": None,
+            "turns": None,
+            "usage_raw": None,
+            "token_basis": None,
+            "tokens_proxy_input_uncached": 100,
+            "tokens_proxy_output": 42,
+            "tokens_proxy_cache_read": 7,
+            "tokens_proxy_cache_write": 3,
+            "token_basis_proxy": "proxy_measured",
+        }
+        self.assertFalse(zero_metered(bare))
+        self.assertIsNone(unmetered_side([bare, dict(bare)]))
+        self.assertAlmostEqual(row_cost(bare), 0.0012564)
+
+    def test_cell_proxy_url_is_rewritten_for_that_cell_only(self):
+        from thesis.ab.run_ab import bind_cell_proxy
+        filled = bind_cell_proxy({
+            "proxy": {
+                "base_url": "http://127.0.0.1:9/v1",
+                "model_ref": "anthropic/claude-opus-5-5",
+            },
+            "config": {
+                "provider": {
+                    "anthropic": {"options": {"baseURL": "http://127.0.0.1:9/v1"}},
+                },
+            },
+        }, Path("/tmp/ledger"))
+        base = filled["proxy"]["base_url"]
+        self.assertTrue(base.startswith("http://127.0.0.1:9/c/"))
+        self.assertTrue(base.endswith("/v1"))
+        self.assertNotIn("/v1/c/", base)
+        self.assertEqual(
+            filled["config"]["provider"]["anthropic"]["options"]["baseURL"],
+            base,
+        )
+        self.assertEqual(filled["proxy"]["ledger_dir"], "/tmp/ledger")
+        self.assertEqual(len(filled["proxy"]["cell_id"]), 16)
+
+    def test_july_beta_tree_installs_with_the_beta_alias(self):
+        from thesis.ab.sdk_pin import install_alias_for_tree
+        root = Path(tempfile.mkdtemp())
+        provider = root / "packages" / "opencode" / "src" / "provider"
+        provider.mkdir(parents=True)
+        (provider / "provider.ts").write_text(
+            'await BunProc.install("@aws-sdk/credential-providers")\n'
+            'const mod = await import(await BunProc.install(pkg, "beta"))\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(install_alias_for_tree(root), "beta")
+        self.assertEqual(install_alias_for_tree(Path(tempfile.mkdtemp())), "latest")
+
+    def test_preflight_exit_before_meter_is_incompatible(self):
+        from thesis.ab.run_ab import preflight_stop_reason
+        reason = preflight_stop_reason({
+            "completed": False,
+            "error": "exit 1",
+            "output_tail": "TypeError: createAnthropic is not a function",
+            "tokens": None,
+            "wall_time_s": 1.2,
+        })
+        self.assertEqual(
+            reason,
+            "preflight exited before any metered call: exit 1: TypeError: createAnthropic is not a function",
+        )
+        self.assertIsNone(preflight_stop_reason({
+            "completed": True,
+            "error": None,
+            "tokens": None,
+        }))
 
     def test_incompatible_side_is_recorded_and_not_scored(self):
         out = Path(tempfile.mkdtemp())
