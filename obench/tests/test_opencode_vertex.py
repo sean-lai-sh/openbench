@@ -353,24 +353,47 @@ class TestProviderSdkPin(unittest.TestCase):
         bun.write_text(textwrap.dedent("""\
             #!/usr/bin/env python3
             import os, pathlib, sys
-            pathlib.Path(os.environ["BUN_ARGS"]).write_text("\\n".join(sys.argv[1:]), encoding="utf-8")
+            args = sys.argv[1:]
+            dest = pathlib.Path(os.environ["BUN_ARGS"])
+            previous = dest.read_text(encoding="utf-8") if dest.is_file() else ""
+            dest.write_text(previous + "\\n".join(args) + "\\n", encoding="utf-8")
+            for arg in args:
+                if arg.startswith("@ai-sdk/anthropic@"):
+                    version = arg.rsplit("@", 1)[1]
+                    module = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_text('{"version": "%s"}' % version, encoding="utf-8")
         """), encoding="utf-8")
         bun.chmod(0o755)
         home = Path(tempfile.mkdtemp())
         env = os.environ.copy()
         env["XDG_CACHE_HOME"] = str(home)
         env["BUN_ARGS"] = str(args_file)
-        opencode._ensure_provider_sdk(env, {
+        proxy = {
             "needs_sdk": True,
             "bun": "results/opencode-src/bun/1.2.14/bun",
             "anthropic_sdk": "1.2.12",
-        })
+        }
+        opencode._ensure_provider_sdk(env, proxy)
+        opencode._ensure_provider_sdk(env, proxy)
         self.assertEqual(
             args_file.read_text(encoding="utf-8").splitlines(),
             ["add", "@ai-sdk/anthropic@1.2.12"],
         )
         saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "1.2.12")
+        self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "latest")
+        installed = json.loads(
+            (home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(installed["version"], "1.2.12")
+
+    def test_exec_failure_is_infra_not_incompatible(self):
+        from thesis.ab.compat import assess
+        missing = Path(tempfile.mkdtemp()) / "opencode"
+        result = assess(str(missing), route="proxy", proxy_url="http://127.0.0.1:9")
+        self.assertEqual(result.status, "infra")
+        self.assertIn("Errno", result.reason)
+        self.assertNotIn("not listed", result.reason)
 
 
 if __name__ == "__main__":

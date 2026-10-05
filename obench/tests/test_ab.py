@@ -583,6 +583,48 @@ class TestBunAndSdkPin(unittest.TestCase):
         self.assertEqual(anthropic_pin_for_tree(root, registry={}), "1.2.12")
 
 
+class TestDistBinary(unittest.TestCase):
+    def _tree(self, names):
+        root = Path(tempfile.mkdtemp())
+        pkg = root / "packages" / "opencode"
+        paths = []
+        for name in names:
+            path = pkg / "dist" / name / "bin" / "opencode"
+            path.parent.mkdir(parents=True)
+            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            path.chmod(0o755)
+            paths.append(path)
+        return root, paths
+
+    def test_glibc_host_picks_the_non_baseline_binary(self):
+        import platform
+        from thesis.ab.build_opencode import _find_binary, select_dist_binary
+        names = [
+            "opencode-linux-x64",
+            "opencode-linux-x64-baseline",
+            "opencode-linux-x64-baseline-musl",
+            "opencode-linux-x64-musl",
+            "opencode-linux-arm64",
+            "opencode-darwin-arm64",
+        ]
+        root, paths = self._tree(names)
+        self.assertEqual(platform.libc_ver()[0], "glibc")
+        self.assertEqual(_find_binary(root).parent.parent.name, "opencode-linux-x64")
+        musl = select_dist_binary(paths, system="linux", machine="x64", libc="musl")
+        self.assertEqual(musl.parent.parent.name, "opencode-linux-x64-musl")
+        baseline_only = [
+            path for path in paths
+            if path.parent.parent.name in {
+                "opencode-linux-x64-baseline",
+                "opencode-linux-x64-musl",
+            }
+        ]
+        baseline = select_dist_binary(baseline_only, system="linux", machine="x64", libc="glibc")
+        self.assertEqual(baseline.parent.parent.name, "opencode-linux-x64-baseline")
+        arm = select_dist_binary(paths, system="linux", machine="arm64", libc="glibc")
+        self.assertEqual(arm.parent.parent.name, "opencode-linux-arm64")
+
+
 class TestIncompatibleCells(unittest.TestCase):
     def _prs(self):
         return TestSchedule._prs(self)
@@ -817,6 +859,114 @@ class TestIncompatibleCells(unittest.TestCase):
             self.assertTrue(bun.is_absolute())
             self.assertEqual(bun.parent.name, "1.2.14")
             self.assertEqual(proxy["anthropic_sdk"], "1.2.12")
+
+    def test_decimal_error_with_no_tokens_is_incompatible(self):
+        from thesis.ab.run_ab import provider_stream_failure
+        out = Path(tempfile.mkdtemp())
+        calls = []
+
+        def worker(spec):
+            calls.append((spec["side"], spec["trial"]))
+            if spec["side"] == "without":
+                body = {
+                    "task": spec["task"],
+                    "trial": spec["trial"],
+                    "score": 0,
+                    "success": False,
+                    "completed": True,
+                    "failure_class": "wrong_answer",
+                    "error": "exit 1",
+                    "output_tail": "Error: [DecimalError] Invalid argument: [object Object]",
+                    "tokens_input_uncached": None,
+                    "tokens_output": None,
+                    "tokens_cache_read": None,
+                    "tokens_cache_write": None,
+                }
+            else:
+                body = {
+                    "task": spec["task"],
+                    "trial": spec["trial"],
+                    "score": 1,
+                    "success": True,
+                    "tokens_input_uncached": 4,
+                    "tokens_output": 2,
+                    "tokens_cache_read": 0,
+                    "tokens_cache_write": 0,
+                }
+            publish_text(Path(spec["cell_path"]), json.dumps(body))
+
+        def build_fn(sha, cache, repo=""):
+            return Path("/tmp") / sha
+
+        def assess_fn(binary):
+            return Assessment("configured", "proxy", {}, False, proxy={"needs_sdk": False})
+
+        sample = {
+            "output_tail": "Error: [DecimalError] Invalid argument: [object Object]",
+            "tokens_output": 0,
+        }
+        self.assertEqual(
+            provider_stream_failure(sample),
+            "provider stream error with no metered tokens: Error: [DecimalError] Invalid argument: [object Object]",
+        )
+
+        drive(
+            self._prs(), ("make-it-run",), 2, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+            max_cost_usd=100, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+        )
+        self.assertEqual(calls, [("without", 1), ("with", 1), ("with", 2)])
+        sidecar = json.loads((out / "1" / "without.incompatible.json").read_text(encoding="utf-8"))
+        self.assertEqual(sidecar["status"], "incompatible")
+        self.assertIn("DecimalError", sidecar["reason"])
+        record = pr_record(self._prs()[0], out)
+        self.assertEqual(record["without"]["n"], 0)
+        self.assertEqual(record["with"]["n"], 2)
+        self.assertIsNone(over_budget(out, 100))
+
+    def test_mostly_infra_side_is_flagged_and_not_scored(self):
+        out = Path(tempfile.mkdtemp())
+        calls = []
+
+        def worker(spec):
+            calls.append((spec["side"], spec["trial"]))
+            publish_text(Path(spec["cell_path"]), json.dumps({
+                "task": spec["task"],
+                "trial": spec["trial"],
+                "score": 0,
+                "success": False,
+                "failure_class": "infra",
+                "error": "[Errno 2] No such file or directory",
+                "tokens_input_uncached": None,
+                "tokens_output": None,
+                "tokens_cache_read": None,
+                "tokens_cache_write": None,
+            }))
+
+        def build_fn(sha, cache, repo=""):
+            return Path("/tmp") / sha
+
+        def assess_fn(binary):
+            return Assessment("native", "listed", {}, False)
+
+        drive(
+            self._prs(), ("make-it-run",), 3, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+            max_cost_usd=100, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+        )
+        self.assertEqual(
+            calls,
+            [("without", 1), ("without", 2), ("with", 1), ("with", 2)],
+        )
+        sidecar = json.loads((out / "1" / "without.infra.json").read_text(encoding="utf-8"))
+        self.assertEqual(sidecar["status"], "infra")
+        record = pr_record(self._prs()[0], out)
+        self.assertEqual(record["without"]["n"], 0)
+        self.assertEqual(record["with"]["n"], 0)
+        self.assertIn("without is infra", render_markdown([record]))
+        self.assertIsNone(over_budget(out, 100))
 
 
 if __name__ == "__main__":
