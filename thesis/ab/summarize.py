@@ -275,9 +275,11 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
     root = out_dir / pr.pr
     incompatible = {}
     for side in (Side.WITHOUT, Side.WITH):
-        path = root / f"{side.value}.incompatible.json"
-        if path.is_file():
-            incompatible[side.value] = json.loads(path.read_text(encoding="utf-8"))
+        for kind in ("incompatible", "infra"):
+            path = root / f"{side.value}.{kind}.json"
+            if path.is_file():
+                incompatible[side.value] = json.loads(path.read_text(encoding="utf-8"))
+                break
     without_rows = [] if "without" in incompatible else load_jsonl(root / "without.jsonl")
     with_rows = [] if "with" in incompatible else load_jsonl(root / "with.jsonl")
     left = side_stats(without_rows)
@@ -355,7 +357,8 @@ def render_markdown(records: list[dict]) -> str:
         lines.append("")
         if item["incompatible"]:
             for side, body in item["incompatible"].items():
-                lines.append(f"{side} is incompatible: {body.get('reason', '')}")
+                status = body.get("status") or "incompatible"
+                lines.append(f"{side} is {status}: {body.get('reason', '')}")
             lines.append("")
         lines.append("| Side | Pass rate | Mean score | Median seconds | Mean tokens |")
         lines.append("| --- | --- | --- | --- | --- |")

@@ -324,7 +324,11 @@ def _ensure_provider_sdk(env, proxy):
     deps = parsed.get("dependencies")
     if not isinstance(deps, dict):
         deps = {}
-    deps["@ai-sdk/anthropic"] = pin
+    # Compiled OpenCode calls BunProc.install(pkg, "latest") and skips the
+    # install only when package.json already says "latest". The files in
+    # node_modules stay on the pin.
+    recorded = "latest" if _installed_sdk_version(module) == pin else pin
+    deps["@ai-sdk/anthropic"] = recorded
     parsed["dependencies"] = deps
     with open(pkg_path, "w", encoding="utf-8") as fh:
         json.dump(parsed, fh)

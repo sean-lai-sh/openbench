@@ -217,6 +217,65 @@ def _compile_old(root: Path, env: dict) -> Path:
     return outfile
 
 
+def host_libc() -> str:
+    if platform.system() != "Linux":
+        return "glibc"
+    name = platform.libc_ver()[0]
+    if "musl" in name:
+        return "musl"
+    if name == "glibc":
+        return "glibc"
+    try:
+        proc = subprocess.run(
+            ["ldd", sys.executable],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "glibc"
+    if "musl" in (proc.stdout or "") + (proc.stderr or ""):
+        return "musl"
+    return "glibc"
+
+
+def _dist_target(path: Path) -> dict | None:
+    name = path.parent.parent.name
+    prefix = "opencode-"
+    if not name.startswith(prefix):
+        return None
+    parts = name[len(prefix):].split("-")
+    if len(parts) < 2:
+        return None
+    os_name, arch, *flags = parts
+    if any(flag not in {"baseline", "musl"} for flag in flags):
+        return None
+    return {
+        "os": os_name,
+        "arch": arch,
+        "baseline": "baseline" in flags,
+        "musl": "musl" in flags,
+    }
+
+
+def select_dist_binary(paths, *, system: str, machine: str, libc: str) -> Path:
+    parsed = []
+    for path in paths:
+        info = _dist_target(Path(path))
+        if info is None or info["os"] != system or info["arch"] != machine:
+            continue
+        parsed.append((Path(path), info))
+    if libc == "musl":
+        preferred = [item for item in parsed if item[1]["musl"]]
+        pool = preferred or [item for item in parsed if not item[1]["musl"]]
+    else:
+        pool = [item for item in parsed if not item[1]["musl"]]
+    plain = [item for item in pool if not item[1]["baseline"]]
+    pool = plain or pool
+    if not pool:
+        raise BuildError(f"no {system}-{machine} {libc} opencode binary")
+    pool.sort(key=lambda item: str(item[0]))
+    return pool[0][0]
+
+
 def _find_binary(root: Path) -> Path:
     pkg = root / "packages" / "opencode"
     found = sorted(pkg.glob("dist/**/bin/opencode"))
@@ -226,7 +285,8 @@ def _find_binary(root: Path) -> Path:
         if wrapper.is_file():
             return wrapper
         raise BuildError(f"no opencode binary under {pkg / 'dist'}")
-    return executables[-1]
+    system, machine, _goarch = _host()
+    return select_dist_binary(executables, system=system, machine=machine, libc=host_libc())
 
 
 def _execute_plan(root: Path, plan: dict, cache: Path) -> Path:

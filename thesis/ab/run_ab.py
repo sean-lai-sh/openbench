@@ -40,7 +40,7 @@ _METERED = (
     "tokens_cache_write",
 )
 _STREAM_RE = re.compile(
-    r"Unhandled chunk type|stream-start|stream error|ProviderInitError|BunInstallFailedError",
+    r"Unhandled chunk type|stream-start|stream error|ProviderInitError|BunInstallFailedError|DecimalError",
     re.IGNORECASE,
 )
 _GUARD_SKIP = frozenset({"infra", "incompatible"})
@@ -162,24 +162,41 @@ def project_side(out_dir: Path, pr: str, side: str) -> None:
     publish_text(dest, payload)
 
 
-def _sidecar(out_dir: Path, pr: str, side: str) -> Path:
-    return out_dir / pr / f"{side}.incompatible.json"
+def _sidecar(out_dir: Path, pr: str, side: str, kind: str = "incompatible") -> Path:
+    return out_dir / pr / f"{side}.{kind}.json"
 
 
-def write_incompatible(out_dir: Path, pr: str, side: str, sha: str, reason: str) -> None:
-    publish_text(_sidecar(out_dir, pr, side), json.dumps({
+def _write_verdict(out_dir: Path, pr: str, side: str, sha: str, status: str, reason: str) -> None:
+    publish_text(_sidecar(out_dir, pr, side, status), json.dumps({
         "pr": pr,
         "side": side,
         "sha": sha,
-        "status": "incompatible",
+        "status": status,
         "reason": reason,
     }, sort_keys=True))
 
 
+def write_incompatible(out_dir: Path, pr: str, side: str, sha: str, reason: str) -> None:
+    _write_verdict(out_dir, pr, side, sha, "incompatible", reason)
+
+
+def write_infra(out_dir: Path, pr: str, side: str, sha: str, reason: str) -> None:
+    _write_verdict(out_dir, pr, side, sha, "infra", reason)
+
+
 def clear_incompatible(out_dir: Path, pr: str, side: str) -> None:
-    path = _sidecar(out_dir, pr, side)
-    if path.is_file():
-        path.unlink()
+    for kind in ("incompatible", "infra"):
+        path = _sidecar(out_dir, pr, side, kind)
+        if path.is_file():
+            path.unlink()
+
+
+def _record_stopped(out_dir: Path, spec: dict, state: dict) -> None:
+    reason = state["reason"]
+    if state.get("status") == "infra":
+        write_infra(out_dir, spec["pr"], spec["side"], spec["sha"], reason)
+    else:
+        write_incompatible(out_dir, spec["pr"], spec["side"], spec["sha"], reason)
 
 
 def execute_cell(spec: dict) -> None:
@@ -321,6 +338,24 @@ def _side_has_metered_work(out_dir: Path, spec: dict, ignore: Path) -> bool:
     return False
 
 
+def _finished_rows(out_dir: Path, spec: dict) -> list[dict]:
+    root = out_dir / spec["pr"] / "cells" / spec["side"]
+    if not root.is_dir():
+        return []
+    rows = []
+    for path in sorted(root.glob("*/*.json")):
+        row = read_cell(path)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def unmetered_side(rows: list[dict]) -> str | None:
+    if len(rows) < 2 or any(not zero_metered(row) for row in rows):
+        return None
+    return "finished cells have no metered tokens"
+
+
 def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
     path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
     row = read_cell(path)
@@ -332,6 +367,15 @@ def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
         if not _side_has_metered_work(out_dir, spec, path):
             write_incompatible(out_dir, spec["pr"], spec["side"], spec["sha"], reason)
             prepared[_side_key(spec)] = {"ok": False, "reason": reason}
+    elif prepared.get(_side_key(spec), {}).get("ok", True):
+        infra_reason = unmetered_side(_finished_rows(out_dir, spec))
+        if infra_reason:
+            write_infra(out_dir, spec["pr"], spec["side"], spec["sha"], infra_reason)
+            prepared[_side_key(spec)] = {
+                "ok": False,
+                "reason": infra_reason,
+                "status": "infra",
+            }
     project_side(out_dir, spec["pr"], spec["side"])
 
 
@@ -468,7 +512,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         repo = spec.get("repo") or ""
         key = (repo, sha)
         if key in prepared and not prepared[key].get("ok", True):
-            write_incompatible(out_dir, spec["pr"], spec["side"], sha, prepared[key]["reason"])
+            _record_stopped(out_dir, spec, prepared[key])
             return None
         if key not in prepared:
             try:
@@ -486,6 +530,12 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                     assessment = assess_fn(str(built))
                 if assessment.status == "incompatible":
                     prepared[key] = {"ok": False, "reason": assessment.reason}
+                elif assessment.status == "infra":
+                    prepared[key] = {
+                        "ok": False,
+                        "reason": assessment.reason,
+                        "status": "infra",
+                    }
                 else:
                     prepared[key] = {
                         "ok": True,
@@ -508,7 +558,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                                 prepared[key] = {"ok": False, "reason": reason}
         state = prepared[key]
         if not state["ok"]:
-            write_incompatible(out_dir, spec["pr"], spec["side"], sha, state["reason"])
+            _record_stopped(out_dir, spec, state)
             key = (spec["pr"], spec["side"], sha)
             if key not in announced:
                 announced.add(key)
