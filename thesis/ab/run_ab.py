@@ -23,11 +23,11 @@ from obench.validate_tasks import build_task_roots, discover_tasks
 
 from thesis.ab.build_opencode import binary as build_opencode
 from thesis.ab.compat import assess
-from thesis.ab.durable import publish_text
+from thesis.ab.durable import exclusive_lock, publish_text
 from thesis.ab.errors import BuildError, Incompatible
 from thesis.ab.harness import harness_name
 from thesis.ab.prs import PrListError, Side, parse_prs, select_prs
-from thesis.ab.sdk_pin import anthropic_pin_for_tree
+from thesis.ab.sdk_pin import ai_version_for_tree, anthropic_pin_for_tree
 from thesis.ab.summarize import row_cost
 from thesis.ab.toolchain import bun_requirement
 
@@ -254,6 +254,12 @@ def execute_cell(spec: dict) -> None:
             harness_version=harness_version,
             version_drift=True,
         )
+        installed = row.pop("installed_anthropic", None) if isinstance(row, dict) else None
+        installed_text = installed if isinstance(installed, str) else None
+        apply_toolchain(row, spec.get("toolchain"), installed_text)
+        toolchain_path = spec.get("toolchain_path")
+        if toolchain_path:
+            publish_side_toolchain(Path(toolchain_path), spec.get("toolchain"), installed_text)
         publish_text(Path(spec["cell_path"]), json.dumps(row, sort_keys=True))
     finally:
         for key, value in saved.items():
@@ -283,6 +289,8 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "adapters_dir": adapters,
         "model": model,
         "timeout_s": cell_timeout(timeout_s),
+        "toolchain": prepared.get("toolchain") or {},
+        "toolchain_path": str(out_dir / spec["pr"] / f"{spec['side']}.toolchain.json"),
     })
     return filled
 
@@ -291,6 +299,72 @@ def cell_timeout(requested: int) -> int:
     if requested < 1:
         return requested
     return min(int(requested), CELL_TIMEOUT_CAP_S)
+
+
+def apply_toolchain(row: dict, toolchain: dict | None, installed: str | None = None) -> dict:
+    body = {}
+    if isinstance(toolchain, dict):
+        for key in ("ai", "anthropic", "bun"):
+            value = toolchain.get(key)
+            if isinstance(value, str) and value.strip():
+                body[key] = value.strip()
+    if isinstance(installed, str) and installed.strip():
+        body["anthropic"] = installed.strip()
+    if body:
+        row["toolchain"] = body
+    return body
+
+
+def write_toolchain(out_dir: Path, pr: str, side: str, toolchain: dict | None) -> None:
+    publish_side_toolchain(out_dir / pr / f"{side}.toolchain.json", toolchain)
+
+
+def _read_toolchain_file(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return apply_toolchain({}, parsed if isinstance(parsed, dict) else None)
+
+
+def publish_side_toolchain(path: Path, toolchain: dict | None, installed: str | None = None) -> None:
+    incoming = apply_toolchain({}, toolchain)
+    installed_text = installed.strip() if isinstance(installed, str) else ""
+    if not incoming and not installed_text:
+        return
+    path = Path(path)
+    with exclusive_lock(path.parent / "locks" / f"{path.name}.lock"):
+        current = _read_toolchain_file(path)
+        merged = dict(current)
+        for key in ("ai", "bun"):
+            if incoming.get(key) and not merged.get(key):
+                merged[key] = incoming[key]
+        if installed_text:
+            merged["anthropic"] = installed_text
+        elif incoming.get("anthropic") and not merged.get("anthropic"):
+            merged["anthropic"] = incoming["anthropic"]
+        if not merged or merged == current:
+            return
+        publish_text(path, json.dumps(merged, sort_keys=True))
+
+
+def toolchain_for_checkout(checkout: Path) -> dict:
+    body = {}
+    try:
+        bun = bun_requirement(checkout).split("+", 1)[0].strip()
+    except BuildError:
+        bun = ""
+    if bun:
+        body["bun"] = bun
+    ai = ai_version_for_tree(checkout)
+    if ai:
+        body["ai"] = ai
+    pin = anthropic_pin_for_tree(checkout)
+    if pin:
+        body["anthropic"] = pin
+    return body
 
 
 def bun_for_checkout(cache: Path, checkout: Path) -> Path:
@@ -399,12 +473,11 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     pin = anthropic_pin_for_tree(checkout)
     if pin:
         proxy["anthropic_sdk"] = pin
-    elif proxy.get("needs_sdk"):
-        state = dict(state)
-        state["proxy"] = proxy
-        return state, "no @ai-sdk/anthropic release matches this build's ai package"
     state = dict(state)
     state["proxy"] = proxy
+    state["toolchain"] = toolchain_for_checkout(checkout)
+    if not pin and proxy.get("needs_sdk"):
+        return state, "no @ai-sdk/anthropic release matches this build's ai package"
     return state, None
 
 
@@ -548,15 +621,21 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                         "reason": assessment.reason,
                     }
                     decorated, pin_error = _decorate_toolchain(prepared[key], cache, sha, repo)
+                    tool = decorated.get("toolchain")
                     if pin_error:
-                        prepared[key] = {"ok": False, "reason": pin_error}
+                        prepared[key] = {"ok": False, "reason": pin_error, "toolchain": tool}
                     else:
                         prepared[key] = decorated
                         if preflight_fn is not None:
                             reason = preflight_fn(str(decorated["binary"]), decorated)
                             if reason:
-                                prepared[key] = {"ok": False, "reason": reason}
+                                prepared[key] = {
+                                    "ok": False,
+                                    "reason": reason,
+                                    "toolchain": tool,
+                                }
         state = prepared[key]
+        write_toolchain(out_dir, spec["pr"], spec["side"], state.get("toolchain"))
         if not state["ok"]:
             _record_stopped(out_dir, spec, state)
             key = (spec["pr"], spec["side"], sha)

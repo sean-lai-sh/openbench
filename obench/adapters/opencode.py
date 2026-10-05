@@ -292,13 +292,13 @@ def _installed_sdk_version(module_path):
 
 def _ensure_provider_sdk(env, proxy):
     if not proxy.get("needs_sdk"):
-        return
+        return ""
     pin = str(proxy.get("anthropic_sdk") or "").strip()
     if not pin or pin == "latest":
-        return
+        return ""
     bun = _resolve_bun(proxy.get("bun"))
     if not bun:
-        return
+        return ""
     cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
     os.makedirs(cache, exist_ok=True)
     module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
@@ -332,6 +332,7 @@ def _ensure_provider_sdk(env, proxy):
     parsed["dependencies"] = deps
     with open(pkg_path, "w", encoding="utf-8") as fh:
         json.dump(parsed, fh)
+    return _installed_sdk_version(module)
 
 
 def _proxy_override():
@@ -699,6 +700,12 @@ def _isolated_env():
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     auth_source = next((path for path in _AUTH_CANDIDATES if os.path.isfile(path)), None)
     env, iso_home = _isolated_env()
+    installed_anthropic = ""
+
+    def _stamp(row):
+        if installed_anthropic:
+            row["installed_anthropic"] = installed_anthropic
+        return row
     exe = _exe()
     probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model == "claude-opus-5-5"
     watch_prompt = False
@@ -752,16 +759,16 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             else:
                 env.pop("ANTHROPIC_BASE_URL", None)
             env.pop("VERTEX_LOCATION", None)
-            _ensure_provider_sdk(env, proxy)
+            installed_anthropic = _ensure_provider_sdk(env, proxy) or ""
         elif model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
             env["VERTEX_LOCATION"] = "global"
         try:
             _install_config(env, _config_body(watch_prompt))
         except ValueError as exc:
             shutil.rmtree(iso_home, ignore_errors=True)
-            return {"completed": False, "error": str(exc),
+            return _stamp({"completed": False, "error": str(exc),
                     "output_tail": "", "tokens": None, "turns": None, "cmd": cmd,
-                    **_empty_token_usage()}
+                    **_empty_token_usage()})
     elif model in OPEN_MODELS:
         spec, detail = _resolve_open_spec(model, OPEN_MODELS[model])
         if detail:
@@ -807,7 +814,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
         except _PromptWait as e:
             full_output = e.output or ""
-            return {
+            return _stamp({
                 "completed": False,
                 "error": "waiting on a permission prompt",
                 "output_tail": full_output[-2000:],
@@ -816,10 +823,10 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 "turns": None,
                 "cmd": cmd,
                 **_empty_token_usage(),
-            }
+            })
         except subprocess.TimeoutExpired as e:
             full_output = _err_tail(e, limit=None)
-            return {
+            return _stamp({
                 "completed": False,
                 "error": f"timeout after {timeout_s}s",
                 "output_tail": full_output[-2000:],
@@ -828,7 +835,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 "turns": None,
                 "cmd": cmd,
                 **_empty_token_usage(),
-            }
+            })
     finally:
         if model in MODELS and auth_source is not None:
             isolated_auth = os.path.join(env["XDG_DATA_HOME"], "opencode", "auth.json")
@@ -843,7 +850,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     if not tail:
         tail = combined[-2000:]
 
-    return {
+    return _stamp({
         "completed": proc.returncode == 0,
         "error": None if proc.returncode == 0 else f"exit {proc.returncode}",
         "output_tail": tail,
@@ -854,4 +861,4 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         "turns": turns,
         "cmd": cmd,
         **token_usage,
-    }
+    })

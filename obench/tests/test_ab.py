@@ -1076,6 +1076,65 @@ class TestToolchainRecord(unittest.TestCase):
             "anthropic": "2.0.1",
         })
 
+    def test_a_later_cell_keeps_the_installed_sdk(self):
+        out = Path(tempfile.mkdtemp())
+        cache = out / "cache"
+        pin = {"bun": "1.2.14", "ai": "5.0.8", "anthropic": "2.0.0"}
+
+        def worker(spec):
+            row = {
+                "task": spec["task"],
+                "trial": spec["trial"],
+                "score": 1,
+                "success": True,
+                "tokens_input_uncached": 1,
+                "tokens_output": 1,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            }
+            if spec["trial"] == 1:
+                from thesis.ab.run_ab import apply_toolchain
+                apply_toolchain(row, spec["toolchain"], "2.0.1")
+                publish_text(
+                    Path(spec["toolchain_path"]),
+                    json.dumps(row["toolchain"], sort_keys=True),
+                )
+            publish_text(Path(spec["cell_path"]), json.dumps(row))
+
+        def build_fn(sha, cache_path, repo=""):
+            self._checkout(cache_path, sha, "1.2.14", "5.0.8", "2.0.0")
+            return Path(cache_path) / "bin" / sha
+
+        def assess_fn(binary):
+            return Assessment("configured", "proxy", {}, False, proxy={"needs_sdk": True})
+
+        drive(
+            self._prs(), ("make-it-run",), 2, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=cache,
+            max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+        )
+        for side in ("without", "with"):
+            body = json.loads((out / "1" / f"{side}.toolchain.json").read_text(encoding="utf-8"))
+            self.assertEqual(body["bun"], pin["bun"])
+            self.assertEqual(body["ai"], pin["ai"])
+            self.assertEqual(body["anthropic"], "2.0.1")
+
+    def test_installed_sdk_survives_a_later_pin_write(self):
+        from thesis.ab.run_ab import publish_side_toolchain, write_toolchain
+        out = Path(tempfile.mkdtemp())
+        pin = {"bun": "1.2.14", "ai": "5.0.8", "anthropic": "2.0.0"}
+        path = out / "1" / "without.toolchain.json"
+        write_toolchain(out, "1", "without", pin)
+        publish_side_toolchain(path, pin, "2.0.1")
+        write_toolchain(out, "1", "without", pin)
+        body = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(body, {
+            "ai": "5.0.8",
+            "anthropic": "2.0.1",
+            "bun": "1.2.14",
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

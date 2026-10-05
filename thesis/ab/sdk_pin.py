@@ -132,6 +132,20 @@ def _pin_from_package_json(root: Path) -> str | None:
     return None
 
 
+def ai_version_for_tree(root: Path) -> str | None:
+    root = Path(root)
+    lock_path = root / "bun.lock"
+    if not lock_path.is_file():
+        return None
+    try:
+        lock = load_jsonc(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    packages = lock.get("packages") if isinstance(lock.get("packages"), dict) else {}
+    version, _provider = _entry(packages, "ai")
+    return version
+
+
 def anthropic_pin_for_tree(root: Path, registry: dict[str, str] | None = None) -> str | None:
     """Read `bun.lock` when it exists. Fall back to an exact package.json pin."""
     root = Path(root)
