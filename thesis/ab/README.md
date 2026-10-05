@@ -56,9 +56,9 @@ The per-PR section includes Title, Category, and Harness change.
 
 ## Cost, timeout, resume
 
-`--timeout` defaults to 2400 seconds per cell. `--jobs` defaults to 1. The pilot above uses 8.
+`--timeout` defaults to 2400 seconds per cell. The runner caps each cell at 840 seconds, so a stuck call stops before 15 minutes. A shorter `--timeout` still wins. `--jobs` defaults to 1. The pilot above uses 8.
 
-`--max-cost-usd` prices finished rows at $4 per million uncached input tokens, $20 per million output tokens, $0.20 per million cache-read tokens, and $5 per million cache-write tokens. The runner stops launching new cells once that estimate reaches the cap. Cells already running are allowed to finish. A finished cell with a missing token count is unmetered and also stops new launches.
+`--max-cost-usd` prices finished rows at $4 per million uncached input tokens, $20 per million output tokens, $0.20 per million cache-read tokens, and $5 per million cache-write tokens. The runner stops launching new cells once that estimate reaches the cap. Cells already running are allowed to finish. A finished cell with a missing token count is unmetered and also stops new launches. Cells whose failure class is `infra` or `incompatible` do not.
 
 Run the same command again to skip cells that already have a result file. `--dry-run` prints the plan and does not build OpenCode or call the model.
 
@@ -114,6 +114,6 @@ python -m thesis.ab.build_omp <40-character-sha> --cache results/harness-src
 
 The oldest parent SHA is `b99565959bb7a094e339802076d6ad6fd7d7f83c`, the parent of PR 623 (nearest tag v0.1.180). `python -m thesis.ab.build_opencode` compiles that commit with the `package.json` Bun (1.2.14) and Go 1.24.6. The binary runs, and `opencode --version` prints `openbench`. `opencode run --help` lists `-m` / `--model` and does not list `--auto` or `--dangerously-skip-permissions`. The config schema rejects a `permission` key, so the runner does not write one.
 
-`opencode models` lists `anthropic/claude-opus-5-5` after the proxy config is installed. A `run` against a stub upstream posts `POST /v1/messages` with `"model":"claude-opus-5-5"` and `"max_tokens":128000`. The compiled binary treats `bun install` as its own help text and exits 0, so the runner installs `@ai-sdk/anthropic` with the build's Bun before the run.
+`opencode models` lists `anthropic/claude-opus-5-5` after the proxy config is installed. A `run` against a stub upstream posts `POST /v1/messages` with `"model":"claude-opus-5-5"` and `"max_tokens":128000`. The compiled binary treats `bun install` as its own help text and exits 0, so the runner installs `@ai-sdk/anthropic` with that checkout's Bun before the run. The version is the lockfile pin when it depends on the same `@ai-sdk/provider` release as `ai`. When the locked anthropic package is from an older provider generation, the runner picks the newest `@ai-sdk/anthropic` that depends on `ai`'s provider. A side that fails that short preflight, or whose cells report a provider stream error and no tokens, is incompatible and is not scored.
 
 PRs 623, 913, 984, 1248, 2334, and 2367 do not mention `@ai-sdk/google-vertex/anthropic` under `packages/opencode`. Those are the rows the native Vertex route cannot load. Every SHA in the fixture, including those six, has the custom `provider` field in `config.ts`. The proxy route uses that field. This check is the source tree, not a build of all 34 rows. `--model-route vertex` still records a side as incompatible when that provider package does not resolve.

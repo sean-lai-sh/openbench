@@ -268,21 +268,47 @@ def _open_config_content(spec):
     })
 
 
+def _resolve_bun(bun):
+    text = str(bun or "").strip()
+    if not text:
+        return shutil.which("bun") or ""
+    if os.path.isabs(text):
+        return text
+    return os.path.abspath(text)
+
+
+def _installed_sdk_version(module_path):
+    if not os.path.isfile(module_path):
+        return ""
+    try:
+        with open(module_path, encoding="utf-8") as fh:
+            parsed = json.loads(fh.read())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    return str(parsed.get("version") or "")
+
+
 def _ensure_provider_sdk(env, proxy):
     if not proxy.get("needs_sdk"):
         return
-    bun = str(proxy.get("bun") or "").strip() or shutil.which("bun")
+    pin = str(proxy.get("anthropic_sdk") or "").strip()
+    if not pin or pin == "latest":
+        return
+    bun = _resolve_bun(proxy.get("bun"))
     if not bun:
         return
     cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
     os.makedirs(cache, exist_ok=True)
     module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
-    if not os.path.isfile(module):
+    if _installed_sdk_version(module) != pin:
         subprocess.run(
-            [bun, "add", "@ai-sdk/anthropic@latest"],
+            [bun, "add", f"@ai-sdk/anthropic@{pin}"],
             cwd=cache,
             env=env,
             stdin=subprocess.DEVNULL,
+            timeout=120,
             check=False,
         )
     pkg_path = os.path.join(cache, "package.json")
@@ -298,7 +324,7 @@ def _ensure_provider_sdk(env, proxy):
     deps = parsed.get("dependencies")
     if not isinstance(deps, dict):
         deps = {}
-    deps["@ai-sdk/anthropic"] = "latest"
+    deps["@ai-sdk/anthropic"] = pin
     parsed["dependencies"] = deps
     with open(pkg_path, "w", encoding="utf-8") as fh:
         json.dump(parsed, fh)

@@ -536,18 +536,14 @@ class TestBunAndSdkPin(unittest.TestCase):
             "2.0.0": "2.0.0",
             "4.0.71": "4.0.21",
         }
-        # PR 623, v0.1.180. The locked provider SDK already matches ai 4.3.16.
         self.assertEqual(
             select_anthropic_pin(_lock("4.3.16", "1.1.3", "1.2.12", "1.1.3"), registry),
             "1.2.12",
         )
-        # PRs 2334 and 2367. ai 5.0.8 and @ai-sdk/anthropic 2.0.0 share provider 2.0.0.
         self.assertEqual(
             select_anthropic_pin(_lock("5.0.8", "2.0.0", "2.0.0", "2.0.0"), registry),
             "2.0.0",
         )
-        # PRs 913, 984, and 1248. The lock still names anthropic 1.2.12, which
-        # speaks provider 1.1.3, while ai 5 beta speaks provider 2.0.0-beta.1.
         self.assertEqual(
             select_anthropic_pin(
                 _lock("5.0.0-beta.7", "2.0.0-beta.1", "1.2.12", "1.1.3"),

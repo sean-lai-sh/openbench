@@ -278,8 +278,8 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         path = root / f"{side.value}.incompatible.json"
         if path.is_file():
             incompatible[side.value] = json.loads(path.read_text(encoding="utf-8"))
-    without_rows = load_jsonl(root / "without.jsonl")
-    with_rows = load_jsonl(root / "with.jsonl")
+    without_rows = [] if "without" in incompatible else load_jsonl(root / "without.jsonl")
+    with_rows = [] if "with" in incompatible else load_jsonl(root / "with.jsonl")
     left = side_stats(without_rows)
     right = side_stats(with_rows)
     deltas = paired_deltas(without_rows, with_rows)
