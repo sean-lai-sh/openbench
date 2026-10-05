@@ -457,6 +457,16 @@ def bind_cell_proxy(filled: dict, ledger_dir: Path) -> dict:
     return filled
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_DRAWING_RE = re.compile(r"[\u2500-\u259f]")
+
+
+def _readable_tail(text: str) -> str:
+    """Drop the OpenCode banner so an incompatible reason stays one line."""
+    cleaned = _DRAWING_RE.sub(" ", _ANSI_RE.sub("", text))
+    return " ".join(cleaned.split())
+
+
 def preflight_stop_reason(row: dict | None) -> str | None:
     reason = provider_stream_failure(row)
     if reason:
@@ -466,7 +476,7 @@ def preflight_stop_reason(row: dict | None) -> str | None:
     err = str(row.get("error") or "")
     if not re.fullmatch(r"exit \d+", err):
         return None
-    tail = " ".join(str(row.get("output_tail") or "").split())
+    tail = _readable_tail(str(row.get("output_tail") or ""))
     detail = f"{err}: {tail[:180]}" if tail else err
     return f"preflight exited before any metered call: {detail}"
 

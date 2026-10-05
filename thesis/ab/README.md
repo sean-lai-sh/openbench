@@ -68,6 +68,15 @@ Build one SHA on its own with:
 python -m thesis.ab.build_opencode <40-character-sha> --cache results/opencode-src
 ```
 
+v1.0 checkouts (`packages/opencode/script/build.ts --single`, the November 2025 cluster including PR 4204 parent `0d3d48bb5964a95e939edcea3bb726a21823d1a1`) write four Linux x64 binaries under `dist/opencode-linux-x64*/bin/opencode`: glibc, glibc baseline, musl, and musl baseline. The musl file is mode 755. On a glibc host `exec` still returns ENOENT, because the ELF interpreter is `/lib/ld-musl-x86_64.so.1` and that linker is not installed. A `#!/usr/bin/env node` launcher in `packages/opencode/bin/opencode` fails the same way when `node` is not on `PATH`. The publisher keeps the dist binary whose interpreter exists here, and a cached `bin/<sha>/opencode` that fails that check is rebuilt. Smoke one ENOENT SHA with:
+
+```bash
+python -m thesis.ab.build_opencode 0d3d48bb5964a95e939edcea3bb726a21823d1a1 --cache results/opencode-src
+results/opencode-src/bin/0d3d48bb5964a95e939edcea3bb726a21823d1a1/opencode --version
+```
+
+The version line is the check. The command compiles that upstream commit.
+
 ## Pi and Oh My Pi pilot
 
 Pi is the `pi` command from `badlogic/pi-mono`. Oh My Pi is the `omp` command from `can1357/oh-my-pi`. Both use the same runner. The `Repo` column makes the run id `pi-3` or `omp-14`. The results record the two as separate harnesses.

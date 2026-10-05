@@ -13,6 +13,7 @@ import os
 import platform
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import urllib.request
@@ -256,6 +257,122 @@ def _dist_target(path: Path) -> dict | None:
     }
 
 
+def elf_interpreter(path: Path) -> str | None:
+    """Return the ELF PT_INTERP string.
+
+    ``None`` means the file is not an ELF. ``""`` means an ELF with no
+    interpreter. A path is the dynamic linker ``exec`` needs.
+    """
+    try:
+        handle = path.open("rb")
+    except OSError:
+        return None
+    with handle:
+        ident = handle.read(16)
+        if len(ident) < 16 or ident[:4] != b"\x7fELF":
+            return None
+        elf_class = ident[4]
+        data = ident[5]
+        if data == 1:
+            endian = "<"
+        elif data == 2:
+            endian = ">"
+        else:
+            return None
+        if elf_class == 2:
+            handle.seek(32)
+            raw = handle.read(8)
+            if len(raw) < 8:
+                return None
+            phoff = struct.unpack(endian + "Q", raw)[0]
+            handle.seek(54)
+            raw = handle.read(4)
+            if len(raw) < 4:
+                return None
+            phentsize, phnum = struct.unpack(endian + "HH", raw)
+            offset_at = 8
+            filesz_at = 32
+            word = "Q"
+        elif elf_class == 1:
+            handle.seek(28)
+            raw = handle.read(4)
+            if len(raw) < 4:
+                return None
+            phoff = struct.unpack(endian + "I", raw)[0]
+            handle.seek(42)
+            raw = handle.read(4)
+            if len(raw) < 4:
+                return None
+            phentsize, phnum = struct.unpack(endian + "HH", raw)
+            offset_at = 4
+            filesz_at = 16
+            word = "I"
+        else:
+            return None
+        if phnum <= 0 or phentsize < filesz_at + struct.calcsize(word) or phoff <= 0:
+            return ""
+        for index in range(min(phnum, 128)):
+            handle.seek(phoff + index * phentsize)
+            entry = handle.read(phentsize)
+            if len(entry) < phentsize:
+                return ""
+            p_type = struct.unpack_from(endian + "I", entry, 0)[0]
+            if p_type != 3:
+                continue
+            p_offset = struct.unpack_from(endian + word, entry, offset_at)[0]
+            p_filesz = struct.unpack_from(endian + word, entry, filesz_at)[0]
+            if p_filesz <= 0 or p_filesz > 4096:
+                return ""
+            handle.seek(p_offset)
+            blob = handle.read(p_filesz)
+            return blob.split(b"\x00", 1)[0].decode("utf-8", "replace")
+        return ""
+
+
+def _shebang_can_exec(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            line = handle.readline(512)
+    except OSError:
+        return False
+    if not line.startswith(b"#!"):
+        return True
+    parts = line[2:].strip().split()
+    if not parts:
+        return False
+    program = parts[0].decode("utf-8", "replace")
+    if Path(program).name == "env":
+        if len(parts) < 2:
+            return False
+        return shutil.which(parts[1].decode("utf-8", "replace")) is not None
+    return Path(program).is_file()
+
+
+def can_exec(path: Path) -> bool:
+    """True when this host can ``exec`` the file.
+
+    A musl OpenCode build is mode 755 and still raises ``ENOENT`` on a glibc
+    host: the kernel looks up ``/lib/ld-musl-x86_64.so.1`` and that file is
+    absent. The same error is a ``#!/usr/bin/env node`` launcher when ``node``
+    is not on ``PATH``.
+    """
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return False
+    interpreter = elf_interpreter(path)
+    if interpreter is None:
+        return _shebang_can_exec(path)
+    if interpreter == "":
+        return True
+    return Path(interpreter).is_file()
+
+
+def _ensure_exec_bit(path: Path) -> None:
+    mode = path.stat().st_mode
+    if mode & stat.S_IXUSR:
+        return
+    path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def select_dist_binary(paths, *, system: str, machine: str, libc: str) -> Path:
     parsed = []
     for path in paths:
@@ -268,25 +385,45 @@ def select_dist_binary(paths, *, system: str, machine: str, libc: str) -> Path:
         pool = preferred or [item for item in parsed if not item[1]["musl"]]
     else:
         pool = [item for item in parsed if not item[1]["musl"]]
-    plain = [item for item in pool if not item[1]["baseline"]]
-    pool = plain or pool
-    if not pool:
-        raise BuildError(f"no {system}-{machine} {libc} opencode binary")
-    pool.sort(key=lambda item: str(item[0]))
-    return pool[0][0]
+    runnable = [item for item in pool if can_exec(item[0])]
+    plain = [item for item in runnable if not item[1]["baseline"]]
+    chosen = plain or runnable
+    if not chosen:
+        missing = []
+        for path, _info in pool:
+            interpreter = elf_interpreter(path)
+            if interpreter:
+                missing.append(f"{path.parent.parent.name} -> {interpreter}")
+        detail = f"; missing interpreter: {'; '.join(missing[:4])}" if missing else ""
+        raise BuildError(f"no runnable {system}-{machine} {libc} opencode binary{detail}")
+    chosen.sort(key=lambda item: str(item[0]))
+    return chosen[0][0]
 
 
 def _find_binary(root: Path) -> Path:
     pkg = root / "packages" / "opencode"
     found = sorted(pkg.glob("dist/**/bin/opencode"))
-    executables = [path for path in found if path.is_file() and os.access(path, os.X_OK)]
-    if not executables:
+    candidates = []
+    for path in found:
+        if not path.is_file():
+            continue
+        try:
+            _ensure_exec_bit(path)
+        except OSError:
+            continue
+        candidates.append(path)
+    if not candidates:
         wrapper = pkg / "bin" / "opencode"
         if wrapper.is_file():
+            try:
+                _ensure_exec_bit(wrapper)
+            except OSError:
+                wrapper = None
+        if wrapper is not None and wrapper.is_file() and can_exec(wrapper):
             return wrapper
         raise BuildError(f"no opencode binary under {pkg / 'dist'}")
     system, machine, _goarch = _host()
-    return select_dist_binary(executables, system=system, machine=machine, libc=host_libc())
+    return select_dist_binary(candidates, system=system, machine=machine, libc=host_libc())
 
 
 def _execute_plan(root: Path, plan: dict, cache: Path) -> Path:
@@ -346,10 +483,10 @@ def binary(sha: str, cache: Path) -> Path:
     # Git resolves a relative dest against ``cwd``. Callers pass ``results/...``.
     cache = Path(cache).resolve()
     published = cache / "bin" / sha / "opencode"
-    if published.is_file() and os.access(published, os.X_OK):
+    if can_exec(published):
         return published
     with exclusive_lock(cache / "locks" / f"{sha}.lock"):
-        if published.is_file() and os.access(published, os.X_OK):
+        if can_exec(published):
             return published
         with exclusive_lock(cache / "mirror.lock"):
             mirror = _ensure_mirror(cache)
@@ -357,6 +494,14 @@ def binary(sha: str, cache: Path) -> Path:
             _ensure_worktree(mirror, sha, worktree)
         plan = build_plan(worktree)
         built = _execute_plan(worktree, plan, cache)
+        try:
+            _ensure_exec_bit(built)
+        except OSError as exc:
+            raise BuildError(f"cannot mark {built} executable: {exc}") from exc
+        if not can_exec(built):
+            interpreter = elf_interpreter(built)
+            detail = f" (interpreter {interpreter})" if interpreter else ""
+            raise BuildError(f"built opencode cannot exec on this host: {built}{detail}")
         published.parent.mkdir(parents=True, exist_ok=True)
         tmp = published.with_name("opencode.tmp")
         shutil.copy2(built, tmp)

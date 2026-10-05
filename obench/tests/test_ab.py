@@ -324,6 +324,17 @@ class TestSchedule(unittest.TestCase):
             reason,
             "preflight exited before any metered call: exit 1: TypeError: createAnthropic is not a function",
         )
+        banner = preflight_stop_reason({
+            "completed": False,
+            "error": "exit 1",
+            "output_tail": "\x1b[0m \u2588\u2580\u2580\u2588 \u2588\u2580\u2580\u2588 \x1b[1m> Reply with ok",
+            "tokens": None,
+        })
+        self.assertEqual(
+            banner,
+            "preflight exited before any metered call: exit 1: > Reply with ok",
+        )
+        self.assertNotIn("\x1b", banner)
         self.assertIsNone(preflight_stop_reason({
             "completed": True,
             "error": None,
@@ -718,6 +729,79 @@ class TestDistBinary(unittest.TestCase):
         self.assertEqual(baseline.parent.parent.name, "opencode-linux-x64-baseline")
         arm = select_dist_binary(paths, system="linux", machine="arm64", libc="glibc")
         self.assertEqual(arm.parent.parent.name, "opencode-linux-arm64")
+
+    def _elf(self, path, interpreter):
+        import struct
+        interp = interpreter.encode() + b"\x00"
+        phoff = 64
+        phentsize = 56
+        interp_off = phoff + phentsize
+        header = struct.pack(
+            "<16sHHIQQQIHHHHHH",
+            b"\x7fELF" + bytes([2, 1, 1]) + b"\x00" * 9,
+            2, 62, 1, 0, phoff, 0, 0, 64, phentsize, 1, 0, 0, 0,
+        )
+        program = struct.pack(
+            "<IIQQQQQQ",
+            3, 0, interp_off, interp_off, interp_off, len(interp), len(interp), 1,
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(header + program + interp)
+        path.chmod(0o755)
+
+    def test_non_executable_dist_binary_is_marked_and_chosen(self):
+        from thesis.ab.build_opencode import _find_binary
+        root, paths = self._tree(["opencode-linux-x64", "opencode-linux-x64-musl"])
+        glibc = next(path for path in paths if path.parent.parent.name == "opencode-linux-x64")
+        glibc.chmod(0o644)
+        wrapper = root / "packages" / "opencode" / "bin" / "opencode"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        chosen = _find_binary(root)
+        self.assertEqual(chosen, glibc)
+        self.assertTrue(os.access(glibc, os.X_OK))
+
+    def test_mislabeled_musl_binary_is_not_published(self):
+        from thesis.ab.build_opencode import BuildError, _find_binary, can_exec, select_dist_binary
+        root, paths = self._tree(["opencode-linux-x64-baseline"])
+        musl = root / "packages" / "opencode" / "dist" / "opencode-linux-x64" / "bin" / "opencode"
+        self._elf(musl, "/lib/ld-musl-x86_64.so.1")
+        paths.append(musl)
+        self.assertFalse(can_exec(musl))
+        chosen = select_dist_binary(paths, system="linux", machine="x64", libc="glibc")
+        self.assertEqual(chosen.parent.parent.name, "opencode-linux-x64-baseline")
+        self.assertEqual(_find_binary(root), chosen)
+        only_musl = root / "packages" / "opencode" / "dist" / "opencode-linux-x64-musl" / "bin" / "opencode"
+        self._elf(only_musl, "/lib/ld-musl-x86_64.so.1")
+        with self.assertRaises(BuildError):
+            select_dist_binary([only_musl], system="linux", machine="x64", libc="glibc")
+
+    def test_cached_musl_binary_is_rebuilt(self):
+        from unittest.mock import patch
+        from thesis.ab.build_opencode import binary, can_exec
+        cache = Path(tempfile.mkdtemp())
+        sha = "ab" * 20
+        published = cache / "bin" / sha / "opencode"
+        self._elf(published, "/lib/ld-musl-x86_64.so.1")
+        good = Path(tempfile.mkdtemp()) / "opencode"
+        good.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        good.chmod(0o755)
+
+        def execute(_root, _plan, _cache):
+            return good
+
+        with patch("thesis.ab.build_opencode._ensure_mirror", return_value=cache / "mirror"), \
+             patch("thesis.ab.build_opencode._ensure_worktree"), \
+             patch("thesis.ab.build_opencode.build_plan", return_value={"kind": "build.ts"}), \
+             patch("thesis.ab.build_opencode._execute_plan", side_effect=execute):
+            result = binary(sha, cache)
+        self.assertEqual(result, published.resolve())
+        self.assertTrue(can_exec(result))
+        self.assertTrue(result.read_text(encoding="utf-8").startswith("#!"))
+        with patch("thesis.ab.build_opencode._execute_plan", side_effect=AssertionError("rebuilt")):
+            again = binary(sha, cache)
+        self.assertEqual(again, published.resolve())
 
 
 class TestIncompatibleCells(unittest.TestCase):
