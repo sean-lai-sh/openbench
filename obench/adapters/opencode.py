@@ -324,10 +324,11 @@ def _ensure_provider_sdk(env, proxy):
     deps = parsed.get("dependencies")
     if not isinstance(deps, dict):
         deps = {}
-    # Compiled OpenCode calls BunProc.install(pkg, "latest") and skips the
-    # install only when package.json already says "latest". The files in
-    # node_modules stay on the pin.
-    recorded = "latest" if _installed_sdk_version(module) == pin else pin
+    # BunProc.install skips only when package.json stores the dist-tag this
+    # binary passes ("latest", or "beta" on the July 2025 builds). The files
+    # in node_modules stay on the pin.
+    alias = str(proxy.get("sdk_install_alias") or "latest").strip() or "latest"
+    recorded = alias if _installed_sdk_version(module) == pin else pin
     deps["@ai-sdk/anthropic"] = recorded
     parsed["dependencies"] = deps
     with open(pkg_path, "w", encoding="utf-8") as fh:
