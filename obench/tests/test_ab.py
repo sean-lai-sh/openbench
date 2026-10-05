@@ -969,5 +969,113 @@ class TestIncompatibleCells(unittest.TestCase):
         self.assertIsNone(over_budget(out, 100))
 
 
+class TestToolchainRecord(unittest.TestCase):
+    def _prs(self):
+        return TestSchedule._prs(self)
+
+    def _checkout(self, cache, sha, bun, ai, anthropic):
+        checkout = Path(cache) / "worktrees" / sha
+        checkout.mkdir(parents=True, exist_ok=True)
+        (checkout / "package.json").write_text(
+            json.dumps({"packageManager": f"bun@{bun}"}),
+            encoding="utf-8",
+        )
+        (checkout / "bun.lock").write_text(
+            json.dumps(_lock(ai, "2.0.0", anthropic, "2.0.0")),
+            encoding="utf-8",
+        )
+        return checkout
+
+    def test_each_side_records_bun_ai_and_the_installed_sdk(self):
+        from thesis.ab.run_ab import apply_toolchain
+        out = Path(tempfile.mkdtemp())
+        cache = out / "cache"
+        seen = []
+
+        def worker(spec):
+            seen.append(spec["toolchain"])
+            row = {
+                "task": spec["task"],
+                "trial": spec["trial"],
+                "score": 1,
+                "success": True,
+                "tokens_input_uncached": 1,
+                "tokens_output": 1,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            }
+            apply_toolchain(row, spec["toolchain"], spec["toolchain"]["anthropic"])
+            publish_text(Path(spec["cell_path"]), json.dumps(row))
+
+        def build_fn(sha, cache_path, repo=""):
+            if sha == SHA_A:
+                self._checkout(cache_path, sha, "1.2.14", "4.3.16", "1.2.12")
+            else:
+                self._checkout(cache_path, sha, "1.2.19", "5.0.8", "2.0.0")
+            return Path(cache_path) / "bin" / sha
+
+        def assess_fn(binary):
+            return Assessment("configured", "proxy", {}, False, proxy={"needs_sdk": True})
+
+        drive(
+            self._prs(), ("make-it-run",), 1, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=cache,
+            max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+        )
+        self.assertEqual(seen, [
+            {"ai": "4.3.16", "anthropic": "1.2.12", "bun": "1.2.14"},
+            {"ai": "5.0.8", "anthropic": "2.0.0", "bun": "1.2.19"},
+        ])
+        without = json.loads((out / "1" / "without.toolchain.json").read_text(encoding="utf-8"))
+        with_side = json.loads((out / "1" / "with.toolchain.json").read_text(encoding="utf-8"))
+        self.assertEqual(without, seen[0])
+        self.assertEqual(with_side, seen[1])
+        record = pr_record(self._prs()[0], out)
+        self.assertEqual(record["toolchain"]["without"]["anthropic"], "1.2.12")
+        self.assertEqual(record["toolchain"]["with"]["anthropic"], "2.0.0")
+        self.assertTrue(record["sdk_changed"])
+        text = render_markdown([record])
+        self.assertIn("without toolchain: bun 1.2.14, ai 4.3.16, @ai-sdk/anthropic 1.2.12", text)
+        self.assertIn("with toolchain: bun 1.2.19, ai 5.0.8, @ai-sdk/anthropic 2.0.0", text)
+        self.assertIn("SDK changed: harness delta may be confounded", text)
+        parsed = list(csv.DictReader(io.StringIO(render_csv([record]))))
+        self.assertEqual(parsed[0]["sdk_changed"], "yes")
+
+    def test_matching_sdk_versions_are_not_flagged(self):
+        out = Path(tempfile.mkdtemp()) / "1"
+        out.mkdir(parents=True)
+        body = {"bun": "1.2.14", "ai": "5.0.8", "anthropic": "2.0.0"}
+        (out / "without.toolchain.json").write_text(json.dumps(body), encoding="utf-8")
+        (out / "with.toolchain.json").write_text(json.dumps(body), encoding="utf-8")
+        row = {
+            "task": "make-it-run", "trial": 1, "score": 1, "success": True,
+            "tokens_input_uncached": 1, "tokens_output": 1,
+            "tokens_cache_read": 0, "tokens_cache_write": 0,
+            "toolchain": body,
+        }
+        (out / "without.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+        (out / "with.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+        pr = self._prs()[0]
+        record = pr_record(pr, out.parent)
+        self.assertFalse(record["sdk_changed"])
+        self.assertNotIn("SDK changed: harness delta may be confounded", render_markdown([record]))
+        self.assertIn("@ai-sdk/anthropic 2.0.0", render_markdown([record]))
+
+    def test_installed_sdk_replaces_the_requested_pin(self):
+        from thesis.ab.run_ab import apply_toolchain
+        row = {}
+        apply_toolchain(
+            row,
+            {"bun": "1.2.14", "ai": "5.0.8", "anthropic": "2.0.0"},
+            "2.0.1",
+        )
+        self.assertEqual(row["toolchain"], {
+            "bun": "1.2.14",
+            "ai": "5.0.8",
+            "anthropic": "2.0.1",
+        })
+
+
 if __name__ == "__main__":
     unittest.main()

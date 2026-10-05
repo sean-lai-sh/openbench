@@ -374,8 +374,8 @@ class TestProviderSdkPin(unittest.TestCase):
             "bun": "results/opencode-src/bun/1.2.14/bun",
             "anthropic_sdk": "1.2.12",
         }
-        opencode._ensure_provider_sdk(env, proxy)
-        opencode._ensure_provider_sdk(env, proxy)
+        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
+        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
         self.assertEqual(
             args_file.read_text(encoding="utf-8").splitlines(),
             ["add", "@ai-sdk/anthropic@1.2.12"],
