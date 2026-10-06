@@ -1008,6 +1008,12 @@ class TestIncompatibleCells(unittest.TestCase):
             (checkout / "bun.lock").write_text(json.dumps(_lock(
                 "4.3.16", "1.1.3", "1.2.12", "1.1.3",
             )), encoding="utf-8")
+            global_src = checkout / "packages" / "opencode" / "src" / "global"
+            global_src.mkdir(parents=True, exist_ok=True)
+            (global_src / "index.ts").write_text(
+                'export const CACHE_VERSION = "9"\n',
+                encoding="utf-8",
+            )
             dest = Path(cache_path) / "bun" / "1.3.13" / "bun"
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -1038,6 +1044,7 @@ class TestIncompatibleCells(unittest.TestCase):
             self.assertTrue(bun.is_absolute())
             self.assertEqual(bun.parent.name, "1.2.14")
             self.assertEqual(proxy["anthropic_sdk"], "1.2.12")
+            self.assertEqual(proxy["cache_version"], "9")
 
     def test_decimal_error_with_no_tokens_is_incompatible(self):
         from thesis.ab.run_ab import provider_stream_failure
@@ -1313,6 +1320,361 @@ class TestToolchainRecord(unittest.TestCase):
             "anthropic": "2.0.1",
             "bun": "1.2.14",
         })
+
+
+class TestEarlyDeath(unittest.TestCase):
+    def _prs(self):
+        return TestSchedule._prs(self)
+
+    def _drive(self, out, worker, trials):
+        def build_fn(sha, cache, repo=""):
+            return Path("/tmp") / sha
+
+        def assess_fn(binary):
+            return Assessment("native", "listed", {}, False)
+
+        return drive(
+            self._prs(), ("make-it-run",), trials, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+            max_cost_usd=100, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+        )
+
+    def test_first_fast_crashes_stop_the_side_and_are_infra(self):
+        out = Path(tempfile.mkdtemp())
+        calls = []
+
+        def worker(spec):
+            calls.append((spec["side"], spec["trial"]))
+            if spec["side"] == "without":
+                body = {
+                    "task": spec["task"],
+                    "trial": spec["trial"],
+                    "score": 0,
+                    "success": False,
+                    "completed": True,
+                    "failure_class": "wrong_answer",
+                    "error": "exit 1",
+                    "output_tail": "Error: Unhandled chunk type: custom",
+                    "t_agent_s": 4.2,
+                    "wall_time_s": 5.1,
+                    "tokens_input_uncached": 10,
+                    "tokens_output": 2,
+                    "tokens_cache_read": 0,
+                    "tokens_cache_write": 0,
+                }
+            else:
+                body = {
+                    "task": spec["task"],
+                    "trial": spec["trial"],
+                    "score": 1,
+                    "success": True,
+                    "t_agent_s": 40,
+                    "tokens_input_uncached": 4,
+                    "tokens_output": 2,
+                    "tokens_cache_read": 0,
+                    "tokens_cache_write": 0,
+                }
+            publish_text(Path(spec["cell_path"]), json.dumps(body))
+
+        self._drive(out, worker, 4)
+        self.assertEqual(
+            calls,
+            [("without", 1), ("without", 2), ("without", 3), ("with", 1), ("with", 2), ("with", 3), ("with", 4)],
+        )
+        cell = json.loads((out / "1" / "cells" / "without" / "make-it-run" / "1.json").read_text(encoding="utf-8"))
+        self.assertEqual(cell["failure_class"], "infra")
+        self.assertTrue(cell["failure_reason"].startswith("early death under 10s"))
+        sidecar = json.loads((out / "1" / "without.infra.json").read_text(encoding="utf-8"))
+        self.assertEqual(sidecar["status"], "infra")
+        self.assertIn("under 10s", sidecar["reason"])
+        self.assertFalse((out / "1" / "with.infra.json").exists())
+        record = pr_record(self._prs()[0], out)
+        self.assertEqual(record["without"]["n"], 0)
+        self.assertEqual(record["with"]["n"], 4)
+        self.assertIn("without is infra", render_markdown([record]))
+
+    def test_a_fast_wrong_answer_without_the_signature_still_runs(self):
+        out = Path(tempfile.mkdtemp())
+        calls = []
+
+        def worker(spec):
+            calls.append(spec["trial"])
+            publish_text(Path(spec["cell_path"]), json.dumps({
+                "task": spec["task"],
+                "trial": spec["trial"],
+                "score": 0,
+                "success": False,
+                "completed": True,
+                "failure_class": "wrong_answer",
+                "error": "exit 1",
+                "output_tail": "checker failed",
+                "t_agent_s": 4.0,
+                "tokens_input_uncached": 10,
+                "tokens_output": 2,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            }))
+
+        self._drive(out, worker, 3)
+        self.assertEqual(calls, [1, 2, 3, 1, 2, 3])
+        cell = json.loads((out / "1" / "cells" / "without" / "make-it-run" / "1.json").read_text(encoding="utf-8"))
+        self.assertEqual(cell["failure_class"], "wrong_answer")
+        self.assertFalse((out / "1" / "without.infra.json").exists())
+
+    def test_a_healthy_first_cell_does_not_stop_later_crashes(self):
+        out = Path(tempfile.mkdtemp())
+        calls = []
+
+        def worker(spec):
+            calls.append((spec["side"], spec["trial"]))
+            fast = spec["side"] == "without" and spec["trial"] > 1
+            body = {
+                "task": spec["task"],
+                "trial": spec["trial"],
+                "score": 0,
+                "success": False,
+                "completed": True,
+                "failure_class": "wrong_answer",
+                "t_agent_s": 4.0 if fast else 30.0,
+                "output_tail": "Error: Unhandled chunk type: custom" if fast else "nope",
+                "tokens_input_uncached": 10,
+                "tokens_output": 2,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            }
+            publish_text(Path(spec["cell_path"]), json.dumps(body))
+
+        self._drive(out, worker, 4)
+        self.assertEqual(len(calls), 8)
+        self.assertFalse((out / "1" / "without.infra.json").exists())
+        crashed = json.loads((out / "1" / "cells" / "without" / "make-it-run" / "2.json").read_text(encoding="utf-8"))
+        self.assertEqual(crashed["failure_class"], "infra")
+
+
+class TestTranscriptsDir(unittest.TestCase):
+    def _prs(self):
+        return TestSchedule._prs(self)
+
+    def test_drive_passes_per_cell_transcript_and_evidence_dirs(self):
+        out = Path(tempfile.mkdtemp())
+        custom = out / "custom-root"
+        seen = []
+
+        def worker(spec):
+            seen.append(spec)
+            publish_text(Path(spec["cell_path"]), json.dumps({
+                "task": spec["task"], "trial": spec["trial"], "score": 1, "success": True,
+                "tokens_input_uncached": 1, "tokens_output": 1,
+                "tokens_cache_read": 0, "tokens_cache_write": 0,
+            }))
+
+        def build_fn(sha, cache, repo=""):
+            return Path("/tmp") / sha
+
+        def assess_fn(binary):
+            return Assessment("native", "listed", {}, False)
+
+        drive(
+            self._prs(), ("make-it-run",), 1, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+            max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+            transcripts_dir=custom,
+        )
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(
+            seen[0]["transcripts_dir"],
+            str(custom / "1" / "transcripts"),
+        )
+        self.assertEqual(
+            seen[0]["evidence_dir"],
+            str(custom / "1" / "transcripts" / "without" / "make-it-run" / "1"),
+        )
+
+
+class TestOldCompile(unittest.TestCase):
+    def test_old_compile_omits_minify(self):
+        from unittest.mock import patch
+        from thesis.ab.build_opencode import _compile_old
+        root = Path(tempfile.mkdtemp())
+        commands = []
+
+        def fake_run(cmd, cwd, env=None):
+            commands.append(list(cmd))
+            for arg in cmd:
+                if isinstance(arg, str) and arg.startswith("--outfile="):
+                    dest = Path(arg.split("=", 1)[1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                    dest.chmod(0o755)
+
+        with patch("thesis.ab.build_opencode._run", side_effect=fake_run):
+            built = _compile_old(root, {})
+        self.assertTrue(built.is_file())
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--compile", commands[0])
+        self.assertNotIn("--minify", commands[0])
+
+    def test_missing_or_minified_stamp_is_rebuilt(self):
+        from unittest.mock import patch
+        from thesis.ab.build_opencode import binary
+        cache = Path(tempfile.mkdtemp())
+        sha = "cd" * 20
+        published = cache / "bin" / sha / "opencode"
+        published.parent.mkdir(parents=True)
+        published.write_text("#!/bin/sh\necho minified\n", encoding="utf-8")
+        published.chmod(0o755)
+        fresh = Path(tempfile.mkdtemp()) / "opencode"
+        fresh.write_text("#!/bin/sh\necho fresh\n", encoding="utf-8")
+        fresh.chmod(0o755)
+        calls = {"n": 0}
+
+        def execute(_root, plan, _cache):
+            calls["n"] += 1
+            self.assertEqual(plan["kind"], "compile")
+            self.assertNotIn("--minify", plan.get("args") or [])
+            return fresh
+
+        patches = (
+            patch("thesis.ab.build_opencode._ensure_mirror", return_value=cache / "mirror"),
+            patch("thesis.ab.build_opencode._ensure_worktree"),
+            patch("thesis.ab.build_opencode.build_plan", return_value={"kind": "compile", "args": []}),
+            patch("thesis.ab.build_opencode._execute_plan", side_effect=execute),
+        )
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        result = binary(sha, cache)
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(result.read_text(encoding="utf-8"), fresh.read_text(encoding="utf-8"))
+        stamp = json.loads((published.parent / "build-stamp.json").read_text(encoding="utf-8"))
+        self.assertEqual(stamp["kind"], "compile")
+        self.assertIs(stamp["minify"], False)
+        again = binary(sha, cache)
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(again, result)
+
+        stamp["minify"] = True
+        (published.parent / "build-stamp.json").write_text(json.dumps(stamp), encoding="utf-8")
+        rebuilt = binary(sha, cache)
+        self.assertEqual(calls["n"], 2)
+        self.assertFalse(json.loads((rebuilt.parent / "build-stamp.json").read_text(encoding="utf-8"))["minify"])
+
+
+class TestSdkDriftCell(unittest.TestCase):
+    def test_cell_is_infra_when_the_provider_sdk_drifts(self):
+        from thesis.ab.run_ab import execute_cell
+        root = Path(tempfile.mkdtemp())
+        task = root / "tasks" / "demo"
+        (task / "workspace").mkdir(parents=True)
+        (task / "instruction.md").write_text("say hi", encoding="utf-8")
+        checker = task / "checker.sh"
+        checker.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        checker.chmod(checker.stat().st_mode | stat.S_IEXEC)
+        note = root / "probe.txt"
+        bun = root / "bun"
+        bun.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import os, pathlib, sys
+            for arg in sys.argv[1:]:
+                if arg.startswith("@ai-sdk/anthropic@"):
+                    version = arg.rsplit("@", 1)[1]
+                    module = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_text('{"version": "%s"}' % version, encoding="utf-8")
+        """), encoding="utf-8")
+        bun.chmod(0o755)
+        binary = root / "opencode"
+        script = textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import json, os, pathlib, sys
+            args = sys.argv[1:]
+            note = pathlib.Path(NOTE)
+            if args == ["--version"]:
+                print("cell-test")
+                raise SystemExit(0)
+            if args[:2] == ["run", "--help"]:
+                print("--auto")
+                print("-m, --model")
+                print("--format")
+                print("--dir")
+                print("--title")
+                print("--print-logs")
+                raise SystemExit(0)
+            problems = []
+            if os.environ.get("OPENCODE_DISABLE_DEFAULT_PLUGINS") != "1":
+                problems.append("plugins")
+            cache = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode"
+            version = cache / "version"
+            if not version.is_file() or version.read_text(encoding="utf-8") != "9":
+                problems.append("version")
+            if "--print-logs" not in args:
+                problems.append("print-logs")
+            module = cache / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.write_text('{"version": "4.0.72"}', encoding="utf-8")
+            data = pathlib.Path(os.environ["XDG_DATA_HOME"]) / "opencode"
+            (data / "storage").mkdir(parents=True, exist_ok=True)
+            (data / "storage" / "session.json").write_text('{"tool":"bash"}', encoding="utf-8")
+            (data / "log").mkdir(parents=True, exist_ok=True)
+            (data / "log" / "opencode.log").write_text("lsp ready\\n", encoding="utf-8")
+            note.write_text(",".join(problems), encoding="utf-8")
+            print(json.dumps({"type": "step_finish", "part": {"tokens": {
+                "input": 3, "output": 2, "reasoning": 0,
+                "cache": {"read": 0, "write": 0}, "total": 5,
+            }}}))
+        """).replace("NOTE", repr(str(note)))
+        binary.write_text(script, encoding="utf-8")
+        binary.chmod(0o755)
+        dest = root / "cell.json"
+        transcripts = root / "transcripts"
+        evidence = transcripts / "with" / "demo" / "1"
+        saved = os.environ.get("OBENCH_OPENCODE_BIN")
+        try:
+            execute_cell({
+                "binary": str(binary),
+                "config": {},
+                "permission_config": False,
+                "proxy": {
+                    "needs_sdk": True,
+                    "model_ref": "anthropic/claude-opus-5-5",
+                    "api_key": "proxy",
+                    "anthropic_sdk": "2.0.0",
+                    "cache_version": "9",
+                    "bun": str(bun),
+                },
+                "cell_path": str(dest),
+                "tasks_dir": str(root / "tasks"),
+                "adapters_dir": str(ROOT / "obench" / "adapters"),
+                "model": "claude-opus-5-5",
+                "task": "demo",
+                "trial": 1,
+                "side": "with",
+                "timeout_s": 30,
+                "transcripts_dir": str(transcripts),
+                "evidence_dir": str(evidence),
+            })
+        finally:
+            if saved is None:
+                os.environ.pop("OBENCH_OPENCODE_BIN", None)
+            else:
+                os.environ["OBENCH_OPENCODE_BIN"] = saved
+        self.assertEqual(note.read_text(encoding="utf-8"), "")
+        row = json.loads(dest.read_text(encoding="utf-8"))
+        self.assertEqual(row["failure_class"], "infra")
+        self.assertIn("sdk drift", row["failure_reason"])
+        self.assertIn("4.0.72", row["failure_reason"])
+        self.assertFalse(row["success"])
+        self.assertIn("--print-logs", row["cmd"])
+        self.assertEqual(
+            (evidence / "storage" / "session.json").read_text(encoding="utf-8"),
+            '{"tool":"bash"}',
+        )
+        self.assertIn("lsp ready", (evidence / "log" / "opencode.log").read_text(encoding="utf-8"))
+        transcripts_found = list(transcripts.glob("with/*.txt"))
+        self.assertTrue(transcripts_found)
+        self.assertIn("step_finish", transcripts_found[0].read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -112,6 +112,18 @@ class PromotionPrecedenceTests(unittest.TestCase):
     infra audit: 2 deepseek trial-3 cells re-entered the denominator).
     """
 
+    def test_pinned_ab_infra_is_not_promoted(self):
+        drift = _row(
+            failure_class="infra",
+            failure_reason="sdk drift: installed @ai-sdk/anthropic 4.0.72 != pin 2.0.0",
+        )
+        self.assertEqual(fc.class_for_report(drift), "infra")
+        early = _row(
+            failure_class="infra",
+            failure_reason="early death under 10s: Unhandled chunk type",
+        )
+        self.assertEqual(fc.class_for_report(early), "infra")
+
     def test_starved_stored_infra_is_not_promoted(self):
         row = _row(failure_class="infra",
                    sampling_observed=[{"max_tokens": 1}])

@@ -1835,6 +1835,27 @@ def _stall_watchdog_loop(
             return
 
 
+def _apply_sdk_drift(row, result):
+    """Force infra when the adapter reports the provider SDK left its pin.
+
+    The checker may already have exited. A drifted SDK is not a comparable
+    trial, so the stored class stays infra even if the checker produced a
+    verdict. ``class_for_report`` keeps that exclusion via ``failure_reason``.
+    """
+    if not isinstance(result, dict):
+        return row
+    drift = result.get("sdk_drift")
+    if not isinstance(drift, str) or not drift.strip():
+        return row
+    text = drift.strip()
+    row["sdk_drift"] = text
+    row["failure_class"] = "infra"
+    row["failure_reason"] = text
+    row["success"] = False
+    row["score"] = 0.0
+    return row
+
+
 def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
              checker_timeout_s, exec_mode="local",
              docker_image=None, docker_fallback=False, harness_version=None,
@@ -2169,7 +2190,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 row["error"] = (
                     "stall watchdog exhausted bounded termination attempts"
                 )
-            return _populate_proxy_row(row, active_proxy_ctx, cell_token)
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
+            )
 
         # Persist the full agent transcript LOCAL-ONLY (prefer the untruncated
         # full_output; fall back to the ~2000-char output_tail). Never let a
@@ -2204,7 +2227,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             if row["error"] is None:
                 row["error"] = traceback.format_exc(limit=4).strip()
             row["failure_class"] = classify_failure(row, classifier_output, timeout_s)
-            return _populate_proxy_row(row, active_proxy_ctx, cell_token)
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
+            )
         row["checker_stdout"] = scrub_checker_output(checker_stdout)
         row["checker_stderr"] = scrub_checker_output(checker_stderr)
         row["checker_exit"] = checker_exit
@@ -2215,7 +2240,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             raw_score if raw_score is not None else 0.0)
         row["failure_class"] = classify_failure(row, classifier_output, timeout_s)
         row["failure_reason"] = classify_failure_reason(row, classifier_output)
-        return _populate_proxy_row(row, active_proxy_ctx, cell_token)
+        return _apply_sdk_drift(
+            _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
+        )
     finally:
         _finalize_proxy_cell(row, active_proxy_ctx, cell_token)
         if workspace_observer is not None:

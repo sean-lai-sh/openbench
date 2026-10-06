@@ -46,6 +46,15 @@ _STREAM_RE = re.compile(
     re.IGNORECASE,
 )
 _GUARD_SKIP = frozenset({"infra", "incompatible"})
+_CACHE_VERSION_RE = re.compile(r"""CACHE_VERSION\s*=\s*["'](\d+)["']""")
+# Fast provider/toolchain crashes. A clean checker failure can also finish
+# in a few seconds; these strings are the deaths that are not a verdict.
+_EARLY_DEATH_RE = re.compile(
+    r"Unhandled chunk type|ProviderInitError|DecimalError|prepare wasm",
+    re.IGNORECASE,
+)
+EARLY_DEATH_S = 10.0
+EARLY_DEATH_CELLS = 3
 
 
 class RunError(ValueError):
@@ -212,6 +221,7 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_CONFIG_JSON",
         "OBENCH_OPENCODE_PERMISSION_CONFIG",
         "OBENCH_OPENCODE_PROXY",
+        "OBENCH_OPENCODE_EVIDENCE_DIR",
         "OBENCH_PI_VERTEX",
         "OBENCH_PI_BIN",
     )
@@ -230,6 +240,11 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_PROXY"] = json.dumps(spec["proxy"])
             else:
                 os.environ.pop("OBENCH_OPENCODE_PROXY", None)
+            evidence = str(spec.get("evidence_dir") or "").strip()
+            if evidence:
+                os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = evidence
+            else:
+                os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
             os.environ.pop("OBENCH_PI_VERTEX", None)
             os.environ.pop("OBENCH_PI_BIN", None)
         else:
@@ -237,12 +252,14 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_CONFIG_JSON", None)
             os.environ.pop("OBENCH_OPENCODE_PERMISSION_CONFIG", None)
             os.environ.pop("OBENCH_OPENCODE_PROXY", None)
+            os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
             vertex = spec.get("vertex") or {}
             os.environ["OBENCH_PI_VERTEX"] = json.dumps(vertex)
             os.environ["OBENCH_PI_BIN"] = vertex.get("bin") or spec["binary"]
         from obench.run import load_adapter, run_cell
         adapter = load_adapter(spec["adapters_dir"], harness)
         harness_version = adapter.version() if hasattr(adapter, "version") else None
+        transcripts_dir = str(spec.get("transcripts_dir") or "").strip() or None
         row = run_cell(
             harness,
             spec["task"],
@@ -255,6 +272,8 @@ def execute_cell(spec: dict) -> None:
             exec_mode="local",
             harness_version=harness_version,
             version_drift=True,
+            transcripts_dir=transcripts_dir,
+            results_stem=str(spec.get("side") or ""),
         )
         installed = row.pop("installed_anthropic", None) if isinstance(row, dict) else None
         installed_text = installed if isinstance(installed, str) else None
@@ -278,8 +297,21 @@ def _adapters_dir() -> str:
     return str(Path(obench.__file__).resolve().parent / "adapters")
 
 
+def cell_transcripts_dir(out_dir: Path, pr: str, transcripts_root: Path | None = None) -> Path:
+    """Directory passed to ``run_cell`` for one PR's local transcripts."""
+    if transcripts_root is not None:
+        return Path(transcripts_root) / pr / "transcripts"
+    return Path(out_dir) / pr / "transcripts"
+
+
+def cell_evidence_dir(transcripts_dir: Path, side: str, task: str, trial: int) -> Path:
+    """Per-cell directory for OpenCode session storage and logs."""
+    return Path(transcripts_dir) / side / task_component(task) / str(trial)
+
+
 def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: str,
-          model: str, timeout_s: int) -> dict:
+          model: str, timeout_s: int, transcripts_root: Path | None = None) -> dict:
+    transcripts = cell_transcripts_dir(out_dir, spec["pr"], transcripts_root)
     filled = dict(spec)
     filled.update({
         "binary": prepared["binary"],
@@ -295,6 +327,10 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "timeout_s": cell_timeout(timeout_s),
         "toolchain": prepared.get("toolchain") or {},
         "toolchain_path": str(out_dir / spec["pr"] / f"{spec['side']}.toolchain.json"),
+        "transcripts_dir": str(transcripts),
+        "evidence_dir": str(cell_evidence_dir(
+            transcripts, spec["side"], spec["task"], spec["trial"],
+        )),
     })
     return filled
 
@@ -468,6 +504,10 @@ def _readable_tail(text: str) -> str:
 
 
 def preflight_stop_reason(row: dict | None) -> str | None:
+    if isinstance(row, dict):
+        drift = row.get("sdk_drift")
+        if isinstance(drift, str) and drift.strip():
+            return drift.strip()
     reason = provider_stream_failure(row)
     if reason:
         return reason
@@ -528,6 +568,79 @@ def unmetered_side(rows: list[dict]) -> str | None:
     return "finished cells have no metered tokens"
 
 
+def _cell_runtime_s(row: dict) -> float | None:
+    for key in ("t_agent_s", "wall_time_s"):
+        value = row.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value >= 0:
+            return float(value)
+    return None
+
+
+def early_death_marker(row: dict | None) -> str | None:
+    """Return the crash signature when a cell died in under 10 seconds.
+
+    ``incompatible`` rows are left alone: a zero-token stream error already
+    stops the side. A passing checker is not a death.
+    """
+    if not isinstance(row, dict) or row.get("success") is True:
+        return None
+    if row.get("failure_class") == "incompatible":
+        return None
+    runtime = _cell_runtime_s(row)
+    if runtime is None or runtime >= EARLY_DEATH_S:
+        return None
+    text = "\n".join(
+        str(row.get(key) or "")
+        for key in ("error", "output_tail", "full_output")
+    )
+    match = _EARLY_DEATH_RE.search(text)
+    if match is None:
+        return None
+    return match.group(0)
+
+
+def _reclassify_early_deaths(out_dir: Path, spec: dict) -> None:
+    root = out_dir / spec["pr"] / "cells" / spec["side"]
+    if not root.is_dir():
+        return
+    for path in sorted(root.glob("*/*.json")):
+        row = read_cell(path)
+        marker = early_death_marker(row)
+        if marker is None or not isinstance(row, dict):
+            continue
+        reason = f"early death under 10s: {marker}"
+        if row.get("failure_class") == "infra" and row.get("failure_reason") == reason:
+            continue
+        row["failure_class"] = "infra"
+        row["failure_reason"] = reason
+        row["success"] = False
+        row["score"] = 0.0
+        publish_text(path, json.dumps(row, sort_keys=True))
+
+
+def _ordered_side_rows(rows: list[dict]) -> list[dict]:
+    if rows and all(isinstance(row.get("ts_iso"), str) and row.get("ts_iso") for row in rows):
+        return sorted(rows, key=lambda row: str(row["ts_iso"]))
+    return list(rows)
+
+
+def early_death_side(rows: list[dict]) -> str | None:
+    """Stop a side once its first three cells are fast provider crashes.
+
+    One fast crash is infra and is not scored. Three in a row means the
+    binary will keep dying the same way, so the remaining trials are not launched.
+    """
+    ordered = _ordered_side_rows(rows)
+    if len(ordered) < EARLY_DEATH_CELLS:
+        return None
+    head = ordered[:EARLY_DEATH_CELLS]
+    if any(early_death_marker(row) is None for row in head):
+        return None
+    return "first cells died in under 10s"
+
+
 def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
     path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
     row = read_cell(path)
@@ -548,7 +661,30 @@ def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
                 "reason": infra_reason,
                 "status": "infra",
             }
+    _reclassify_early_deaths(out_dir, spec)
+    if prepared.get(_side_key(spec), {}).get("ok", True):
+        death = early_death_side(_finished_rows(out_dir, spec))
+        if death:
+            write_infra(out_dir, spec["pr"], spec["side"], spec["sha"], death)
+            prepared[_side_key(spec)] = {
+                "ok": False,
+                "reason": death,
+                "status": "infra",
+            }
     project_side(out_dir, spec["pr"], spec["side"])
+
+
+def cache_version_for_checkout(checkout: Path) -> str:
+    """Return CACHE_VERSION from the checkout, or "" when the tree has none."""
+    path = Path(checkout) / "packages" / "opencode" / "src" / "global" / "index.ts"
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = _CACHE_VERSION_RE.search(text)
+    return match.group(1) if match else ""
 
 
 def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[dict, str | None]:
@@ -572,6 +708,9 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     if pin:
         proxy["anthropic_sdk"] = pin
     proxy["sdk_install_alias"] = install_alias_for_tree(checkout)
+    cache_version = cache_version_for_checkout(checkout)
+    if cache_version:
+        proxy["cache_version"] = cache_version
     state = dict(state)
     state["proxy"] = proxy
     state["toolchain"] = toolchain_for_checkout(checkout)
@@ -646,7 +785,8 @@ def _needs_proxy(prs, model_route: str) -> bool:
 
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
-          worker=None, proxy_url=None, model_route="proxy", preflight_fn=None):
+          worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
+          transcripts_dir=None):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``."""
     out_dir = Path(out_dir)
     cache = Path(cache).resolve()
@@ -763,7 +903,10 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         state = materialize(spec)
         if state is None:
             return None
-        filled = _fill(spec, state, out_dir, tasks_dir_s, adapters, model, timeout_s)
+        filled = _fill(
+            spec, state, out_dir, tasks_dir_s, adapters, model, timeout_s,
+            transcripts_root=transcripts_dir,
+        )
         if server is not None:
             filled = bind_cell_proxy(filled, ledger_dir)
         return filled
@@ -845,6 +988,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--timeout", type=int, default=2400)
     parser.add_argument("--out", type=Path, default=Path("results/ab"))
+    parser.add_argument(
+        "--transcripts-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Root for local transcripts, OpenCode session storage, and logs. "
+            "Defaults to <out>/<pr>/transcripts."
+        ),
+    )
     parser.add_argument("--cache", type=Path, default=None)
     parser.add_argument("--max-cost-usd", type=float, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -873,6 +1025,7 @@ def main(argv: list[str] | None = None) -> int:
             jobs=args.jobs, model=args.model, timeout_s=args.timeout,
             cache=cache, max_cost_usd=args.max_cost_usd, dry_run=args.dry_run,
             tasks_dir=tasks_dir, model_route=args.model_route,
+            transcripts_dir=args.transcripts_dir,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
