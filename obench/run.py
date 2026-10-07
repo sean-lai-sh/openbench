@@ -106,6 +106,8 @@ ROW_FIELDS = (
     "paced_wait_s",
     "model_context_window",
     "model_max_tokens",
+    "turn_mode",
+    "turn1_exit",
 )
 
 
@@ -2173,6 +2175,10 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["cmd"] = result.get("cmd")
         row["output_tail"] = result.get("output_tail") or ""
         row["agent_mode"] = result.get("agent_mode")
+        row["turn_mode"] = result.get("turn_mode")
+        turn1_exit = result.get("turn1_exit")
+        if isinstance(turn1_exit, int) and not isinstance(turn1_exit, bool):
+            row["turn1_exit"] = turn1_exit
         installed_sdk = result.get("installed_anthropic")
         if isinstance(installed_sdk, str) and installed_sdk.strip():
             row["installed_anthropic"] = installed_sdk.strip()

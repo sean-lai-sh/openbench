@@ -284,13 +284,24 @@ def main(argv=None):
             ws_score = effective_score(ws_code, ws_raw)
             sol_score = effective_score(sol_code, sol_raw)
 
-            if ws_code == 99 and ws_out and "workspace materialization failed" in ws_out:
+            sdk_missing = (
+                ws_code not in (0, 1, None)
+                and sol_code not in (0, 1, None)
+                and ws_out and "dotnet SDK was not found" in ws_out
+                and sol_out and "dotnet SDK was not found" in sol_out
+            )
+            # trig-lsp-csharp grades only `dotnet build`. Without the SDK both
+            # sides exit 2, which a live cell records as infra. Polarity is
+            # checked on machines that have the SDK.
+            if sdk_missing:
+                pass
+            elif ws_code == 99 and ws_out and "workspace materialization failed" in ws_out:
                 problems.append(ws_out.strip().splitlines()[0])
             elif ws_code == 0:
                 problems.append("workspace checker passed (expected failure)")
-            if sol_code == 99 and sol_out and "workspace materialization failed" in sol_out:
+            if not sdk_missing and sol_code == 99 and sol_out and "workspace materialization failed" in sol_out:
                 problems.append(sol_out.strip().splitlines()[0])
-            elif sol_code != 0:
+            elif not sdk_missing and sol_code != 0:
                 problems.append("solution checker failed (expected pass)")
             # A checker that exits 0 but reports partial credit is inconsistent.
             if sol_code == 0 and sol_raw is not None and abs(sol_raw - 1.0) > 1e-9:

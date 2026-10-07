@@ -78,7 +78,7 @@ PREFIXES = {
     ),
     "trig-read-lines": (
         "Before fixing anything, use the read tool (not bash) to view only lines 3 through 7 "
-        "of `catalog/books.py` — a 5-line window, not the whole file — and quote line 3 "
+        "of `catalog/members.py` — a 5-line window, not the whole file — and quote line 3 "
         "verbatim at the start of your final answer. Then fix the failing tests."
     ),
 }
@@ -246,15 +246,24 @@ class TriggerTaskTests(unittest.TestCase):
             (TASKS / "trig-webfetch-image" / "solution" / "answer.txt").read_text(encoding="utf-8").strip(),
             "red",
         )
+        instruction = (TASKS / "trig-lsp-csharp" / "instruction.md").read_text(encoding="utf-8")
         self.assertEqual(
-            (TASKS / "trig-lsp-csharp" / "instruction.md").read_text(encoding="utf-8").strip(),
-            "Fix the compile error in Program.cs.",
+            instruction.strip(),
+            "Fix the compile errors in Program.cs so `dotnet build` succeeds.",
         )
+        self.assertNotIn("lsp", instruction.lower())
+        self.assertNotIn("diagnostic", instruction.lower())
         broken = (TASKS / "trig-lsp-csharp" / "workspace" / "Program.cs").read_text(encoding="utf-8")
-        self.assertIn("missingPort", broken)
         fixed = (TASKS / "trig-lsp-csharp" / "solution" / "Program.cs").read_text(encoding="utf-8")
-        self.assertNotIn("missingPort", fixed)
-        self.assertIn("8417", fixed)
+        broken_lines = broken.splitlines()
+        semi = next(i for i, line in enumerate(broken_lines) if line.strip() == "var port = ReadPort()")
+        paren = next(i for i, line in enumerate(broken_lines) if "(1 + 2;" in line)
+        self.assertGreaterEqual(paren - semi, 15)
+        self.assertNotIn("8417", broken)
+        self.assertNotIn("8417", fixed)
+        self.assertIn("ReadPort();", fixed)
+        self.assertIn("(1 + 2)", fixed)
+        self.assertNotIn("ReadPort()", fixed.split("ReadPort();", 1)[0])
         for name in ("trig-dup-edit", "trig-webfetch-image", "trig-lsp-csharp"):
             self.assertTrue((TASKS / name / "checker.sh").is_file(), name)
 

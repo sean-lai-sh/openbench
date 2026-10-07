@@ -1,4 +1,4 @@
-Before fixing anything, use the read tool (not bash) to view only lines 3 through 7 of `catalog/books.py` — a 5-line window, not the whole file — and quote line 3 verbatim at the start of your final answer. Then fix the failing tests.
+Before fixing anything, use the read tool (not bash) to view only lines 3 through 7 of `catalog/members.py` — a 5-line window, not the whole file — and quote line 3 verbatim at the start of your final answer. Then fix the failing tests.
 
 # Make the test suite pass
 

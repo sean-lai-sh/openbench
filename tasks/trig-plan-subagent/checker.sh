@@ -34,14 +34,8 @@ def snapshot(root):
 
 task_dir = os.environ.get("TASK_DIR", "")
 unchanged = bool(task_dir) and snapshot(Path(task_dir) / "workspace") == snapshot(Path.cwd())
-root = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR", "").strip()
-text = ""
-if root:
-    for name in ("streamed-text.txt", "agent-output.txt"):
-        path = Path(root) / name
-        if path.is_file():
-            text = path.read_text(encoding="utf-8", errors="replace")
-            break
+from obench.final_answer import checker_text
+text = checker_text()
 names_both = re.search(r"\brat\b", text) is not None and re.search(r"\brate\b", text) is not None
 if unchanged and names_both:
     print("final answer names rat and rate and the workspace is unchanged.")

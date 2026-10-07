@@ -36,6 +36,17 @@ Pass a subset with `--tasks make-it-run,fix-failing-test`. Repeat the flag or se
 
 `trig-*` tasks are copies of those core tasks with one sentence prefixed to `instruction.md`. They stay out of the default set. `--tasks` can name them. `--task-map thesis/ab/fixtures/trigger-tasks.csv` runs each triggerable PR on the task named for that PR. Rows that still need a fixture are skipped unless `--pr` names one, which is an error.
 
+`--task` together with `--task-map` keeps only the named tasks from each row. PR 4204 maps to both `trig-subagent-followup` and `trig-subagent-resume`. This screens the follow-up task alone (5 trials, 2 sides, 10 cells):
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 4204 \
+  --task trig-subagent-followup \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 5 \
+  --dry-run
+```
+
 The map's optional `options` column is a semicolon-separated `key=value` list applied to every cell of that PR. There is no separate CLI flag. Empty options are allowed. A typo is an error.
 
 | Key | Effect |

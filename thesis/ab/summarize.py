@@ -525,18 +525,84 @@ def no_progress_kills(rows: list[dict]) -> int:
 _RULE_PREFIXES = ("global", "project", "both", "neither")
 
 
+_TURN_MODES = ("two-turn", "single", "turn-failure")
+
+
+def _count_int(row: dict, key: str) -> int:
+    value = row.get(key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return 0
+
+
+def _count_true(row: dict, key: str) -> int:
+    return 1 if row.get(key) is True else 0
+
+
 def effect_counts(rows: list[dict]) -> dict:
-    """Sum child-session writes and count final-answer rule prefixes."""
+    """Sum child-session writes, task calls, and final-answer rule prefixes.
+
+    ``subagent_write_calls`` includes child bash. ``child_edit_calls`` does
+    not: it is edit, write, and patch only.
+    """
     writes = 0
+    task_calls = 0
+    fresh = 0
+    resumed = 0
+    searched = 0
+    child_edits = 0
+    plan_reminders = 0
+    generated = 0
+    dotnet_builds = 0
+    edits = 0
+    rejections = 0
+    ended = 0
+    answers = 0
+    changed = 0
+    leaked = 0
     rules = {name: 0 for name in _RULE_PREFIXES}
+    turns = {name: 0 for name in _TURN_MODES}
     for row in rows:
-        value = row.get("subagent_write_calls")
-        if isinstance(value, int) and not isinstance(value, bool):
-            writes += value
+        writes += _count_int(row, "subagent_write_calls")
+        task_calls += _count_int(row, "task_calls")
+        fresh += _count_int(row, "fresh_subagents")
+        child_edits += _count_int(row, "child_edit_calls")
+        dotnet_builds += _count_int(row, "dotnet_build_calls")
+        edits += _count_int(row, "edit_calls")
+        rejections += _count_int(row, "permission_rejections")
+        leaked += _count_int(row, "tmpdir_leaked_dirs")
+        resumed += _count_true(row, "subagent_resumed")
+        searched += _count_true(row, "main_agent_searched")
+        plan_reminders += _count_true(row, "child_plan_reminder")
+        generated += _count_true(row, "list_has_generated")
+        ended += _count_true(row, "ended_on_rejection")
+        answers += _count_true(row, "final_answer_present")
+        changed += _count_true(row, "workspace_changed")
         kind = row.get("rule_prefix")
         if kind in rules:
             rules[kind] += 1
-    return {"subagent_write_calls": writes, "rule_prefix": rules}
+        mode = row.get("turn_mode")
+        if mode in turns:
+            turns[mode] += 1
+    return {
+        "subagent_write_calls": writes,
+        "rule_prefix": rules,
+        "task_calls": task_calls,
+        "subagent_resumed": resumed,
+        "fresh_subagents": fresh,
+        "main_agent_searched": searched,
+        "turn_mode": turns,
+        "child_edit_calls": child_edits,
+        "child_plan_reminder": plan_reminders,
+        "list_has_generated": generated,
+        "workspace_changed": changed,
+        "dotnet_build_calls": dotnet_builds,
+        "edit_calls": edits,
+        "permission_rejections": rejections,
+        "ended_on_rejection": ended,
+        "final_answer_present": answers,
+        "tmpdir_leaked_dirs": leaked,
+    }
 
 
 def _effect_line(effects: dict) -> str:
@@ -548,12 +614,65 @@ def _effect_line(effects: dict) -> str:
     def _rules(rules: dict) -> str:
         return "/".join(str(int(rules.get(name) or 0)) for name in _RULE_PREFIXES)
 
+    def _turns(body: dict) -> str:
+        modes = body.get("turn_mode") or {}
+        return "/".join(str(int(modes.get(name) or 0)) for name in _TURN_MODES)
+
+    def _global_rule(rules: dict) -> int:
+        return int(rules.get("global") or 0) + int(rules.get("both") or 0)
+
     return (
-        "Subagent write calls: "
+        "Subagent write calls (bash+edit+write+patch): "
         f"without {int(left.get('subagent_write_calls') or 0)}, "
         f"with {int(right.get('subagent_write_calls') or 0)}. "
+        "Child edit/write/patch (not bash): "
+        f"without {int(left.get('child_edit_calls') or 0)}, "
+        f"with {int(right.get('child_edit_calls') or 0)}. "
+        "Child plan-mode reminder: "
+        f"without {int(left.get('child_plan_reminder') or 0)}, "
+        f"with {int(right.get('child_plan_reminder') or 0)}. "
+        "Workspace changed: "
+        f"without {int(left.get('workspace_changed') or 0)}, "
+        f"with {int(right.get('workspace_changed') or 0)}. "
+        "List output contains generated/: "
+        f"without {int(left.get('list_has_generated') or 0)}, "
+        f"with {int(right.get('list_has_generated') or 0)}. "
+        "dotnet build calls: "
+        f"without {int(left.get('dotnet_build_calls') or 0)}, "
+        f"with {int(right.get('dotnet_build_calls') or 0)}. "
+        "Edit calls: "
+        f"without {int(left.get('edit_calls') or 0)}, "
+        f"with {int(right.get('edit_calls') or 0)}. "
+        "Permission rejections: "
+        f"without {int(left.get('permission_rejections') or 0)}, "
+        f"with {int(right.get('permission_rejections') or 0)}. "
+        "Ended on rejection: "
+        f"without {int(left.get('ended_on_rejection') or 0)}, "
+        f"with {int(right.get('ended_on_rejection') or 0)}. "
+        "Final answer present: "
+        f"without {int(left.get('final_answer_present') or 0)}, "
+        f"with {int(right.get('final_answer_present') or 0)}. "
+        "Leaked temp dirs: "
+        f"without {int(left.get('tmpdir_leaked_dirs') or 0)}, "
+        f"with {int(right.get('tmpdir_leaked_dirs') or 0)}. "
         "Rule prefix (global/project/both/neither): "
-        f"without {_rules(left_rules)}, with {_rules(right_rules)}."
+        f"without {_rules(left_rules)}, with {_rules(right_rules)}. "
+        "GLOBAL-RULE share (global+both): "
+        f"without {_global_rule(left_rules)}, with {_global_rule(right_rules)}. "
+        "Task calls: "
+        f"without {int(left.get('task_calls') or 0)}, "
+        f"with {int(right.get('task_calls') or 0)}. "
+        "Subagent resumed: "
+        f"without {int(left.get('subagent_resumed') or 0)}, "
+        f"with {int(right.get('subagent_resumed') or 0)}. "
+        "Fresh subagents: "
+        f"without {int(left.get('fresh_subagents') or 0)}, "
+        f"with {int(right.get('fresh_subagents') or 0)}. "
+        "Main agent searched: "
+        f"without {int(left.get('main_agent_searched') or 0)}, "
+        f"with {int(right.get('main_agent_searched') or 0)}. "
+        "Turn mode (two-turn/single/turn-failure): "
+        f"without {_turns(left)}, with {_turns(right)}."
     )
 
 
@@ -565,6 +684,24 @@ def _effect_csv(effects: dict) -> dict:
         rules = body.get("rule_prefix") or {}
         for name in _RULE_PREFIXES:
             row[f"{side}_rule_{name}"] = int(rules.get(name) or 0)
+        row[f"{side}_rule_global_share"] = int(rules.get("global") or 0) + int(rules.get("both") or 0)
+        row[f"{side}_task_calls"] = int(body.get("task_calls") or 0)
+        row[f"{side}_subagent_resumed"] = int(body.get("subagent_resumed") or 0)
+        row[f"{side}_fresh_subagents"] = int(body.get("fresh_subagents") or 0)
+        row[f"{side}_main_agent_searched"] = int(body.get("main_agent_searched") or 0)
+        modes = body.get("turn_mode") or {}
+        for name in _TURN_MODES:
+            row[f"{side}_turn_{name.replace('-', '_')}"] = int(modes.get(name) or 0)
+        row[f"{side}_child_edit_calls"] = int(body.get("child_edit_calls") or 0)
+        row[f"{side}_child_plan_reminder"] = int(body.get("child_plan_reminder") or 0)
+        row[f"{side}_workspace_changed"] = int(body.get("workspace_changed") or 0)
+        row[f"{side}_list_has_generated"] = int(body.get("list_has_generated") or 0)
+        row[f"{side}_dotnet_build_calls"] = int(body.get("dotnet_build_calls") or 0)
+        row[f"{side}_edit_calls"] = int(body.get("edit_calls") or 0)
+        row[f"{side}_permission_rejections"] = int(body.get("permission_rejections") or 0)
+        row[f"{side}_ended_on_rejection"] = int(body.get("ended_on_rejection") or 0)
+        row[f"{side}_final_answer"] = int(body.get("final_answer_present") or 0)
+        row[f"{side}_tmpdir_leaked_dirs"] = int(body.get("tmpdir_leaked_dirs") or 0)
     return row
 
 
@@ -939,6 +1076,24 @@ def render_csv(records: list[dict]) -> str:
         "without_rule_project", "with_rule_project",
         "without_rule_both", "with_rule_both",
         "without_rule_neither", "with_rule_neither",
+        "without_rule_global_share", "with_rule_global_share",
+        "without_task_calls", "with_task_calls",
+        "without_subagent_resumed", "with_subagent_resumed",
+        "without_fresh_subagents", "with_fresh_subagents",
+        "without_main_agent_searched", "with_main_agent_searched",
+        "without_turn_two_turn", "with_turn_two_turn",
+        "without_turn_single", "with_turn_single",
+        "without_turn_turn_failure", "with_turn_turn_failure",
+        "without_child_edit_calls", "with_child_edit_calls",
+        "without_child_plan_reminder", "with_child_plan_reminder",
+        "without_workspace_changed", "with_workspace_changed",
+        "without_list_has_generated", "with_list_has_generated",
+        "without_dotnet_build_calls", "with_dotnet_build_calls",
+        "without_edit_calls", "with_edit_calls",
+        "without_permission_rejections", "with_permission_rejections",
+        "without_ended_on_rejection", "with_ended_on_rejection",
+        "without_final_answer", "with_final_answer",
+        "without_tmpdir_leaked_dirs", "with_tmpdir_leaked_dirs",
         "headroom_tasks", "headroom_n", "headroom_pass_delta",
         "headroom_pass_ci_low", "headroom_pass_ci_high",
         "incompatible",

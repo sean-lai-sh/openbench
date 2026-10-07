@@ -61,6 +61,9 @@ FAKE = textwrap.dedent("""\
     if log:
         with open(log, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(args) + "\\n")
+    exit_code = os.environ.get("FAKE_EXIT_CODE")
+    if exit_code:
+        raise SystemExit(int(exit_code))
     session = os.environ.get("FAKE_SESSION", "")
     if session:
         print(json.dumps({"type": "session", "sessionID": session}))
@@ -314,6 +317,8 @@ class TestVertexFlags(unittest.TestCase):
         self.assertIn("turn two", calls[1])
         self.assertNotIn("__OBENCH_SINGLE_TURN__", " ".join(calls[1]))
         self.assertNotIn("single fallback", calls[1])
+        self.assertEqual(res.get("turn_mode"), "two-turn")
+        self.assertEqual(res.get("turn1_exit"), 0)
 
     def test_missing_session_flags_send_the_single_fallback(self):
         log = Path(self.tmp.name) / "fallback.jsonl"
@@ -327,6 +332,54 @@ class TestVertexFlags(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("single fallback", calls[0])
         self.assertNotIn("__OBENCH_USER_TURN__", " ".join(calls[0]))
+        self.assertEqual(res.get("turn_mode"), "single")
+
+    def test_turn1_failure_is_infra_and_skips_turn2(self):
+        log = Path(self.tmp.name) / "failed-turn.jsonl"
+        help_text = HELP_MODERN + "--session\n--continue\n"
+        instruction = (
+            "turn one\n__OBENCH_USER_TURN__\nturn two\n"
+            "__OBENCH_SINGLE_TURN__\nsingle fallback\n"
+        )
+        res = self._run(help_text, {
+            "FAKE_LOG": str(log),
+            "FAKE_EXIT_CODE": "2",
+            "FAKE_SESSION": "ses_from_first",
+        }, instruction=instruction)
+        self.assertFalse(res["completed"])
+        self.assertEqual(res.get("failure_class"), "infra")
+        self.assertEqual(res.get("turn_mode"), "turn-failure")
+        self.assertEqual(res.get("turn1_exit"), 2)
+        self.assertIn("turn 2 was not run", res.get("error") or "")
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(calls), 1)
+
+    def test_old_layout_pyright_is_not_a_missing_worktree(self):
+        root = Path(self.tmp.name) / "old-opencode"
+        lsp = root / "packages" / "opencode" / "src" / "lsp"
+        lsp.mkdir(parents=True)
+        for name in ("client.ts", "index.ts", "language.ts", "server.ts"):
+            (lsp / name).write_text("export const x = 1\n", encoding="utf-8")
+        binary = root / "packages" / "opencode" / "dist" / "opencode"
+        binary.parent.mkdir(parents=True)
+        binary.write_text(FAKE, encoding="utf-8")
+        binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+        bindir = Path(self.tmp.name) / "pyright-bin"
+        bindir.mkdir()
+        tool = bindir / "pyright-langserver"
+        tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
+        res = self._run(HELP_MODERN, {
+            "OBENCH_OPENCODE_BIN": str(binary),
+            "OBENCH_OPENCODE_LSP": "pyright",
+            "PATH": os.pathsep.join([str(bindir), "/usr/bin", "/bin"]),
+        })
+        self.assertTrue(res["completed"], res.get("error"))
+        self.assertNotIn("worktree", res.get("error") or "")
+        dumped = self._dump()
+        config = dumped.get("config") or ""
+        self.assertNotIn('"lsp": true', config)
+        self.assertNotIn('"lsp":true', config.replace(" ", ""))
 
     def test_missing_worktree_with_lsp_is_infra(self):
         bindir = Path(self.tmp.name) / "bin"

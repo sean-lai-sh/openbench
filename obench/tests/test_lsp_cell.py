@@ -201,6 +201,27 @@ class LspProvisionTests(unittest.TestCase):
         )
         self.assertEqual(worktree_root(str(embedded)), str(root))
 
+    def test_old_layout_without_lsp_ts_is_still_a_worktree(self):
+        root = Path(self.tmp.name) / "old-tree"
+        lsp = root / "packages" / "opencode" / "src" / "lsp"
+        lsp.mkdir(parents=True)
+        for name in ("client.ts", "index.ts", "language.ts", "server.ts"):
+            (lsp / name).write_text("export const name = " + repr(name) + "\n", encoding="utf-8")
+        binary = root / "packages" / "opencode" / "dist" / "opencode"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("", encoding="utf-8")
+        self.assertEqual(worktree_root(str(binary)), str(root))
+        self.assertFalse(lsp_boolean_enables_all(str(root)))
+        index_only = Path(self.tmp.name) / "index-only"
+        src = index_only / "packages" / "opencode" / "src"
+        src.mkdir(parents=True)
+        (src / "index.ts").write_text("export {}\n", encoding="utf-8")
+        loose = index_only / "bin" / "opencode"
+        loose.parent.mkdir(parents=True)
+        loose.write_text("", encoding="utf-8")
+        self.assertEqual(worktree_root(str(loose)), str(index_only))
+        self.assertFalse(lsp_boolean_enables_all(str(index_only)))
+
     def test_unknown_server_is_an_error(self):
         with self.assertRaises(LspProvisionError):
             provision_language_servers(self.env, str(self.work), ["vue"], bun=str(self.bin))

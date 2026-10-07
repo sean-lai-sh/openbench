@@ -16,15 +16,14 @@ if os.environ.get("OPENBENCH_SOLUTION_OVERLAY") == "1":
     print("main.py ran and printed the expected line.")
     raise SystemExit(0)
 outside = os.environ.get("OBENCH_OPENCODE_OUTSIDE_PATH", "").strip()
-task_dir = os.environ.get("TASK_DIR", "")
-expected = Path(task_dir) / "solution" / "greeter.py"
+expected = Path.cwd() / "greeter.py"
 copy = Path(outside) if outside else None
 if copy is None or not copy.is_file() or not expected.is_file():
     print("FAIL: outside greeter copy is missing", file=sys.stderr)
     raise SystemExit(1)
 if copy.read_bytes() != expected.read_bytes():
-    print("FAIL: outside greeter copy does not match the fixed module", file=sys.stderr)
+    print("FAIL: outside greeter copy does not match the cell's greeter.py", file=sys.stderr)
     raise SystemExit(1)
-print("main.py ran and the outside copy matches the fixed greeter.")
+print("main.py ran and the outside copy matches the cell's greeter.")
 raise SystemExit(0)
 PY

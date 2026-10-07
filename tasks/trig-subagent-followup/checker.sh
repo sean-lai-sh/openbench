@@ -5,7 +5,6 @@ python3 - << 'PY'
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 def run(args):
     return subprocess.run(args, capture_output=True, text=True)
@@ -25,15 +24,12 @@ if os.environ.get("OPENBENCH_SOLUTION_OVERLAY") == "1":
     print("fee paths print the expected lines.")
     raise SystemExit(0)
 root = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR", "").strip()
-if not root:
+final_path = os.environ.get("OBENCH_FINAL_ANSWER", "").strip()
+if not root and not final_path:
     print("fee paths print the expected lines.")
     raise SystemExit(0)
-text = ""
-for name in ("streamed-text.txt", "agent-output.txt"):
-    path = Path(root) / name
-    if path.is_file():
-        text = path.read_text(encoding="utf-8", errors="replace")
-        break
+from obench.final_answer import checker_text
+text = checker_text()
 needed = ("main.py", "billing/report.py", "billing/export/csv_writer.py")
 missing = [item for item in needed if item not in text]
 if missing:
