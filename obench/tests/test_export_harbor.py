@@ -492,7 +492,11 @@ class CoreTasksHarborRoundTripTests(unittest.TestCase):
         shutil.rmtree(cls.out_root, ignore_errors=True)
 
     def test_exports_all_eight_core_tasks(self):
-        self.assertEqual(sorted(self.by_name), sorted(CORE_TASKS))
+        names = set(self.by_name)
+        self.assertTrue(set(CORE_TASKS).issubset(names))
+        extra = names - set(CORE_TASKS)
+        self.assertTrue(extra)
+        self.assertTrue(all(name.startswith("trig-") for name in extra), sorted(extra))
 
     def test_polarity_holds_for_each_core_task(self):
         """Harbor bridge preserves OpenBench polarity through reward mapping.

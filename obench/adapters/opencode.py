@@ -305,16 +305,38 @@ def _write_cache_version(cache, version):
         fh.write(text)
 
 
+def _anthropic_pin(proxy):
+    """Return the pinned ``@ai-sdk/anthropic`` version, or "" when there is none.
+
+    ``needs_sdk`` is not part of this. It is true only when
+    ``BUN_BE_BUN=1 <bin> install --help`` still prints OpenCode help. Binaries
+    that embed bun print bun's install help instead, so the flag is false,
+    but v0.6 through v1.0.x still run
+    ``bun add --force --exact @ai-sdk/anthropic@latest`` at startup.
+    """
+    if not isinstance(proxy, dict):
+        return ""
+    pin = str(proxy.get("anthropic_sdk") or "").strip()
+    if not pin or pin == "latest":
+        return ""
+    return pin
+
+
+def _provider_module(env):
+    return os.path.join(
+        env.get("XDG_CACHE_HOME") or "",
+        "opencode", "node_modules", "@ai-sdk", "anthropic", "package.json",
+    )
+
+
 def _ensure_provider_sdk(env, proxy):
-    if not proxy.get("needs_sdk"):
+    pin = _anthropic_pin(proxy)
+    if not pin:
         return ""
     # Default auth plugins (`opencode-anthropic-auth`, `opencode-copilot-auth`)
     # run `bun add --force` and re-resolve the dist-tag in package.json. That
     # upgrades a pinned @ai-sdk/anthropic to whatever "latest" is today.
     env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "1"
-    pin = str(proxy.get("anthropic_sdk") or "").strip()
-    if not pin or pin == "latest":
-        return ""
     bun = _resolve_bun(proxy.get("bun"))
     if not bun:
         return ""
@@ -356,18 +378,24 @@ def _ensure_provider_sdk(env, proxy):
     return _installed_sdk_version(module)
 
 
+def _installed_provider_sdk(env, proxy):
+    """Version on disk after the binary runs, when this build has a pin.
+
+    Empty when there is no pin. ``missing`` when the pin was requested and
+    the module is not there, so the toolchain does not keep the lockfile pin
+    in place of a version that never ran.
+    """
+    if not _anthropic_pin(proxy):
+        return ""
+    return _installed_sdk_version(_provider_module(env)) or "missing"
+
+
 def _provider_sdk_drift(env, proxy):
     """Return an infra reason when the installed SDK no longer matches the pin."""
-    if not isinstance(proxy, dict) or not proxy.get("needs_sdk"):
+    pin = _anthropic_pin(proxy)
+    if not pin:
         return ""
-    pin = str(proxy.get("anthropic_sdk") or "").strip()
-    if not pin or pin == "latest":
-        return ""
-    module = os.path.join(
-        env.get("XDG_CACHE_HOME") or "",
-        "opencode", "node_modules", "@ai-sdk", "anthropic", "package.json",
-    )
-    installed = _installed_sdk_version(module)
+    installed = _installed_sdk_version(_provider_module(env))
     if installed == pin:
         return ""
     found = installed or "missing"
@@ -386,12 +414,25 @@ def _attach_sdk_drift(row, drift):
     return row
 
 
+def _copy_evidence_tree(src, dest):
+    """Copy one evidence directory. Missing sources are skipped."""
+    if not os.path.isdir(src):
+        return
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copytree(src, dest, dirs_exist_ok=True)
+
+
 def _preserve_opencode_evidence(env):
     """Copy session storage and logs out before the isolated home is deleted.
 
     ``OBENCH_OPENCODE_EVIDENCE_DIR`` is set by the A/B runner when a cell
-    should keep ``$XDG_DATA_HOME/opencode/storage`` and ``log``. A copy
-    failure must not change the cell result.
+    should keep OpenCode session evidence. Current builds store it at
+    ``$XDG_DATA_HOME/opencode/storage`` and ``log``. Builds from roughly
+    PR 623 through PR 2334 store sessions at
+    ``opencode/project/<projectID>/storage`` instead, and print no tool
+    output, so that tree has to be copied too. Later builds also keep a
+    SQLite session at ``opencode/opencode.db``. A copy failure must not
+    change the cell result.
     """
     dest_root = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR", "").strip()
     if not dest_root:
@@ -399,13 +440,39 @@ def _preserve_opencode_evidence(env):
     base = os.path.join(env.get("XDG_DATA_HOME") or "", "opencode")
     try:
         os.makedirs(dest_root, mode=0o700, exist_ok=True)
-        for name in ("storage", "log"):
-            src = os.path.join(base, name)
-            if not os.path.isdir(src):
-                continue
-            shutil.copytree(src, os.path.join(dest_root, name), dirs_exist_ok=True)
     except OSError:
         return
+    for name in ("storage", "log"):
+        try:
+            _copy_evidence_tree(os.path.join(base, name), os.path.join(dest_root, name))
+        except OSError:
+            continue
+    project_root = os.path.join(base, "project")
+    if os.path.isdir(project_root):
+        try:
+            entries = sorted(os.listdir(project_root))
+        except OSError:
+            entries = []
+        for entry in entries:
+            src_dir = os.path.join(project_root, entry)
+            if not os.path.isdir(src_dir):
+                continue
+            for name in ("storage", "log"):
+                try:
+                    _copy_evidence_tree(
+                        os.path.join(src_dir, name),
+                        os.path.join(dest_root, "project", entry, name),
+                    )
+                except OSError:
+                    continue
+    for name in ("opencode.db", "opencode.db-wal", "opencode.db-shm"):
+        src = os.path.join(base, name)
+        if not os.path.isfile(src):
+            continue
+        try:
+            shutil.copy2(src, os.path.join(dest_root, name))
+        except OSError:
+            continue
 
 
 def _proxy_override():
@@ -786,8 +853,11 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     observed = {"done": False, "drift": ""}
 
     def _stamp(row):
-        if installed_anthropic:
-            row["installed_anthropic"] = installed_anthropic
+        # Prefer the version left on disk. The pre-run return value is still
+        # the pin when the binary then force-installs @latest.
+        installed = observed.get("installed") or installed_anthropic
+        if installed:
+            row["installed_anthropic"] = installed
         return row
 
     def _observe():
@@ -795,6 +865,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             return
         observed["done"] = True
         observed["drift"] = _provider_sdk_drift(env, proxy)
+        observed["installed"] = _installed_provider_sdk(env, proxy)
         _preserve_opencode_evidence(env)
 
     def _finish(row):

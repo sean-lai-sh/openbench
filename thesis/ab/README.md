@@ -20,7 +20,7 @@ PR 23771 in the fixture is a commit on the development branch, not GitHub's merg
 
 ## Tasks
 
-The default task set is every core task under `tasks/` that contains `checker.sh`. Imported Terminal-Bench tasks need Docker and stay out of the default set.
+The default task set is every core task under `tasks/` that contains `checker.sh`, except `trig-*` copies. Imported Terminal-Bench tasks need Docker and stay out of the default set.
 
 List the core tasks with either command.
 
@@ -34,23 +34,52 @@ python -c "from obench.validate_tasks import discover_tasks, build_task_roots; p
 
 Pass a subset with `--tasks make-it-run,fix-failing-test`. Repeat the flag or separate names with commas.
 
+`trig-*` tasks are copies of those core tasks with one sentence prefixed to `instruction.md`. They stay out of the default set. `--tasks` can name them. `--task-map thesis/ab/fixtures/trigger-tasks.csv` runs each triggerable PR on the task named for that PR. Rows that still need a fixture are skipped unless `--pr` names one, which is an error.
+
+A 5-trial A/B on PR 22390's trigger task, then the parent-vs-parent noise arm. `--aa` runs the parent build on sides `aa-1` and `aa-2` and reuses that cached binary. Those side names are not `without` / `with`.
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 22390 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 5 \
+  --out results/ab
+
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 22390 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 5 \
+  --aa \
+  --out results/ab-aa
+```
+
+After the cells exist, grep the transcript and the copied storage for that PR's pattern. The pattern file defaults to `thesis/ab/fixtures/trigger-evidence.csv` (the researcher's table, also stored as `trigger-tasks-34.md` and `trigger-tasks-34.csv` in that directory):
+
+```bash
+python -m thesis.ab.evidence results/ab
+```
+
+The cell gains `exercised` (`exercised`, `not exercised`, or `undeterminable` when no evidence file was copied). `results/ab/evidence-summary.json` counts those per PR and side.
+
 ## What each binary gets
 
 The runner reads `opencode run --help` on that binary. It passes `--auto` when the help text lists it, and otherwise `--dangerously-skip-permissions` when that flag is listed. When neither flag exists and the config schema accepts a `permission` object, the per-run config sets edit, bash, webfetch, and the other tools to `allow`. A run that still sits on a permission prompt fails with `waiting on a permission prompt` instead of waiting out the task timeout.
 
 The default config points the stock `anthropic` provider at the proxy. The model id is `claude-opus-5-5`, with a 1,000,000 token context limit and a 128,000 token output limit. Old trees read the base URL from `provider.anthropic.api`. Later trees read `options.baseURL`. A tree that rejects both gets `ANTHROPIC_BASE_URL` instead. The API key is the dummy value `proxy`. The proxy holds the Vertex credential.
 
-Trees that install `@ai-sdk/anthropic` on the host get the pin recorded for that checkout. The runner writes the checkout's `CACHE_VERSION` into `$XDG_CACHE_HOME/opencode/version` and sets `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`, so an old binary does not wipe the cache and install `@latest`. After the cell, a provider package whose version moved off the pin is `infra` with reason `sdk drift`.
+Any checkout with an `@ai-sdk/anthropic` pin gets that package installed into the host cache before the cell, whether or not `needs_sdk` is set. `needs_sdk` is only true when `BUN_BE_BUN=1 <bin> install --help` still prints OpenCode help. v0.6 through v1.0.79 (PRs 2334, 3115, 3418, 4204) embed bun, so that check is false, and they still run `bun add --force --exact @ai-sdk/anthropic@latest` unless the cache version file matches `CACHE_VERSION` and `package.json` already records the dist-tag (`latest`, or `beta` on the July 2025 builds). The runner writes both, and sets `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`, before the cell. After the cell, the toolchain's `anthropic` field is the version left in the cache, not the lockfile pin. A mismatch is `infra` with reason `sdk drift`.
+
+Stock OpenCode from v1.0.123 (PR 4838) through v1.15.2 (PR 26821) imports `@ai-sdk/anthropic` as a bundled provider. The proxy route uses that import and does not resolve `@ai-sdk/anthropic@latest`, so those builds are not exposed to the 4.x jump. They still have a lockfile pin, so the same cache seed and drift check run. The process itself keeps using the bundled SDK. A custom provider npm that is not in `BUNDLED_PROVIDERS` still goes through `BunProc.install(pkg, "latest")`.
 
 `--model-route vertex` is the previous path. The config defines `google-vertex-anthropic/claude-opus-5-5@default` when the binary does not already list it. A binary that still cannot load that provider is recorded as incompatible, with the reason, and that side is not scored.
 
 ## Results
 
-Finished cells are `results/ab/<pr>/cells/<side>/<task>/<trial>.json`. The runner rewrites `results/ab/<pr>/without.jsonl` and `with.jsonl` from those files. An incompatible side writes `results/ab/<pr>/<side>.incompatible.json`. Each side also writes `<side>.toolchain.json` with the Bun version, the `ai` version, and the installed `@ai-sdk/anthropic` version. The same object is on each cell row. The summary prints both sides. When the installed SDK versions differ, it says `SDK changed: harness delta may be confounded`.
+Finished cells are `results/ab/<pr>/cells/<side>/<task>/<trial>.json`. The runner rewrites `results/ab/<pr>/without.jsonl` and `with.jsonl` from those files. `--aa` writes `aa-1.jsonl` and `aa-2.jsonl` instead, plus `arm.json` naming the parent SHA. The summary labels that arm parent-vs-parent noise and does not report it as a with-minus-without harness delta. An incompatible side writes `results/ab/<pr>/<side>.incompatible.json`. Each side also writes `<side>.toolchain.json` with the Bun version, the `ai` version, and the installed `@ai-sdk/anthropic` version. The same object is on each cell row. The summary prints both sides. When the installed SDK versions differ, it says `SDK changed: harness delta may be confounded`.
 
 A cell that dies in under 10 seconds with `Unhandled chunk type`, `ProviderInitError`, `DecimalError`, or `prepare wasm` in its output is `failure_class=infra`, not a wrong answer. If the first three cells of a side all die that way, the runner writes `<side>.infra.json` and does not launch the rest. Infra and incompatible cells are not scored.
 
-Each cell keeps a local transcript, plus that cell's OpenCode session storage and log directory, under `results/ab/<pr>/transcripts/`. `--transcripts-dir` changes the root. Those files are local evidence for whether the changed code path ran. They are not published.
+Each cell keeps a local transcript, plus that cell's OpenCode session storage and log directory, under `results/ab/<pr>/transcripts/`. Current builds are copied from `opencode/storage` and `opencode/log`. Builds from about PR 623 through PR 2334 keep sessions at `opencode/project/<id>/storage`, and that tree is copied too. A later `opencode/opencode.db` is copied when it exists. `--transcripts-dir` changes the root. Those files are local evidence for whether the changed code path ran. They are not published.
 
 Summarize pass rate, score, time, turns, tokens, and cost. Each PR lists per-task deltas for time, turns, tokens, and cost, with a bootstrap interval. The headroom section lists tasks whose mean score is below 1.0 on either side and gives the pass-rate delta on only those tasks.
 

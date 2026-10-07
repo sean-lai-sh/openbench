@@ -1676,6 +1676,313 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertTrue(transcripts_found)
         self.assertIn("step_finish", transcripts_found[0].read_text(encoding="utf-8"))
 
+    def test_embedded_bun_binary_keeps_the_pin_or_flags_drift(self):
+        """v0.6–v1.0.x embed bun, so install --help is bun's and needs_sdk is false.
+
+        Those binaries still run ``bun add --force --exact @ai-sdk/anthropic@latest``
+        unless the cache version and the dist-tag alias are already in place.
+        """
+        from thesis.ab.compat import _needs_host_sdk
+        from thesis.ab.run_ab import execute_cell
+        root = Path(tempfile.mkdtemp())
+        task = root / "tasks" / "demo"
+        (task / "workspace").mkdir(parents=True)
+        (task / "instruction.md").write_text("say hi", encoding="utf-8")
+        checker = task / "checker.sh"
+        checker.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        checker.chmod(checker.stat().st_mode | stat.S_IEXEC)
+        bun = root / "bun"
+        bun.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import os, pathlib, sys
+            for arg in sys.argv[1:]:
+                if arg.startswith("@ai-sdk/anthropic@"):
+                    version = arg.rsplit("@", 1)[1]
+                    module = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_text('{"version": "%s"}' % version, encoding="utf-8")
+        """), encoding="utf-8")
+        bun.chmod(0o755)
+
+        def binary(name, force_latest):
+            note = root / f"{name}.txt"
+            path = root / name
+            script = textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, pathlib, sys
+                args = sys.argv[1:]
+                note = pathlib.Path(NOTE)
+                if args == ["install", "--help"]:
+                    print("bun install v1.2.14")
+                    print("Usage: bun install [flags]")
+                    raise SystemExit(0)
+                if args == ["--version"]:
+                    print("0.15.17")
+                    raise SystemExit(0)
+                if args[:2] == ["run", "--help"]:
+                    print("--auto")
+                    print("-m, --model")
+                    print("--format")
+                    print("--dir")
+                    print("--title")
+                    raise SystemExit(0)
+                cache = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode"
+                module = cache / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+                pkg_path = cache / "package.json"
+                deps = {}
+                if pkg_path.is_file():
+                    deps = json.loads(pkg_path.read_text(encoding="utf-8")).get("dependencies") or {}
+                version_path = cache / "version"
+                kept = (
+                    not FORCE
+                    and deps.get("@ai-sdk/anthropic") == "latest"
+                    and os.environ.get("OPENCODE_DISABLE_DEFAULT_PLUGINS") == "1"
+                    and version_path.is_file()
+                    and version_path.read_text(encoding="utf-8") == "9"
+                    and module.is_file()
+                    and json.loads(module.read_text(encoding="utf-8")).get("version") == "2.0.0"
+                )
+                if kept:
+                    note.write_text("kept", encoding="utf-8")
+                else:
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_text('{"version": "4.0.74"}', encoding="utf-8")
+                    note.write_text("reinstalled", encoding="utf-8")
+                print(json.dumps({"type": "step_finish", "part": {"tokens": {
+                    "input": 3, "output": 2, "reasoning": 0,
+                    "cache": {"read": 0, "write": 0}, "total": 5,
+                }}}))
+            """).replace("NOTE", repr(str(note))).replace("FORCE", "True" if force_latest else "False")
+            path.write_text(script, encoding="utf-8")
+            path.chmod(0o755)
+            return path, note
+
+        kept_bin, kept_note = binary("opencode-kept", False)
+        drift_bin, drift_note = binary("opencode-drift", True)
+        self.assertFalse(_needs_host_sdk(str(kept_bin)))
+        self.assertFalse(_needs_host_sdk(str(drift_bin)))
+        toolchain = {"ai": "5.0.8", "anthropic": "2.0.0", "bun": "1.2.14"}
+        saved = os.environ.get("OBENCH_OPENCODE_BIN")
+
+        def run(exe, trial):
+            dest = root / f"cell-{trial}.json"
+            tool = root / f"{trial}.toolchain.json"
+            try:
+                execute_cell({
+                    "binary": str(exe),
+                    "config": {},
+                    "permission_config": False,
+                    "proxy": {
+                        "needs_sdk": False,
+                        "model_ref": "anthropic/claude-opus-5-5",
+                        "api_key": "proxy",
+                        "anthropic_sdk": "2.0.0",
+                        "cache_version": "9",
+                        "bun": str(bun),
+                    },
+                    "toolchain": toolchain,
+                    "toolchain_path": str(tool),
+                    "cell_path": str(dest),
+                    "tasks_dir": str(root / "tasks"),
+                    "adapters_dir": str(ROOT / "obench" / "adapters"),
+                    "model": "claude-opus-5-5",
+                    "task": "demo",
+                    "trial": trial,
+                    "side": "without",
+                    "timeout_s": 30,
+                })
+            finally:
+                if saved is None:
+                    os.environ.pop("OBENCH_OPENCODE_BIN", None)
+                else:
+                    os.environ["OBENCH_OPENCODE_BIN"] = saved
+            row = json.loads(dest.read_text(encoding="utf-8"))
+            side = json.loads(tool.read_text(encoding="utf-8"))
+            return row, side
+
+        kept, kept_tool = run(kept_bin, 1)
+        self.assertEqual(kept_note.read_text(encoding="utf-8"), "kept")
+        self.assertNotEqual(kept.get("failure_class"), "infra")
+        self.assertEqual(kept["toolchain"]["anthropic"], "2.0.0")
+        self.assertEqual(kept_tool["anthropic"], "2.0.0")
+        self.assertNotIn("sdk_drift", kept)
+
+        drifted, drifted_tool = run(drift_bin, 2)
+        self.assertEqual(drift_note.read_text(encoding="utf-8"), "reinstalled")
+        self.assertEqual(drifted["failure_class"], "infra")
+        self.assertIn("4.0.74", drifted["failure_reason"])
+        self.assertIn("sdk drift", drifted["failure_reason"])
+        self.assertEqual(drifted["toolchain"]["anthropic"], "4.0.74")
+        self.assertEqual(drifted_tool["anthropic"], "4.0.74")
+        self.assertEqual(drifted["toolchain"]["ai"], "5.0.8")
+
+
+class TestTriggerArm(unittest.TestCase):
+    def _prs(self):
+        return TestSchedule._prs(self)
+
+    def test_default_tasks_leave_trigger_copies_opt_in(self):
+        from thesis.ab.run_ab import resolve_tasks
+        root = Path(tempfile.mkdtemp())
+        for name in ("make-it-run", "trig-list"):
+            task = root / name
+            task.mkdir()
+            (task / "checker.sh").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        self.assertEqual(resolve_tasks(None, root), ("make-it-run",))
+        self.assertEqual(resolve_tasks(["trig-list,make-it-run"], root), ("trig-list", "make-it-run"))
+
+    def test_aa_reuses_the_parent_binary(self):
+        out = Path(tempfile.mkdtemp())
+        built = []
+
+        def build_fn(sha, cache, repo=""):
+            built.append(sha)
+            return Path("/tmp") / sha
+
+        seen = []
+
+        def worker(spec):
+            seen.append(spec)
+            publish_text(Path(spec["cell_path"]), json.dumps({
+                "task": spec["task"], "trial": spec["trial"], "score": 1, "success": True,
+                "tokens_input_uncached": 1, "tokens_output": 1,
+                "tokens_cache_read": 0, "tokens_cache_write": 0,
+            }))
+
+        def assess_fn(binary):
+            return Assessment("native", "listed", {}, False)
+
+        plan, launched, stopped = drive(
+            self._prs(), ("make-it-run",), 2, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+            max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker, aa=True,
+        )
+        self.assertIsNone(stopped)
+        self.assertEqual(launched, 4)
+        self.assertEqual(built, [SHA_A])
+        self.assertEqual({item["side"] for item in seen}, {"aa-1", "aa-2"})
+        self.assertTrue(all(item["sha"] == SHA_A and item["arm"] == "parent-vs-parent" for item in seen))
+        self.assertTrue(all(item["binary"] == str(Path("/tmp") / SHA_A) for item in seen))
+        self.assertNotIn(SHA_B, plan)
+        self.assertNotIn("without", plan)
+        self.assertNotIn(" with ", plan)
+        self.assertIn("arm: parent-vs-parent", plan)
+        self.assertIn("cells: 4", plan)
+        arm = json.loads((out / "1" / "arm.json").read_text(encoding="utf-8"))
+        self.assertEqual(arm["arm"], "parent-vs-parent")
+        self.assertEqual(arm["sha"], SHA_A)
+        self.assertEqual(arm["sides"], ["aa-1", "aa-2"])
+        self.assertTrue((out / "1" / "aa-1.jsonl").is_file())
+        self.assertTrue((out / "1" / "aa-2.jsonl").is_file())
+        self.assertFalse((out / "1" / "without.jsonl").exists())
+        self.assertFalse((out / "1" / "with.jsonl").exists())
+
+    def test_parent_noise_summary_is_not_a_harness_delta(self):
+        out = Path(tempfile.mkdtemp())
+        root = out / "1"
+        root.mkdir()
+
+        def row(score):
+            return {
+                "task": "trig-list",
+                "score": score,
+                "success": score == 1,
+                "wall_time_s": 10,
+                "turns": 2,
+                "tokens_input_uncached": 10,
+                "tokens_output": 1,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            }
+
+        (root / "aa-1.jsonl").write_text(json.dumps(row(1)) + "\n", encoding="utf-8")
+        (root / "aa-2.jsonl").write_text(json.dumps(row(0)) + "\n", encoding="utf-8")
+        (root / "arm.json").write_text(json.dumps({
+            "arm": "parent-vs-parent", "sha": SHA_A, "sides": ["aa-1", "aa-2"],
+        }), encoding="utf-8")
+        record = pr_record(self._prs()[0], out)
+        text = render_markdown([record])
+        self.assertEqual(record["comparison"], "parent-vs-parent")
+        self.assertIsNone(record["delta_score"])
+        self.assertEqual(record["noise"]["score_span"], 1.0)
+        self.assertIn("# Parent-vs-parent noise", text)
+        self.assertIn("| aa-1 |", text)
+        self.assertIn("| aa-2 |", text)
+        self.assertIn(SHA_A, text)
+        self.assertNotIn("with minus without", text)
+        self.assertNotIn("| without |", text)
+        self.assertNotIn("| with |", text)
+        parsed = list(csv.DictReader(io.StringIO(render_csv([record]))))
+        self.assertEqual(parsed[0]["comparison"], "parent-vs-parent")
+        self.assertEqual(parsed[0]["delta_score"], "")
+
+    def test_task_map_dry_run_selects_each_prs_trigger_task(self):
+        import contextlib
+        from thesis.ab.run_ab import main
+        task_map = ROOT / "thesis" / "ab" / "fixtures" / "trigger-tasks.csv"
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE),
+                "--pr", "22390,3115",
+                "--task-map", str(task_map),
+                "--trials", "5",
+                "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        text = buf.getvalue()
+        self.assertIn("22390 without", text)
+        self.assertIn("tasks trig-bash-limits", text)
+        self.assertIn("3115 without", text)
+        self.assertIn("trig-list", text)
+        self.assertIn("cells: 20", text)
+        self.assertNotIn("arm: parent-vs-parent", text)
+
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE),
+                "--pr", "22390",
+                "--task-map", str(task_map),
+                "--trials", "5",
+                "--aa",
+                "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        text = buf.getvalue()
+        self.assertIn("arm: parent-vs-parent", text)
+        self.assertIn("sides aa-1,aa-2", text)
+        self.assertIn("trig-bash-limits", text)
+        self.assertIn("cells: 10", text)
+        self.assertNotIn("without", text)
+        self.assertNotIn(" with ", text)
+        parent = next(item.without_sha for item in parse_prs(FIXTURE) if item.pr == "22390")
+        merge = next(item.with_sha for item in parse_prs(FIXTURE) if item.pr == "22390")
+        self.assertIn(parent, text)
+        self.assertNotIn(merge, text)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE), "--pr", "2334", "--task-map", str(task_map), "--dry-run",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("needs fixture", err.getvalue())
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE),
+                "--tasks", "make-it-run",
+                "--task-map", str(task_map),
+                "--dry-run",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("--tasks or --task-map", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

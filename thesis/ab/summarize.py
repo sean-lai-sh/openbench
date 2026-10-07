@@ -8,7 +8,7 @@ import statistics
 import sys
 from pathlib import Path
 
-from thesis.ab.prs import PullRequest, Side, parse_prs
+from thesis.ab.prs import AA_SIDES, PullRequest, Side, parse_prs
 
 EXCLUDED = frozenset({"infra", "rate_limited", "stalled"})
 TOKEN_FIELDS = (
@@ -325,6 +325,90 @@ def sdk_versions_differ(left: dict, right: dict) -> bool:
     return bool(without and with_side and without != with_side)
 
 
+def _side_files(root: Path, side: str) -> bool:
+    if (root / f"{side}.jsonl").is_file():
+        return True
+    return any((root / f"{side}.{kind}.json").is_file() for kind in ("incompatible", "infra"))
+
+
+def _load_named_side(root: Path, side: str) -> tuple[list[dict], dict | None]:
+    verdict = None
+    for kind in ("incompatible", "infra"):
+        path = root / f"{side}.{kind}.json"
+        if path.is_file():
+            verdict = json.loads(path.read_text(encoding="utf-8"))
+            break
+    rows = [] if verdict is not None else load_jsonl(root / f"{side}.jsonl")
+    return rows, verdict
+
+
+def noise_block(root: Path) -> dict:
+    """Stats for the two parent replicas. The span is noise, not a harness effect."""
+    loaded = {side: _load_named_side(root, side) for side in AA_SIDES}
+    left_rows, left_verdict = loaded[AA_SIDES[0]]
+    right_rows, right_verdict = loaded[AA_SIDES[1]]
+    incompatible = {}
+    if left_verdict is not None:
+        incompatible[AA_SIDES[0]] = left_verdict
+    if right_verdict is not None:
+        incompatible[AA_SIDES[1]] = right_verdict
+    left_scores = task_score_means(left_rows)
+    right_scores = task_score_means(right_rows)
+    score_spans = {
+        task: abs(right_scores[task] - left_scores[task])
+        for task in set(left_scores) & set(right_scores)
+    }
+    spans = []
+    for row in task_metric_deltas(left_rows, right_rows):
+        metrics = {}
+        for key, metric in row["metrics"].items():
+            delta = metric["delta"]
+            metrics[key] = {
+                "span": None if delta is None else abs(delta),
+                "delta": delta,
+                "ci": metric["ci"],
+                "digits": metric["digits"],
+            }
+        spans.append({
+            "task": row["task"],
+            "metrics": metrics,
+            "score_span": score_spans.get(row["task"]),
+        })
+    named = {row["task"] for row in spans}
+    for task in sorted(set(score_spans) - named):
+        spans.append({
+            "task": task,
+            "metrics": {
+                key: {"span": None, "delta": None, "ci": None, "digits": digits}
+                for key, _label, _value_of, digits in TASK_DELTAS
+            },
+            "score_span": score_spans[task],
+        })
+    spans.sort(key=lambda row: row["task"])
+    score_deltas = paired_deltas(left_rows, right_rows)
+    arm_path = root / "arm.json"
+    arm = {}
+    if arm_path.is_file():
+        try:
+            parsed = json.loads(arm_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            arm = parsed
+    return {
+        "arm": "parent-vs-parent",
+        "sha": arm.get("sha") or "",
+        "sides": {
+            AA_SIDES[0]: side_stats(left_rows),
+            AA_SIDES[1]: side_stats(right_rows),
+        },
+        "incompatible": incompatible,
+        "task_spans": spans,
+        "score_span": None if not score_deltas else _mean([abs(item) for item in score_deltas]),
+        "paired_tasks": len(score_deltas),
+    }
+
+
 def pr_record(pr: PullRequest, out_dir: Path) -> dict:
     root = out_dir / pr.pr
     incompatible = {}
@@ -343,7 +427,9 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
     deltas = paired_deltas(without_rows, with_rows)
     point = _mean(deltas)
     interval = bootstrap_ci(deltas)
-    return {
+    has_ab = any(_side_files(root, side.value) for side in (Side.WITHOUT, Side.WITH))
+    has_aa = any(_side_files(root, side) for side in AA_SIDES)
+    record = {
         "pr": pr.pr,
         "repo": pr.repo,
         "title": pr.title,
@@ -359,7 +445,20 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         "paired_tasks": len(deltas),
         "task_deltas": task_metric_deltas(without_rows, with_rows),
         "headroom": headroom_report(without_rows, with_rows),
+        "comparison": "ab",
     }
+    if has_aa and not has_ab:
+        record["comparison"] = "parent-vs-parent"
+        record["noise"] = noise_block(root)
+        record["delta_score"] = None
+        record["delta_ci"] = None
+        record["paired_tasks"] = 0
+        record["task_deltas"] = []
+        record["headroom"] = {"tasks": [], "delta_pass_rate": None, "delta_ci": None, "n": 0}
+        record["incompatible"] = {}
+    elif has_aa:
+        record["noise"] = noise_block(root)
+    return record
 
 
 def _toolchain_line(side: str, tool: dict) -> str:
@@ -384,7 +483,94 @@ def _side_cells(stats: dict) -> list[str]:
     ]
 
 
+def render_parent_noise(records: list[dict]) -> str:
+    """Render parent replicas. Side names stay aa-1 and aa-2."""
+    lines = [
+        "# Parent-vs-parent noise",
+        "",
+        "Both sides ran the parent build. aa-1 and aa-2 are replicas.",
+        "The span is the noise range for that task. It is not a harness comparison.",
+        "",
+        "| PR | Parent SHA | aa-1 pass rate | aa-2 pass rate | Score span | Paired tasks |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for item in records:
+        noise = item.get("noise") or {}
+        sides = noise.get("sides") or {}
+        left = sides.get(AA_SIDES[0]) or {}
+        right = sides.get(AA_SIDES[1]) or {}
+        lines.append(
+            f"| {item['pr']} | {noise.get('sha') or ''} | {_fmt(left.get('pass_rate'))} | "
+            f"{_fmt(right.get('pass_rate'))} | {_fmt(noise.get('score_span'))} | "
+            f"{noise.get('paired_tasks') or 0} |"
+        )
+    lines.append("")
+    for item in records:
+        noise = item.get("noise") or {}
+        sides = noise.get("sides") or {}
+        lines.append(f"## PR {item['pr']}")
+        lines.append("")
+        lines.append("Arm: parent-vs-parent")
+        if noise.get("sha"):
+            lines.append(f"Parent SHA: {noise['sha']}")
+        lines.append("")
+        if noise.get("incompatible"):
+            for side, body in noise["incompatible"].items():
+                status = body.get("status") or "incompatible"
+                lines.append(f"{side} is {status}: {body.get('reason', '')}")
+            lines.append("")
+        lines.append("| Side | Pass rate | Mean score | Median seconds | Mean tokens |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for side in AA_SIDES:
+            stats = sides.get(side) or {
+                "pass_rate": None, "mean_score": None, "median_time_s": None, "mean_tokens": None,
+            }
+            lines.append(f"| {side} | " + " | ".join(_side_cells(stats)) + " |")
+        lines.append("")
+        lines.append(
+            f"Score span (absolute difference of task means): {_fmt(noise.get('score_span'))} "
+            f"on {noise.get('paired_tasks') or 0} paired tasks."
+        )
+        lines.append("")
+        lines.extend(_noise_task_lines(noise.get("task_spans") or []))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _noise_task_lines(rows: list[dict]) -> list[str]:
+    lines = ["### Per-task noise range", ""]
+    if not rows:
+        lines.append("No paired task has time, turns, tokens, or cost on both replicas.")
+        return lines
+    headers = ["Task", "Score span"]
+    for _key, label, _value_of, _digits in TASK_DELTAS:
+        headers.append(f"{label} span")
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join("---" for _ in headers) + " |")
+    for row in rows:
+        cells = [row["task"], _fmt(row.get("score_span"))]
+        for key, _label, _value_of, _digits in TASK_DELTAS:
+            metric = row["metrics"][key]
+            cells.append(_fmt(metric["span"], metric["digits"]))
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
 def render_markdown(records: list[dict]) -> str:
+    noise_only = [item for item in records if item.get("comparison") == "parent-vs-parent"]
+    ab_records = [item for item in records if item.get("comparison") != "parent-vs-parent"]
+    if not noise_only and not any(item.get("noise") for item in ab_records):
+        return _render_ab_markdown(records)
+    if not ab_records:
+        return render_parent_noise(noise_only)
+    text = _render_ab_markdown(ab_records)
+    attached = [item for item in ab_records if item.get("noise")]
+    if noise_only or attached:
+        text = text.rstrip() + "\n\n" + render_parent_noise(noise_only + attached)
+    return text
+
+
+def _render_ab_markdown(records: list[dict]) -> str:
     ranked = sorted(
         records,
         key=lambda item: (item["delta_score"] is None, -(item["delta_score"] or 0)),
@@ -523,8 +709,9 @@ def render_csv(records: list[dict]) -> str:
         "headroom_pass_ci_low", "headroom_pass_ci_high",
         "incompatible",
         "without_bun", "without_ai", "without_anthropic",
-        "with_bun", "with_ai", "with_anthropic",
+        "with_bun", "with_ai",         "with_anthropic",
         "sdk_changed",
+        "comparison",
     ]
     writer = csv.DictWriter(buf, fieldnames=fields)
     writer.writeheader()
@@ -563,6 +750,7 @@ def render_csv(records: list[dict]) -> str:
             "with_ai": (item.get("toolchain") or {}).get("with", {}).get("ai", ""),
             "with_anthropic": (item.get("toolchain") or {}).get("with", {}).get("anthropic", ""),
             "sdk_changed": "yes" if item.get("sdk_changed") else "",
+            "comparison": item.get("comparison") or "ab",
         })
     return buf.getvalue()
 
