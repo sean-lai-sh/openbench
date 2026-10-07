@@ -305,16 +305,38 @@ def _write_cache_version(cache, version):
         fh.write(text)
 
 
+def _anthropic_pin(proxy):
+    """Return the pinned ``@ai-sdk/anthropic`` version, or "" when there is none.
+
+    ``needs_sdk`` is not part of this. It is true only when
+    ``BUN_BE_BUN=1 <bin> install --help`` still prints OpenCode help. Binaries
+    that embed bun print bun's install help instead, so the flag is false,
+    but v0.6 through v1.0.x still run
+    ``bun add --force --exact @ai-sdk/anthropic@latest`` at startup.
+    """
+    if not isinstance(proxy, dict):
+        return ""
+    pin = str(proxy.get("anthropic_sdk") or "").strip()
+    if not pin or pin == "latest":
+        return ""
+    return pin
+
+
+def _provider_module(env):
+    return os.path.join(
+        env.get("XDG_CACHE_HOME") or "",
+        "opencode", "node_modules", "@ai-sdk", "anthropic", "package.json",
+    )
+
+
 def _ensure_provider_sdk(env, proxy):
-    if not proxy.get("needs_sdk"):
+    pin = _anthropic_pin(proxy)
+    if not pin:
         return ""
     # Default auth plugins (`opencode-anthropic-auth`, `opencode-copilot-auth`)
     # run `bun add --force` and re-resolve the dist-tag in package.json. That
     # upgrades a pinned @ai-sdk/anthropic to whatever "latest" is today.
     env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "1"
-    pin = str(proxy.get("anthropic_sdk") or "").strip()
-    if not pin or pin == "latest":
-        return ""
     bun = _resolve_bun(proxy.get("bun"))
     if not bun:
         return ""
@@ -356,18 +378,24 @@ def _ensure_provider_sdk(env, proxy):
     return _installed_sdk_version(module)
 
 
+def _installed_provider_sdk(env, proxy):
+    """Version on disk after the binary runs, when this build has a pin.
+
+    Empty when there is no pin. ``missing`` when the pin was requested and
+    the module is not there, so the toolchain does not keep the lockfile pin
+    in place of a version that never ran.
+    """
+    if not _anthropic_pin(proxy):
+        return ""
+    return _installed_sdk_version(_provider_module(env)) or "missing"
+
+
 def _provider_sdk_drift(env, proxy):
     """Return an infra reason when the installed SDK no longer matches the pin."""
-    if not isinstance(proxy, dict) or not proxy.get("needs_sdk"):
+    pin = _anthropic_pin(proxy)
+    if not pin:
         return ""
-    pin = str(proxy.get("anthropic_sdk") or "").strip()
-    if not pin or pin == "latest":
-        return ""
-    module = os.path.join(
-        env.get("XDG_CACHE_HOME") or "",
-        "opencode", "node_modules", "@ai-sdk", "anthropic", "package.json",
-    )
-    installed = _installed_sdk_version(module)
+    installed = _installed_sdk_version(_provider_module(env))
     if installed == pin:
         return ""
     found = installed or "missing"
@@ -825,8 +853,11 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     observed = {"done": False, "drift": ""}
 
     def _stamp(row):
-        if installed_anthropic:
-            row["installed_anthropic"] = installed_anthropic
+        # Prefer the version left on disk. The pre-run return value is still
+        # the pin when the binary then force-installs @latest.
+        installed = observed.get("installed") or installed_anthropic
+        if installed:
+            row["installed_anthropic"] = installed
         return row
 
     def _observe():
@@ -834,6 +865,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             return
         observed["done"] = True
         observed["drift"] = _provider_sdk_drift(env, proxy)
+        observed["installed"] = _installed_provider_sdk(env, proxy)
         _preserve_opencode_evidence(env)
 
     def _finish(row):

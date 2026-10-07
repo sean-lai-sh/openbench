@@ -2172,6 +2172,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["turns"] = result.get("turns")
         row["cmd"] = result.get("cmd")
         row["output_tail"] = result.get("output_tail") or ""
+        installed_sdk = result.get("installed_anthropic")
+        if isinstance(installed_sdk, str) and installed_sdk.strip():
+            row["installed_anthropic"] = installed_sdk.strip()
         full_output = result.get("full_output")
         classifier_output = full_output if full_output is not None else row["output_tail"]
         _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)

@@ -444,12 +444,18 @@ class TestProviderSdkPin(unittest.TestCase):
         module.write_text('{"version": "4.0.72"}', encoding="utf-8")
         env = {"XDG_CACHE_HOME": str(home)}
         proxy = {"needs_sdk": True, "anthropic_sdk": "2.0.0"}
+        embedded = {"needs_sdk": False, "anthropic_sdk": "2.0.0"}
         self.assertEqual(
             opencode._provider_sdk_drift(env, proxy),
             "sdk drift: installed @ai-sdk/anthropic 4.0.72 != pin 2.0.0",
         )
+        self.assertEqual(
+            opencode._provider_sdk_drift(env, embedded),
+            "sdk drift: installed @ai-sdk/anthropic 4.0.72 != pin 2.0.0",
+        )
         module.write_text('{"version": "2.0.0"}', encoding="utf-8")
         self.assertEqual(opencode._provider_sdk_drift(env, proxy), "")
+        self.assertEqual(opencode._provider_sdk_drift(env, embedded), "")
 
     def test_print_logs_is_added_only_when_evidence_is_kept(self):
         import obench.adapters.opencode as opencode

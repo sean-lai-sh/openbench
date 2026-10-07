@@ -1676,6 +1676,146 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertTrue(transcripts_found)
         self.assertIn("step_finish", transcripts_found[0].read_text(encoding="utf-8"))
 
+    def test_embedded_bun_binary_keeps_the_pin_or_flags_drift(self):
+        """v0.6–v1.0.x embed bun, so install --help is bun's and needs_sdk is false.
+
+        Those binaries still run ``bun add --force --exact @ai-sdk/anthropic@latest``
+        unless the cache version and the dist-tag alias are already in place.
+        """
+        from thesis.ab.compat import _needs_host_sdk
+        from thesis.ab.run_ab import execute_cell
+        root = Path(tempfile.mkdtemp())
+        task = root / "tasks" / "demo"
+        (task / "workspace").mkdir(parents=True)
+        (task / "instruction.md").write_text("say hi", encoding="utf-8")
+        checker = task / "checker.sh"
+        checker.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        checker.chmod(checker.stat().st_mode | stat.S_IEXEC)
+        bun = root / "bun"
+        bun.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import os, pathlib, sys
+            for arg in sys.argv[1:]:
+                if arg.startswith("@ai-sdk/anthropic@"):
+                    version = arg.rsplit("@", 1)[1]
+                    module = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_text('{"version": "%s"}' % version, encoding="utf-8")
+        """), encoding="utf-8")
+        bun.chmod(0o755)
+
+        def binary(name, force_latest):
+            note = root / f"{name}.txt"
+            path = root / name
+            script = textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, pathlib, sys
+                args = sys.argv[1:]
+                note = pathlib.Path(NOTE)
+                if args == ["install", "--help"]:
+                    print("bun install v1.2.14")
+                    print("Usage: bun install [flags]")
+                    raise SystemExit(0)
+                if args == ["--version"]:
+                    print("0.15.17")
+                    raise SystemExit(0)
+                if args[:2] == ["run", "--help"]:
+                    print("--auto")
+                    print("-m, --model")
+                    print("--format")
+                    print("--dir")
+                    print("--title")
+                    raise SystemExit(0)
+                cache = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode"
+                module = cache / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+                pkg_path = cache / "package.json"
+                deps = {}
+                if pkg_path.is_file():
+                    deps = json.loads(pkg_path.read_text(encoding="utf-8")).get("dependencies") or {}
+                version_path = cache / "version"
+                kept = (
+                    not FORCE
+                    and deps.get("@ai-sdk/anthropic") == "latest"
+                    and os.environ.get("OPENCODE_DISABLE_DEFAULT_PLUGINS") == "1"
+                    and version_path.is_file()
+                    and version_path.read_text(encoding="utf-8") == "9"
+                    and module.is_file()
+                    and json.loads(module.read_text(encoding="utf-8")).get("version") == "2.0.0"
+                )
+                if kept:
+                    note.write_text("kept", encoding="utf-8")
+                else:
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_text('{"version": "4.0.74"}', encoding="utf-8")
+                    note.write_text("reinstalled", encoding="utf-8")
+                print(json.dumps({"type": "step_finish", "part": {"tokens": {
+                    "input": 3, "output": 2, "reasoning": 0,
+                    "cache": {"read": 0, "write": 0}, "total": 5,
+                }}}))
+            """).replace("NOTE", repr(str(note))).replace("FORCE", "True" if force_latest else "False")
+            path.write_text(script, encoding="utf-8")
+            path.chmod(0o755)
+            return path, note
+
+        kept_bin, kept_note = binary("opencode-kept", False)
+        drift_bin, drift_note = binary("opencode-drift", True)
+        self.assertFalse(_needs_host_sdk(str(kept_bin)))
+        self.assertFalse(_needs_host_sdk(str(drift_bin)))
+        toolchain = {"ai": "5.0.8", "anthropic": "2.0.0", "bun": "1.2.14"}
+        saved = os.environ.get("OBENCH_OPENCODE_BIN")
+
+        def run(exe, trial):
+            dest = root / f"cell-{trial}.json"
+            tool = root / f"{trial}.toolchain.json"
+            try:
+                execute_cell({
+                    "binary": str(exe),
+                    "config": {},
+                    "permission_config": False,
+                    "proxy": {
+                        "needs_sdk": False,
+                        "model_ref": "anthropic/claude-opus-5-5",
+                        "api_key": "proxy",
+                        "anthropic_sdk": "2.0.0",
+                        "cache_version": "9",
+                        "bun": str(bun),
+                    },
+                    "toolchain": toolchain,
+                    "toolchain_path": str(tool),
+                    "cell_path": str(dest),
+                    "tasks_dir": str(root / "tasks"),
+                    "adapters_dir": str(ROOT / "obench" / "adapters"),
+                    "model": "claude-opus-5-5",
+                    "task": "demo",
+                    "trial": trial,
+                    "side": "without",
+                    "timeout_s": 30,
+                })
+            finally:
+                if saved is None:
+                    os.environ.pop("OBENCH_OPENCODE_BIN", None)
+                else:
+                    os.environ["OBENCH_OPENCODE_BIN"] = saved
+            row = json.loads(dest.read_text(encoding="utf-8"))
+            side = json.loads(tool.read_text(encoding="utf-8"))
+            return row, side
+
+        kept, kept_tool = run(kept_bin, 1)
+        self.assertEqual(kept_note.read_text(encoding="utf-8"), "kept")
+        self.assertNotEqual(kept.get("failure_class"), "infra")
+        self.assertEqual(kept["toolchain"]["anthropic"], "2.0.0")
+        self.assertEqual(kept_tool["anthropic"], "2.0.0")
+        self.assertNotIn("sdk_drift", kept)
+
+        drifted, drifted_tool = run(drift_bin, 2)
+        self.assertEqual(drift_note.read_text(encoding="utf-8"), "reinstalled")
+        self.assertEqual(drifted["failure_class"], "infra")
+        self.assertIn("4.0.74", drifted["failure_reason"])
+        self.assertIn("sdk drift", drifted["failure_reason"])
+        self.assertEqual(drifted["toolchain"]["anthropic"], "4.0.74")
+        self.assertEqual(drifted_tool["anthropic"], "4.0.74")
+        self.assertEqual(drifted["toolchain"]["ai"], "5.0.8")
+
 
 class TestTriggerArm(unittest.TestCase):
     def _prs(self):
