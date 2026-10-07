@@ -56,4 +56,11 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import traceback
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception:
+        traceback.print_exc()
+        raise SystemExit(2)

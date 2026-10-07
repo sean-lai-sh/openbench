@@ -51,6 +51,22 @@ class MapScoreTests(unittest.TestCase):
     def test_nonzero_without_score_is_zero(self):
         self.assertEqual(eh.map_checker_to_reward(1, "FAIL\n"), 0.0)
 
+    def test_verdict_line_keeps_full_and_zero_reward(self):
+        self.assertEqual(
+            eh.map_checker_to_reward(0, "ok\nOBENCH_VERDICT: pass\n"),
+            1.0,
+        )
+        self.assertEqual(
+            eh.map_checker_to_reward(
+                0, "ok\nSCORE: 0.2\nOBENCH_VERDICT: pass\n"
+            ),
+            1.0,
+        )
+        self.assertEqual(
+            eh.map_checker_to_reward(1, "FAIL\nOBENCH_VERDICT: fail\n"),
+            0.0,
+        )
+
     def test_nonzero_with_score_uses_last_score(self):
         out = "SCORE: 0.1\npartial\nSCORE: 0.75\n"
         self.assertEqual(eh.map_checker_to_reward(2, out), 0.75)

@@ -156,9 +156,21 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _checkout_root(path: str) -> str | None:
-    marker = os.path.join(path, "packages", "opencode", "src", "config", "lsp.ts")
-    runtime = os.path.join(path, "packages", "opencode", "src", "lsp", "lsp.ts")
-    if os.path.isfile(marker) or os.path.isfile(runtime):
+    """OpenCode checkout root, including trees from before ``lsp/lsp.ts``.
+
+    Current trees have ``config/lsp.ts`` or ``lsp/lsp.ts``. PR 2334's tree only
+    has ``packages/opencode/src/lsp/{client,index,language,server}.ts`` and
+    ``packages/opencode/src/index.ts``. Either of those is enough to know this
+    directory is the checkout that produced the binary.
+    """
+    src = os.path.join(path, "packages", "opencode", "src")
+    if os.path.isfile(os.path.join(src, "config", "lsp.ts")):
+        return path
+    if os.path.isfile(os.path.join(src, "lsp", "lsp.ts")):
+        return path
+    if os.path.isdir(os.path.join(src, "lsp")):
+        return path
+    if os.path.isfile(os.path.join(src, "index.ts")):
         return path
     return None
 

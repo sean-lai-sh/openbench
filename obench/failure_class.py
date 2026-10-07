@@ -330,6 +330,16 @@ def has_checker_owned_verdict(row, text=""):
         return False
     if row.get("checker_exit") not in (0, 1):
         return False
+    # A thesis checker that exited 0 or 1 without an agreeing OBENCH_VERDICT
+    # line did not grade the cell. Import errors and other crashes often exit
+    # 1; those must not be promoted to wrong_answer. Historical rows that
+    # never captured checker_stdout keep the exit-code rule.
+    if str(row.get("failure_reason") or "").startswith("checker_crash"):
+        return False
+    from .checker_verdict import thesis_task_name, verdict_agrees
+    if thesis_task_name(row.get("task")) and row.get("checker_stdout") is not None:
+        if not verdict_agrees(row.get("checker_exit"), row.get("checker_stdout")):
+            return False
     # Affirmative evidence the model actually produced something, NOT merely a
     # truthy turn counter. has_zero_output_and_minimal_turns is deliberately
     # suppressed when the transcript carries text, and a provider error IS text
@@ -442,7 +452,11 @@ def has_pinned_infra_reason(row):
     work. ``class_for_report`` must not promote them back to ``wrong_answer``.
     """
     reason = str((row or {}).get("failure_reason") or "")
-    return reason.startswith("sdk drift") or reason.startswith("early death")
+    return (
+        reason.startswith("sdk drift")
+        or reason.startswith("early death")
+        or reason.startswith("checker_crash")
+    )
 
 
 def classify_failure_reason(row, adapter_output=""):
@@ -570,6 +584,11 @@ def class_for_report(row):
         # promoted to phantom wrong-answers, skewing that arm's denominator.)
         if not row.get("success") \
                 and "verifier did not produce" in (row.get("checker_stdout") or ""):
+            return "infra"
+        # A thesis checker crash (import error, missing verdict, exit 127, …)
+        # is pinned infra even when checker_exit is 1. Promotion would turn
+        # that into a wrong answer.
+        if str(row.get("failure_reason") or "").startswith("checker_crash"):
             return "infra"
         # The A/B runner pins these reasons itself. A checker exit on a drifted
         # SDK, or on a cell that died in a few seconds, is not a model verdict.

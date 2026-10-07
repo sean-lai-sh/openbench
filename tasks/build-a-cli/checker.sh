@@ -9,6 +9,7 @@ DATA="$TASK_DIR/checker_data"
 
 if [ ! -f wordcount.py ]; then
     echo "FAIL: wordcount.py not found in workspace" >&2
+    printf '%s\n' "OBENCH_VERDICT: fail"
     exit 1
 fi
 
@@ -20,9 +21,16 @@ case3 5"
 fail=0
 while read -r name n; do
     [ -z "$name" ] && continue
+    set +e
     got="$(python3 wordcount.py "$DATA/$name.txt" "$n")"
+    status=$?
+    set -e
+    if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+        echo "FAIL: $name command exited $status" >&2
+        exit "$status"
+    fi
     want="$(cat "$DATA/$name.expected")"
-    if [ "$got" != "$want" ]; then
+    if [ "$status" -ne 0 ] || [ "$got" != "$want" ]; then
         echo "FAIL: $name (N=$n)" >&2
         echo "--- expected ---" >&2
         printf '%s\n' "$want" >&2
@@ -35,6 +43,8 @@ $cases
 EOF
 
 if [ "$fail" -ne 0 ]; then
+    printf '%s\n' "OBENCH_VERDICT: fail"
     exit 1
 fi
 echo "All wordcount cases passed."
+printf '%s\n' "OBENCH_VERDICT: pass"

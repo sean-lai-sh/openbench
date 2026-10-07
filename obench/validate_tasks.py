@@ -121,6 +121,8 @@ def run_checker(task_dir, overlay_solution_flag):
 
         env = dict(os.environ)
         env["TASK_DIR"] = task_dir
+        from .checker_verdict import prepend_checker_pythonpath
+        prepend_checker_pythonpath(env)
         # Imported Docker-backed checkers create a second host directory for
         # `/logs/verifier`. Keep that mount under the same Colima-visible root
         # as the workspace; inheriting macOS's /var/folders TMPDIR makes tests
@@ -205,6 +207,36 @@ def fmt_score(value):
     return "-" if value is None else "{:.3f}".format(value)
 
 
+def sdk_missing_polarity(ws_code, ws_out, sol_code, sol_out):
+    """True when both checkers exited outside 0/1 because the SDK is absent.
+
+    ``trig-lsp-csharp`` passes only when ``dotnet build`` exits 0. Exit 2
+    with this message is an infra failure, not a wrong answer, so polarity
+    is not judged until a machine has the SDK.
+    """
+    return (
+        ws_code not in (0, 1, None)
+        and sol_code not in (0, 1, None)
+        and bool(ws_out)
+        and "dotnet SDK was not found" in ws_out
+        and bool(sol_out)
+        and "dotnet SDK was not found" in sol_out
+    )
+
+
+def checker_column(code, *, solution, sdk_missing):
+    """Label one polarity column. A missing SDK is infra on both sides."""
+    if sdk_missing:
+        return "infra"
+    if solution:
+        if code == 0:
+            return "PASS(ok)"
+        return "n/a" if code is None else "FAIL(bad)"
+    if code not in (None, 0):
+        return "FAIL(ok)"
+    return "n/a" if code is None else "PASS(bad)"
+
+
 def build_task_roots(tasks_dir=None, include_imported=True):
     """Build tier roots from an optional ``--tasks-dir`` override."""
     if tasks_dir:
@@ -278,19 +310,26 @@ def main(argv=None):
 
         ws_code = ws_out = sol_code = sol_out = None
         ws_score = sol_score = None
+        sdk_missing = False
         if not problems:
             ws_code, ws_out, ws_raw = run_checker(task_dir, overlay_solution_flag=False)
             sol_code, sol_out, sol_raw = run_checker(task_dir, overlay_solution_flag=True)
             ws_score = effective_score(ws_code, ws_raw)
             sol_score = effective_score(sol_code, sol_raw)
 
-            if ws_code == 99 and ws_out and "workspace materialization failed" in ws_out:
+            sdk_missing = sdk_missing_polarity(ws_code, ws_out, sol_code, sol_out)
+            # trig-lsp-csharp grades only `dotnet build`. Without the SDK both
+            # sides exit 2, which a live cell records as infra. Polarity is
+            # checked on machines that have the SDK.
+            if sdk_missing:
+                pass
+            elif ws_code == 99 and ws_out and "workspace materialization failed" in ws_out:
                 problems.append(ws_out.strip().splitlines()[0])
             elif ws_code == 0:
                 problems.append("workspace checker passed (expected failure)")
-            if sol_code == 99 and sol_out and "workspace materialization failed" in sol_out:
+            if not sdk_missing and sol_code == 99 and sol_out and "workspace materialization failed" in sol_out:
                 problems.append(sol_out.strip().splitlines()[0])
-            elif sol_code != 0:
+            elif not sdk_missing and sol_code != 0:
                 problems.append("solution checker failed (expected pass)")
             # A checker that exits 0 but reports partial credit is inconsistent.
             if sol_code == 0 and sol_raw is not None and abs(sol_raw - 1.0) > 1e-9:
@@ -307,6 +346,7 @@ def main(argv=None):
             "ws_score": ws_score,
             "sol_score": sol_score,
             "ok": ok,
+            "sdk_missing": sdk_missing,
             "problems": problems,
             "ws_out": ws_out,
             "sol_out": sol_out,
@@ -328,10 +368,9 @@ def main(argv=None):
         for r in results:
             if r["tier"] != tier:
                 continue
-            ws = "FAIL(ok)" if (r["ws_code"] not in (None, 0)) else (
-                "n/a" if r["ws_code"] is None else "PASS(bad)")
-            sol = "PASS(ok)" if r["sol_code"] == 0 else (
-                "n/a" if r["sol_code"] is None else "FAIL(bad)")
+            missing = r.get("sdk_missing")
+            ws = checker_column(r["ws_code"], solution=False, sdk_missing=missing)
+            sol = checker_column(r["sol_code"], solution=True, sdk_missing=missing)
             result = "PASS" if r["ok"] else "FAIL"
             print("{:<{tw}}  {:<{w}}  {:>10}  {:>10}  {:>10}  {:>10}  {:>6}".format(
                 r["tier"], r["name"], ws, fmt_score(r["ws_score"]),
@@ -358,8 +397,12 @@ def main(argv=None):
         for tier in seen_tiers
         if any(r["tier"] == tier for r in results))
     if all_ok:
+        skipped = [r["name"] for r in results if r.get("sdk_missing")]
         print("All {} task(s) validated ({}): workspace FAILs, solution PASSes "
               "(solution score 1.0).".format(len(results), per_tier))
+        if skipped:
+            print("Polarity skipped (dotnet SDK missing, recorded as infra): {}.".format(
+                ", ".join(skipped)))
         return 0
     print("Validation FAILED for one or more tasks.")
     return 1

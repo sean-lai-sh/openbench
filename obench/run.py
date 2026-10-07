@@ -106,6 +106,8 @@ ROW_FIELDS = (
     "paced_wait_s",
     "model_context_window",
     "model_max_tokens",
+    "turn_mode",
+    "turn1_exit",
 )
 
 
@@ -1251,6 +1253,8 @@ def run_checker(task_dir, workdir, timeout_s, checker_env=None, task_image=None)
     checker = os.path.join(task_dir, "checker.sh")
     env = dict(os.environ) if checker_env is None else dict(checker_env)
     env["TASK_DIR"] = os.path.abspath(task_dir)
+    from .checker_verdict import prepend_checker_pythonpath
+    prepend_checker_pythonpath(env)
     # Checkers mktemp their verifier log dirs under ${TMPDIR:-/tmp}, then bind-
     # mount them into a container. colima only shares $HOME, so a /tmp mount
     # resolves VM-local and the verifier's reward file vanishes on the host
@@ -2173,6 +2177,10 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["cmd"] = result.get("cmd")
         row["output_tail"] = result.get("output_tail") or ""
         row["agent_mode"] = result.get("agent_mode")
+        row["turn_mode"] = result.get("turn_mode")
+        turn1_exit = result.get("turn1_exit")
+        if isinstance(turn1_exit, int) and not isinstance(turn1_exit, bool):
+            row["turn1_exit"] = turn1_exit
         installed_sdk = result.get("installed_anthropic")
         if isinstance(installed_sdk, str) and installed_sdk.strip():
             row["installed_anthropic"] = installed_sdk.strip()
@@ -2249,13 +2257,21 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["checker_stdout"] = scrub_checker_output(checker_stdout)
         row["checker_stderr"] = scrub_checker_output(checker_stderr)
         row["checker_exit"] = checker_exit
-        row["success"] = (checker_exit == 0)
-        # exit 0 is a full pass (score 1.0) regardless of any SCORE line; a
-        # nonzero exit takes the SCORE line for partial credit, else 0.0.
-        row["score"] = 1.0 if checker_exit == 0 else (
-            raw_score if raw_score is not None else 0.0)
-        row["failure_class"] = classify_failure(row, classifier_output, timeout_s)
-        row["failure_reason"] = classify_failure_reason(row, classifier_output)
+        from .checker_verdict import apply_explicit_verdict, expects_explicit_verdict
+        if expects_explicit_verdict(task_dir):
+            apply_explicit_verdict(
+                row, checker_exit, raw_score,
+                classify_failure, classify_failure_reason,
+                classifier_output, timeout_s,
+            )
+        else:
+            row["success"] = (checker_exit == 0)
+            # exit 0 is a full pass (score 1.0) regardless of any SCORE line; a
+            # nonzero exit takes the SCORE line for partial credit, else 0.0.
+            row["score"] = 1.0 if checker_exit == 0 else (
+                raw_score if raw_score is not None else 0.0)
+            row["failure_class"] = classify_failure(row, classifier_output, timeout_s)
+            row["failure_reason"] = classify_failure_reason(row, classifier_output)
         return _apply_sdk_drift(
             _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
         )

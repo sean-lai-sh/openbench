@@ -14,6 +14,16 @@ PR 984 is stricter than its pattern row. ``classify_edit_only`` marks a cell
 exercised only when the evidence has at least one edit call and zero
 ``"tool": "bash"`` or ``"tool": "write"`` parts. The cell records
 ``edit_calls`` and ``bash_write_calls`` (the largest count in any one file).
+
+PR 19058 is also stricter. The parent logs ``touching file`` and then an
+``lsp.client`` didOpen or publishDiagnostics line for the outside path. The
+merge logs only ``touching file``. ``classify_lsp_outside`` counts a cell as
+exercised only when the touch is present and the client line is absent. The
+cell records ``outside_touch_lines`` and ``outside_lsp_client_lines``.
+
+PR 2367's trigger is whether a list tool output contains ``generated/``.
+PR 1248's trigger is whether the child session received the plan-mode
+reminder, not merely that the parent message recorded ``"mode": "plan"``.
 """
 
 from __future__ import annotations
@@ -37,7 +47,18 @@ _MAX_BYTES = 32 * 1024 * 1024
 # make-ci-green for #984 must actually call edit, and the mode.build.tools
 # config must have removed bash and write. The pattern file still matches edit.
 EDIT_ONLY_PRS = frozenset({"984"})
+LSP_OUTSIDE_PRS = frozenset({"19058"})
+LIST_GENERATED_PRS = frozenset({"2367"})
+PLAN_REMINDER_PRS = frozenset({"1248"})
 _BASH_OR_WRITE = re.compile(r'"tool": ?"(bash|write)"')
+_OUTSIDE_TOUCH = re.compile(
+    r"/tmp/obench-shared-[^\"\n]{0,240}touching file"
+    r"|touching file[^\"\n]{0,240}/tmp/obench-shared-"
+)
+_OUTSIDE_LSP_CLIENT = re.compile(
+    r"lsp\.client\b[^\n]*\bpath=/tmp/obench-shared-\S+"
+    r"[^\n]*\b(?:didOpen|publishDiagnostics)\b"
+)
 # Researcher's pattern table, committed next to this module.
 DEFAULT_PATTERNS = Path(__file__).resolve().parent / "fixtures" / "trigger-evidence.csv"
 
@@ -175,6 +196,38 @@ def classify_edit_only(paths: list[Path], edit_pattern: re.Pattern[str]) -> tupl
     return NOT_EXERCISED, edits, denied
 
 
+def outside_lsp_counts(paths: list[Path]) -> tuple[int, int]:
+    """Largest ``touching file`` count and largest outside lsp.client count.
+
+    Each count is the most matches in any one evidence file, so a copied
+    transcript is not added to the storage copy.
+    """
+    touches = 0
+    clients = 0
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        touches = max(touches, len(_OUTSIDE_TOUCH.findall(text)))
+        clients = max(clients, len(_OUTSIDE_LSP_CLIENT.findall(text)))
+    return touches, clients
+
+
+def classify_lsp_outside(paths: list[Path]) -> tuple[str, int, int]:
+    """Exercised only when the outside file is touched and no LSP client opens it.
+
+    The parent logs both ``touching file`` and ``lsp.client … didOpen`` or
+    ``publishDiagnostics``. The merge logs the touch and not the client line.
+    Returns ``(status, outside_touch_lines, outside_lsp_client_lines)``.
+    """
+    if not paths:
+        return UNDETERMINABLE, 0, 0
+    touches, clients = outside_lsp_counts(paths)
+    if touches >= 1 and clients == 0:
+        return EXERCISED, touches, clients
+    return NOT_EXERCISED, touches, clients
+
+
 def classify_files(paths: list[Path], pattern: re.Pattern[str]) -> str:
     if not paths:
         return UNDETERMINABLE
@@ -189,6 +242,12 @@ _READ_PATH = re.compile(r'"(?:filePath|path)"\s*:\s*"([^"]+)"|<path>([^<]+)</pat
 _OFFSET = re.compile(r'"offset"\s*:\s*"?(\d+)"?')
 _LIMIT = re.compile(r'"limit"\s*:\s*"?(\d+)"?')
 _SESSION = re.compile(r'"(?:sessionID|session_id|task_id)"\s*:\s*"(ses_[^"]+)"')
+# 12214 prints the returned id in the tool output as `task_id: ses_…`, not as
+# a JSON field. A quote right after the key keeps `"task_id":"ses_…"` on the
+# structured path above, which is what 4204 builds use.
+_PLAIN_SESSION = re.compile(
+    r"(?:task_id|session_id)(?!\")\s*:\s*\"?(ses_[A-Za-z0-9]+)"
+)
 _CHILD_ID_PARENT = re.compile(
     r'"id"\s*:\s*"(ses_[^"]+)"[^}]{0,800}?"parentID"\s*:\s*"(ses_[^"]+)"'
 )
@@ -196,6 +255,26 @@ _CHILD_PARENT_ID = re.compile(
     r'"parentID"\s*:\s*"(ses_[^"]+)"[^}]{0,800}?"id"\s*:\s*"(ses_[^"]+)"'
 )
 _WRITE_TOOLS = frozenset({"bash", "edit", "write", "patch"})
+# Bash is a child action, but it is not a file edit. 1248 cares about the
+# edit/write/patch subset because plan mode blocks those and not a shell.
+_FILE_EDIT_TOOLS = frozenset({"edit", "write", "patch"})
+_PLAN_REMINDER = re.compile(
+    r"plan mode is active"
+    r"|you are in plan mode"
+    r"|you are a plan agent"
+    r"|the user does not want you to execute yet"
+    r"|switched to plan mode",
+    re.IGNORECASE,
+)
+_LIST_OUTPUT = re.compile(r'"output"\s*:\s*"((?:\\.|[^"\\])*)"', re.DOTALL)
+_DOTNET_BUILD = re.compile(r"dotnet\s+build")
+_REJECTION = re.compile(
+    r"auto-rejecting"
+    r"|permission requested:[^\n]{0,240}reject"
+    r"|\"status\"\s*:\s*\"rejected\"",
+    re.IGNORECASE,
+)
+_SEARCH_TOOLS = frozenset({"grep", "glob", "read"})
 _RULE_TOKENS = (("GLOBAL-RULE", "global"), ("PROJECT-RULE", "project"))
 _EOF = 10**12
 
@@ -296,12 +375,11 @@ def _child_sessions(text: str) -> set[str]:
     return children
 
 
-def subagent_write_call_count(paths: list[Path]) -> int:
-    """Non-read-only tool calls inside a child session.
+def _child_tool_count(paths: list[Path], tools: frozenset[str]) -> int:
+    """Tool calls of ``tools`` inside a child session.
 
-    Counts bash, edit, write, and patch whose session id has a parent. Child
-    ids are collected across the evidence files. The file with the most such
-    calls wins, so a copied transcript is not added to the storage copy.
+    Child ids are collected across the evidence files. The file with the most
+    such calls wins, so a copied transcript is not added to the storage copy.
     """
     texts: list[tuple[Path, str]] = []
     children: set[str] = set()
@@ -317,7 +395,7 @@ def subagent_write_call_count(paths: list[Path]) -> int:
     for path, text in texts:
         count = 0
         for name, window in _tool_windows(text):
-            if name not in _WRITE_TOOLS:
+            if name not in tools:
                 continue
             sessions = _SESSION.findall(window)
             if any(session in children for session in sessions):
@@ -329,6 +407,20 @@ def subagent_write_call_count(paths: list[Path]) -> int:
     return best
 
 
+def subagent_write_call_count(paths: list[Path]) -> int:
+    """Child-session bash, edit, write, and patch calls.
+
+    This count includes bash. ``child_edit_call_count`` is the file-edit
+    subset (edit, write, patch) and leaves bash out.
+    """
+    return _child_tool_count(paths, _WRITE_TOOLS)
+
+
+def child_edit_call_count(paths: list[Path]) -> int:
+    """Child-session edit, write, and patch calls. Bash is not included."""
+    return _child_tool_count(paths, _FILE_EDIT_TOOLS)
+
+
 def _forward_windows(text: str, kind: str) -> list[str]:
     """Text after each ``tool`` key of ``kind``, up to the next tool key."""
     matches = list(_TOOL.finditer(text))
@@ -338,6 +430,20 @@ def _forward_windows(text: str, kind: str) -> list[str]:
             continue
         end = matches[index + 1].start() if index + 1 < len(matches) else min(len(text), match.end() + 2000)
         found.append(text[match.end():end])
+    return found
+
+
+def _task_session_ids(window: str) -> list[str]:
+    """Session ids on one task call, structured first, then plain text.
+
+    4204 stores the id in metadata or input JSON. 12214 prints it in the tool
+    output as ``task_id: ses_… (for resuming…)``. Both have to be recorded or
+    the later resume call looks like the first time that id appeared.
+    """
+    found = _SESSION.findall(window)
+    for session in _PLAIN_SESSION.findall(window):
+        if session not in found:
+            found.append(session)
     return found
 
 
@@ -356,7 +462,7 @@ def task_call_stats(paths: list[Path]) -> tuple[int, bool, int]:
     resumed = False
     for window in _forward_windows(text, "task"):
         calls += 1
-        ids = _SESSION.findall(window)
+        ids = _task_session_ids(window)
         if any(session in seen for session in ids):
             resumed = True
         else:
@@ -365,6 +471,35 @@ def task_call_stats(paths: list[Path]) -> tuple[int, bool, int]:
             if session not in seen:
                 seen.append(session)
     return calls, resumed, fresh
+
+
+def main_agent_searched(paths: list[Path]) -> bool:
+    """True when the root session itself grepped, globbed, or read.
+
+    A search whose session id is a child session belongs to the subagent.
+    ``main_agent_searched`` is the "searched alone" flag: the main agent did
+    the lookup in its own session.
+    """
+    texts: list[tuple[Path, str]] = []
+    children: set[str] = set()
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        texts.append((path, text))
+        children.update(_child_sessions(text))
+    for path, text in texts:
+        path_is_child = any(session in str(path) for session in children)
+        for name, window in _tool_windows(text):
+            if name not in _SEARCH_TOOLS:
+                continue
+            sessions = _SESSION.findall(window)
+            if children and sessions and all(session in children for session in sessions):
+                continue
+            if children and not sessions and path_is_child:
+                continue
+            return True
+    return False
 
 
 def classify_rule_prefix(text: str) -> str:
@@ -401,27 +536,174 @@ def classify_rule_prefix(text: str) -> str:
     return "neither"
 
 
+def _unescape_output(body: str) -> str:
+    return body.replace("\\/", "/").replace("\\n", "\n").replace('\\"', '"')
+
+
+def list_has_generated(paths: list[Path]) -> bool | None:
+    """Whether any list-tool output contains ``generated/``.
+
+    ``None`` when the evidence has no list output, so a missing listing is
+    not the same as a listing that omitted the ignored directory.
+    """
+    saw = False
+    found = False
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        for window in _forward_windows(text, "list"):
+            outputs = _LIST_OUTPUT.findall(window)
+            if not outputs:
+                continue
+            saw = True
+            for body in outputs:
+                if "generated/" in _unescape_output(body):
+                    found = True
+        for match in re.finditer(r"\|\s+List\b[^\n]*\n((?:[^\n]*\n){0,80})", text):
+            saw = True
+            if "generated/" in match.group(1):
+                found = True
+    if found:
+        return True
+    if saw:
+        return False
+    return None
+
+
+def classify_list_generated(paths: list[Path]) -> tuple[str, bool]:
+    """Exercised when a list output contains ``generated/`` (PR 2367's trigger)."""
+    if not paths:
+        return UNDETERMINABLE, False
+    found = list_has_generated(paths)
+    if found is None:
+        return UNDETERMINABLE, False
+    return (EXERCISED if found else NOT_EXERCISED), bool(found)
+
+
+def child_received_plan_reminder(paths: list[Path]) -> bool:
+    """True when a child session's own text contains the plan-mode reminder.
+
+    The parent cell is started with ``--mode plan``, so the reminder on the
+    parent message is not the trigger. The child has to receive it.
+    """
+    texts: list[tuple[Path, str]] = []
+    children: set[str] = set()
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        texts.append((path, text))
+        children.update(_child_sessions(text))
+    if not children:
+        return False
+    for path, text in texts:
+        path_is_child = any(session in str(path) for session in children)
+        for match in _PLAN_REMINDER.finditer(text):
+            if path_is_child:
+                return True
+            start = text.rfind("{", 0, match.start())
+            end = text.find("}", match.end())
+            blob = text[start:end + 1] if start >= 0 and end >= 0 else ""
+            sessions = _SESSION.findall(blob)
+            if any(session in children for session in sessions):
+                return True
+    return False
+
+
+def classify_child_plan_reminder(paths: list[Path]) -> tuple[str, bool]:
+    """Exercised only when the child session received the plan-mode reminder."""
+    if not paths:
+        return UNDETERMINABLE, False
+    reminded = child_received_plan_reminder(paths)
+    return (EXERCISED if reminded else NOT_EXERCISED), reminded
+
+
+def dotnet_build_call_count(paths: list[Path]) -> int:
+    """Bash calls that run ``dotnet build``.
+
+    The largest count in any one file wins, so a copied transcript is not
+    added to the storage copy. A file that only has other bash calls does
+    not hide a build in a second file.
+    """
+    best = 0
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        count = sum(1 for window in _forward_windows(text, "bash") if _DOTNET_BUILD.search(window))
+        best = max(best, count)
+    return best
+
+
+def edit_call_count(paths: list[Path]) -> int:
+    """Edit-tool calls in the file that has the most of them."""
+    text = _richest(paths, "edit")
+    if not text:
+        return 0
+    return sum(1 for name, _window in _tool_windows(text) if name == "edit")
+
+
+def rejection_stats(paths: list[Path]) -> tuple[int, bool]:
+    """``(permission_rejections, ended_on_rejection)`` from the richest file.
+
+    A rejection is an auto-reject line or a tool state of ``rejected``.
+    The cell ended on a rejection when nothing completed and no assistant
+    text was recorded after the last one.
+    """
+    best = ""
+    best_count = -1
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        count = len(_REJECTION.findall(text))
+        if count > best_count:
+            best = text
+            best_count = count
+    if best_count <= 0:
+        return 0, False
+    last = None
+    for match in _REJECTION.finditer(best):
+        last = match
+    tail = best[last.end():] if last else ""
+    later = re.search(
+        r'"type"\s*:\s*"text"|"status"\s*:\s*"completed"',
+        tail,
+        re.IGNORECASE,
+    )
+    return best_count, later is None
+
+
 def rule_prefix_from_dir(root: Path | None) -> str:
     if root is None:
         return "neither"
-    directory = Path(root)
-    streamed = directory / "streamed-text.txt"
-    agent = directory / "agent-output.txt"
-    if streamed.is_file():
-        try:
-            return classify_rule_prefix(streamed.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            return "neither"
-    if agent.is_file():
-        try:
-            return classify_rule_prefix(agent.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            return "neither"
-    return "neither"
+    from obench.final_answer import final_text
+    try:
+        return classify_rule_prefix(final_text(root))
+    except OSError:
+        return "neither"
+
+
+def _final_answer_text(root: Path | None) -> str:
+    if root is None:
+        return ""
+    from obench.final_answer import final_text
+    try:
+        return final_text(root)
+    except OSError:
+        return ""
 
 
 def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list[Path] | None = None) -> dict:
-    """Record read, subagent, task, and rule-prefix facts on a cell row."""
+    """Record read, subagent, task, and per-trigger facts on a cell row.
+
+    ``subagent_write_calls`` counts child bash as well as edit, write, and
+    patch. ``child_edit_calls`` is edit, write, and patch only.
+    ``workspace_changed`` stays the runner's own flag; this function does not
+    recompute it. ``tmpdir_leaked_dirs`` is refreshed when the cell wrote
+    ``scratch-tmpdir.txt`` and that directory is still on disk.
+    """
     if not isinstance(row, dict):
         return row
     paths = list(files or [])
@@ -430,13 +712,47 @@ def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list
         paths = [path for path in sorted(root.rglob("*")) if path.is_file()]
     reads, reread = read_call_stats(paths)
     task_calls, resumed, fresh = task_call_stats(paths)
+    answer = _final_answer_text(root)
+    generated = list_has_generated(paths)
+    rejections, ended = rejection_stats(paths)
     row["read_calls"] = reads
     row["reread"] = reread
     row["subagent_write_calls"] = subagent_write_call_count(paths)
+    row["child_edit_calls"] = child_edit_call_count(paths)
     row["task_calls"] = task_calls
     row["subagent_resumed"] = resumed
     row["fresh_subagents"] = fresh
-    row["rule_prefix"] = rule_prefix_from_dir(root)
+    row["main_agent_searched"] = main_agent_searched(paths)
+    row["rule_prefix"] = classify_rule_prefix(answer)
+    row["final_answer_present"] = bool(answer.strip())
+    row["child_plan_reminder"] = child_received_plan_reminder(paths)
+    row["list_has_generated"] = generated
+    row["dotnet_build_calls"] = dotnet_build_call_count(paths)
+    # PR 984's classifier records edit_calls before this runs. Keep the
+    # larger count so a text-UI edit is not replaced by a JSON miss.
+    edits = edit_call_count(paths)
+    previous = row.get("edit_calls")
+    if isinstance(previous, int) and not isinstance(previous, bool):
+        edits = max(edits, previous)
+    row["edit_calls"] = edits
+    row["permission_rejections"] = rejections
+    row["ended_on_rejection"] = ended
+    marker = root / "scratch-tmpdir.txt" if root is not None else None
+    if marker is not None and marker.is_file():
+        scratch = ""
+        try:
+            scratch = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            scratch = ""
+        if scratch and Path(scratch).is_dir():
+            from thesis.ab.run_ab import leaked_temp_dirs
+            row["tmpdir_leaked_dirs"] = leaked_temp_dirs(scratch)
+    elif "tmpdir_leaked_dirs" not in row:
+        row["tmpdir_leaked_dirs"] = 0
+    touches, clients = outside_lsp_counts(paths)
+    if touches or clients or str(row.get("task") or "") == "trig-lsp-outside":
+        row["outside_touch_lines"] = touches
+        row["outside_lsp_client_lines"] = clients
     return row
 
 
@@ -487,6 +803,14 @@ def annotate(out_dir: Path, patterns: dict[str, EvidencePattern]) -> dict:
             status, edits, denied = classify_edit_only(unique, spec.compiled)
             row["edit_calls"] = edits
             row["bash_write_calls"] = denied
+        elif pr in LSP_OUTSIDE_PRS:
+            status, touches, clients = classify_lsp_outside(unique)
+            row["outside_touch_lines"] = touches
+            row["outside_lsp_client_lines"] = clients
+        elif pr in LIST_GENERATED_PRS:
+            status, _generated = classify_list_generated(unique)
+        elif pr in PLAN_REMINDER_PRS:
+            status, _reminded = classify_child_plan_reminder(unique)
         else:
             status = classify_files(unique, spec.compiled)
         row["exercised"] = status

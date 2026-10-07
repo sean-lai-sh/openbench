@@ -192,6 +192,38 @@ def select_task_map(prs, mapping: dict[str, TriggerTasks], path: Path, explicit:
     return tuple(chosen), by_pr
 
 
+def restrict_mapped_tasks(prs, tasks: dict[str, tuple[str, ...]], wanted: tuple[str, ...], *, explicit: bool):
+    """Keep mapped tasks that the screen named.
+
+    PR 4204 maps to both ``trig-subagent-followup`` and ``trig-subagent-resume``.
+    ``--task trig-subagent-followup`` with ``--task-map`` runs only the named
+    task. An explicit ``--pr`` whose map has none of the names is an error.
+    A full list skips those PRs.
+    """
+    wanted_set = set(wanted)
+    kept_tasks: dict[str, tuple[str, ...]] = {}
+    kept_prs = []
+    for pr in prs:
+        names = tuple(tasks.get(pr.pr) or ())
+        chosen = tuple(name for name in names if name in wanted_set)
+        if not chosen:
+            if explicit:
+                listed = ", ".join(names) or "nothing"
+                raise RunError(
+                    f"{pr.pr} has no mapped task in {', '.join(wanted)}; it maps to {listed}"
+                )
+            print(
+                f"skip {pr.pr}: no mapped task in {', '.join(wanted)}",
+                file=sys.stderr,
+            )
+            continue
+        kept_tasks[pr.pr] = chosen
+        kept_prs.append(pr)
+    if not kept_prs:
+        raise RunError("task filter matches no trigger task")
+    return tuple(kept_prs), kept_tasks
+
+
 def tasks_for(tasks, pr: str) -> tuple[str, ...]:
     if isinstance(tasks, dict):
         chosen = tasks.get(pr)
@@ -476,6 +508,10 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_BUN",
         "OBENCH_OPENCODE_WEBFETCH_URL",
         "OBENCH_OPENCODE_OUTSIDE_PATH",
+        "OBENCH_FINAL_ANSWER",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
         "OBENCH_WEBFETCH_COLOUR",
         "OBENCH_WEBFETCH_SEED",
         "OBENCH_OPENCODE_DISABLE_TOOLS",
@@ -555,6 +591,8 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_OUTSIDE_PATH"] = outside
             else:
                 os.environ.pop("OBENCH_OPENCODE_OUTSIDE_PATH", None)
+            for key, value in scratch_env(spec).items():
+                os.environ[key] = value
             evidence = str(spec.get("evidence_dir") or "").strip()
             if evidence:
                 evidence = str(Path(evidence).resolve())
@@ -586,6 +624,7 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_BUN", None)
             os.environ.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
             os.environ.pop("OBENCH_OPENCODE_OUTSIDE_PATH", None)
+            os.environ.pop("OBENCH_FINAL_ANSWER", None)
             os.environ.pop("OBENCH_WEBFETCH_COLOUR", None)
             os.environ.pop("OBENCH_WEBFETCH_SEED", None)
             os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
@@ -620,6 +659,14 @@ def execute_cell(spec: dict) -> None:
             attach_schedule(row, spec, started_at)
             from thesis.ab.evidence import attach_cell_metrics
             attach_cell_metrics(row, evidence if evidence else None)
+            if spec.get("task") == "trig-tmpdir":
+                scratch = os.environ.get("TMPDIR", "").strip()
+                if scratch:
+                    row["tmpdir_leaked_dirs"] = leaked_temp_dirs(scratch)
+                    if evidence:
+                        evidence_path = Path(evidence)
+                        evidence_path.mkdir(parents=True, exist_ok=True)
+                        publish_text(evidence_path / "scratch-tmpdir.txt", scratch + "\n")
             from thesis.ab.watch import apply_watchdog_class
             apply_watchdog_class(row)
             if png_server is not None:
@@ -654,6 +701,52 @@ def cell_transcripts_dir(out_dir: Path, pr: str, transcripts_root: Path | None =
 
 def _absolute(path: Path | str) -> str:
     return str(Path(path).resolve())
+
+
+def _cell_scratch_tmpdir(spec: dict) -> str | None:
+    """A private temp root for PR 25226 so cells do not share ``/tmp/opencode``.
+
+    OpenCode whitelists ``<os.tmpdir()>/opencode``. Setting ``TMPDIR`` makes
+    that directory ``/tmp/obench-tmp-<token>/opencode`` for this cell only.
+    """
+    if spec.get("task") != "trig-tmpdir":
+        return None
+    token = secrets.token_hex(8)
+    directory = Path("/tmp") / f"obench-tmp-{token}"
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True, mode=0o700)
+    ensure_empty_opencode(directory)
+    return str(directory)
+
+
+def ensure_empty_opencode(root: Path) -> Path:
+    """Create ``<root>/opencode`` with nothing in it.
+
+    OpenCode whitelists that directory. A leftover file from another cell
+    would look like this cell's own scratch.
+    """
+    opencode = Path(root) / "opencode"
+    if opencode.exists():
+        shutil.rmtree(opencode)
+    opencode.mkdir(mode=0o700)
+    return opencode
+
+
+def leaked_temp_dirs(root: str | Path) -> int:
+    """Directories left under ``<root>/opencode`` after the cell."""
+    opencode = Path(root) / "opencode"
+    if not opencode.is_dir():
+        return 0
+    return sum(1 for path in opencode.rglob("*") if path.is_dir())
+
+
+def scratch_env(spec: dict) -> dict[str, str]:
+    """Environment that points this cell's temp directory at its own root."""
+    path = _cell_scratch_tmpdir(spec)
+    if not path:
+        return {}
+    return {"TMPDIR": path, "TMP": path, "TEMP": path}
 
 
 def _cell_outside_path(spec: dict) -> str | None:
@@ -1466,7 +1559,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="A/B harness commits on the same tasks")
     parser.add_argument("prs", type=Path, help="PR list CSV or JSONL")
     parser.add_argument("--pr", action="append", default=[], help="PR id, or comma-separated ids")
-    parser.add_argument("--tasks", action="append", default=[], help="task name, or comma-separated names")
+    parser.add_argument(
+        "--tasks", "--task",
+        action="append",
+        default=[],
+        help="task name, or comma-separated names. With --task-map, keeps only those names from each PR's row.",
+    )
     parser.add_argument(
         "--task-map",
         type=Path,
@@ -1474,7 +1572,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "CSV (pr,task,status[,options]) of per-PR trigger tasks. "
             "Replaces the default task set. options is applied to that PR's cells. "
-            "--tasks still selects one set for every PR."
+            "Pass --task as well to keep only those mapped names "
+            "(PR 4204 maps to two tasks; --task trig-subagent-followup screens one)."
         ),
     )
     parser.add_argument(
@@ -1562,9 +1661,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_progress_s < 0:
         print("error: --no-progress-s must be >= 0", file=sys.stderr)
         return 2
-    if args.tasks and args.task_map is not None:
-        print("error: pass --tasks or --task-map, not both", file=sys.stderr)
-        return 2
     if args.aa and args.with_aa:
         print("error: pass either --aa or --with-aa", file=sys.stderr)
         return 2
@@ -1593,6 +1689,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.task_map is not None:
             mapping = load_task_map(args.task_map)
             prs, tasks = select_task_map(prs, mapping, args.task_map, explicit=bool(args.pr))
+            if args.tasks:
+                wanted = resolve_tasks(args.tasks)
+                prs, tasks = restrict_mapped_tasks(
+                    prs, tasks, wanted, explicit=bool(args.pr),
+                )
             resolve_tasks([name for chosen in tasks.values() for name in chosen])
             fixtures = {pr.pr: mapping[pr.pr].options for pr in prs}
         else:

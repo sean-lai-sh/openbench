@@ -540,6 +540,8 @@ def _write_agent_output(text):
         if assembled:
             with open(os.path.join(dest_root, "streamed-text.txt"), "w", encoding="utf-8") as fh:
                 fh.write(assembled)
+        from obench.final_answer import publish_final_answer
+        publish_final_answer(dest_root, text)
     except OSError:
         return
 
@@ -1184,11 +1186,21 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         observed["installed"] = _installed_provider_sdk(env, proxy)
         _preserve_opencode_evidence(env)
 
+    turn_state = {"mode": None, "exit": None, "failure": None}
+
     def _finish(row):
         _observe()
         mode = os.environ.get("OBENCH_OPENCODE_MODE", "").strip()
         if mode:
             row["agent_mode"] = mode
+        if turn_state["mode"]:
+            row["turn_mode"] = turn_state["mode"]
+        if turn_state["exit"] is not None:
+            row["turn1_exit"] = turn_state["exit"]
+        if turn_state["failure"]:
+            row["failure_class"] = "infra"
+            row["completed"] = False
+            row["error"] = turn_state["failure"]
         _write_agent_output(row.get("full_output") or row.get("output_tail") or "")
         return _stamp(_attach_sdk_drift(row, observed["drift"]))
     exe = _exe()
@@ -1316,23 +1328,41 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     prompts, two_turn = _prompts_for(instruction, turn_help)
     cmd = list(cmd)
     cmd[-1] = prompts[0]
+    if _split_turns(instruction) and not two_turn:
+        turn_state["mode"] = "single"
 
     try:
         try:
             proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
-            if two_turn and proc.returncode == 0 and len(prompts) == 2:
-                session_id = _extract_session_id((proc.stdout or "") + (proc.stderr or ""))
-                has_session, has_continue = _session_flags(turn_help)
-                extra = []
-                if has_session and session_id:
-                    extra = ["--session", session_id]
-                elif has_continue:
-                    extra = ["--continue"]
-                if extra:
-                    cmd = list(cmd[:-1]) + extra + [prompts[1]]
-                    second = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
-                    proc = _combine_procs(proc, second)
+            if two_turn and len(prompts) == 2:
+                turn_state["exit"] = proc.returncode
+                if proc.returncode != 0:
+                    turn_state["mode"] = "turn-failure"
+                    turn_state["failure"] = (
+                        f"turn 1 exited {proc.returncode}; turn 2 was not run"
+                    )
+                else:
+                    session_id = _extract_session_id((proc.stdout or "") + (proc.stderr or ""))
+                    has_session, has_continue = _session_flags(turn_help)
+                    extra = []
+                    if has_session and session_id:
+                        extra = ["--session", session_id]
+                    elif has_continue:
+                        extra = ["--continue"]
+                    if extra:
+                        turn_state["mode"] = "two-turn"
+                        cmd = list(cmd[:-1]) + extra + [prompts[1]]
+                        second = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
+                        proc = _combine_procs(proc, second)
+                    else:
+                        turn_state["mode"] = "turn-failure"
+                        turn_state["failure"] = (
+                            "turn 1 finished but the session could not be continued; "
+                            "turn 2 was not run"
+                        )
         except _PromptWait as e:
+            if two_turn and turn_state["mode"] is None:
+                turn_state["mode"] = "turn-failure"
             full_output = e.output or ""
             return _finish({
                 "completed": False,
@@ -1345,6 +1375,8 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 **_empty_token_usage(),
             })
         except _WatchdogKill as e:
+            if two_turn and turn_state["mode"] is None:
+                turn_state["mode"] = "turn-failure"
             full_output = e.output or ""
             return _finish({
                 "completed": False,
@@ -1357,6 +1389,8 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 **_empty_token_usage(),
             })
         except subprocess.TimeoutExpired as e:
+            if two_turn and turn_state["mode"] is None:
+                turn_state["mode"] = "turn-failure"
             full_output = _err_tail(e, limit=None)
             return _finish({
                 "completed": False,

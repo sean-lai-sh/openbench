@@ -2146,16 +2146,34 @@ class TestTriggerArm(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("needs fixture", err.getvalue())
 
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE),
+                "--pr", "4204",
+                "--task", "trig-subagent-followup",
+                "--task-map", str(task_map),
+                "--trials", "5",
+                "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        text = buf.getvalue()
+        self.assertIn("tasks trig-subagent-followup", text)
+        self.assertNotIn("trig-subagent-resume", text)
+        self.assertIn("cells: 10", text)
+
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             code = main([
                 str(FIXTURE),
-                "--tasks", "make-it-run",
+                "--pr", "4204",
+                "--task", "make-it-run",
                 "--task-map", str(task_map),
                 "--dry-run",
             ])
         self.assertEqual(code, 2)
-        self.assertIn("--tasks or --task-map", err.getvalue())
+        self.assertIn("no mapped task", err.getvalue())
 
     def test_interleave_and_random_orders_and_with_aa(self):
         import contextlib

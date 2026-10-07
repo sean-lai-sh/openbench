@@ -18,6 +18,7 @@ from thesis.ab.evidence import (
     main,
 )
 from thesis.ab.run_ab import load_task_map
+from obench.tests.bare_python import checker_environ
 
 ROOT = Path(__file__).resolve().parents[2]
 TASKS = ROOT / "tasks"
@@ -78,7 +79,7 @@ PREFIXES = {
     ),
     "trig-read-lines": (
         "Before fixing anything, use the read tool (not bash) to view only lines 3 through 7 "
-        "of `catalog/books.py` — a 5-line window, not the whole file — and quote line 3 "
+        "of `catalog/members.py` — a 5-line window, not the whole file — and quote line 3 "
         "verbatim at the start of your final answer. Then fix the failing tests."
     ),
 }
@@ -246,15 +247,24 @@ class TriggerTaskTests(unittest.TestCase):
             (TASKS / "trig-webfetch-image" / "solution" / "answer.txt").read_text(encoding="utf-8").strip(),
             "red",
         )
+        instruction = (TASKS / "trig-lsp-csharp" / "instruction.md").read_text(encoding="utf-8")
         self.assertEqual(
-            (TASKS / "trig-lsp-csharp" / "instruction.md").read_text(encoding="utf-8").strip(),
-            "Fix the compile error in Program.cs.",
+            instruction.strip(),
+            "Fix the compile errors in Program.cs so `dotnet build` succeeds.",
         )
+        self.assertNotIn("lsp", instruction.lower())
+        self.assertNotIn("diagnostic", instruction.lower())
         broken = (TASKS / "trig-lsp-csharp" / "workspace" / "Program.cs").read_text(encoding="utf-8")
-        self.assertIn("missingPort", broken)
         fixed = (TASKS / "trig-lsp-csharp" / "solution" / "Program.cs").read_text(encoding="utf-8")
-        self.assertNotIn("missingPort", fixed)
-        self.assertIn("8417", fixed)
+        broken_lines = broken.splitlines()
+        semi = next(i for i, line in enumerate(broken_lines) if line.strip() == "var port = ReadPort()")
+        paren = next(i for i, line in enumerate(broken_lines) if "(1 + 2;" in line)
+        self.assertGreaterEqual(paren - semi, 15)
+        self.assertNotIn("8417", broken)
+        self.assertNotIn("8417", fixed)
+        self.assertIn("ReadPort();", fixed)
+        self.assertIn("(1 + 2)", fixed)
+        self.assertNotIn("ReadPort()", fixed.split("ReadPort();", 1)[0])
         for name in ("trig-dup-edit", "trig-webfetch-image", "trig-lsp-csharp"):
             self.assertTrue((TASKS / name / "checker.sh").is_file(), name)
 
@@ -268,7 +278,7 @@ class TriggerTaskTests(unittest.TestCase):
         env = os.environ.copy()
         env["TASK_DIR"] = str(src)
         failed = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(failed.returncode, 1)
         evidence = Path(tempfile.mkdtemp())
@@ -278,12 +288,12 @@ class TriggerTaskTests(unittest.TestCase):
         )
         env["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(evidence)
         planned = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(planned.returncode, 0, planned.stderr)
         (work / "settings.json").write_text('{"rate": 0.5}\n', encoding="utf-8")
         changed = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(changed.returncode, 1, changed.stdout)
         solved = Path(tempfile.mkdtemp())
@@ -293,7 +303,7 @@ class TriggerTaskTests(unittest.TestCase):
         overlay["OPENBENCH_SOLUTION_OVERLAY"] = "1"
         overlay["TASK_DIR"] = str(src)
         ok = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=solved, capture_output=True, text=True, env=overlay,
+            ["bash", str(src / "checker.sh")], cwd=solved, capture_output=True, text=True, env=checker_environ(overlay),
         )
         self.assertEqual(ok.returncode, 0, ok.stderr)
 
@@ -306,18 +316,18 @@ class TriggerTaskTests(unittest.TestCase):
         env = os.environ.copy()
         env.pop("OBENCH_WEBFETCH_COLOUR", None)
         missed = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(missed.returncode, 1)
         (work / "answer.txt").write_text("red\n", encoding="utf-8")
         default = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(default.returncode, 0, default.stderr)
         env["OBENCH_WEBFETCH_COLOUR"] = "cyan"
         (work / "answer.txt").write_text("CYAN.\n", encoding="utf-8")
         named = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(named.returncode, 0, named.stderr)
 
@@ -563,19 +573,19 @@ class EvidenceGrepTests(unittest.TestCase):
         )
         env["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(evidence)
         ok = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(ok.returncode, 0, ok.stderr)
         (evidence / "streamed-text.txt").write_text("only main.py\n", encoding="utf-8")
         missed = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(missed.returncode, 1)
         overlay = os.environ.copy()
         overlay["OPENBENCH_SOLUTION_OVERLAY"] = "1"
         overlay["TASK_DIR"] = str(src)
         golden = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=overlay,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(overlay),
         )
         self.assertEqual(golden.returncode, 0, golden.stderr)
         text = (src / "instruction.md").read_text(encoding="utf-8")
