@@ -40,11 +40,17 @@ The runner reads `opencode run --help` on that binary. It passes `--auto` when t
 
 The default config points the stock `anthropic` provider at the proxy. The model id is `claude-opus-5-5`, with a 1,000,000 token context limit and a 128,000 token output limit. Old trees read the base URL from `provider.anthropic.api`. Later trees read `options.baseURL`. A tree that rejects both gets `ANTHROPIC_BASE_URL` instead. The API key is the dummy value `proxy`. The proxy holds the Vertex credential.
 
+Trees that install `@ai-sdk/anthropic` on the host get the pin recorded for that checkout. The runner writes the checkout's `CACHE_VERSION` into `$XDG_CACHE_HOME/opencode/version` and sets `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`, so an old binary does not wipe the cache and install `@latest`. After the cell, a provider package whose version moved off the pin is `infra` with reason `sdk drift`.
+
 `--model-route vertex` is the previous path. The config defines `google-vertex-anthropic/claude-opus-5-5@default` when the binary does not already list it. A binary that still cannot load that provider is recorded as incompatible, with the reason, and that side is not scored.
 
 ## Results
 
 Finished cells are `results/ab/<pr>/cells/<side>/<task>/<trial>.json`. The runner rewrites `results/ab/<pr>/without.jsonl` and `with.jsonl` from those files. An incompatible side writes `results/ab/<pr>/<side>.incompatible.json`. Each side also writes `<side>.toolchain.json` with the Bun version, the `ai` version, and the installed `@ai-sdk/anthropic` version. The same object is on each cell row. The summary prints both sides. When the installed SDK versions differ, it says `SDK changed: harness delta may be confounded`.
+
+A cell that dies in under 10 seconds with `Unhandled chunk type`, `ProviderInitError`, `DecimalError`, or `prepare wasm` in its output is `failure_class=infra`, not a wrong answer. If the first three cells of a side all die that way, the runner writes `<side>.infra.json` and does not launch the rest. Infra and incompatible cells are not scored.
+
+Each cell keeps a local transcript, plus that cell's OpenCode session storage and log directory, under `results/ab/<pr>/transcripts/`. `--transcripts-dir` changes the root. Those files are local evidence for whether the changed code path ran. They are not published.
 
 Summarize pass rate, score, time, turns, tokens, and cost. Each PR lists per-task deltas for time, turns, tokens, and cost, with a bootstrap interval. The headroom section lists tasks whose mean score is below 1.0 on either side and gives the pass-rate delta on only those tasks.
 
@@ -76,6 +82,8 @@ results/opencode-src/bin/0d3d48bb5964a95e939edcea3bb726a21823d1a1/opencode --ver
 ```
 
 The version line is the check. The command compiles that upstream commit.
+
+Older trees (no `script/build.ts`) compile with `bun build --compile` and without `--minify`. Minify drops the embedded tree-sitter wasm, so a bash tool call fails with `ENOENT` and the cell hangs. A cached `bin/<sha>/opencode` is reused only when `build-stamp.json` beside it matches the current recipe. A missing stamp, or a compile stamp that still says `minify: true`, is rebuilt.
 
 ## Pi and Oh My Pi pilot
 

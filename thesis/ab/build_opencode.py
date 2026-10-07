@@ -202,10 +202,13 @@ def _compile_old(root: Path, env: dict) -> Path:
             env={**env, "CGO_ENABLED": "0", "GOOS": system, "GOARCH": goarch},
         )
     outfile = dist / "opencode"
+    # Upstream publish.ts compiles without --minify. Minify drops the embedded
+    # tree-sitter wasm, and a bash tool call then fails with ENOENT under
+    # /$bunfs and hangs until the cell timeout. 2334 and 2367 hit that.
     cmd = [
         "bun", "build",
         "--define", "OPENCODE_VERSION='openbench'",
-        "--compile", "--minify",
+        "--compile",
         f"--target=bun-{system}-{machine}",
         f"--outfile={outfile}",
         "./src/index.ts",
@@ -426,6 +429,45 @@ def _find_binary(root: Path) -> Path:
     return select_dist_binary(candidates, system=system, machine=machine, libc=host_libc())
 
 
+def _build_stamp(plan: dict) -> dict:
+    """Identity of the recipe that produced a cached binary.
+
+    ``binary()`` refuses a cache hit whose stamp does not match the recipe
+    this process would write. A missing stamp, or a compile stamp that still
+    records ``minify: true``, is rebuilt. That drops cached minified binaries
+    for the old ``bun build --compile`` trees (2334 and 2367).
+    """
+    kind = plan.get("kind")
+    if kind == "compile":
+        return {"flags": ["--compile"], "kind": "compile", "minify": False}
+    return {"args": list(plan.get("args") or []), "kind": kind}
+
+
+def _read_build_stamp(published: Path) -> dict | None:
+    path = published.parent / "build-stamp.json"
+    if not path.is_file():
+        return None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _stamp_current(stamp: dict | None) -> bool:
+    if not isinstance(stamp, dict):
+        return False
+    kind = stamp.get("kind")
+    if kind == "compile":
+        return stamp.get("minify") is False
+    return kind in {"build.ts", "bun-run"}
+
+
+def _write_build_stamp(published: Path, plan: dict) -> None:
+    path = published.parent / "build-stamp.json"
+    path.write_text(json.dumps(_build_stamp(plan), sort_keys=True), encoding="utf-8")
+
+
 def _execute_plan(root: Path, plan: dict, cache: Path) -> Path:
     bun_path = ensure_bun(plan["bun"], cache) if plan.get("bun") else None
     go_prefix = ensure_go(plan["go"], cache) if plan.get("go") else None
@@ -483,10 +525,10 @@ def binary(sha: str, cache: Path) -> Path:
     # Git resolves a relative dest against ``cwd``. Callers pass ``results/...``.
     cache = Path(cache).resolve()
     published = cache / "bin" / sha / "opencode"
-    if can_exec(published):
+    if can_exec(published) and _stamp_current(_read_build_stamp(published)):
         return published
     with exclusive_lock(cache / "locks" / f"{sha}.lock"):
-        if can_exec(published):
+        if can_exec(published) and _stamp_current(_read_build_stamp(published)):
             return published
         with exclusive_lock(cache / "mirror.lock"):
             mirror = _ensure_mirror(cache)
@@ -507,6 +549,7 @@ def binary(sha: str, cache: Path) -> Path:
         shutil.copy2(built, tmp)
         tmp.chmod(0o755)
         os.replace(tmp, published)
+        _write_build_stamp(published, plan)
     return published
 
 

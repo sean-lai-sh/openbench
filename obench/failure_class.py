@@ -426,6 +426,18 @@ def has_checker_crash(row):
         return False
 
 
+def has_pinned_infra_reason(row):
+    """True when the A/B runner already decided this cell is not a verdict.
+
+    SDK drift and sub-10s provider crashes are written as ``failure_class=infra``
+    with a stable ``failure_reason``. A checker exit of 0 or 1 on those rows is
+    not a capability result: the pin moved, or the agent died before it could
+    work. ``class_for_report`` must not promote them back to ``wrong_answer``.
+    """
+    reason = str((row or {}).get("failure_reason") or "")
+    return reason.startswith("sdk drift") or reason.startswith("early death")
+
+
 def classify_failure_reason(row, adapter_output=""):
     """Return a stable diagnostic reason without overriding stronger markers."""
     row = row or {}
@@ -551,6 +563,10 @@ def class_for_report(row):
         # promoted to phantom wrong-answers, skewing that arm's denominator.)
         if not row.get("success") \
                 and "verifier did not produce" in (row.get("checker_stdout") or ""):
+            return "infra"
+        # The A/B runner pins these reasons itself. A checker exit on a drifted
+        # SDK, or on a cell that died in a few seconds, is not a model verdict.
+        if stored == "infra" and has_pinned_infra_reason(row):
             return "infra"
         # Correct the other direction too: a stored VERDICT on a cell whose
         # request budget was starved is not a capability result. sampling_observed

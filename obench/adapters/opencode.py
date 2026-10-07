@@ -290,9 +290,28 @@ def _installed_sdk_version(module_path):
     return str(parsed.get("version") or "")
 
 
+def _write_cache_version(cache, version):
+    """Write the checkout's CACHE_VERSION so an old binary keeps this cache.
+
+    Builds from 2025 delete ``$XDG_CACHE_HOME/opencode`` at startup when
+    ``version`` is missing or differs from ``CACHE_VERSION`` in
+    ``packages/opencode/src/global/index.ts``. The next launch then installs
+    ``@ai-sdk/anthropic`` at the dist-tag, which is not the pin.
+    """
+    text = str(version or "").strip()
+    if not text:
+        return
+    with open(os.path.join(cache, "version"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 def _ensure_provider_sdk(env, proxy):
     if not proxy.get("needs_sdk"):
         return ""
+    # Default auth plugins (`opencode-anthropic-auth`, `opencode-copilot-auth`)
+    # run `bun add --force` and re-resolve the dist-tag in package.json. That
+    # upgrades a pinned @ai-sdk/anthropic to whatever "latest" is today.
+    env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "1"
     pin = str(proxy.get("anthropic_sdk") or "").strip()
     if not pin or pin == "latest":
         return ""
@@ -333,7 +352,60 @@ def _ensure_provider_sdk(env, proxy):
     parsed["dependencies"] = deps
     with open(pkg_path, "w", encoding="utf-8") as fh:
         json.dump(parsed, fh)
+    _write_cache_version(cache, proxy.get("cache_version"))
     return _installed_sdk_version(module)
+
+
+def _provider_sdk_drift(env, proxy):
+    """Return an infra reason when the installed SDK no longer matches the pin."""
+    if not isinstance(proxy, dict) or not proxy.get("needs_sdk"):
+        return ""
+    pin = str(proxy.get("anthropic_sdk") or "").strip()
+    if not pin or pin == "latest":
+        return ""
+    module = os.path.join(
+        env.get("XDG_CACHE_HOME") or "",
+        "opencode", "node_modules", "@ai-sdk", "anthropic", "package.json",
+    )
+    installed = _installed_sdk_version(module)
+    if installed == pin:
+        return ""
+    found = installed or "missing"
+    return f"sdk drift: installed @ai-sdk/anthropic {found} != pin {pin}"
+
+
+def _attach_sdk_drift(row, drift):
+    if not drift:
+        return row
+    row["sdk_drift"] = drift
+    error = row.get("error")
+    if error:
+        row["error"] = f"{error}; {drift}"
+    else:
+        row["error"] = drift
+    return row
+
+
+def _preserve_opencode_evidence(env):
+    """Copy session storage and logs out before the isolated home is deleted.
+
+    ``OBENCH_OPENCODE_EVIDENCE_DIR`` is set by the A/B runner when a cell
+    should keep ``$XDG_DATA_HOME/opencode/storage`` and ``log``. A copy
+    failure must not change the cell result.
+    """
+    dest_root = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR", "").strip()
+    if not dest_root:
+        return
+    base = os.path.join(env.get("XDG_DATA_HOME") or "", "opencode")
+    try:
+        os.makedirs(dest_root, mode=0o700, exist_ok=True)
+        for name in ("storage", "log"):
+            src = os.path.join(base, name)
+            if not os.path.isdir(src):
+                continue
+            shutil.copytree(src, os.path.join(dest_root, name), dirs_exist_ok=True)
+    except OSError:
+        return
 
 
 def _proxy_override():
@@ -437,6 +509,14 @@ def _build_cmd(exe, model_id, variant, workdir, instruction, help_text):
     if has("--title"):
         cmd.extend(["--title", "openbench"])
     cmd.append(instruction)
+    # LSP exercise checks need the server log. Only builds whose help lists
+    # the flag get it, and only when the A/B runner asked to keep evidence.
+    if (
+        os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR", "").strip()
+        and has("--print-logs")
+        and "--print-logs" not in cmd
+    ):
+        cmd.insert(2, "--print-logs")
     watched = (
         not modern
         and "--auto" not in cmd
@@ -702,11 +782,24 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     auth_source = next((path for path in _AUTH_CANDIDATES if os.path.isfile(path)), None)
     env, iso_home = _isolated_env()
     installed_anthropic = ""
+    proxy = None
+    observed = {"done": False, "drift": ""}
 
     def _stamp(row):
         if installed_anthropic:
             row["installed_anthropic"] = installed_anthropic
         return row
+
+    def _observe():
+        if observed["done"]:
+            return
+        observed["done"] = True
+        observed["drift"] = _provider_sdk_drift(env, proxy)
+        _preserve_opencode_evidence(env)
+
+    def _finish(row):
+        _observe()
+        return _stamp(_attach_sdk_drift(row, observed["drift"]))
     exe = _exe()
     probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model == "claude-opus-5-5"
     watch_prompt = False
@@ -815,7 +908,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
         except _PromptWait as e:
             full_output = e.output or ""
-            return _stamp({
+            return _finish({
                 "completed": False,
                 "error": "waiting on a permission prompt",
                 "output_tail": full_output[-2000:],
@@ -827,7 +920,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             })
         except subprocess.TimeoutExpired as e:
             full_output = _err_tail(e, limit=None)
-            return _stamp({
+            return _finish({
                 "completed": False,
                 "error": f"timeout after {timeout_s}s",
                 "output_tail": full_output[-2000:],
@@ -838,6 +931,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 **_empty_token_usage(),
             })
     finally:
+        # The cache and session live under the temp home. Read the pin and
+        # copy storage/logs before that tree is removed.
+        _observe()
         if model in MODELS and auth_source is not None:
             isolated_auth = os.path.join(env["XDG_DATA_HOME"], "opencode", "auth.json")
             try_persist_auth_file(isolated_auth, auth_source)
@@ -851,7 +947,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     if not tail:
         tail = combined[-2000:]
 
-    return _stamp({
+    return _finish({
         "completed": proc.returncode == 0,
         "error": None if proc.returncode == 0 else f"exit {proc.returncode}",
         "output_tail": tail,

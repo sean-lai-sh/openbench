@@ -373,9 +373,12 @@ class TestProviderSdkPin(unittest.TestCase):
             "needs_sdk": True,
             "bun": "results/opencode-src/bun/1.2.14/bun",
             "anthropic_sdk": "1.2.12",
+            "cache_version": "1",
         }
         self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
         self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
+        self.assertEqual(env["OPENCODE_DISABLE_DEFAULT_PLUGINS"], "1")
+        self.assertEqual((home / "opencode" / "version").read_text(encoding="utf-8"), "1")
         self.assertEqual(
             args_file.read_text(encoding="utf-8").splitlines(),
             ["add", "@ai-sdk/anthropic@1.2.12"],
@@ -420,15 +423,67 @@ class TestProviderSdkPin(unittest.TestCase):
             "bun": "results/opencode-src/bun/1.2.14/bun",
             "anthropic_sdk": "2.0.0-beta.11",
             "sdk_install_alias": "beta",
+            "cache_version": "3",
         }
         self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.0-beta.11")
         self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.0-beta.11")
+        self.assertEqual((home / "opencode" / "version").read_text(encoding="utf-8"), "3")
+        self.assertEqual(env["OPENCODE_DISABLE_DEFAULT_PLUGINS"], "1")
         saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "beta")
         installed = json.loads(
             (home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8")
         )
         self.assertEqual(installed["version"], "2.0.0-beta.11")
+
+    def test_sdk_drift_names_the_installed_version(self):
+        import obench.adapters.opencode as opencode
+        home = Path(tempfile.mkdtemp())
+        module = home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+        module.parent.mkdir(parents=True)
+        module.write_text('{"version": "4.0.72"}', encoding="utf-8")
+        env = {"XDG_CACHE_HOME": str(home)}
+        proxy = {"needs_sdk": True, "anthropic_sdk": "2.0.0"}
+        self.assertEqual(
+            opencode._provider_sdk_drift(env, proxy),
+            "sdk drift: installed @ai-sdk/anthropic 4.0.72 != pin 2.0.0",
+        )
+        module.write_text('{"version": "2.0.0"}', encoding="utf-8")
+        self.assertEqual(opencode._provider_sdk_drift(env, proxy), "")
+
+    def test_print_logs_is_added_only_when_evidence_is_kept(self):
+        import obench.adapters.opencode as opencode
+        help_text = "\n".join([
+            "--auto",
+            "-m, --model",
+            "--format",
+            "--dir",
+            "--title",
+            "--print-logs",
+        ])
+        saved = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR")
+        try:
+            os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
+            plain, _watched = opencode._build_cmd(
+                "opencode", "anthropic/claude-opus-5-5", None, "/work", "ping", help_text,
+            )
+            self.assertNotIn("--print-logs", plain)
+            os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = "/tmp/evidence"
+            logged, _watched = opencode._build_cmd(
+                "opencode", "anthropic/claude-opus-5-5", None, "/work", "ping", help_text,
+            )
+            self.assertEqual(logged[2], "--print-logs")
+            os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = "/tmp/evidence"
+            no_flag, _watched = opencode._build_cmd(
+                "opencode", "anthropic/claude-opus-5-5", None, "/work", "ping",
+                "--auto\n-m, --model\n",
+            )
+            self.assertNotIn("--print-logs", no_flag)
+        finally:
+            if saved is None:
+                os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
+            else:
+                os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = saved
 
     def test_exec_failure_is_infra_not_incompatible(self):
         from thesis.ab.compat import assess
