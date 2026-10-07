@@ -131,6 +131,9 @@ class TriggerTaskTests(unittest.TestCase):
             "6524": "make-it-run",
             "17098": "trig-skills",
             "19058": "trig-lsp-outside",
+            "913": "trig-list-noise",
+            "984": "make-ci-green",
+            "1248": "trig-plan-subagent",
         }
         triggerable = {pr: row.tasks for pr, row in mapping.items() if row.status == "triggerable"}
         self.assertEqual(triggerable, {pr: (task,) for pr, task in expected.items()})
@@ -143,17 +146,29 @@ class TriggerTaskTests(unittest.TestCase):
         self.assertTrue(mapping["24974"].options.global_agents)
         self.assertEqual(mapping["25226"].options.permissions, "workspace")
         self.assertEqual(mapping["22390"].options.as_text(), "")
-        self.assertEqual(mapping["1248"].status, "incompatible")
+        self.assertEqual(mapping["1248"].status, "triggerable")
+        self.assertEqual(mapping["1248"].tasks, ("trig-plan-subagent",))
         self.assertEqual(mapping["1248"].options.mode, "plan")
-        self.assertEqual(mapping["3369"].status, "incompatible")
+        self.assertEqual(mapping["913"].tasks, ("trig-list-noise",))
+        self.assertEqual(mapping["984"].tasks, ("make-ci-green",))
+        held = {
+            "3369": ("make-it-run", "incompatible"),
+            "3418": ("trig-dup-edit", "incompatible"),
+            "5527": ("make-it-run", "needs fixture"),
+            "13331": ("trig-webfetch-image", "needs fixture"),
+            "23771": ("trig-lsp-csharp", "needs fixture"),
+            "18140": ("make-it-run", "untriggerable"),
+        }
+        for pr, (task, status) in held.items():
+            self.assertEqual(mapping[pr].tasks, (task,), pr)
+            self.assertEqual(mapping[pr].status, status, pr)
         self.assertEqual(mapping["3369"].options.fault, "http-529")
-        self.assertEqual(mapping["5527"].status, "needs fixture")
         self.assertEqual(mapping["5527"].options.fault, "sse-server-error")
-        self.assertEqual(mapping["13331"].status, "needs fixture")
-        self.assertEqual(mapping["23771"].status, "needs fixture")
         self.assertEqual(mapping["23771"].options.lsp, ("dotnet",))
-        self.assertEqual(mapping["18140"].status, "untriggerable")
-        self.assertEqual(mapping["18140"].tasks, ())
+        self.assertEqual(len(mapping), 34)
+        for pr, row in mapping.items():
+            self.assertTrue(row.tasks, pr)
+            self.assertTrue(row.status, pr)
 
     def test_skill_and_prompt_order_keep_the_instruction_and_add_files(self):
         original = (TASKS / "make-it-run" / "instruction.md").read_bytes()
@@ -274,6 +289,30 @@ class EvidenceGrepTests(unittest.TestCase):
         self.assertEqual(sides["5066"]["sides"]["without"][NOT_EXERCISED], 1)
         self.assertEqual(sides["623"]["sides"]["with"][UNDETERMINABLE], 1)
         self.assertTrue((out / "evidence-summary.json").is_file())
+
+    def test_list_noise_pattern_reads_ignored_dirs_in_the_listing(self):
+        pattern = load_patterns(PATTERNS)["913"].compiled
+        present = (
+            '{"tool":"list","state":{"output":"'
+            'src/app.py\\nvendor/leftpad.py\\nvenv/pyvenv.cfg\\n'
+            'coverage/index.txt\\nlogs/app.log\\ntmp/out.txt"}}'
+        )
+        absent = '{"tool":"list","state":{"output":"src/app.py\\ntests/test_app.py\\n"}}'
+        bare = '{\n  "tool": "list"\n}\n'
+        text_present = "|  List  \nvendor/leftpad.py\nsrc/app.py\n"
+        text_absent = "|  List  \nsrc/app.py\ntests/test_app.py\n"
+        self.assertIsNotNone(pattern.search(present))
+        self.assertIsNotNone(pattern.search(absent))
+        self.assertIsNone(pattern.search(bare))
+        self.assertIsNotNone(pattern.search(text_present))
+        self.assertIsNotNone(pattern.search(text_absent))
+        # 2367 still treats any list call as exercised. 913 does not.
+        list_only = load_patterns(PATTERNS)["2367"].compiled
+        self.assertIsNotNone(list_only.search(bare))
+        noise = TASKS / "trig-list-noise" / "workspace"
+        for name in ("vendor", "venv", "coverage", "logs", "tmp"):
+            files = [path for path in (noise / name).iterdir() if path.is_file()]
+            self.assertGreaterEqual(len(files), 2, name)
 
     def test_cli_defaults_to_the_committed_pattern_file(self):
         fixtures = ROOT / "thesis" / "ab" / "fixtures"
