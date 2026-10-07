@@ -668,7 +668,7 @@ def rejection_stats(paths: list[Path]) -> tuple[int, bool]:
         last = match
     tail = best[last.end():] if last else ""
     later = re.search(
-        r'"type"\s*:\s*"text"|"status"\s*:\s*"completed"|plan mode is active',
+        r'"type"\s*:\s*"text"|"status"\s*:\s*"completed"',
         tail,
         re.IGNORECASE,
     )
@@ -726,7 +726,7 @@ def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list
     row["rule_prefix"] = classify_rule_prefix(answer)
     row["final_answer_present"] = bool(answer.strip())
     row["child_plan_reminder"] = child_received_plan_reminder(paths)
-    row["list_has_generated"] = bool(generated)
+    row["list_has_generated"] = generated
     row["dotnet_build_calls"] = dotnet_build_call_count(paths)
     # PR 984's classifier records edit_calls before this runs. Keep the
     # larger count so a text-UI edit is not replaced by a JSON miss.

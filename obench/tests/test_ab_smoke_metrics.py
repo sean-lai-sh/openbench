@@ -12,11 +12,13 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from obench.validate_tasks import checker_column, sdk_missing_polarity
 from thesis.ab.evidence import (
     EXERCISED,
     NOT_EXERCISED,
     UNDETERMINABLE,
     annotate,
+    attach_cell_metrics,
     child_edit_call_count,
     child_received_plan_reminder,
     classify_child_plan_reminder,
@@ -169,6 +171,12 @@ class TmpdirMetricTests(unittest.TestCase):
         count, ended = rejection_stats([answered])
         self.assertEqual(count, 1)
         self.assertFalse(ended)
+        reminded = _file(directory, "plan-after.txt", (
+            "auto-rejecting\nPlan mode is active.\n"
+        ))
+        count, ended = rejection_stats([reminded])
+        self.assertEqual(count, 1)
+        self.assertTrue(ended)
         root = Path(tempfile.mkdtemp())
         (root / "opencode").mkdir()
         (root / "opencode" / "stale.txt").write_text("old", encoding="utf-8")
@@ -233,6 +241,9 @@ class TmpdirMetricTests(unittest.TestCase):
         self.assertTrue(reminded["child_plan_reminder"])
         self.assertEqual(missed["exercised"], NOT_EXERCISED)
         self.assertFalse(missed["child_plan_reminder"])
+        empty = Path(tempfile.mkdtemp())
+        row = attach_cell_metrics({"task": "trig-list-noise"}, empty, files=[])
+        self.assertIsNone(row["list_has_generated"])
 
 
 class CSharpCheckerTests(unittest.TestCase):
@@ -299,6 +310,13 @@ class CSharpCheckerTests(unittest.TestCase):
         gone = self._run(missing, work)
         self.assertEqual(gone.returncode, 2)
         self.assertIn("dotnet SDK was not found", gone.stderr)
+        message = "dotnet SDK was not found; the checker cannot run dotnet build"
+        self.assertTrue(sdk_missing_polarity(2, message, 2, message))
+        self.assertFalse(sdk_missing_polarity(1, message, 0, "dotnet build passed"))
+        self.assertEqual(checker_column(2, solution=False, sdk_missing=True), "infra")
+        self.assertEqual(checker_column(2, solution=True, sdk_missing=True), "infra")
+        self.assertEqual(checker_column(1, solution=False, sdk_missing=False), "FAIL(ok)")
+        self.assertEqual(checker_column(0, solution=True, sdk_missing=False), "PASS(ok)")
 
 
 class OutsideAndAnswerTests(unittest.TestCase):
