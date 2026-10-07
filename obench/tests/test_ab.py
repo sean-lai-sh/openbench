@@ -1677,5 +1677,172 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertIn("step_finish", transcripts_found[0].read_text(encoding="utf-8"))
 
 
+class TestTriggerArm(unittest.TestCase):
+    def _prs(self):
+        return TestSchedule._prs(self)
+
+    def test_default_tasks_leave_trigger_copies_opt_in(self):
+        from thesis.ab.run_ab import resolve_tasks
+        root = Path(tempfile.mkdtemp())
+        for name in ("make-it-run", "trig-list"):
+            task = root / name
+            task.mkdir()
+            (task / "checker.sh").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        self.assertEqual(resolve_tasks(None, root), ("make-it-run",))
+        self.assertEqual(resolve_tasks(["trig-list,make-it-run"], root), ("trig-list", "make-it-run"))
+
+    def test_aa_reuses_the_parent_binary(self):
+        out = Path(tempfile.mkdtemp())
+        built = []
+
+        def build_fn(sha, cache, repo=""):
+            built.append(sha)
+            return Path("/tmp") / sha
+
+        seen = []
+
+        def worker(spec):
+            seen.append(spec)
+            publish_text(Path(spec["cell_path"]), json.dumps({
+                "task": spec["task"], "trial": spec["trial"], "score": 1, "success": True,
+                "tokens_input_uncached": 1, "tokens_output": 1,
+                "tokens_cache_read": 0, "tokens_cache_write": 0,
+            }))
+
+        def assess_fn(binary):
+            return Assessment("native", "listed", {}, False)
+
+        plan, launched, stopped = drive(
+            self._prs(), ("make-it-run",), 2, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+            max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker, aa=True,
+        )
+        self.assertIsNone(stopped)
+        self.assertEqual(launched, 4)
+        self.assertEqual(built, [SHA_A])
+        self.assertEqual({item["side"] for item in seen}, {"aa-1", "aa-2"})
+        self.assertTrue(all(item["sha"] == SHA_A and item["arm"] == "parent-vs-parent" for item in seen))
+        self.assertTrue(all(item["binary"] == str(Path("/tmp") / SHA_A) for item in seen))
+        self.assertNotIn(SHA_B, plan)
+        self.assertNotIn("without", plan)
+        self.assertNotIn(" with ", plan)
+        self.assertIn("arm: parent-vs-parent", plan)
+        self.assertIn("cells: 4", plan)
+        arm = json.loads((out / "1" / "arm.json").read_text(encoding="utf-8"))
+        self.assertEqual(arm["arm"], "parent-vs-parent")
+        self.assertEqual(arm["sha"], SHA_A)
+        self.assertEqual(arm["sides"], ["aa-1", "aa-2"])
+        self.assertTrue((out / "1" / "aa-1.jsonl").is_file())
+        self.assertTrue((out / "1" / "aa-2.jsonl").is_file())
+        self.assertFalse((out / "1" / "without.jsonl").exists())
+        self.assertFalse((out / "1" / "with.jsonl").exists())
+
+    def test_parent_noise_summary_is_not_a_harness_delta(self):
+        out = Path(tempfile.mkdtemp())
+        root = out / "1"
+        root.mkdir()
+
+        def row(score):
+            return {
+                "task": "trig-list",
+                "score": score,
+                "success": score == 1,
+                "wall_time_s": 10,
+                "turns": 2,
+                "tokens_input_uncached": 10,
+                "tokens_output": 1,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            }
+
+        (root / "aa-1.jsonl").write_text(json.dumps(row(1)) + "\n", encoding="utf-8")
+        (root / "aa-2.jsonl").write_text(json.dumps(row(0)) + "\n", encoding="utf-8")
+        (root / "arm.json").write_text(json.dumps({
+            "arm": "parent-vs-parent", "sha": SHA_A, "sides": ["aa-1", "aa-2"],
+        }), encoding="utf-8")
+        record = pr_record(self._prs()[0], out)
+        text = render_markdown([record])
+        self.assertEqual(record["comparison"], "parent-vs-parent")
+        self.assertIsNone(record["delta_score"])
+        self.assertEqual(record["noise"]["score_span"], 1.0)
+        self.assertIn("# Parent-vs-parent noise", text)
+        self.assertIn("| aa-1 |", text)
+        self.assertIn("| aa-2 |", text)
+        self.assertIn(SHA_A, text)
+        self.assertNotIn("with minus without", text)
+        self.assertNotIn("| without |", text)
+        self.assertNotIn("| with |", text)
+        parsed = list(csv.DictReader(io.StringIO(render_csv([record]))))
+        self.assertEqual(parsed[0]["comparison"], "parent-vs-parent")
+        self.assertEqual(parsed[0]["delta_score"], "")
+
+    def test_task_map_dry_run_selects_each_prs_trigger_task(self):
+        import contextlib
+        from thesis.ab.run_ab import main
+        task_map = ROOT / "thesis" / "ab" / "fixtures" / "trigger-tasks.csv"
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE),
+                "--pr", "22390,3115",
+                "--task-map", str(task_map),
+                "--trials", "5",
+                "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        text = buf.getvalue()
+        self.assertIn("22390 without", text)
+        self.assertIn("tasks trig-bash-limits", text)
+        self.assertIn("3115 without", text)
+        self.assertIn("trig-list", text)
+        self.assertIn("cells: 20", text)
+        self.assertNotIn("arm: parent-vs-parent", text)
+
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE),
+                "--pr", "22390",
+                "--task-map", str(task_map),
+                "--trials", "5",
+                "--aa",
+                "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        text = buf.getvalue()
+        self.assertIn("arm: parent-vs-parent", text)
+        self.assertIn("sides aa-1,aa-2", text)
+        self.assertIn("trig-bash-limits", text)
+        self.assertIn("cells: 10", text)
+        self.assertNotIn("without", text)
+        self.assertNotIn(" with ", text)
+        parent = next(item.without_sha for item in parse_prs(FIXTURE) if item.pr == "22390")
+        merge = next(item.with_sha for item in parse_prs(FIXTURE) if item.pr == "22390")
+        self.assertIn(parent, text)
+        self.assertNotIn(merge, text)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE), "--pr", "2334", "--task-map", str(task_map), "--dry-run",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("needs fixture", err.getvalue())
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE),
+                "--tasks", "make-it-run",
+                "--task-map", str(task_map),
+                "--dry-run",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("--tasks or --task-map", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

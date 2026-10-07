@@ -485,6 +485,57 @@ class TestProviderSdkPin(unittest.TestCase):
             else:
                 os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = saved
 
+    def test_evidence_copy_keeps_each_storage_layout(self):
+        import obench.adapters.opencode as opencode
+        saved = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR")
+        try:
+            modern_home = Path(tempfile.mkdtemp())
+            modern = modern_home / "opencode"
+            (modern / "storage" / "session").mkdir(parents=True)
+            (modern / "storage" / "session" / "part.json").write_text(
+                '{"tool":"read"}', encoding="utf-8",
+            )
+            (modern / "log").mkdir()
+            (modern / "log" / "opencode.log").write_text("INFO service=session\n", encoding="utf-8")
+            (modern / "opencode.db").write_bytes(b"sqlite-session")
+            modern_dest = Path(tempfile.mkdtemp())
+            os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(modern_dest)
+            opencode._preserve_opencode_evidence({"XDG_DATA_HOME": str(modern_home)})
+            self.assertEqual(
+                (modern_dest / "storage" / "session" / "part.json").read_text(encoding="utf-8"),
+                '{"tool":"read"}',
+            )
+            self.assertIn(
+                "service=session",
+                (modern_dest / "log" / "opencode.log").read_text(encoding="utf-8"),
+            )
+            self.assertEqual((modern_dest / "opencode.db").read_bytes(), b"sqlite-session")
+            self.assertFalse((modern_dest / "project").exists())
+
+            old_home = Path(tempfile.mkdtemp())
+            project = old_home / "opencode" / "project" / "proj123"
+            (project / "storage" / "session").mkdir(parents=True)
+            (project / "storage" / "session" / "part.json").write_text(
+                '{"tool": "list"}', encoding="utf-8",
+            )
+            (project / "log").mkdir()
+            (project / "log" / "dev.log").write_text("old-session\n", encoding="utf-8")
+            old_dest = Path(tempfile.mkdtemp())
+            os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(old_dest)
+            opencode._preserve_opencode_evidence({"XDG_DATA_HOME": str(old_home)})
+            copied = old_dest / "project" / "proj123" / "storage" / "session" / "part.json"
+            self.assertEqual(copied.read_text(encoding="utf-8"), '{"tool": "list"}')
+            self.assertEqual(
+                (old_dest / "project" / "proj123" / "log" / "dev.log").read_text(encoding="utf-8"),
+                "old-session\n",
+            )
+            self.assertFalse((old_dest / "storage").exists())
+        finally:
+            if saved is None:
+                os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
+            else:
+                os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = saved
+
     def test_exec_failure_is_infra_not_incompatible(self):
         from thesis.ab.compat import assess
         missing = Path(tempfile.mkdtemp()) / "opencode"

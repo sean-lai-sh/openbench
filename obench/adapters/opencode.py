@@ -386,12 +386,25 @@ def _attach_sdk_drift(row, drift):
     return row
 
 
+def _copy_evidence_tree(src, dest):
+    """Copy one evidence directory. Missing sources are skipped."""
+    if not os.path.isdir(src):
+        return
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copytree(src, dest, dirs_exist_ok=True)
+
+
 def _preserve_opencode_evidence(env):
     """Copy session storage and logs out before the isolated home is deleted.
 
     ``OBENCH_OPENCODE_EVIDENCE_DIR`` is set by the A/B runner when a cell
-    should keep ``$XDG_DATA_HOME/opencode/storage`` and ``log``. A copy
-    failure must not change the cell result.
+    should keep OpenCode session evidence. Current builds store it at
+    ``$XDG_DATA_HOME/opencode/storage`` and ``log``. Builds from roughly
+    PR 623 through PR 2334 store sessions at
+    ``opencode/project/<projectID>/storage`` instead, and print no tool
+    output, so that tree has to be copied too. Later builds also keep a
+    SQLite session at ``opencode/opencode.db``. A copy failure must not
+    change the cell result.
     """
     dest_root = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR", "").strip()
     if not dest_root:
@@ -399,13 +412,39 @@ def _preserve_opencode_evidence(env):
     base = os.path.join(env.get("XDG_DATA_HOME") or "", "opencode")
     try:
         os.makedirs(dest_root, mode=0o700, exist_ok=True)
-        for name in ("storage", "log"):
-            src = os.path.join(base, name)
-            if not os.path.isdir(src):
-                continue
-            shutil.copytree(src, os.path.join(dest_root, name), dirs_exist_ok=True)
     except OSError:
         return
+    for name in ("storage", "log"):
+        try:
+            _copy_evidence_tree(os.path.join(base, name), os.path.join(dest_root, name))
+        except OSError:
+            continue
+    project_root = os.path.join(base, "project")
+    if os.path.isdir(project_root):
+        try:
+            entries = sorted(os.listdir(project_root))
+        except OSError:
+            entries = []
+        for entry in entries:
+            src_dir = os.path.join(project_root, entry)
+            if not os.path.isdir(src_dir):
+                continue
+            for name in ("storage", "log"):
+                try:
+                    _copy_evidence_tree(
+                        os.path.join(src_dir, name),
+                        os.path.join(dest_root, "project", entry, name),
+                    )
+                except OSError:
+                    continue
+    for name in ("opencode.db", "opencode.db-wal", "opencode.db-shm"):
+        src = os.path.join(base, name)
+        if not os.path.isfile(src):
+            continue
+        try:
+            shutil.copy2(src, os.path.join(dest_root, name))
+        except OSError:
+            continue
 
 
 def _proxy_override():

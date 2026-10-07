@@ -21,6 +21,11 @@ class Side(Enum):
     WITH = "with"
 
 
+# Parent-vs-parent replicas. These names are not without/with, so a summary
+# cannot treat the noise arm as a harness A/B.
+AA_SIDES = ("aa-1", "aa-2")
+
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _PR = re.compile(r"^[A-Za-z0-9._-]+$")
 

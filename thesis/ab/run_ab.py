@@ -11,6 +11,7 @@ score.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import secrets
 import sys
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from dataclasses import dataclass
 from pathlib import Path
 
 from obench.validate_tasks import build_task_roots, discover_tasks
@@ -27,7 +29,7 @@ from thesis.ab.compat import assess
 from thesis.ab.durable import exclusive_lock, publish_text
 from thesis.ab.errors import BuildError, Incompatible
 from thesis.ab.harness import harness_name
-from thesis.ab.prs import PrListError, Side, parse_prs, select_prs
+from thesis.ab.prs import AA_SIDES, PrListError, Side, parse_prs, select_prs
 from thesis.ab.sdk_pin import ai_version_for_tree, anthropic_pin_for_tree, install_alias_for_tree
 from thesis.ab.summarize import billable_tokens, row_cost
 from thesis.ab.toolchain import bun_requirement
@@ -69,12 +71,20 @@ def core_task_names(tasks_dir: Path | None = None) -> tuple[str, ...]:
     return tuple(name for _tier, name, _path in discover_tasks(roots))
 
 
+def is_trigger_task(name: str) -> bool:
+    """Trigger copies are opt-in. The stock comparison stays the original core set."""
+    return name.startswith("trig-")
+
+
 def resolve_tasks(wanted: list[str] | None, tasks_dir: Path | None = None) -> tuple[str, ...]:
     available = core_task_names(tasks_dir)
     if not available:
         raise RunError("no core tasks found (directories under tasks/ with checker.sh)")
     if not wanted:
-        return available
+        chosen = tuple(name for name in available if not is_trigger_task(name))
+        if not chosen:
+            raise RunError("no core tasks found (directories under tasks/ with checker.sh)")
+        return chosen
     asked: list[str] = []
     for chunk in wanted:
         asked.extend(piece.strip() for piece in chunk.split(",") if piece.strip())
@@ -82,12 +92,91 @@ def resolve_tasks(wanted: list[str] | None, tasks_dir: Path | None = None) -> tu
     if missing:
         raise RunError("unknown task(s): " + ", ".join(missing))
     seen: set[str] = set()
-    chosen: list[str] = []
+    chosen_list: list[str] = []
     for name in asked:
         if name not in seen:
             seen.add(name)
-            chosen.append(name)
-    return tuple(chosen)
+            chosen_list.append(name)
+    return tuple(chosen_list)
+
+
+@dataclass(frozen=True)
+class TriggerTasks:
+    pr: str
+    tasks: tuple[str, ...]
+    status: str
+
+
+def load_task_map(path: Path) -> dict[str, TriggerTasks]:
+    """Load ``pr,task,status`` rows. ``task`` may list several names separated by commas."""
+    path = Path(path)
+    if not path.is_file():
+        raise RunError(f"task map not found: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RunError(f"task map not readable: {path}: {exc}") from exc
+    reader = csv.DictReader(text.splitlines())
+    fields = set(reader.fieldnames or [])
+    missing = {"pr", "task", "status"} - fields
+    if missing:
+        raise RunError(f"{path}: missing column(s): {', '.join(sorted(missing))}")
+    found: dict[str, TriggerTasks] = {}
+    for index, row in enumerate(reader, start=2):
+        pr = str(row.get("pr") or "").strip()
+        if not pr:
+            raise RunError(f"{path}:{index}: missing pr")
+        if pr in found:
+            raise RunError(f"{path}:{index}: duplicate PR {pr}")
+        status = " ".join(str(row.get("status") or "").split())
+        if not status:
+            raise RunError(f"{path}:{index}: missing status")
+        tasks = tuple(
+            piece.strip()
+            for piece in str(row.get("task") or "").split(",")
+            if piece.strip()
+        )
+        found[pr] = TriggerTasks(pr=pr, tasks=tasks, status=status)
+    if not found:
+        raise RunError(f"{path}: no task-map rows")
+    return found
+
+
+def select_task_map(prs, mapping: dict[str, TriggerTasks], path: Path, explicit: bool):
+    """Return ``(prs, {pr: tasks})`` for triggerable rows.
+
+    An explicit ``--pr`` that is not triggerable is an error. A full list
+    skips those rows and says so.
+    """
+    chosen = []
+    by_pr: dict[str, tuple[str, ...]] = {}
+    for pr in prs:
+        row = mapping.get(pr.pr)
+        if row is None:
+            raise RunError(f"{pr.pr} is not listed in {path}")
+        if row.status != "triggerable":
+            if explicit:
+                raise RunError(
+                    f"{pr.pr} is {row.status} in {path}; it has no runnable trigger task"
+                )
+            print(f"skip {pr.pr}: {row.status}", file=sys.stderr)
+            continue
+        if not row.tasks:
+            raise RunError(f"{pr.pr} is triggerable in {path} but names no task")
+        by_pr[pr.pr] = row.tasks
+        chosen.append(pr)
+    if not chosen:
+        raise RunError(f"{path}: no triggerable PRs to run")
+    return tuple(chosen), by_pr
+
+
+def tasks_for(tasks, pr: str) -> tuple[str, ...]:
+    if isinstance(tasks, dict):
+        chosen = tasks.get(pr)
+        if not chosen:
+            raise RunError(f"no tasks for {pr}")
+        return tuple(chosen)
+    return tuple(tasks)
 
 
 def task_component(task: str) -> str:
@@ -110,31 +199,51 @@ def read_cell(path: Path) -> dict | None:
     return data
 
 
-def plan_cells(prs, tasks: tuple[str, ...], trials: int) -> list[dict]:
+def plan_cells(prs, tasks, trials: int, *, aa: bool = False) -> list[dict]:
     cells = []
+    labels = AA_SIDES if aa else (Side.WITHOUT.value, Side.WITH.value)
     for pr in prs:
-        for side in (Side.WITHOUT, Side.WITH):
-            for task in tasks:
+        chosen = tasks_for(tasks, pr.pr)
+        for label in labels:
+            sha = pr.without_sha if aa or label == Side.WITHOUT.value else pr.with_sha
+            for task in chosen:
                 for trial in range(1, trials + 1):
                     cells.append({
                         "pr": pr.pr,
                         "repo": pr.repo,
-                        "side": side.value,
-                        "sha": pr.sha_for(side),
+                        "side": label,
+                        "sha": sha,
                         "task": task,
                         "trial": trial,
+                        "arm": "parent-vs-parent" if aa else "ab",
                     })
     return cells
 
 
-def format_plan(prs, tasks: tuple[str, ...], trials: int) -> str:
-    lines = [
-        f"{pr.pr} without {pr.without_sha} with {pr.with_sha}"
-        for pr in prs
-    ]
-    lines.append("tasks: " + ",".join(tasks))
+def format_plan(prs, tasks, trials: int, *, aa: bool = False) -> str:
+    lines = []
+    for pr in prs:
+        chosen = ",".join(tasks_for(tasks, pr.pr))
+        if aa:
+            lines.append(
+                f"{pr.pr} parent-vs-parent {pr.without_sha} "
+                f"sides {','.join(AA_SIDES)} tasks {chosen}"
+            )
+        elif isinstance(tasks, dict):
+            lines.append(
+                f"{pr.pr} without {pr.without_sha} with {pr.with_sha} tasks {chosen}"
+            )
+        else:
+            lines.append(f"{pr.pr} without {pr.without_sha} with {pr.with_sha}")
+    if isinstance(tasks, dict):
+        lines.append("tasks: per-pr")
+    else:
+        lines.append("tasks: " + ",".join(tasks))
     lines.append(f"trials: {trials}")
-    lines.append(f"cells: {len(prs) * 2 * len(tasks) * trials}")
+    cell_count = sum(2 * len(tasks_for(tasks, pr.pr)) * trials for pr in prs)
+    lines.append(f"cells: {cell_count}")
+    if aa:
+        lines.append("arm: parent-vs-parent")
     return "\n".join(lines) + "\n"
 
 
@@ -786,14 +895,27 @@ def _needs_proxy(prs, model_route: str) -> bool:
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
-          transcripts_dir=None):
-    """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``."""
+          transcripts_dir=None, aa: bool = False):
+    """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
+
+    ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
+    ``aa`` runs the parent SHA on ``aa-1`` and ``aa-2``. Both sides share
+    the prepared binary for that SHA.
+    """
     out_dir = Path(out_dir)
     cache = Path(cache).resolve()
-    tasks = tuple(tasks)
-    plan = format_plan(prs, tasks, trials)
+    if not isinstance(tasks, dict):
+        tasks = tuple(tasks)
+    plan = format_plan(prs, tasks, trials, aa=aa)
     if dry_run:
         return plan, 0, None
+    if aa:
+        for pr in prs:
+            publish_text(out_dir / pr.pr / "arm.json", json.dumps({
+                "arm": "parent-vs-parent",
+                "sha": pr.without_sha,
+                "sides": list(AA_SIDES),
+            }, sort_keys=True))
     own_assess = assess_fn is None
     build_fn = build_fn or _default_build
     worker = worker or execute_cell
@@ -803,7 +925,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     adapters = _adapters_dir()
     prepared: dict[tuple[str, str], dict] = {}
     pending = []
-    for spec in plan_cells(prs, tasks, trials):
+    for spec in plan_cells(prs, tasks, trials, aa=aa):
         path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
         if read_cell(path) is not None:
             _absorb_finished(spec, out_dir, prepared)
@@ -977,6 +1099,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("prs", type=Path, help="PR list CSV or JSONL")
     parser.add_argument("--pr", action="append", default=[], help="PR id, or comma-separated ids")
     parser.add_argument("--tasks", action="append", default=[], help="task name, or comma-separated names")
+    parser.add_argument(
+        "--task-map",
+        type=Path,
+        default=None,
+        help=(
+            "CSV (pr,task,status) of per-PR trigger tasks. "
+            "Replaces the default task set. --tasks still selects one set for every PR."
+        ),
+    )
+    parser.add_argument(
+        "--aa",
+        action="store_true",
+        help=(
+            "Parent-vs-parent noise arm. Run the parent build on aa-1 and aa-2. "
+            "Not a without/with harness comparison. Both sides reuse that parent binary."
+        ),
+    )
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--model", default="claude-opus-5-5")
@@ -1010,9 +1149,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_cost_usd is not None and args.max_cost_usd < 0:
         print("error: --max-cost-usd must be >= 0", file=sys.stderr)
         return 2
+    if args.tasks and args.task_map is not None:
+        print("error: pass --tasks or --task-map, not both", file=sys.stderr)
+        return 2
     try:
         prs = select_prs(parse_prs(args.prs), args.pr or None)
-        tasks = resolve_tasks(args.tasks or None)
+        if args.task_map is not None:
+            mapping = load_task_map(args.task_map)
+            prs, tasks = select_task_map(prs, mapping, args.task_map, explicit=bool(args.pr))
+            resolve_tasks([name for chosen in tasks.values() for name in chosen])
+        else:
+            tasks = resolve_tasks(args.tasks or None)
         tasks_dir = _tasks_dir_from_discovery()
         if args.cache is not None:
             cache = args.cache
@@ -1025,7 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
             jobs=args.jobs, model=args.model, timeout_s=args.timeout,
             cache=cache, max_cost_usd=args.max_cost_usd, dry_run=args.dry_run,
             tasks_dir=tasks_dir, model_route=args.model_route,
-            transcripts_dir=args.transcripts_dir,
+            transcripts_dir=args.transcripts_dir, aa=args.aa,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
