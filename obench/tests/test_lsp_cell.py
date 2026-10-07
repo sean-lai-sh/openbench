@@ -117,6 +117,29 @@ class LspProvisionTests(unittest.TestCase):
             )
         self.assertIn("SDK 10", str(caught.exception))
 
+    def test_roslyn_already_on_path_skips_install(self):
+        ready = Path(self.tmp.name) / "ready"
+        ready.mkdir()
+        _write(ready, "roslyn-language-server", "#!/bin/sh\n")
+        self.env["PATH"] = str(ready) + os.pathsep + "/usr/bin"
+        notes = provision_language_servers(self.env, str(self.work), ["dotnet"])
+        self.assertIn("already", notes[0])
+        self.assertFalse((self.data / "opencode" / "bin" / "roslyn-language-server").exists())
+
+    def test_dotnet_root_is_used_when_path_misses_the_binary(self):
+        self.env["DOTNET_ROOT"] = str(self.dotnet.parent)
+        notes = provision_language_servers(self.env, str(self.work), ["dotnet"])
+        self.assertIn("roslyn", notes[0])
+        self.assertTrue((self.data / "opencode" / "bin" / "roslyn-language-server").is_file())
+
+    def test_missing_dotnet_says_the_cell_cannot_run(self):
+        with self.assertRaises(LspProvisionError) as caught:
+            provision_language_servers(self.env, str(self.work), ["dotnet"])
+        message = str(caught.exception)
+        self.assertIn("SDK 10", message)
+        self.assertIn("cannot", message)
+        self.assertIn("--tool-path", message)
+
     def test_unknown_server_is_an_error(self):
         with self.assertRaises(LspProvisionError):
             provision_language_servers(self.env, str(self.work), ["vue"], bun=str(self.bin))

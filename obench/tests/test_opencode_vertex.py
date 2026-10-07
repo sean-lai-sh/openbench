@@ -116,7 +116,7 @@ class TestVertexFlags(unittest.TestCase):
         self.work = Path(self.tmp.name) / "work"
         self.work.mkdir()
 
-    def _run(self, help_text, extra=None):
+    def _run(self, help_text, extra=None, instruction="ping"):
         with EnvPatch() as env:
             env["OBENCH_OPENCODE_BIN"] = str(self.binary)
             env["FAKE_HELP"] = help_text
@@ -133,9 +133,10 @@ class TestVertexFlags(unittest.TestCase):
             env.pop("OBENCH_OPENCODE_GLOBAL_AGENTS", None)
             env.pop("OBENCH_OPENCODE_LSP", None)
             env.pop("OBENCH_OPENCODE_BUN", None)
+            env.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
             if extra:
                 env.update(extra)
-            return self.openc.run("ping", str(self.work), "claude-opus-5-5", 30)
+            return self.openc.run(instruction, str(self.work), "claude-opus-5-5", 30)
 
     def _dump(self):
         return json.loads(self.dump.read_text(encoding="utf-8"))
@@ -250,6 +251,19 @@ class TestVertexFlags(unittest.TestCase):
             self._dump()["agents"],
             "Prefix every final answer with GLOBAL-RULE.\n",
         )
+
+    def test_webfetch_placeholder_becomes_the_local_url(self):
+        url = "http://127.0.0.1:9/color.png"
+        res = self._run(
+            HELP_MODERN,
+            {"OBENCH_OPENCODE_WEBFETCH_URL": url},
+            instruction="Use webfetch on __OBENCH_WEBFETCH_URL__ and write the colour.",
+        )
+        self.assertTrue(res["completed"], res.get("error"))
+        prompt = res["cmd"][-1]
+        self.assertIn(url, prompt)
+        self.assertNotIn("__OBENCH_WEBFETCH_URL__", prompt)
+        self.assertEqual(self.openc._WEBFETCH_PLACEHOLDER, "__OBENCH_WEBFETCH_URL__")
 
     def test_missing_lsp_toolchain_fails_the_cell(self):
         res = self._run(HELP_MODERN, {

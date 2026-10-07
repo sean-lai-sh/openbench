@@ -6,7 +6,10 @@ OpenCode looks up pyright with ``bun install`` under
 ``roslyn-language-server``, which current NuGet builds install only on the
 .NET 10 SDK. OpenCode's own installer uses ``dotnet tool install --global``
 and then looks in the data bin, so this helper installs with ``--tool-path``
-into that bin and puts it on ``PATH``.
+into that bin and puts it on ``PATH``. A cell whose PATH has no .NET 10 SDK,
+and no ``DOTNET_ROOT`` pointing at one, cannot start this server: the helper
+raises and the adapter returns ``completed: false``. SDK 8 and 9 fail the
+tool's package format.
 """
 
 from __future__ import annotations
@@ -117,10 +120,36 @@ def _dotnet_major(dotnet: str, env: dict) -> int:
         raise LspProvisionError(f"dotnet version {text!r} is not numeric") from exc
 
 
+def _dotnet_binary(env: dict, explicit: str | None) -> str | None:
+    if explicit and os.path.isfile(explicit):
+        return explicit
+    found = _which("dotnet", env)
+    if found:
+        return found
+    root = (env.get("DOTNET_ROOT") or "").strip()
+    if root:
+        candidate = os.path.join(root, "dotnet")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def _dotnet(env: dict, dotnet: str | None) -> str:
-    binary = dotnet if dotnet and os.path.isfile(dotnet) else _which("dotnet", env)
+    # OpenCode's C# spawn uses which("roslyn-language-server") first. A hit
+    # skips its own `dotnet tool install --global`, which writes somewhere
+    # other than the data bin it then searches.
+    if _which("roslyn-language-server", env):
+        return "roslyn-language-server already on PATH"
+    binary = _dotnet_binary(env, dotnet)
     if not binary:
-        raise LspProvisionError("dotnet SDK 10 is not on PATH")
+        raise LspProvisionError(
+            "dotnet SDK 10 is not on PATH; this cell cannot install "
+            "roslyn-language-server with --tool-path into "
+            "$XDG_DATA_HOME/opencode/bin. OpenCode's own installer uses "
+            "`dotnet tool install --global` and then looks in that bin, "
+            "which is not where --global writes. "
+            "SDK 8 and 9 cannot install the current tool."
+        )
     major = _dotnet_major(binary, env)
     if major < 10:
         raise LspProvisionError(

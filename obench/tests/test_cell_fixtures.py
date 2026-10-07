@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import json
+import struct
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from thesis.ab.cell_fixtures import (
+    IMAGE_MODALITIES,
+    WEBFETCH_PLACEHOLDER,
     FixtureError,
     apply_context_limit,
+    apply_image_modalities,
+    bind_local_webfetch,
     compaction_overflow,
     compaction_usable,
     parse_options,
@@ -33,7 +39,8 @@ class OptionParseTests(unittest.TestCase):
     def test_known_options_round_trip(self):
         parsed = parse_options(
             "context=72000; fault=sse-server-error; mode=plan; "
-            "permissions=workspace; global-agents=1; lsp=pyright,typescript"
+            "permissions=workspace; global-agents=1; lsp=pyright,typescript; "
+            "modalities=image; webfetch=local"
         )
         self.assertEqual(parsed.context, 72000)
         self.assertEqual(parsed.fault, "sse-server-error")
@@ -41,8 +48,13 @@ class OptionParseTests(unittest.TestCase):
         self.assertEqual(parsed.permissions, "workspace")
         self.assertTrue(parsed.global_agents)
         self.assertEqual(parsed.lsp, ("pyright", "typescript"))
+        self.assertEqual(parsed.modalities, "image")
+        self.assertEqual(parsed.webfetch, "local")
         self.assertIn("context=72000", parsed.as_text())
         self.assertIn("lsp=pyright,typescript", parsed.as_text())
+        self.assertIn("modalities=image", parsed.as_text())
+        self.assertIn("webfetch=local", parsed.as_text())
+        self.assertEqual(parsed.payload()["modalities"], "image")
 
     def test_unknown_duplicate_and_empty_values_are_errors(self):
         for text in (
@@ -56,6 +68,8 @@ class OptionParseTests(unittest.TestCase):
             "global-agents=0",
             "lsp=",
             "lsp=vue",
+            "modalities=pdf",
+            "webfetch=httpbin",
             "bare",
         ):
             with self.subTest(text=text):
@@ -118,6 +132,84 @@ class CompactionTests(unittest.TestCase):
             prepared_config["provider"]["anthropic"]["models"]["claude-opus-5-5"]["limit"]["context"],
             1_000_000,
         )
+
+    def test_image_modalities_copy_the_model_and_keep_the_limit(self):
+        original = anthropic_proxy_config("http://127.0.0.1:9", include_endpoint=True)
+        updated = apply_image_modalities(original)
+        model = original["provider"]["anthropic"]["models"]["claude-opus-5-5"]
+        self.assertNotIn("modalities", model)
+        copied = updated["provider"]["anthropic"]["models"]["claude-opus-5-5"]
+        self.assertEqual(copied["modalities"], IMAGE_MODALITIES)
+        self.assertEqual(copied["limit"]["context"], 1_000_000)
+        self.assertEqual(copied["limit"]["output"], 128000)
+        self.assertEqual(updated["provider"]["anthropic"]["api"], "http://127.0.0.1:9")
+        self.assertIn("image", copied["modalities"]["input"])
+        self.assertEqual(copied["modalities"]["output"], ["text"])
+
+    def test_empty_config_gets_an_image_capable_proxy_model(self):
+        updated = apply_image_modalities({})
+        model = updated["provider"]["anthropic"]["models"]["claude-opus-5-5"]
+        self.assertEqual(model["modalities"], IMAGE_MODALITIES)
+        self.assertEqual(model["limit"]["output"], 128000)
+
+    def test_fill_applies_modalities_without_touching_the_prepared_config(self):
+        prepared_config = anthropic_proxy_config("http://127.0.0.1:9", include_endpoint=False)
+        prepared = {
+            "binary": "/bin/true",
+            "config": prepared_config,
+            "permission_config": False,
+            "harness": "opencode",
+            "proxy": {},
+        }
+        spec = {
+            "pr": "3052",
+            "side": "with",
+            "task": "trig-image-read",
+            "trial": 1,
+            "fixtures": {"context": None, "modalities": "image", "lsp": []},
+        }
+        out = Path(tempfile.mkdtemp())
+        filled = _fill(spec, prepared, out, "tasks", "adapters", "claude-opus-5-5", 60)
+        cell = filled["config"]["provider"]["anthropic"]["models"]["claude-opus-5-5"]
+        self.assertEqual(cell["modalities"]["input"], ["text", "image"])
+        self.assertNotIn(
+            "modalities",
+            prepared_config["provider"]["anthropic"]["models"]["claude-opus-5-5"],
+        )
+
+
+def _png_pixel(png: bytes) -> tuple[int, int, int]:
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    pos = 8
+    payload = b""
+    while pos + 8 <= len(png):
+        length = struct.unpack(">I", png[pos:pos + 4])[0]
+        tag = png[pos + 4:pos + 8]
+        data = png[pos + 8:pos + 8 + length]
+        if tag == b"IDAT":
+            payload += data
+        pos += 12 + length
+    raw = zlib.decompress(payload)
+    assert raw[0] == 0
+    return raw[1], raw[2], raw[3]
+
+
+class LocalImageTests(unittest.TestCase):
+    def test_local_png_is_red_and_served_as_an_image(self):
+        env = {}
+        server = bind_local_webfetch(env, {"webfetch": "local"})
+        self.addCleanup(server.close)
+        self.assertEqual(WEBFETCH_PLACEHOLDER, "__OBENCH_WEBFETCH_URL__")
+        url = env["OBENCH_OPENCODE_WEBFETCH_URL"]
+        self.assertTrue(url.startswith("http://127.0.0.1:"))
+        self.assertTrue(url.endswith("/color.png"))
+        with urllib.request.urlopen(url, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertTrue(response.headers["Content-Type"].startswith("image/png"))
+            body = response.read()
+        self.assertEqual(_png_pixel(body), (255, 0, 0))
+        self.assertIsNone(bind_local_webfetch(env, {}))
+        self.assertNotIn("OBENCH_OPENCODE_WEBFETCH_URL", env)
 
 
 class _Upstream(BaseHTTPRequestHandler):

@@ -626,6 +626,21 @@ def _config_body(include_permissions):
     return body
 
 
+_WEBFETCH_PLACEHOLDER = "__OBENCH_WEBFETCH_URL__"
+
+
+def _apply_webfetch_url(instruction):
+    """Swap the fixture token for the cell's local PNG URL.
+
+    The runner sets ``OBENCH_OPENCODE_WEBFETCH_URL`` only for ``webfetch=local``.
+    Other prompts are unchanged.
+    """
+    url = os.environ.get("OBENCH_OPENCODE_WEBFETCH_URL", "").strip()
+    if not url or _WEBFETCH_PLACEHOLDER not in instruction:
+        return instruction
+    return instruction.replace(_WEBFETCH_PLACEHOLDER, url)
+
+
 def _install_global_agents(env):
     """Write the global instruction file PR 24974 orders ahead of the project one."""
     if os.environ.get("OBENCH_OPENCODE_GLOBAL_AGENTS", "").strip() != "1":
@@ -888,6 +903,7 @@ def _isolated_env():
 
 
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
+    instruction = _apply_webfetch_url(instruction)
     auth_source = next((path for path in _AUTH_CANDIDATES if os.path.isfile(path)), None)
     env, iso_home = _isolated_env()
     installed_anthropic = ""

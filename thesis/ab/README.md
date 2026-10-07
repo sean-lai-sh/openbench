@@ -45,7 +45,9 @@ The map's optional `options` column is a semicolon-separated `key=value` list ap
 | `mode` | Passes `opencode run --mode <value>` when that binary's help lists `--mode`. |
 | `permissions=workspace` | Omits `--auto` and `--dangerously-skip-permissions`, and writes the allow-map without `external_directory`. |
 | `global-agents=1` | Writes `$XDG_CONFIG_HOME/opencode/AGENTS.md` (`Prefix every final answer with GLOBAL-RULE.`). |
-| `lsp` | Installs `pyright`, `typescript` (`typescript@5.8.3` into the workspace), and/or `dotnet` (Roslyn onto the cell PATH; needs the .NET 10 SDK) before the cell starts. |
+| `lsp` | Installs `pyright`, `typescript` (`typescript@5.8.3` into the workspace), and/or `dotnet` (Roslyn with `--tool-path` into `$XDG_DATA_HOME/opencode/bin`; needs the .NET 10 SDK on PATH or `DOTNET_ROOT`) before the cell starts. A cell without that SDK fails closed. |
+| `modalities=image` | Sets every model `modalities` to image input and text output, so the read tool attaches a PNG. |
+| `webfetch=local` | Serves a one-pixel red PNG at `http://127.0.0.1:<port>/color.png` (`Content-Type: image/png`) and replaces `__OBENCH_WEBFETCH_URL__` in the prompt. No public image host. |
 
 ```bash
 python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
