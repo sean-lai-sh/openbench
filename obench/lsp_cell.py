@@ -15,11 +15,15 @@ tool's package format.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 
 TYPESCRIPT_SPEC = "typescript@5.8.3"
 _KNOWN = frozenset({"pyright", "typescript", "dotnet"})
+# The runner box keeps the .NET 10 SDK here. OpenCode's C# server is a
+# `dotnet tool` and will not start from an older SDK on PATH.
+_HOST_DOTNET_ROOT = "/home/box/.dotnet"
 
 
 class LspProvisionError(RuntimeError):
@@ -134,7 +138,69 @@ def _dotnet_binary(env: dict, explicit: str | None) -> str | None:
     return None
 
 
+def _apply_host_dotnet(env: dict) -> None:
+    """Put the runner's .NET 10 SDK on PATH when that directory exists."""
+    root = _HOST_DOTNET_ROOT
+    if not root or not os.path.isdir(root):
+        return
+    binary = os.path.join(root, "dotnet")
+    if not os.path.isfile(binary):
+        return
+    env["DOTNET_ROOT"] = root
+    _prepend(env, root)
+
+
+def worktree_root(binary: str) -> str | None:
+    """Return the OpenCode checkout that produced ``binary``, if it is on disk."""
+    if not binary:
+        return None
+    cur = os.path.abspath(binary)
+    for _ in range(12):
+        if os.path.isfile(os.path.join(cur, "packages", "opencode", "src", "config", "lsp.ts")):
+            return cur
+        if os.path.isfile(os.path.join(cur, "packages", "opencode", "src", "lsp", "lsp.ts")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    try:
+        text = open(binary, encoding="utf-8", errors="replace").read(2000)
+    except OSError:
+        return None
+    match = re.search(r"(/\S+)/packages/opencode/src/index\.ts", text)
+    if not match:
+        return None
+    root = match.group(1)
+    marker = os.path.join(root, "packages", "opencode", "src", "config", "lsp.ts")
+    runtime = os.path.join(root, "packages", "opencode", "src", "lsp", "lsp.ts")
+    if os.path.isfile(marker) or os.path.isfile(runtime):
+        return root
+    return None
+
+
+def lsp_boolean_enables_all(root: str) -> bool:
+    """True when this tree disables every LSP unless config ``lsp`` is true.
+
+    PR 23771's schema is ``boolean | record`` and the runtime logs
+    "all LSPs are disabled" when ``cfg.lsp`` is missing. Earlier trees accept
+    ``false | record`` and start builtin servers by default, so writing
+    ``lsp: true`` there is rejected by the strict schema.
+    """
+    schema = os.path.join(root, "packages", "opencode", "src", "config", "lsp.ts")
+    runtime = os.path.join(root, "packages", "opencode", "src", "lsp", "lsp.ts")
+    try:
+        schema_text = open(schema, encoding="utf-8").read()
+        runtime_text = open(runtime, encoding="utf-8").read()
+    except OSError:
+        return False
+    if "Schema.Boolean" not in schema_text:
+        return False
+    return "all LSPs are disabled" in runtime_text
+
+
 def _dotnet(env: dict, dotnet: str | None) -> str:
+    _apply_host_dotnet(env)
     # OpenCode's C# spawn uses which("roslyn-language-server") first. A hit
     # skips its own `dotnet tool install --global`, which writes somewhere
     # other than the data bin it then searches.

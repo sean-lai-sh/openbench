@@ -79,6 +79,92 @@ def cell_proxy_base(base_url: str, cell_id: str) -> str:
     return f"{base}/c/{cell_id}{tail}"
 
 
+_TOKEN_MARKERS = frozenset({
+    "input_tokens", "output_tokens", "prompt_tokens", "completion_tokens",
+    "total_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+    "totalTokens",
+})
+_LEDGER_USAGE_KEYS = frozenset({
+    "input_tokens", "output_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens", "cache_creation",
+    "cache_write_tokens", "cached_input_tokens",
+    "prompt_tokens", "completion_tokens", "total_tokens",
+    "reasoning_output_tokens", "reasoning_tokens",
+    "input_tokens_details", "output_tokens_details",
+    "prompt_tokens_details", "completion_tokens_details",
+    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "prompt_cache_write_tokens",
+    "cacheRead", "cacheWrite", "reasoning", "totalTokens",
+})
+_LEDGER_TIMING_KEYS = frozenset({
+    "started_at", "ended_at", "duration_ms", "latency_ms",
+    "time_to_first_token_ms", "elapsed_ms", "ttft_ms",
+})
+
+
+def _has_token_marker(obj: dict) -> bool:
+    return any(key in obj for key in _TOKEN_MARKERS)
+
+
+def _is_tool_call(obj: dict) -> bool:
+    if obj.get("type") in {"tool_use", "tool_result", "server_tool_use"}:
+        return True
+    return isinstance(obj.get("input"), dict) and "name" in obj
+
+
+def _token_usage(obj) -> dict | None:
+    """Last real token-usage object, skipping tool-call blocks.
+
+    ``extract_usage`` treats a ``tool_use`` block as usage because the block
+    has an ``input`` key. That copies the tool name and arguments into the
+    ledger. A nested ``usage`` object with token fields wins instead.
+    """
+    found = None
+
+    def walk(node) -> None:
+        nonlocal found
+        if isinstance(node, dict):
+            usage = node.get("usage")
+            if isinstance(usage, dict) and _has_token_marker(usage):
+                found = usage
+            elif _has_token_marker(node) and not _is_tool_call(node):
+                found = node
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(obj)
+    return found
+
+
+def _select_usage(obj) -> dict | None:
+    raw = extract_usage(obj)
+    if not isinstance(raw, dict):
+        return None
+    token = _token_usage(obj)
+    return token if token is not None else raw
+
+
+def trim_ledger_usage(usage: dict) -> tuple[dict, dict]:
+    """Keep token usage and timing. Drop tool-call fields.
+
+    Numeric ``input`` / ``output`` stay (the pi token shape). A tool's
+    ``input`` object does not. An empty usage dict is still a row so the
+    request count matches the pre-trim ledger.
+    """
+    kept: dict = {}
+    timing: dict = {}
+    for key, value in usage.items():
+        if key in ("input", "output") and isinstance(value, (int, float)) and not isinstance(value, bool):
+            kept[key] = value
+        elif key in _LEDGER_TIMING_KEYS:
+            timing[key] = value
+        elif key in _LEDGER_USAGE_KEYS:
+            kept[key] = value
+    return kept, timing
+
+
 def _usage_from_block(block: bytes) -> dict | None:
     data_lines = []
     for line in block.splitlines():
@@ -93,8 +179,7 @@ def _usage_from_block(block: bytes) -> dict | None:
         obj = json.loads(data)
     except json.JSONDecodeError:
         return None
-    usage = extract_usage(obj)
-    return usage if isinstance(usage, dict) else None
+    return _select_usage(obj)
 
 
 def drain_sse(buf: bytes) -> tuple[bytes, list[dict]]:
@@ -153,7 +238,7 @@ def _usage_from_json(payload: bytes) -> dict | None:
         obj = json.loads(payload.decode("utf-8", "replace"))
     except json.JSONDecodeError:
         return None
-    usage = extract_usage(obj)
+    usage = _select_usage(obj)
     return merge_message_usage([usage]) if isinstance(usage, dict) else None
 
 
@@ -210,7 +295,10 @@ def note_cell_bytes(directory: Path | None, cell_id: str | None, n: int) -> None
 
 def _append_ledger(directory: Path, cell_id: str, usage: dict) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
-    line = json.dumps({"record_type": "request", "usage": usage}, sort_keys=True) + "\n"
+    kept, timing = trim_ledger_usage(usage)
+    row = {"record_type": "request", "usage": kept}
+    row.update(timing)
+    line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
@@ -318,11 +406,67 @@ def _message_route(route: str) -> bool:
     return path.endswith("/messages")
 
 
+def _system_text(data: dict) -> str:
+    parts: list[str] = []
+    system = data.get("system")
+    if isinstance(system, str):
+        parts.append(system)
+    elif isinstance(system, list):
+        for block in system:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+    return "\n".join(parts)
+
+
+def _is_main_loop_request(raw: bytes) -> bool:
+    """True for the agent loop, false for title generation and other tiny calls.
+
+    Title generation sends the title system prompt, a small max token budget,
+    and no tools. The agent loop sends a tools array or a long system prompt.
+    """
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    tools = data.get("tools")
+    if isinstance(tools, list) and tools:
+        return True
+    text = _system_text(data).lower()
+    if "title generator" in text or "never use tools" in text:
+        return False
+    max_tokens = data.get("max_tokens")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, (int, float)):
+        max_tokens = data.get("max_output_tokens")
+    if (
+        isinstance(max_tokens, (int, float))
+        and not isinstance(max_tokens, bool)
+        and max_tokens <= 64
+    ):
+        return False
+    return len(text) >= 200
+
+
 class Proxy:
     def __init__(self, httpd: ThreadingHTTPServer, thread: threading.Thread):
         self._httpd = httpd
         self._thread = thread
-        self._faults: dict[str, str] = {}
+        self._faults: dict[str, dict] = {}
         self._fault_lock = threading.Lock()
 
     @property
@@ -330,23 +474,40 @@ class Proxy:
         host, port = self._httpd.server_address
         return f"http://{host}:{port}"
 
-    def arm_fault(self, cell_id: str, kind: str) -> None:
-        """Return ``kind`` for the next ``/v1/messages`` POST from ``cell_id``.
+    def arm_fault(self, cell_id: str, kind: str, count: int = 1) -> None:
+        """Return ``kind`` for the next ``count`` main-loop messages posts.
 
-        Token-count posts are left alone. A second messages post is forwarded.
+        Token-count posts, title generation, and other small no-tool requests
+        are forwarded and do not consume the count. After ``count`` main-loop
+        posts, later posts are forwarded.
         """
         if kind not in FAULTS:
             raise ProxyError(f"unknown fault {kind!r}")
         if not cell_id:
             raise ProxyError("fault injection needs a cell id")
+        try:
+            left = int(count)
+        except (TypeError, ValueError) as exc:
+            raise ProxyError(f"fault count must be an integer, got {count!r}") from exc
+        if left < 1:
+            raise ProxyError("fault count must be >= 1")
         with self._fault_lock:
-            self._faults[cell_id] = kind
+            self._faults[cell_id] = {"kind": kind, "left": left}
 
-    def take_fault(self, cell_id: str | None, route: str) -> str | None:
+    def take_fault(self, cell_id: str | None, route: str, body: bytes = b"") -> str | None:
         if not cell_id or not _message_route(route):
             return None
+        if not _is_main_loop_request(body):
+            return None
         with self._fault_lock:
-            return self._faults.pop(cell_id, None)
+            slot = self._faults.get(cell_id)
+            if not slot:
+                return None
+            slot["left"] -= 1
+            kind = slot["kind"]
+            if slot["left"] <= 0:
+                self._faults.pop(cell_id, None)
+            return kind
 
     def close(self) -> None:
         self._httpd.shutdown()
@@ -383,7 +544,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             cell, route = split_cell_path(self.path)
             if ledger is not None and cell and raw:
                 note_cell_bytes(ledger, cell, len(raw))
-            fault = holder["proxy"].take_fault(cell, route)
+            fault = holder["proxy"].take_fault(cell, route, raw)
             if fault:
                 self._send_fault(fault)
                 return

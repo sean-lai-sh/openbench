@@ -1,2 +1,1 @@
-Use webfetch on __OBENCH_WEBFETCH_URL__ and write the image's dominant colour (one word) to answer.txt.
-
+Use webfetch on __OBENCH_WEBFETCH_URL__ and write the image's dominant colour as one name from this list: red, orange, yellow, green, cyan, blue, purple, pink, brown, grey. Answer with that single name in answer.txt.

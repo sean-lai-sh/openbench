@@ -465,7 +465,13 @@ def _preserve_opencode_evidence(env):
                     )
                 except OSError:
                     continue
-    for name in ("opencode.db", "opencode.db-wal", "opencode.db-shm"):
+    try:
+        names = os.listdir(base)
+    except OSError:
+        names = []
+    for name in names:
+        if not _is_session_db(name):
+            continue
         src = os.path.join(base, name)
         if not os.path.isfile(src):
             continue
@@ -473,6 +479,69 @@ def _preserve_opencode_evidence(env):
             shutil.copy2(src, os.path.join(dest_root, name))
         except OSError:
             continue
+
+
+def _is_session_db(name):
+    """``opencode.db`` and channel files such as ``opencode-local.db``.
+
+    A local build's default channel is ``local``, so the session database is
+    ``opencode-local.db`` (plus ``-wal`` / ``-shm``) rather than ``opencode.db``.
+    """
+    if name in {"opencode.db", "opencode.db-wal", "opencode.db-shm"}:
+        return True
+    if not name.startswith("opencode-"):
+        return False
+    return name.endswith(".db") or name.endswith(".db-wal") or name.endswith(".db-shm")
+
+
+def _assemble_text_deltas(text):
+    """Join ``message.part.delta`` text fields into one string.
+
+    Some builds stream the final answer as deltas and exit before a finished
+    ``type=text`` part, so the transcript never contains GLOBAL-RULE or
+    PROJECT-RULE as a single event. The assembled string is what the evidence
+    grep can match.
+    """
+    parts = []
+    for line in (text or "").splitlines():
+        raw = line.strip()
+        if not raw or raw[0] not in "{[":
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        nodes = [obj]
+        if isinstance(obj, dict) and isinstance(obj.get("properties"), dict):
+            nodes.append(obj["properties"])
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            kind = str(node.get("type") or "")
+            field = node.get("field")
+            delta = node.get("delta")
+            if not isinstance(delta, str):
+                continue
+            if kind in {"message.part.delta", "part.delta"} or field == "text":
+                parts.append(delta)
+    return "".join(parts)
+
+
+def _write_agent_output(text):
+    """Keep the agent stdout next to the copied session so checkers can read it."""
+    dest_root = os.environ.get("OBENCH_OPENCODE_EVIDENCE_DIR", "").strip()
+    if not dest_root or not text:
+        return
+    try:
+        os.makedirs(dest_root, mode=0o700, exist_ok=True)
+        with open(os.path.join(dest_root, "agent-output.txt"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        assembled = _assemble_text_deltas(text)
+        if assembled:
+            with open(os.path.join(dest_root, "streamed-text.txt"), "w", encoding="utf-8") as fh:
+                fh.write(assembled)
+    except OSError:
+        return
 
 
 def _proxy_override():
@@ -633,6 +702,23 @@ def _apply_disabled_tools(body):
         tools[name] = False
 
 
+def _apply_lsp_enable(body):
+    """Turn LSP on when this tree treats a missing ``lsp`` key as off.
+
+    ``OBENCH_OPENCODE_LSP`` names the servers to install. Trees whose schema
+    is ``boolean | record`` still log "all LSPs are disabled" until the config
+    sets ``lsp`` to true. Trees that reject boolean true are left unchanged.
+    """
+    if not os.environ.get("OBENCH_OPENCODE_LSP", "").strip():
+        return
+    if "lsp" in body:
+        return
+    from obench.lsp_cell import lsp_boolean_enables_all, worktree_root
+    root = worktree_root(_exe())
+    if root and lsp_boolean_enables_all(root):
+        body["lsp"] = True
+
+
 def _config_body(include_permissions):
     body = {}
     raw = os.environ.get("OBENCH_OPENCODE_CONFIG_JSON", "").strip()
@@ -646,6 +732,7 @@ def _config_body(include_permissions):
         # the binary has --auto. That flag is omitted for this cell.
         body["permission"] = dict(_WORKSPACE_PERMISSIONS)
         _apply_disabled_tools(body)
+        _apply_lsp_enable(body)
         return body
     flag = os.environ.get("OBENCH_OPENCODE_PERMISSION_CONFIG", "").strip()
     write_permissions = include_permissions and flag != "0"
@@ -654,6 +741,7 @@ def _config_body(include_permissions):
     if write_permissions:
         body.setdefault("permission", dict(_ALLOW_PERMISSIONS))
     _apply_disabled_tools(body)
+    _apply_lsp_enable(body)
     return body
 
 
@@ -1002,6 +1090,10 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
 
     def _finish(row):
         _observe()
+        mode = os.environ.get("OBENCH_OPENCODE_MODE", "").strip()
+        if mode:
+            row["agent_mode"] = mode
+        _write_agent_output(row.get("full_output") or row.get("output_tail") or "")
         return _stamp(_attach_sdk_drift(row, observed["drift"]))
     exe = _exe()
     try:

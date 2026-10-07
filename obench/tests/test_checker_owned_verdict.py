@@ -81,6 +81,20 @@ class CheckerOwnedVerdictTests(unittest.TestCase):
 
     def test_predicate_requires_all_three_conditions(self):
         self.assertTrue(fc.has_checker_owned_verdict(_row()))
+
+    def test_plan_mode_text_is_a_verdict_without_file_changes(self):
+        row = _row(
+            tokens_output=0, tokens=0, turns=0, workspace_changed=False, agent_mode="plan",
+        )
+        text = (
+            'Plan: change settings.json key "rat" to rate so the report prints Total: 5.0\n'
+            "Traceback (most recent call last):\nTypeError\n"
+        )
+        self.assertEqual(fc.classify_failure(row, text), "wrong_answer")
+        silent = _row(
+            tokens_output=0, tokens=0, turns=None, workspace_changed=False, agent_mode="plan",
+        )
+        self.assertEqual(fc.classify_failure(silent, ""), "infra")
         self.assertFalse(fc.has_checker_owned_verdict(_row(completed=False)))
         self.assertFalse(fc.has_checker_owned_verdict(_row(checker_exit="timeout")))
         self.assertFalse(fc.has_checker_owned_verdict(_row(turns=0, tokens_output=0)))

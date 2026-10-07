@@ -454,6 +454,8 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_LSP",
         "OBENCH_OPENCODE_BUN",
         "OBENCH_OPENCODE_WEBFETCH_URL",
+        "OBENCH_WEBFETCH_COLOUR",
+        "OBENCH_WEBFETCH_SEED",
         "OBENCH_OPENCODE_DISABLE_TOOLS",
         "OBENCH_NO_PROGRESS_S",
         "OBENCH_CELL_LEDGER",
@@ -548,6 +550,8 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_LSP", None)
             os.environ.pop("OBENCH_OPENCODE_BUN", None)
             os.environ.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
+            os.environ.pop("OBENCH_WEBFETCH_COLOUR", None)
+            os.environ.pop("OBENCH_WEBFETCH_SEED", None)
             os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
             os.environ.pop("OBENCH_NO_PROGRESS_S", None)
             os.environ.pop("OBENCH_CELL_LEDGER", None)
@@ -580,6 +584,9 @@ def execute_cell(spec: dict) -> None:
             attach_schedule(row, spec, started_at)
             from thesis.ab.watch import apply_watchdog_class
             apply_watchdog_class(row)
+            if png_server is not None:
+                row["webfetch_seed"] = png_server.seed
+                row["webfetch_colour"] = png_server.colour
         apply_toolchain(row, spec.get("toolchain"), installed_text)
         toolchain_path = spec.get("toolchain_path")
         if toolchain_path:
@@ -1327,7 +1334,11 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                 fault = str(cell_fixtures.get("fault") or "").strip()
             if fault:
                 cell_id = str((filled.get("proxy") or {}).get("cell_id") or "")
-                server.arm_fault(cell_id, fault)
+                count = 1
+                raw_count = cell_fixtures.get("fault_count") if isinstance(cell_fixtures, dict) else None
+                if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count > 0:
+                    count = raw_count
+                server.arm_fault(cell_id, fault, count)
         return filled
 
     try:

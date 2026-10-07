@@ -8,7 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from obench.lsp_cell import LspProvisionError, provision_language_servers
+from obench.lsp_cell import (
+    LspProvisionError,
+    lsp_boolean_enables_all,
+    provision_language_servers,
+    worktree_root,
+)
+import obench.lsp_cell as lsp_cell
 
 BUN = """#!/usr/bin/env python3
 import os, sys
@@ -139,6 +145,39 @@ class LspProvisionTests(unittest.TestCase):
         self.assertIn("SDK 10", message)
         self.assertIn("cannot", message)
         self.assertIn("--tool-path", message)
+
+    def test_host_dotnet_root_is_prepended_when_the_directory_exists(self):
+        saved = lsp_cell._HOST_DOTNET_ROOT
+        lsp_cell._HOST_DOTNET_ROOT = str(self.dotnet.parent)
+        try:
+            notes = provision_language_servers(self.env, str(self.work), ["dotnet"])
+        finally:
+            lsp_cell._HOST_DOTNET_ROOT = saved
+        self.assertEqual(self.env["DOTNET_ROOT"], str(self.dotnet.parent))
+        self.assertIn(str(self.dotnet.parent), self.env["PATH"].split(os.pathsep))
+        self.assertIn("roslyn", notes[0])
+
+    def test_boolean_lsp_schema_is_detected_from_the_worktree(self):
+        root = Path(self.tmp.name) / "src-tree"
+        schema = root / "packages" / "opencode" / "src" / "config"
+        runtime = root / "packages" / "opencode" / "src" / "lsp"
+        schema.mkdir(parents=True)
+        runtime.mkdir(parents=True)
+        (schema / "lsp.ts").write_text(
+            "export const Info = Schema.Union([Schema.Boolean, Schema.Record])\n",
+            encoding="utf-8",
+        )
+        (runtime / "lsp.ts").write_text(
+            'if (!cfg.lsp) { log.info("all LSPs are disabled") }\n',
+            encoding="utf-8",
+        )
+        binary = root / "packages" / "opencode" / "dist" / "opencode"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("", encoding="utf-8")
+        self.assertTrue(lsp_boolean_enables_all(str(root)))
+        self.assertEqual(worktree_root(str(binary)), str(root))
+        (schema / "lsp.ts").write_text("export const Info = z.literal(false)\n", encoding="utf-8")
+        self.assertFalse(lsp_boolean_enables_all(str(root)))
 
     def test_unknown_server_is_an_error(self):
         with self.assertRaises(LspProvisionError):
