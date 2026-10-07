@@ -93,10 +93,12 @@ def _typescript(env: dict, workdir: str, bun: str | None) -> str:
 
 
 def _dotnet_major(dotnet: str, env: dict) -> int:
+    home = env.get("HOME") or ""
+    cwd = home if home and os.path.isdir(home) else None
     try:
         proc = subprocess.run(
             [dotnet, "--version"],
-            cwd=env.get("HOME") or None,
+            cwd=cwd,
             env=env,
             capture_output=True,
             text=True,

@@ -179,7 +179,11 @@ class TriggerTaskTests(unittest.TestCase):
         ))
         self.assertTrue((TASKS / "trig-list-noise" / "workspace" / ".ignore").is_file())
         self.assertTrue((TASKS / "trig-image-read" / "workspace" / "spec.png").is_file())
-        self.assertIn("8417", (TASKS / "trig-lsp-ts" / "instruction.md").read_text(encoding="utf-8"))
+        self.assertIn(
+            "node node_modules/typescript/bin/tsc --noEmit",
+            (TASKS / "trig-lsp-ts" / "instruction.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn("8417", (TASKS / "trig-lsp-ts" / "workspace" / "src" / "index.ts").read_text(encoding="utf-8"))
 
 
 class EvidenceGrepTests(unittest.TestCase):
