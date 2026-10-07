@@ -25,6 +25,7 @@ from pathlib import Path
 from obench.validate_tasks import build_task_roots, discover_tasks
 
 from thesis.ab.build_opencode import binary as build_opencode
+from thesis.ab.cell_fixtures import CellFixtures, FixtureError, apply_context_limit, parse_options
 from thesis.ab.compat import assess
 from thesis.ab.durable import exclusive_lock, publish_text
 from thesis.ab.errors import BuildError, Incompatible
@@ -105,10 +106,16 @@ class TriggerTasks:
     pr: str
     tasks: tuple[str, ...]
     status: str
+    options: CellFixtures = CellFixtures()
 
 
 def load_task_map(path: Path) -> dict[str, TriggerTasks]:
-    """Load ``pr,task,status`` rows. ``task`` may list several names separated by commas."""
+    """Load ``pr,task,status`` rows, plus an optional ``options`` column.
+
+    ``task`` may list several names separated by commas. ``options`` is a
+    semicolon-separated ``key=value`` list (context, fault, mode, permissions,
+    global-agents, lsp).
+    """
     path = Path(path)
     if not path.is_file():
         raise RunError(f"task map not found: {path}")
@@ -136,7 +143,11 @@ def load_task_map(path: Path) -> dict[str, TriggerTasks]:
             for piece in str(row.get("task") or "").split(",")
             if piece.strip()
         )
-        found[pr] = TriggerTasks(pr=pr, tasks=tasks, status=status)
+        try:
+            options = parse_options(str(row.get("options") or ""))
+        except FixtureError as exc:
+            raise RunError(f"{path}:{index}: {exc}") from exc
+        found[pr] = TriggerTasks(pr=pr, tasks=tasks, status=status, options=options)
     if not found:
         raise RunError(f"{path}: no task-map rows")
     return found
@@ -199,16 +210,33 @@ def read_cell(path: Path) -> dict | None:
     return data
 
 
-def plan_cells(prs, tasks, trials: int, *, aa: bool = False) -> list[dict]:
+def _fixture_suffix(fixtures, pr: str) -> str:
+    if not fixtures:
+        return ""
+    options = fixtures.get(pr)
+    if options is None:
+        return ""
+    text = options.as_text() if isinstance(options, CellFixtures) else ""
+    if not text:
+        return ""
+    return " options " + text
+
+
+def plan_cells(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> list[dict]:
     cells = []
     labels = AA_SIDES if aa else (Side.WITHOUT.value, Side.WITH.value)
     for pr in prs:
         chosen = tasks_for(tasks, pr.pr)
+        payload = {}
+        if fixtures and pr.pr in fixtures:
+            options = fixtures[pr.pr]
+            if isinstance(options, CellFixtures):
+                payload = options.payload()
         for label in labels:
             sha = pr.without_sha if aa or label == Side.WITHOUT.value else pr.with_sha
             for task in chosen:
                 for trial in range(1, trials + 1):
-                    cells.append({
+                    cell = {
                         "pr": pr.pr,
                         "repo": pr.repo,
                         "side": label,
@@ -216,25 +244,29 @@ def plan_cells(prs, tasks, trials: int, *, aa: bool = False) -> list[dict]:
                         "task": task,
                         "trial": trial,
                         "arm": "parent-vs-parent" if aa else "ab",
-                    })
+                    }
+                    if payload:
+                        cell["fixtures"] = payload
+                    cells.append(cell)
     return cells
 
 
-def format_plan(prs, tasks, trials: int, *, aa: bool = False) -> str:
+def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> str:
     lines = []
     for pr in prs:
         chosen = ",".join(tasks_for(tasks, pr.pr))
+        suffix = _fixture_suffix(fixtures, pr.pr)
         if aa:
             lines.append(
                 f"{pr.pr} parent-vs-parent {pr.without_sha} "
-                f"sides {','.join(AA_SIDES)} tasks {chosen}"
+                f"sides {','.join(AA_SIDES)} tasks {chosen}{suffix}"
             )
         elif isinstance(tasks, dict):
             lines.append(
-                f"{pr.pr} without {pr.without_sha} with {pr.with_sha} tasks {chosen}"
+                f"{pr.pr} without {pr.without_sha} with {pr.with_sha} tasks {chosen}{suffix}"
             )
         else:
-            lines.append(f"{pr.pr} without {pr.without_sha} with {pr.with_sha}")
+            lines.append(f"{pr.pr} without {pr.without_sha} with {pr.with_sha}{suffix}")
     if isinstance(tasks, dict):
         lines.append("tasks: per-pr")
     else:
@@ -331,6 +363,11 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_PERMISSION_CONFIG",
         "OBENCH_OPENCODE_PROXY",
         "OBENCH_OPENCODE_EVIDENCE_DIR",
+        "OBENCH_OPENCODE_MODE",
+        "OBENCH_OPENCODE_PERMISSIONS",
+        "OBENCH_OPENCODE_GLOBAL_AGENTS",
+        "OBENCH_OPENCODE_LSP",
+        "OBENCH_OPENCODE_BUN",
         "OBENCH_PI_VERTEX",
         "OBENCH_PI_BIN",
     )
@@ -349,6 +386,37 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_PROXY"] = json.dumps(spec["proxy"])
             else:
                 os.environ.pop("OBENCH_OPENCODE_PROXY", None)
+            fixtures = spec.get("fixtures") if isinstance(spec.get("fixtures"), dict) else {}
+            mode = str(fixtures.get("mode") or "").strip()
+            if mode:
+                os.environ["OBENCH_OPENCODE_MODE"] = mode
+            else:
+                os.environ.pop("OBENCH_OPENCODE_MODE", None)
+            permissions = str(fixtures.get("permissions") or "").strip()
+            if permissions:
+                os.environ["OBENCH_OPENCODE_PERMISSIONS"] = permissions
+            else:
+                os.environ.pop("OBENCH_OPENCODE_PERMISSIONS", None)
+            if fixtures.get("global_agents"):
+                os.environ["OBENCH_OPENCODE_GLOBAL_AGENTS"] = "1"
+            else:
+                os.environ.pop("OBENCH_OPENCODE_GLOBAL_AGENTS", None)
+            lsp = fixtures.get("lsp") or []
+            if isinstance(lsp, str):
+                lsp = [lsp]
+            lsp_text = ",".join(str(name).strip() for name in lsp if str(name).strip())
+            if lsp_text:
+                os.environ["OBENCH_OPENCODE_LSP"] = lsp_text
+            else:
+                os.environ.pop("OBENCH_OPENCODE_LSP", None)
+            bun = ""
+            proxy = spec.get("proxy")
+            if isinstance(proxy, dict):
+                bun = str(proxy.get("bun") or "").strip()
+            if bun:
+                os.environ["OBENCH_OPENCODE_BUN"] = bun
+            else:
+                os.environ.pop("OBENCH_OPENCODE_BUN", None)
             evidence = str(spec.get("evidence_dir") or "").strip()
             if evidence:
                 os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = evidence
@@ -362,6 +430,11 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_PERMISSION_CONFIG", None)
             os.environ.pop("OBENCH_OPENCODE_PROXY", None)
             os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
+            os.environ.pop("OBENCH_OPENCODE_MODE", None)
+            os.environ.pop("OBENCH_OPENCODE_PERMISSIONS", None)
+            os.environ.pop("OBENCH_OPENCODE_GLOBAL_AGENTS", None)
+            os.environ.pop("OBENCH_OPENCODE_LSP", None)
+            os.environ.pop("OBENCH_OPENCODE_BUN", None)
             vertex = spec.get("vertex") or {}
             os.environ["OBENCH_PI_VERTEX"] = json.dumps(vertex)
             os.environ["OBENCH_PI_BIN"] = vertex.get("bin") or spec["binary"]
@@ -441,6 +514,10 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
             transcripts, spec["side"], spec["task"], spec["trial"],
         )),
     })
+    fixtures = filled.get("fixtures") if isinstance(filled.get("fixtures"), dict) else {}
+    context = fixtures.get("context")
+    if isinstance(context, int) and context > 0:
+        filled["config"] = apply_context_limit(filled.get("config") or {}, context)
     return filled
 
 
@@ -895,7 +972,7 @@ def _needs_proxy(prs, model_route: str) -> bool:
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
-          transcripts_dir=None, aa: bool = False):
+          transcripts_dir=None, aa: bool = False, fixtures=None):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -906,7 +983,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     cache = Path(cache).resolve()
     if not isinstance(tasks, dict):
         tasks = tuple(tasks)
-    plan = format_plan(prs, tasks, trials, aa=aa)
+    plan = format_plan(prs, tasks, trials, aa=aa, fixtures=fixtures)
     if dry_run:
         return plan, 0, None
     if aa:
@@ -925,7 +1002,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     adapters = _adapters_dir()
     prepared: dict[tuple[str, str], dict] = {}
     pending = []
-    for spec in plan_cells(prs, tasks, trials, aa=aa):
+    for spec in plan_cells(prs, tasks, trials, aa=aa, fixtures=fixtures):
         path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
         if read_cell(path) is not None:
             _absorb_finished(spec, out_dir, prepared)
@@ -1031,6 +1108,13 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         )
         if server is not None:
             filled = bind_cell_proxy(filled, ledger_dir)
+            fault = ""
+            cell_fixtures = filled.get("fixtures")
+            if isinstance(cell_fixtures, dict):
+                fault = str(cell_fixtures.get("fault") or "").strip()
+            if fault:
+                cell_id = str((filled.get("proxy") or {}).get("cell_id") or "")
+                server.arm_fault(cell_id, fault)
         return filled
 
     try:
@@ -1104,8 +1188,9 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help=(
-            "CSV (pr,task,status) of per-PR trigger tasks. "
-            "Replaces the default task set. --tasks still selects one set for every PR."
+            "CSV (pr,task,status[,options]) of per-PR trigger tasks. "
+            "Replaces the default task set. options is applied to that PR's cells. "
+            "--tasks still selects one set for every PR."
         ),
     )
     parser.add_argument(
@@ -1154,10 +1239,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         prs = select_prs(parse_prs(args.prs), args.pr or None)
+        fixtures = None
         if args.task_map is not None:
             mapping = load_task_map(args.task_map)
             prs, tasks = select_task_map(prs, mapping, args.task_map, explicit=bool(args.pr))
             resolve_tasks([name for chosen in tasks.values() for name in chosen])
+            fixtures = {pr.pr: mapping[pr.pr].options for pr in prs}
         else:
             tasks = resolve_tasks(args.tasks or None)
         tasks_dir = _tasks_dir_from_discovery()
@@ -1173,6 +1260,7 @@ def main(argv: list[str] | None = None) -> int:
             cache=cache, max_cost_usd=args.max_cost_usd, dry_run=args.dry_run,
             tasks_dir=tasks_dir, model_route=args.model_route,
             transcripts_dir=args.transcripts_dir, aa=args.aa,
+            fixtures=fixtures,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -243,15 +243,60 @@ def _refresh_service_account(info: dict, now) -> tuple[str, float]:
     return credentials.token, expiry
 
 
+FAULTS = frozenset({"http-529", "http-429", "sse-server-error"})
+
+# Mid-stream: one successful message_start, then the SSE error event from
+# PR 5527. The first-chunk path in @ai-sdk/anthropic throws APICallError
+# instead, so the event has to follow something the schema accepts.
+_SSE_SERVER_ERROR = (
+    "event: message_start\n"
+    "data: {\"type\":\"message_start\",\"message\":{"
+    "\"id\":\"msg_fault\",\"type\":\"message\",\"role\":\"assistant\","
+    "\"content\":[],\"model\":\"claude-opus-5-5\",\"stop_reason\":null,"
+    "\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}"
+    "}}\n\n"
+    "event: error\n"
+    "data: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"message\":\"no_kv_space\"}}\n\n"
+).encode("utf-8")
+
+_HTTP_529 = b'{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
+_HTTP_429 = b'{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}'
+
+
+def _message_route(route: str) -> bool:
+    path = route.split("?", 1)[0].rstrip("/")
+    return path.endswith("/messages")
+
+
 class Proxy:
     def __init__(self, httpd: ThreadingHTTPServer, thread: threading.Thread):
         self._httpd = httpd
         self._thread = thread
+        self._faults: dict[str, str] = {}
+        self._fault_lock = threading.Lock()
 
     @property
     def base_url(self) -> str:
         host, port = self._httpd.server_address
         return f"http://{host}:{port}"
+
+    def arm_fault(self, cell_id: str, kind: str) -> None:
+        """Return ``kind`` for the next ``/v1/messages`` POST from ``cell_id``.
+
+        Token-count posts are left alone. A second messages post is forwarded.
+        """
+        if kind not in FAULTS:
+            raise ProxyError(f"unknown fault {kind!r}")
+        if not cell_id:
+            raise ProxyError("fault injection needs a cell id")
+        with self._fault_lock:
+            self._faults[cell_id] = kind
+
+    def take_fault(self, cell_id: str | None, route: str) -> str | None:
+        if not cell_id or not _message_route(route):
+            return None
+        with self._fault_lock:
+            return self._faults.pop(cell_id, None)
 
     def close(self) -> None:
         self._httpd.shutdown()
@@ -264,6 +309,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 ledger_dir: Path | None = None) -> Proxy:
     upstream = upstream.rstrip("/")
     ledger = Path(ledger_dir) if ledger_dir is not None else None
+    holder: dict = {}
 
     class Server(ThreadingHTTPServer):
         def handle_error(self, request, client_address):
@@ -285,6 +331,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
             cell, route = split_cell_path(self.path)
+            fault = holder["proxy"].take_fault(cell, route)
+            if fault:
+                self._send_fault(fault)
+                return
             try:
                 kind, body = translate_body(route, raw)
                 path = vertex_path(project, model, kind, location)
@@ -303,12 +353,23 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     headers[name] = value
             self._forward(upstream + path, headers, body, cell if ledger is not None else None, kind)
 
-        def _send(self, status: int, content_type: str, payload: bytes) -> None:
+        def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
+            for name, value in (extra or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(payload)
+
+        def _send_fault(self, kind: str) -> None:
+            if kind == "http-529":
+                self._send(529, "application/json", _HTTP_529)
+                return
+            if kind == "http-429":
+                self._send(429, "application/json", _HTTP_429, {"Retry-After": "1"})
+                return
+            self._send(200, "text/event-stream", _SSE_SERVER_ERROR)
 
         def _write_chunk(self, chunk: bytes) -> None:
             self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
@@ -390,9 +451,12 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             return
 
     httpd = Server(("127.0.0.1", 0), Handler)
+    proxy = Proxy(httpd, None)
+    holder["proxy"] = proxy
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    proxy._thread = thread
     thread.start()
-    return Proxy(httpd, thread)
+    return proxy
 
 
 def start_from_env(ledger_dir: Path | None = None) -> Proxy:

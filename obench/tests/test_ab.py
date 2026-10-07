@@ -1939,6 +1939,7 @@ class TestTriggerArm(unittest.TestCase):
         self.assertIn("trig-list", text)
         self.assertIn("cells: 20", text)
         self.assertNotIn("arm: parent-vs-parent", text)
+        self.assertNotIn(" options ", text)
 
         buf = io.StringIO()
         err = io.StringIO()
@@ -1964,10 +1965,21 @@ class TestTriggerArm(unittest.TestCase):
         self.assertIn(parent, text)
         self.assertNotIn(merge, text)
 
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE), "--pr", "4838", "--task-map", str(task_map), "--trials", "5", "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        text = buf.getvalue()
+        self.assertIn("tasks taskflow options context=72000", text)
+        self.assertIn("cells: 10", text)
+
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             code = main([
-                str(FIXTURE), "--pr", "2334", "--task-map", str(task_map), "--dry-run",
+                str(FIXTURE), "--pr", "5527", "--task-map", str(task_map), "--dry-run",
             ])
         self.assertEqual(code, 2)
         self.assertIn("needs fixture", err.getvalue())

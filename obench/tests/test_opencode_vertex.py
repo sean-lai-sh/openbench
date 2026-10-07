@@ -71,6 +71,9 @@ FAKE = textwrap.dedent("""\
         cfg = os.environ.get("OPENCODE_CONFIG")
         if cfg and os.path.isfile(cfg):
             payload["config"] = open(cfg, encoding="utf-8").read()
+        agents = os.path.join(os.environ.get("XDG_CONFIG_HOME", ""), "opencode", "AGENTS.md")
+        if os.path.isfile(agents):
+            payload["agents"] = open(agents, encoding="utf-8").read()
         with open(dump, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
     tokens = {"input": 11, "output": 7, "reasoning": 5, "cache": {"read": 13, "write": 17}, "total": 53}
@@ -125,6 +128,11 @@ class TestVertexFlags(unittest.TestCase):
             env.pop("VERTEX_LOCATION", None)
             env.pop("OBENCH_OPENCODE_CONFIG_JSON", None)
             env.pop("OBENCH_OPENCODE_PERMISSION_CONFIG", None)
+            env.pop("OBENCH_OPENCODE_MODE", None)
+            env.pop("OBENCH_OPENCODE_PERMISSIONS", None)
+            env.pop("OBENCH_OPENCODE_GLOBAL_AGENTS", None)
+            env.pop("OBENCH_OPENCODE_LSP", None)
+            env.pop("OBENCH_OPENCODE_BUN", None)
             if extra:
                 env.update(extra)
             return self.openc.run("ping", str(self.work), "claude-opus-5-5", 30)
@@ -203,6 +211,54 @@ class TestVertexFlags(unittest.TestCase):
         self.assertEqual(dumped["anthropic"], "proxy")
         self.assertEqual(dumped["base_url"], "http://127.0.0.1:9")
         self.assertIsNone(dumped["location"])
+
+    def test_mode_is_passed_when_the_binary_lists_it(self):
+        help_text = HELP_MODERN + "--mode\n"
+        res = self._run(help_text, {"OBENCH_OPENCODE_MODE": "plan"})
+        self.assertTrue(res["completed"], res.get("error"))
+        cmd = res["cmd"]
+        self.assertEqual(cmd[cmd.index("--mode") + 1], "plan")
+        self.assertIn("--auto", cmd)
+
+    def test_mode_is_omitted_when_help_has_no_mode_flag(self):
+        res = self._run(HELP_MODERN, {"OBENCH_OPENCODE_MODE": "plan"})
+        self.assertTrue(res["completed"], res.get("error"))
+        self.assertNotIn("--mode", res["cmd"])
+
+    def test_empty_help_still_passes_mode(self):
+        res = self._run("", {"OBENCH_OPENCODE_MODE": "plan"})
+        self.assertTrue(res["completed"], res.get("error"))
+        self.assertEqual(res["cmd"][res["cmd"].index("--mode") + 1], "plan")
+
+    def test_workspace_permissions_drop_skip_flags_and_external_directory(self):
+        res = self._run("", {
+            "OBENCH_OPENCODE_PERMISSIONS": "workspace",
+            "OBENCH_OPENCODE_PERMISSION_CONFIG": "0",
+        })
+        self.assertTrue(res["completed"], res.get("error"))
+        cmd = res["cmd"]
+        self.assertNotIn("--auto", cmd)
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
+        body = json.loads(self._dump()["config"])
+        self.assertEqual(body["permission"]["edit"], "allow")
+        self.assertNotIn("external_directory", body["permission"])
+
+    def test_global_agents_file_is_written_into_the_config_home(self):
+        res = self._run(HELP_MODERN, {"OBENCH_OPENCODE_GLOBAL_AGENTS": "1"})
+        self.assertTrue(res["completed"], res.get("error"))
+        self.assertEqual(
+            self._dump()["agents"],
+            "Prefix every final answer with GLOBAL-RULE.\n",
+        )
+
+    def test_missing_lsp_toolchain_fails_the_cell(self):
+        res = self._run(HELP_MODERN, {
+            "OBENCH_OPENCODE_LSP": "pyright",
+            "OBENCH_OPENCODE_BUN": "/nonexistent/bun",
+            "PATH": "/usr/bin",
+        })
+        self.assertFalse(res["completed"])
+        self.assertIn("bun", res["error"])
 
     def test_prompt_fails_fast(self):
         started = time.monotonic()

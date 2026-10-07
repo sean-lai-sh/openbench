@@ -516,6 +516,11 @@ _ALLOW_PERMISSIONS = {
     "todowrite": "allow",
     "todoread": "allow",
 }
+# PR 25226 only shows up when external_directory is not pre-approved.
+_WORKSPACE_PERMISSIONS = {
+    key: value for key, value in _ALLOW_PERMISSIONS.items() if key != "external_directory"
+}
+_GLOBAL_AGENTS = "Prefix every final answer with GLOBAL-RULE.\n"
 
 
 def _flag_present(help_text, flag):
@@ -554,7 +559,7 @@ def _build_cmd(exe, model_id, variant, workdir, instruction, help_text):
         if modern:
             return flag in {
                 "--dir", "--format", "--title", "--variant", "--auto",
-                "--model", "-m",
+                "--model", "-m", "--mode",
             }
         return _flag_present(help_text, flag)
 
@@ -566,11 +571,18 @@ def _build_cmd(exe, model_id, variant, workdir, instruction, help_text):
     cmd.extend(["-m", model_id])
     if variant and has("--variant"):
         cmd.extend(["--variant", variant])
+    mode = os.environ.get("OBENCH_OPENCODE_MODE", "").strip()
+    if mode and has("--mode"):
+        cmd.extend(["--mode", mode])
     # Prefer --auto. Builds that still accept the older skip flag error on --auto.
-    if has("--auto"):
-        cmd.append("--auto")
-    elif has("--dangerously-skip-permissions"):
-        cmd.append("--dangerously-skip-permissions")
+    # A workspace permission override drops both flags so external_directory
+    # is not blanket-approved (PR 25226).
+    workspace_only = os.environ.get("OBENCH_OPENCODE_PERMISSIONS", "").strip() == "workspace"
+    if not workspace_only:
+        if has("--auto"):
+            cmd.append("--auto")
+        elif has("--dangerously-skip-permissions"):
+            cmd.append("--dangerously-skip-permissions")
     if has("--format"):
         cmd.extend(["--format", "json"])
     if has("--title"):
@@ -600,6 +612,11 @@ def _config_body(include_permissions):
         if not isinstance(parsed, dict):
             raise ValueError("OBENCH_OPENCODE_CONFIG_JSON must be a JSON object")
         body.update(parsed)
+    if os.environ.get("OBENCH_OPENCODE_PERMISSIONS", "").strip() == "workspace":
+        # Force the map even when the runner set permission config off because
+        # the binary has --auto. That flag is omitted for this cell.
+        body["permission"] = dict(_WORKSPACE_PERMISSIONS)
+        return body
     flag = os.environ.get("OBENCH_OPENCODE_PERMISSION_CONFIG", "").strip()
     write_permissions = include_permissions and flag != "0"
     if flag == "1":
@@ -607,6 +624,31 @@ def _config_body(include_permissions):
     if write_permissions:
         body.setdefault("permission", dict(_ALLOW_PERMISSIONS))
     return body
+
+
+def _install_global_agents(env):
+    """Write the global instruction file PR 24974 orders ahead of the project one."""
+    if os.environ.get("OBENCH_OPENCODE_GLOBAL_AGENTS", "").strip() != "1":
+        return
+    cfg_dir = os.path.join(env["XDG_CONFIG_HOME"], "opencode")
+    os.makedirs(cfg_dir, exist_ok=True)
+    path = os.path.join(cfg_dir, "AGENTS.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_GLOBAL_AGENTS)
+
+
+def _provision_lsp(env, workdir):
+    raw = os.environ.get("OBENCH_OPENCODE_LSP", "").strip()
+    if not raw:
+        return
+    from obench.lsp_cell import provision_language_servers
+    tools = [part.strip() for part in raw.split(",") if part.strip()]
+    provision_language_servers(
+        env,
+        workdir,
+        tools,
+        bun=os.environ.get("OBENCH_OPENCODE_BUN", "").strip() or None,
+    )
 
 
 def _install_config(env, body):
@@ -872,6 +914,17 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         _observe()
         return _stamp(_attach_sdk_drift(row, observed["drift"]))
     exe = _exe()
+    try:
+        _install_global_agents(env)
+        _provision_lsp(env, workdir)
+    except Exception as exc:  # noqa: BLE001 - a missing toolchain is a cell error, not a crash
+        from obench.lsp_cell import LspProvisionError
+        if isinstance(exc, LspProvisionError):
+            shutil.rmtree(iso_home, ignore_errors=True)
+            return {"completed": False, "error": str(exc),
+                    "output_tail": "", "tokens": None, "turns": None, "cmd": None,
+                    **_empty_token_usage()}
+        raise
     probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model == "claude-opus-5-5"
     watch_prompt = False
     if model in MODELS:

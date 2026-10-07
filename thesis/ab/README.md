@@ -36,6 +36,25 @@ Pass a subset with `--tasks make-it-run,fix-failing-test`. Repeat the flag or se
 
 `trig-*` tasks are copies of those core tasks with one sentence prefixed to `instruction.md`. They stay out of the default set. `--tasks` can name them. `--task-map thesis/ab/fixtures/trigger-tasks.csv` runs each triggerable PR on the task named for that PR. Rows that still need a fixture are skipped unless `--pr` names one, which is an error.
 
+The map's optional `options` column is a semicolon-separated `key=value` list applied to every cell of that PR. There is no separate CLI flag. Empty options are allowed. A typo is an error.
+
+| Key | Effect |
+|-----|--------|
+| `context` | Sets every model `limit.context` in that cell's config (for example `72000`, so compaction's usable window is 40,000). |
+| `fault` | Arms the cell proxy for the first `/v1/messages` POST: `http-529`, `http-429`, or `sse-server-error`. |
+| `mode` | Passes `opencode run --mode <value>` when that binary's help lists `--mode`. |
+| `permissions=workspace` | Omits `--auto` and `--dangerously-skip-permissions`, and writes the allow-map without `external_directory`. |
+| `global-agents=1` | Writes `$XDG_CONFIG_HOME/opencode/AGENTS.md` (`Prefix every final answer with GLOBAL-RULE.`). |
+| `lsp` | Installs `pyright`, `typescript` (`typescript@5.8.3` into the workspace), and/or `dotnet` (Roslyn onto the cell PATH; needs the .NET 10 SDK) before the cell starts. |
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 4838 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 5 \
+  --out results/ab
+```
+
 A 5-trial A/B on PR 22390's trigger task, then the parent-vs-parent noise arm. `--aa` runs the parent build on sides `aa-1` and `aa-2` and reuses that cached binary. Those side names are not `without` / `with`.
 
 ```bash
