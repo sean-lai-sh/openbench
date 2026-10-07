@@ -717,6 +717,26 @@ class _PromptWait(Exception):
         self.output = output
 
 
+class _WatchdogKill(Exception):
+    def __init__(self, text, output):
+        super().__init__(text)
+        self.text = text
+        self.output = output
+
+
+def _no_progress_limit():
+    raw = os.environ.get("OBENCH_NO_PROGRESS_S", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.0
+    if value <= 0:
+        return 0.0
+    return value
+
+
 def _kill_process_group(proc):
     try:
         os.killpg(proc.pid, signal.SIGKILL)
@@ -724,7 +744,30 @@ def _kill_process_group(proc):
         proc.kill()
 
 
+def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
+    from thesis.ab.watch import PromptIdle, WatchdogKill, run_piped
+    try:
+        return run_piped(
+            cmd,
+            cwd,
+            env,
+            timeout_s,
+            no_progress_s=limit,
+            bytes_path=os.environ.get("OBENCH_CELL_BYTES", "").strip() or None,
+            ledger_path=os.environ.get("OBENCH_CELL_LEDGER", "").strip() or None,
+            prompt_re=_PROMPT_RE if watch_prompt else None,
+            prompt_idle_s=_PROMPT_IDLE_S,
+        )
+    except PromptIdle as exc:
+        raise _PromptWait(exc.output) from exc
+    except WatchdogKill as exc:
+        raise _WatchdogKill(exc.marker(), exc.output) from exc
+
+
 def _invoke(cmd, cwd, env, timeout_s, watch_prompt):
+    limit = _no_progress_limit()
+    if limit > 0:
+        return _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit)
     if not watch_prompt:
         return subprocess.run(
             cmd,
@@ -1082,6 +1125,18 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             return _finish({
                 "completed": False,
                 "error": "waiting on a permission prompt",
+                "output_tail": full_output[-2000:],
+                "full_output": full_output,
+                "tokens": None,
+                "turns": None,
+                "cmd": cmd,
+                **_empty_token_usage(),
+            })
+        except _WatchdogKill as e:
+            full_output = e.output or ""
+            return _finish({
+                "completed": False,
+                "error": e.text,
                 "output_tail": full_output[-2000:],
                 "full_output": full_output,
                 "tokens": None,

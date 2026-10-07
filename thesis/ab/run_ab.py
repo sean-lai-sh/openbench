@@ -43,7 +43,7 @@ from thesis.ab.prs import AA_SIDES, PrListError, Side, parse_prs, select_prs
 from thesis.ab.sdk_pin import ai_version_for_tree, anthropic_pin_for_tree, install_alias_for_tree
 from thesis.ab.summarize import billable_tokens, row_cost
 from thesis.ab.toolchain import bun_requirement
-from thesis.ab.vertex_anthropic_proxy import cell_proxy_base
+from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
 
 CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
@@ -455,6 +455,8 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_BUN",
         "OBENCH_OPENCODE_WEBFETCH_URL",
         "OBENCH_OPENCODE_DISABLE_TOOLS",
+        "OBENCH_NO_PROGRESS_S",
+        "OBENCH_CELL_LEDGER",
         "OBENCH_PI_VERTEX",
         "OBENCH_PI_BIN",
     )
@@ -522,6 +524,16 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = evidence
             else:
                 os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
+            limit = spec.get("no_progress_s")
+            if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit > 0:
+                os.environ["OBENCH_NO_PROGRESS_S"] = str(limit)
+            else:
+                os.environ.pop("OBENCH_NO_PROGRESS_S", None)
+            cell_ledger = str(spec.get("cell_ledger") or "").strip()
+            if cell_ledger:
+                os.environ["OBENCH_CELL_LEDGER"] = cell_ledger
+            else:
+                os.environ.pop("OBENCH_CELL_LEDGER", None)
             os.environ.pop("OBENCH_PI_VERTEX", None)
             os.environ.pop("OBENCH_PI_BIN", None)
         else:
@@ -537,6 +549,8 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_BUN", None)
             os.environ.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
             os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
+            os.environ.pop("OBENCH_NO_PROGRESS_S", None)
+            os.environ.pop("OBENCH_CELL_LEDGER", None)
             vertex = spec.get("vertex") or {}
             os.environ["OBENCH_PI_VERTEX"] = json.dumps(vertex)
             os.environ["OBENCH_PI_BIN"] = vertex.get("bin") or spec["binary"]
@@ -564,6 +578,8 @@ def execute_cell(spec: dict) -> None:
         if isinstance(row, dict):
             apply_cell_meter(row, spec.get("proxy"))
             attach_schedule(row, spec, started_at)
+            from thesis.ab.watch import apply_watchdog_class
+            apply_watchdog_class(row)
         apply_toolchain(row, spec.get("toolchain"), installed_text)
         toolchain_path = spec.get("toolchain_path")
         if toolchain_path:
@@ -597,7 +613,8 @@ def cell_evidence_dir(transcripts_dir: Path, side: str, task: str, trial: int) -
 
 
 def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: str,
-          model: str, timeout_s: int, transcripts_root: Path | None = None) -> dict:
+          model: str, timeout_s: int, transcripts_root: Path | None = None,
+          no_progress_s: float = 0) -> dict:
     transcripts = cell_transcripts_dir(out_dir, spec["pr"], transcripts_root)
     filled = dict(spec)
     filled.update({
@@ -619,6 +636,12 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
             transcripts, spec["side"], spec["task"], spec["trial"],
         )),
     })
+    if (
+        isinstance(no_progress_s, (int, float))
+        and not isinstance(no_progress_s, bool)
+        and no_progress_s > 0
+    ):
+        filled["no_progress_s"] = float(no_progress_s)
     fixtures = filled.get("fixtures") if isinstance(filled.get("fixtures"), dict) else {}
     config = filled.get("config") or {}
     changed = False
@@ -852,6 +875,7 @@ def bind_cell_proxy(filled: dict, ledger_dir: Path) -> dict:
     proxy["cell_id"] = cell_id
     proxy["ledger_dir"] = str(ledger_dir)
     filled["proxy"] = proxy
+    filled["cell_ledger"] = str(cell_ledger_path(Path(ledger_dir), cell_id))
     return filled
 
 
@@ -1149,7 +1173,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
           transcripts_dir=None, aa: bool = False, fixtures=None,
-          order: str = "sides", seed: int | None = None, with_aa: bool = False):
+          order: str = "sides", seed: int | None = None, with_aa: bool = False,
+          no_progress_s: float = 300):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -1292,6 +1317,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         filled = _fill(
             spec, state, out_dir, tasks_dir_s, adapters, model, timeout_s,
             transcripts_root=transcripts_dir,
+            no_progress_s=no_progress_s,
         )
         if server is not None:
             filled = bind_cell_proxy(filled, ledger_dir)
@@ -1424,6 +1450,17 @@ def main(argv: list[str] | None = None) -> int:
         help="OpenCode model path. proxy is the shared Anthropic proxy. vertex is the native provider.",
     )
     parser.add_argument("--timeout", type=int, default=2400)
+    parser.add_argument(
+        "--no-progress-s",
+        type=float,
+        default=300,
+        help=(
+            "Kill the agent when stdout, OpenCode logs and storage, and "
+            "metered proxy bytes are all idle for this many seconds. "
+            "0 disables the watchdog. A fatal Aborted( or tree-sitter wasm "
+            "ENOENT still kills immediately while the watchdog is on."
+        ),
+    )
     parser.add_argument("--out", type=Path, default=Path("results/ab"))
     parser.add_argument(
         "--transcripts-dir",
@@ -1446,6 +1483,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.max_cost_usd is not None and args.max_cost_usd < 0:
         print("error: --max-cost-usd must be >= 0", file=sys.stderr)
+        return 2
+    if args.no_progress_s < 0:
+        print("error: --no-progress-s must be >= 0", file=sys.stderr)
         return 2
     if args.tasks and args.task_map is not None:
         print("error: pass --tasks or --task-map, not both", file=sys.stderr)
@@ -1493,6 +1533,7 @@ def main(argv: list[str] | None = None) -> int:
             tasks_dir=tasks_dir, model_route=args.model_route,
             transcripts_dir=args.transcripts_dir, aa=args.aa,
             fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
+            no_progress_s=args.no_progress_s,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

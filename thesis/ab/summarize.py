@@ -422,7 +422,37 @@ def noise_block(root: Path) -> dict:
         "task_spans": spans,
         "score_span": None if not score_deltas else _mean([abs(item) for item in score_deltas]),
         "paired_tasks": len(score_deltas),
+        "no_progress": {
+            side: no_progress_kills(_rows_for_kills(root, side, loaded[side][0]))
+            for side in AA_SIDES
+        },
     }
+
+
+def _cell_json_rows(root: Path, side: str) -> list[dict]:
+    base = root / "cells" / side
+    if not base.is_dir():
+        return []
+    rows = []
+    for path in sorted(base.glob("*/*.json")):
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            rows.append(parsed)
+    return rows
+
+
+def no_progress_kills(rows: list[dict]) -> int:
+    return sum(1 for row in rows if row.get("infra_reason") == "no_progress")
+
+
+def _rows_for_kills(root: Path, side: str, jsonl_rows: list[dict]) -> list[dict]:
+    """Cell JSON wins. A side-level infra sidecar drops the JSONL rows."""
+    if (root / "cells" / side).is_dir():
+        return _cell_json_rows(root, side)
+    return jsonl_rows
 
 
 def pr_record(pr: PullRequest, out_dir: Path) -> dict:
@@ -462,6 +492,10 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         "task_deltas": task_metric_deltas(without_rows, with_rows),
         "headroom": headroom_report(without_rows, with_rows),
         "comparison": "ab",
+        "no_progress": {
+            "without": no_progress_kills(_rows_for_kills(root, "without", without_rows)),
+            "with": no_progress_kills(_rows_for_kills(root, "with", with_rows)),
+        },
     }
     if has_aa and not has_ab:
         record["comparison"] = "parent-vs-parent"
@@ -543,6 +577,12 @@ def render_parent_noise(records: list[dict]) -> str:
             }
             lines.append(f"| {side} | " + " | ".join(_side_cells(stats)) + " |")
         lines.append("")
+        kills = noise.get("no_progress") or {}
+        lines.append(
+            "Watchdog kills (no_progress): "
+            f"{AA_SIDES[0]} {int(kills.get(AA_SIDES[0]) or 0)}, "
+            f"{AA_SIDES[1]} {int(kills.get(AA_SIDES[1]) or 0)}."
+        )
         lines.append(
             f"Score span (absolute difference of task means): {_fmt(noise.get('score_span'))} "
             f"on {noise.get('paired_tasks') or 0} paired tasks."
@@ -610,6 +650,9 @@ def _render_ab_markdown(records: list[dict]) -> str:
         )
     lines.append("")
     lines.append("Pass rate drops rows whose failure class is infra, rate_limited, or stalled.")
+    lines.append(
+        "Watchdog kills are infra cells with infra_reason no_progress, counted per side."
+    )
     lines.append("The score delta is the unweighted mean of per-task (with minus without) score means.")
     lines.append("The interval resamples those tasks 1000 times with seed 0.")
     lines.append(
@@ -647,6 +690,12 @@ def _render_ab_markdown(records: list[dict]) -> str:
         lines.append("| --- | --- | --- | --- | --- |")
         lines.append("| without | " + " | ".join(_side_cells(item["without"])) + " |")
         lines.append("| with | " + " | ".join(_side_cells(item["with"])) + " |")
+        kills = item.get("no_progress") or {}
+        lines.append(
+            "Watchdog kills (no_progress): "
+            f"without {int(kills.get('without') or 0)}, "
+            f"with {int(kills.get('with') or 0)}."
+        )
         ci_text = _ci_text(item["delta_ci"]) or "n/a"
         lines.append("")
         lines.append(
@@ -721,6 +770,7 @@ def render_csv(records: list[dict]) -> str:
         "delta_ci_low", "delta_ci_high", "paired_tasks",
         "without_median_time_s", "with_median_time_s",
         "without_mean_tokens", "with_mean_tokens",
+        "without_no_progress", "with_no_progress",
         "headroom_tasks", "headroom_n", "headroom_pass_delta",
         "headroom_pass_ci_low", "headroom_pass_ci_high",
         "incompatible",
@@ -753,6 +803,8 @@ def render_csv(records: list[dict]) -> str:
             "with_median_time_s": _fmt(item["with"]["median_time_s"]),
             "without_mean_tokens": _fmt(item["without"]["mean_tokens"], 1),
             "with_mean_tokens": _fmt(item["with"]["mean_tokens"], 1),
+            "without_no_progress": int((item.get("no_progress") or {}).get("without") or 0),
+            "with_no_progress": int((item.get("no_progress") or {}).get("with") or 0),
             "headroom_tasks": ";".join(task["task"] for task in headroom["tasks"]),
             "headroom_n": headroom["n"],
             "headroom_pass_delta": _fmt(headroom["delta_pass_rate"]),
