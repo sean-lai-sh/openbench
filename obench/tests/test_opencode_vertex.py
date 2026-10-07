@@ -57,6 +57,13 @@ FAKE = textwrap.dedent("""\
     if "--print-logs" in args and "FAKE_PROBE" in os.environ:
         sys.stdout.write(os.environ.get("FAKE_PROBE", ""))
         raise SystemExit(int(os.environ.get("FAKE_PROBE_CODE", "1")))
+    log = os.environ.get("FAKE_LOG")
+    if log:
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(args) + "\\n")
+    session = os.environ.get("FAKE_SESSION", "")
+    if session:
+        print(json.dumps({"type": "session", "sessionID": session}))
     dump = os.environ.get("FAKE_DUMP")
     if dump:
         payload = {
@@ -281,6 +288,59 @@ class TestVertexFlags(unittest.TestCase):
         self.assertIn(url, prompt)
         self.assertNotIn("__OBENCH_WEBFETCH_URL__", prompt)
         self.assertEqual(self.openc._WEBFETCH_PLACEHOLDER, "__OBENCH_WEBFETCH_URL__")
+
+    def test_two_turns_continue_the_session_and_hide_the_markers(self):
+        log = Path(self.tmp.name) / "calls.jsonl"
+        help_text = HELP_MODERN + "--session\n--continue\n"
+        instruction = (
+            "turn one\n"
+            "__OBENCH_USER_TURN__\n"
+            "turn two\n"
+            "__OBENCH_SINGLE_TURN__\n"
+            "single fallback\n"
+        )
+        res = self._run(help_text, {
+            "FAKE_LOG": str(log),
+            "FAKE_SESSION": "ses_from_first",
+        }, instruction=instruction)
+        self.assertTrue(res["completed"], res.get("error"))
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(calls), 2)
+        self.assertIn("turn one", calls[0])
+        self.assertNotIn("turn two", calls[0])
+        self.assertNotIn("__OBENCH_USER_TURN__", " ".join(calls[0]))
+        self.assertIn("--session", calls[1])
+        self.assertIn("ses_from_first", calls[1])
+        self.assertIn("turn two", calls[1])
+        self.assertNotIn("__OBENCH_SINGLE_TURN__", " ".join(calls[1]))
+        self.assertNotIn("single fallback", calls[1])
+
+    def test_missing_session_flags_send_the_single_fallback(self):
+        log = Path(self.tmp.name) / "fallback.jsonl"
+        instruction = (
+            "turn one\n__OBENCH_USER_TURN__\nturn two\n"
+            "__OBENCH_SINGLE_TURN__\nsingle fallback\n"
+        )
+        res = self._run(HELP_MODERN, {"FAKE_LOG": str(log)}, instruction=instruction)
+        self.assertTrue(res["completed"], res.get("error"))
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(calls), 1)
+        self.assertIn("single fallback", calls[0])
+        self.assertNotIn("__OBENCH_USER_TURN__", " ".join(calls[0]))
+
+    def test_missing_worktree_with_lsp_is_infra(self):
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir()
+        tool = bindir / "pyright-langserver"
+        tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
+        res = self._run(HELP_MODERN, {
+            "OBENCH_OPENCODE_LSP": "pyright",
+            "PATH": os.pathsep.join([str(bindir), "/usr/bin"]),
+        })
+        self.assertFalse(res["completed"])
+        self.assertEqual(res.get("failure_class"), "infra")
+        self.assertIn("worktree", res["error"])
 
     def test_missing_lsp_toolchain_fails_the_cell(self):
         res = self._run(HELP_MODERN, {

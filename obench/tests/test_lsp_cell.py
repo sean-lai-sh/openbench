@@ -179,6 +179,28 @@ class LspProvisionTests(unittest.TestCase):
         (schema / "lsp.ts").write_text("export const Info = z.literal(false)\n", encoding="utf-8")
         self.assertFalse(lsp_boolean_enables_all(str(root)))
 
+    def test_worktree_root_maps_cached_bin_and_embedded_paths(self):
+        root = Path(self.tmp.name) / "worktrees" / ("ab" * 20)
+        runtime = root / "packages" / "opencode" / "src" / "lsp"
+        runtime.mkdir(parents=True)
+        (runtime / "lsp.ts").write_text("all LSPs are disabled\n", encoding="utf-8")
+        cached = Path(self.tmp.name) / "bin" / ("ab" * 20) / "opencode"
+        cached.parent.mkdir(parents=True)
+        cached.write_text("", encoding="utf-8")
+        self.assertEqual(worktree_root(str(cached)), str(root))
+        embedded = Path(self.tmp.name) / "loose" / "opencode"
+        embedded.parent.mkdir(parents=True)
+        embedded.write_text(
+            "build /" + str(root).lstrip("/") + "/packages/opencode/src/index.ts\n",
+            encoding="utf-8",
+        )
+        # The embedded path is absolute. Rewrite it as the regex expects.
+        embedded.write_text(
+            f"pre {root}/packages/opencode/src/index.ts tail\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(worktree_root(str(embedded)), str(root))
+
     def test_unknown_server_is_an_error(self):
         with self.assertRaises(LspProvisionError):
             provision_language_servers(self.env, str(self.work), ["vue"], bun=str(self.bin))

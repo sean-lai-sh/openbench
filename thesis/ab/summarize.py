@@ -522,6 +522,52 @@ def no_progress_kills(rows: list[dict]) -> int:
     return sum(1 for row in rows if row.get("infra_reason") == "no_progress")
 
 
+_RULE_PREFIXES = ("global", "project", "both", "neither")
+
+
+def effect_counts(rows: list[dict]) -> dict:
+    """Sum child-session writes and count final-answer rule prefixes."""
+    writes = 0
+    rules = {name: 0 for name in _RULE_PREFIXES}
+    for row in rows:
+        value = row.get("subagent_write_calls")
+        if isinstance(value, int) and not isinstance(value, bool):
+            writes += value
+        kind = row.get("rule_prefix")
+        if kind in rules:
+            rules[kind] += 1
+    return {"subagent_write_calls": writes, "rule_prefix": rules}
+
+
+def _effect_line(effects: dict) -> str:
+    left = effects.get("without") or {}
+    right = effects.get("with") or {}
+    left_rules = left.get("rule_prefix") or {}
+    right_rules = right.get("rule_prefix") or {}
+
+    def _rules(rules: dict) -> str:
+        return "/".join(str(int(rules.get(name) or 0)) for name in _RULE_PREFIXES)
+
+    return (
+        "Subagent write calls: "
+        f"without {int(left.get('subagent_write_calls') or 0)}, "
+        f"with {int(right.get('subagent_write_calls') or 0)}. "
+        "Rule prefix (global/project/both/neither): "
+        f"without {_rules(left_rules)}, with {_rules(right_rules)}."
+    )
+
+
+def _effect_csv(effects: dict) -> dict:
+    row = {}
+    for side in ("without", "with"):
+        body = effects.get(side) or {}
+        row[f"{side}_subagent_write_calls"] = int(body.get("subagent_write_calls") or 0)
+        rules = body.get("rule_prefix") or {}
+        for name in _RULE_PREFIXES:
+            row[f"{side}_rule_{name}"] = int(rules.get(name) or 0)
+    return row
+
+
 def _rows_for_kills(root: Path, side: str, jsonl_rows: list[dict]) -> list[dict]:
     """Cell JSON wins. A side-level infra sidecar drops the JSONL rows."""
     if (root / "cells" / side).is_dir():
@@ -570,6 +616,10 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         "no_progress": {
             "without": no_progress_kills(_rows_for_kills(root, "without", without_rows)),
             "with": no_progress_kills(_rows_for_kills(root, "with", with_rows)),
+        },
+        "effects": {
+            "without": effect_counts(_rows_for_kills(root, "without", without_rows)),
+            "with": effect_counts(_rows_for_kills(root, "with", with_rows)),
         },
     }
     if has_aa and not has_ab:
@@ -773,6 +823,7 @@ def _render_ab_markdown(records: list[dict]) -> str:
             f"without {int(kills.get('without') or 0)}, "
             f"with {int(kills.get('with') or 0)}."
         )
+        lines.append(_effect_line(item.get("effects") or {}))
         ci_text = _ci_text(item["delta_ci"]) or "n/a"
         lines.append("")
         lines.append(
@@ -883,6 +934,11 @@ def render_csv(records: list[dict]) -> str:
         "delta_wall_s_pct", "delta_wall_s",
         "delta_cost_usd_pct", "delta_cost_usd",
         "without_no_progress", "with_no_progress",
+        "without_subagent_write_calls", "with_subagent_write_calls",
+        "without_rule_global", "with_rule_global",
+        "without_rule_project", "with_rule_project",
+        "without_rule_both", "with_rule_both",
+        "without_rule_neither", "with_rule_neither",
         "headroom_tasks", "headroom_n", "headroom_pass_delta",
         "headroom_pass_ci_low", "headroom_pass_ci_high",
         "incompatible",
@@ -943,6 +999,7 @@ def render_csv(records: list[dict]) -> str:
             "delta_cost_usd": _usage("spend_usd", "delta"),
             "without_no_progress": int((item.get("no_progress") or {}).get("without") or 0),
             "with_no_progress": int((item.get("no_progress") or {}).get("with") or 0),
+            **_effect_csv(item.get("effects") or {}),
             "headroom_tasks": ";".join(task["task"] for task in headroom["tasks"]),
             "headroom_n": headroom["n"],
             "headroom_pass_delta": _fmt(headroom["delta_pass_rate"]),

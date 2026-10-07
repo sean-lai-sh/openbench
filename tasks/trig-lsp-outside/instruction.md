@@ -1,4 +1,4 @@
-Use the write tool to save a copy of the fixed greeter module to `/tmp/obench-shared/greeter_copy.py` (outside this project). Do not copy it with bash.
+Use the write tool to save a copy of the fixed greeter module to `__OBENCH_OUTSIDE_PATH__` (outside this project). Do not copy it with bash.
 
 # Get the greeting program running
 

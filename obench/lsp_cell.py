@@ -27,7 +27,9 @@ _HOST_DOTNET_ROOT = "/home/box/.dotnet"
 
 
 class LspProvisionError(RuntimeError):
-    pass
+    def __init__(self, message, *, infra=False):
+        super().__init__(message)
+        self.infra = bool(infra)
 
 
 def _which(name: str, env: dict) -> str | None:
@@ -150,33 +152,54 @@ def _apply_host_dotnet(env: dict) -> None:
     _prepend(env, root)
 
 
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _checkout_root(path: str) -> str | None:
+    marker = os.path.join(path, "packages", "opencode", "src", "config", "lsp.ts")
+    runtime = os.path.join(path, "packages", "opencode", "src", "lsp", "lsp.ts")
+    if os.path.isfile(marker) or os.path.isfile(runtime):
+        return path
+    return None
+
+
+def _cached_bin_worktree(binary: str) -> str | None:
+    """Map ``cache/bin/<sha>/opencode`` to ``cache/worktrees/<sha>``."""
+    parent = os.path.dirname(binary)
+    sha = os.path.basename(parent)
+    if not _SHA.match(sha):
+        return None
+    if os.path.basename(os.path.dirname(parent)) != "bin":
+        return None
+    cache = os.path.dirname(os.path.dirname(parent))
+    return _checkout_root(os.path.join(cache, "worktrees", sha))
+
+
 def worktree_root(binary: str) -> str | None:
     """Return the OpenCode checkout that produced ``binary``, if it is on disk."""
     if not binary:
         return None
     cur = os.path.abspath(binary)
     for _ in range(12):
-        if os.path.isfile(os.path.join(cur, "packages", "opencode", "src", "config", "lsp.ts")):
-            return cur
-        if os.path.isfile(os.path.join(cur, "packages", "opencode", "src", "lsp", "lsp.ts")):
-            return cur
+        found = _checkout_root(cur)
+        if found:
+            return found
         parent = os.path.dirname(cur)
         if parent == cur:
             break
         cur = parent
+    cached = _cached_bin_worktree(os.path.abspath(binary))
+    if cached:
+        return cached
     try:
-        text = open(binary, encoding="utf-8", errors="replace").read(2000)
+        with open(binary, encoding="utf-8", errors="replace") as handle:
+            text = handle.read(2000)
     except OSError:
         return None
     match = re.search(r"(/\S+)/packages/opencode/src/index\.ts", text)
     if not match:
         return None
-    root = match.group(1)
-    marker = os.path.join(root, "packages", "opencode", "src", "config", "lsp.ts")
-    runtime = os.path.join(root, "packages", "opencode", "src", "lsp", "lsp.ts")
-    if os.path.isfile(marker) or os.path.isfile(runtime):
-        return root
-    return None
+    return _checkout_root(match.group(1))
 
 
 def lsp_boolean_enables_all(root: str) -> bool:

@@ -266,6 +266,41 @@ class TestRunnerWriteTimeClassification(unittest.TestCase):
         self.assertTrue(row["workspace_changed"])
         self.assertEqual(row["failure_class"], "wrong_answer")
 
+    def test_adapter_infra_skips_the_checker(self):
+        orig_invoke, orig_checker = run.invoke_adapter, run.run_checker
+        checked = {"n": 0}
+
+        def fake_invoke(*args, **kwargs):
+            return {
+                "completed": False,
+                "failure_class": "infra",
+                "error": "LSP was requested but the OpenCode worktree could not be found",
+                "output_tail": "",
+                "full_output": "",
+                "tokens": None,
+                "turns": None,
+                "cmd": ["fake"],
+            }, "local"
+
+        def fake_checker(*args, **kwargs):
+            checked["n"] += 1
+            return 1, None, "", ""
+
+        try:
+            run.invoke_adapter = fake_invoke
+            run.run_checker = fake_checker
+            row = run.run_cell(
+                "fake", self.task, "model", 1, 600,
+                self.tasks_dir, self.tmp, 30,
+            )
+        finally:
+            run.invoke_adapter, run.run_checker = orig_invoke, orig_checker
+
+        self.assertEqual(checked["n"], 0)
+        self.assertEqual(row["failure_class"], "infra")
+        self.assertFalse(row["success"])
+        self.assertIsNone(row["checker_exit"])
+
     def test_runner_uses_docker_host_wall_time_when_larger(self):
         orig_invoke, orig_checker = run.invoke_adapter, run.run_checker
 

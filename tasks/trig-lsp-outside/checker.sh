@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# Runs with cwd set to a fresh copy of the task workspace.
-# Exit 0 => `python3 main.py` runs and prints the expected line.
+# The program must print Hello, world! and the per-cell outside copy must
+# exist. Validation's solution overlay only has the in-workspace fix.
 set -uo pipefail
+python3 - << 'PY'
+import os
+import sys
+import subprocess
+from pathlib import Path
 
-EXPECTED="Hello, world!"
-
-got="$(python3 main.py 2>/dev/null)"
-status=$?
-
-if [ "$status" -ne 0 ]; then
-    echo "FAIL: python3 main.py exited with status $status" >&2
-    exit 1
-fi
-
-if [ "$got" != "$EXPECTED" ]; then
-    echo "FAIL: unexpected output" >&2
-    echo "--- expected ---" >&2
-    printf '%s\n' "$EXPECTED" >&2
-    echo "--- got ---" >&2
-    printf '%s\n' "$got" >&2
-    exit 1
-fi
-
-echo "main.py ran and printed the expected line."
+proc = subprocess.run(["python3", "main.py"], capture_output=True, text=True)
+if proc.returncode != 0 or (proc.stdout or "").strip() != "Hello, world!":
+    print("FAIL: python3 main.py did not print Hello, world!", file=sys.stderr)
+    raise SystemExit(1)
+if os.environ.get("OPENBENCH_SOLUTION_OVERLAY") == "1":
+    print("main.py ran and printed the expected line.")
+    raise SystemExit(0)
+outside = os.environ.get("OBENCH_OPENCODE_OUTSIDE_PATH", "").strip()
+task_dir = os.environ.get("TASK_DIR", "")
+expected = Path(task_dir) / "solution" / "greeter.py"
+copy = Path(outside) if outside else None
+if copy is None or not copy.is_file() or not expected.is_file():
+    print("FAIL: outside greeter copy is missing", file=sys.stderr)
+    raise SystemExit(1)
+if copy.read_bytes() != expected.read_bytes():
+    print("FAIL: outside greeter copy does not match the fixed module", file=sys.stderr)
+    raise SystemExit(1)
+print("main.py ran and the outside copy matches the fixed greeter.")
+raise SystemExit(0)
+PY

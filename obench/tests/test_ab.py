@@ -1568,6 +1568,44 @@ class TestOldCompile(unittest.TestCase):
         self.assertIn("--compile", commands[0])
         self.assertNotIn("--minify", commands[0])
 
+    def test_old_compile_is_one_entry_plus_tui_define(self):
+        from unittest.mock import patch
+        from thesis.ab.build_opencode import _build_stamp, _compile_old, _stamp_current
+        root = Path(tempfile.mkdtemp())
+        tui_main = root / "packages" / "tui" / "cmd" / "opencode" / "main.go"
+        tui_main.parent.mkdir(parents=True)
+        tui_main.write_text("package main\nfunc main() {}\n", encoding="utf-8")
+        commands = []
+
+        def fake_run(cmd, cwd, env=None):
+            commands.append(list(cmd))
+            if cmd and cmd[0] == "go":
+                dest = Path(cmd[cmd.index("-o") + 1])
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text("tui", encoding="utf-8")
+                return
+            for arg in cmd:
+                if isinstance(arg, str) and arg.startswith("--outfile="):
+                    dest = Path(arg.split("=", 1)[1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                    dest.chmod(0o755)
+
+        with patch("thesis.ab.build_opencode._run", side_effect=fake_run):
+            built = _compile_old(root, {})
+        self.assertTrue(built.is_file())
+        bun = next(cmd for cmd in commands if cmd and cmd[0] == "bun")
+        self.assertEqual(bun[-1], "./src/index.ts")
+        self.assertEqual(sum(1 for arg in bun if arg == "./src/index.ts"), 1)
+        self.assertTrue(any(arg.startswith("OPENCODE_TUI_PATH='") for arg in bun))
+        self.assertFalse(any(arg.endswith("/tui") and not arg.startswith("OPENCODE_TUI_PATH=") for arg in bun))
+        stamped = _build_stamp({"kind": "compile", "tree_sitter_wasm": "file"})
+        self.assertEqual(stamped["tree_sitter_wasm"], "file-single-entry")
+        self.assertFalse(_stamp_current({
+            "kind": "compile", "minify": False, "tree_sitter_wasm": "file",
+        }))
+        self.assertTrue(_stamp_current(stamped))
+
     def test_missing_or_minified_stamp_is_rebuilt(self):
         from unittest.mock import patch
         from thesis.ab.build_opencode import binary
@@ -2274,6 +2312,47 @@ class TestTriggerArm(unittest.TestCase):
             ])
         self.assertEqual(code, 2)
         self.assertIn("--aa or --with-aa", err.getvalue())
+
+    def test_interleave_seed_keeps_order_and_drives_cell_randomness(self):
+        import contextlib
+        from thesis.ab.cell_fixtures import bind_local_webfetch, colour_for_seed
+        from thesis.ab.run_ab import cell_random_seed, main, order_cells, plan_cells
+        prs = self._prs()
+        plain = order_cells(
+            plan_cells(prs, ("make-it-run",), 1),
+            order="interleave",
+        )
+        seeded = order_cells(
+            plan_cells(prs, ("make-it-run",), 1),
+            order="interleave",
+            seed=7,
+        )
+        view = lambda cells: [(cell["task"], cell["trial"], cell["side"]) for cell in cells]
+        self.assertEqual(view(plain), view(seeded))
+        self.assertTrue(all(cell["run_seed"] == 7 for cell in seeded))
+        self.assertEqual(seeded[0]["cell_seed"], cell_random_seed(7, seeded[0]))
+        again = order_cells(
+            plan_cells(prs, ("make-it-run",), 1),
+            order="interleave",
+            seed=7,
+        )
+        self.assertEqual(seeded[0]["cell_seed"], again[0]["cell_seed"])
+        self.assertNotEqual(seeded[0]["cell_seed"], seeded[1]["cell_seed"])
+        env = {}
+        server = bind_local_webfetch(env, {"webfetch": "local"}, seeded[0]["cell_seed"])
+        self.addCleanup(server.close)
+        self.assertEqual(server.colour, colour_for_seed(seeded[0]["cell_seed"])[0])
+        self.assertEqual(env["OBENCH_WEBFETCH_SEED"], str(seeded[0]["cell_seed"]))
+        task_map = ROOT / "thesis" / "ab" / "fixtures" / "trigger-tasks.csv"
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE), "--pr", "13331", "--task-map", str(task_map),
+                "--trials", "1", "--order", "interleave", "--seed", "7", "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("order: interleave seed=7", buf.getvalue())
 
 
 if __name__ == "__main__":

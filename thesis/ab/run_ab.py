@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import random
 import re
 import secrets
+import shutil
 import sys
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -295,13 +297,29 @@ def _trial_blocks(cells: list[dict]) -> list[list[dict]]:
     return [grouped[key] for key in keys]
 
 
+def cell_random_seed(run_seed: int, cell: dict) -> int:
+    """Stable per-cell seed. It does not depend on launch order."""
+    text = "|".join([
+        str(int(run_seed)),
+        str(cell.get("pr") or ""),
+        str(cell.get("side") or ""),
+        str(cell.get("task") or ""),
+        str(cell.get("trial") or ""),
+    ])
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = None) -> list[dict]:
     """Launch order. Each cell gets ``schedule_index`` from 0.
 
     ``sides`` keeps the historical order: every cell of side A, then side B.
-    ``interleave`` keeps both sides of one trial together, A then B.
-    ``random`` shuffles inside each trial block with ``random.Random(seed)``.
-    A trial block is one PR, one task, and one trial number.
+    ``interleave`` keeps both sides of one trial together, A then B. A seed
+    does not change that order. ``random`` shuffles inside each trial block
+    with ``random.Random(seed)``. A trial block is one PR, one task, and one
+    trial number. When ``seed`` is set, each cell also records ``run_seed``
+    and a derived ``cell_seed`` for per-cell randomness such as the webfetch
+    colour.
     """
     if order not in {"sides", "interleave", "random"}:
         raise RunError(f"unknown order {order!r}")
@@ -319,6 +337,9 @@ def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = N
             ordered.extend(group)
     for index, cell in enumerate(ordered):
         cell["schedule_index"] = index
+        if seed is not None:
+            cell["run_seed"] = int(seed)
+            cell["cell_seed"] = cell_random_seed(seed, cell)
     return ordered
 
 
@@ -353,8 +374,8 @@ def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None,
     lines.append(f"trials: {trials}")
     cell_count = sum(len(arms) * len(tasks_for(tasks, pr.pr)) * trials for pr in prs)
     lines.append(f"cells: {cell_count}")
-    if order == "random":
-        lines.append(f"order: random seed={seed}")
+    if seed is not None:
+        lines.append(f"order: {order} seed={seed}")
     else:
         lines.append(f"order: {order}")
     if with_aa:
@@ -454,6 +475,7 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_LSP",
         "OBENCH_OPENCODE_BUN",
         "OBENCH_OPENCODE_WEBFETCH_URL",
+        "OBENCH_OPENCODE_OUTSIDE_PATH",
         "OBENCH_WEBFETCH_COLOUR",
         "OBENCH_WEBFETCH_SEED",
         "OBENCH_OPENCODE_DISABLE_TOOLS",
@@ -464,6 +486,7 @@ def execute_cell(spec: dict) -> None:
     )
     saved = {key: os.environ.get(key) for key in keys}
     png_server = None
+    evidence = ""
     started_at = datetime.now(timezone.utc).isoformat()
     try:
         if harness == "opencode":
@@ -520,9 +543,21 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_BUN"] = bun
             else:
                 os.environ.pop("OBENCH_OPENCODE_BUN", None)
-            png_server = bind_local_webfetch(os.environ, fixtures)
+            raw_cell_seed = spec.get("cell_seed")
+            cell_seed = (
+                raw_cell_seed
+                if isinstance(raw_cell_seed, int) and not isinstance(raw_cell_seed, bool)
+                else None
+            )
+            png_server = bind_local_webfetch(os.environ, fixtures, cell_seed)
+            outside = _cell_outside_path(spec)
+            if outside:
+                os.environ["OBENCH_OPENCODE_OUTSIDE_PATH"] = outside
+            else:
+                os.environ.pop("OBENCH_OPENCODE_OUTSIDE_PATH", None)
             evidence = str(spec.get("evidence_dir") or "").strip()
             if evidence:
+                evidence = str(Path(evidence).resolve())
                 os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = evidence
             else:
                 os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
@@ -550,6 +585,7 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_LSP", None)
             os.environ.pop("OBENCH_OPENCODE_BUN", None)
             os.environ.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
+            os.environ.pop("OBENCH_OPENCODE_OUTSIDE_PATH", None)
             os.environ.pop("OBENCH_WEBFETCH_COLOUR", None)
             os.environ.pop("OBENCH_WEBFETCH_SEED", None)
             os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
@@ -582,6 +618,8 @@ def execute_cell(spec: dict) -> None:
         if isinstance(row, dict):
             apply_cell_meter(row, spec.get("proxy"))
             attach_schedule(row, spec, started_at)
+            from thesis.ab.evidence import attach_cell_metrics
+            attach_cell_metrics(row, evidence if evidence else None)
             from thesis.ab.watch import apply_watchdog_class
             apply_watchdog_class(row)
             if png_server is not None:
@@ -614,6 +652,22 @@ def cell_transcripts_dir(out_dir: Path, pr: str, transcripts_root: Path | None =
     return Path(out_dir) / pr / "transcripts"
 
 
+def _absolute(path: Path | str) -> str:
+    return str(Path(path).resolve())
+
+
+def _cell_outside_path(spec: dict) -> str | None:
+    """A clean per-cell path for the outside-file task. Nothing is left shared."""
+    if spec.get("task") != "trig-lsp-outside":
+        return None
+    token = secrets.token_hex(8)
+    directory = Path("/tmp") / f"obench-shared-{token}"
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True, mode=0o700)
+    return str(directory / "greeter_copy.py")
+
+
 def cell_evidence_dir(transcripts_dir: Path, side: str, task: str, trial: int) -> Path:
     """Per-cell directory for OpenCode session storage and logs."""
     return Path(transcripts_dir) / side / task_component(task) / str(trial)
@@ -631,15 +685,15 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "harness": prepared.get("harness") or "opencode",
         "vertex": prepared.get("vertex"),
         "proxy": prepared.get("proxy"),
-        "cell_path": str(cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])),
+        "cell_path": _absolute(cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])),
         "tasks_dir": tasks_dir,
         "adapters_dir": adapters,
         "model": model,
         "timeout_s": cell_timeout(timeout_s),
         "toolchain": prepared.get("toolchain") or {},
-        "toolchain_path": str(out_dir / spec["pr"] / f"{spec['side']}.toolchain.json"),
-        "transcripts_dir": str(transcripts),
-        "evidence_dir": str(cell_evidence_dir(
+        "toolchain_path": _absolute(out_dir / spec["pr"] / f"{spec['side']}.toolchain.json"),
+        "transcripts_dir": _absolute(transcripts),
+        "evidence_dir": _absolute(cell_evidence_dir(
             transcripts, spec["side"], spec["task"], spec["trial"],
         )),
     })
@@ -762,6 +816,10 @@ def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
     index = spec.get("schedule_index")
     if isinstance(index, int) and not isinstance(index, bool):
         row["schedule_index"] = index
+    for key in ("run_seed", "cell_seed"):
+        value = spec.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            row[key] = value
     if started_at:
         row["started_at"] = started_at
 
@@ -847,6 +905,8 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     if not ledger or not cell:
         return row
     from obench.run import apply_proxy_ledger, read_proxy_ledger
+    from thesis.ab.vertex_anthropic_proxy import faults_served
+    row["faults_served"] = faults_served(str(ledger), str(cell))
     records = read_proxy_ledger(str(ledger), str(cell))
     if not records:
         return row
@@ -1449,7 +1509,11 @@ def main(argv: list[str] | None = None) -> int:
         "--seed",
         type=int,
         default=None,
-        help="Seed for --order random. Required when the schedule is shuffled.",
+        help=(
+            "Seed for per-cell randomness, such as the webfetch colour, recorded "
+            "on each cell. Also shuffles --order random, which requires it. "
+            "--order interleave keeps its fixed order when a seed is set."
+        ),
     )
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=1)
@@ -1517,8 +1581,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("error: --order random requires --seed", file=sys.stderr)
         return 2
-    if args.seed is not None and order != "random":
-        print("error: --seed applies to --order random", file=sys.stderr)
+    if args.seed is not None and order not in {"random", "interleave"}:
+        print(
+            "error: --seed applies to --order random and --order interleave",
+            file=sys.stderr,
+        )
         return 2
     try:
         prs = select_prs(parse_prs(args.prs), args.pr or None)

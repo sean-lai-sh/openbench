@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -255,6 +256,48 @@ def cell_ledger_path(directory: Path, cell_id: str) -> Path:
     return Path(directory) / f"{_cell_file_stem(cell_id)}.jsonl"
 
 
+def cell_faults_path(directory: Path, cell_id: str) -> Path:
+    """Sibling of the usage ledger. One JSONL row per injected fault."""
+    ledger = cell_ledger_path(Path(directory), cell_id)
+    return ledger.with_name(f"{ledger.stem}.faults.jsonl")
+
+
+def faults_served(directory: Path | str, cell_id: str) -> int:
+    path = cell_faults_path(Path(directory), cell_id)
+    if not path.is_file():
+        return 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    return sum(1 for line in lines if line.strip())
+
+
+def _append_fault(directory: Path, cell_id: str, row: dict) -> None:
+    path = cell_faults_path(Path(directory), cell_id)
+    line = json.dumps(row, sort_keys=True) + "\n"
+    with _LEDGER_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
+def _fault_status(kind: str) -> int:
+    if kind == "http-529":
+        return 529
+    if kind == "http-429":
+        return 429
+    return 200
+
+
+def _request_audience(raw: bytes) -> str:
+    if b"subagent" in raw.lower():
+        return "subagent"
+    return "main-loop"
+
+
 def cell_bytes_path(directory: Path, cell_id: str) -> Path:
     """In-flight byte total beside the cell ledger.
 
@@ -468,6 +511,14 @@ class Proxy:
         self._thread = thread
         self._faults: dict[str, dict] = {}
         self._fault_lock = threading.Lock()
+        self._message_index: dict[str, int] = {}
+
+    def note_message(self, cell_id: str) -> int:
+        """1-based index of a ``/messages`` POST for this cell."""
+        with self._fault_lock:
+            index = self._message_index.get(cell_id, 0) + 1
+            self._message_index[cell_id] = index
+            return index
 
     @property
     def base_url(self) -> str:
@@ -544,8 +595,18 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             cell, route = split_cell_path(self.path)
             if ledger is not None and cell and raw:
                 note_cell_bytes(ledger, cell, len(raw))
+            message_index = None
+            if cell and _message_route(route):
+                message_index = holder["proxy"].note_message(cell)
             fault = holder["proxy"].take_fault(cell, route, raw)
             if fault:
+                if ledger is not None and cell and message_index is not None:
+                    _append_fault(ledger, cell, {
+                        "audience": _request_audience(raw),
+                        "request_index": message_index,
+                        "status": _fault_status(fault),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
                 self._send_fault(fault)
                 return
             try:

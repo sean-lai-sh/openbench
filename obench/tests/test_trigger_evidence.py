@@ -30,6 +30,7 @@ COPIES = {
     "trig-bash-limits": "fix-failing-test",
     "trig-workdir": "misleading-error",
     "trig-read-edge": "make-ci-green",
+    "trig-read-lines": "make-ci-green",
     "trig-grep-trunc": "taskflow",
     "trig-todo-task": "make-ci-green",
     "trig-plan-subagent": "misleading-error",
@@ -69,13 +70,16 @@ PREFIXES = {
         "and report the file and line. Then fix the bug."
     ),
     "trig-tmpdir": (
-        "Write a scratch file in the system temporary directory before editing the project. "
-        "Use the shell's temp dir (the directory in $TMPDIR, or /tmp) and put the file under "
-        "/tmp/opencode so the write stays outside this workspace."
+        "Before editing the project, do your scratch work in a temporary directory outside this project."
     ),
     "trig-lsp-outside": (
         "Use the write tool to save a copy of the fixed greeter module to "
-        "`/tmp/obench-shared/greeter_copy.py` (outside this project). Do not copy it with bash."
+        "`__OBENCH_OUTSIDE_PATH__` (outside this project). Do not copy it with bash."
+    ),
+    "trig-read-lines": (
+        "Before fixing anything, use the read tool (not bash) to view only lines 3 through 7 "
+        "of `catalog/books.py` — a 5-line window, not the whole file — and quote line 3 "
+        "verbatim at the start of your final answer. Then fix the failing tests."
     ),
 }
 
@@ -96,7 +100,7 @@ class TriggerTaskTests(unittest.TestCase):
                 copied = _files(TASKS / name)
                 skip = {"instruction.md", "PROVENANCE.md"}
                 # Plan mode scores the plan text. The file-only checker cannot pass.
-                if name == "trig-plan-subagent":
+                if name in {"trig-plan-subagent", "trig-read-lines", "trig-lsp-outside"}:
                     skip.add("checker.sh")
                 for rel, body in original.items():
                     if rel in skip:
@@ -114,14 +118,14 @@ class TriggerTaskTests(unittest.TestCase):
         expected = {
             "623": "make-it-run",
             "3115": "trig-list",
-            "4204": "trig-subagent-resume",
+            "4204": "trig-subagent-followup",
             "5066": "trig-bash-limits",
             "5131": "trig-bash-limits",
             "5140": "trig-workdir",
             "11731": "make-it-run",
             "12214": "trig-subagent-resume",
             "13090": "trig-read-edge",
-            "13198": "trig-read-edge",
+            "13198": "trig-read-lines",
             "13269": "trig-grep-trunc",
             "17053": "make-it-run",
             "21070": "make-it-run",
@@ -145,7 +149,9 @@ class TriggerTaskTests(unittest.TestCase):
             "13331": "trig-webfetch-image",
         }
         triggerable = {pr: row.tasks for pr, row in mapping.items() if row.status == "triggerable"}
-        self.assertEqual(triggerable, {pr: (task,) for pr, task in expected.items()})
+        want = {pr: (task,) for pr, task in expected.items()}
+        want["4204"] = ("trig-subagent-followup", "trig-subagent-resume")
+        self.assertEqual(triggerable, want)
         for task in set(expected.values()):
             self.assertTrue((TASKS / task / "checker.sh").is_file(), task)
         self.assertEqual(mapping["4838"].options.context, 72000)
@@ -157,6 +163,7 @@ class TriggerTaskTests(unittest.TestCase):
         self.assertEqual(mapping["25226"].options.permissions, "workspace")
         self.assertEqual(mapping["22390"].options.as_text(), "")
         self.assertEqual(mapping["1248"].status, "triggerable")
+        self.assertEqual(mapping["4204"].tasks, ("trig-subagent-followup", "trig-subagent-resume"))
         self.assertEqual(mapping["1248"].tasks, ("trig-plan-subagent",))
         self.assertEqual(mapping["1248"].options.mode, "plan")
         self.assertEqual(mapping["913"].tasks, ("trig-list-noise",))
@@ -251,33 +258,42 @@ class TriggerTaskTests(unittest.TestCase):
         for name in ("trig-dup-edit", "trig-webfetch-image", "trig-lsp-csharp"):
             self.assertTrue((TASKS / name / "checker.sh").is_file(), name)
 
-    def test_plan_checker_accepts_the_program_or_a_plan(self):
+    def test_plan_checker_accepts_an_unchanged_workspace_that_names_both_keys(self):
         import os
         import shutil
         import subprocess
         src = TASKS / "trig-plan-subagent"
         work = Path(tempfile.mkdtemp())
         shutil.copytree(src / "workspace", work, dirs_exist_ok=True)
+        env = os.environ.copy()
+        env["TASK_DIR"] = str(src)
         failed = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
         )
         self.assertEqual(failed.returncode, 1)
         evidence = Path(tempfile.mkdtemp())
         (evidence / "agent-output.txt").write_text(
-            '{"mode": "plan"}\nThe key is written "rat" and should be rate.\n',
+            'The key is written "rat" and should be rate.\n',
             encoding="utf-8",
         )
-        env = os.environ.copy()
         env["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(evidence)
         planned = subprocess.run(
             ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
         )
         self.assertEqual(planned.returncode, 0, planned.stderr)
+        (work / "settings.json").write_text('{"rate": 0.5}\n', encoding="utf-8")
+        changed = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(changed.returncode, 1, changed.stdout)
         solved = Path(tempfile.mkdtemp())
         shutil.copytree(src / "workspace", solved, dirs_exist_ok=True)
         shutil.copy(src / "solution" / "settings.json", solved / "settings.json")
+        overlay = os.environ.copy()
+        overlay["OPENBENCH_SOLUTION_OVERLAY"] = "1"
+        overlay["TASK_DIR"] = str(src)
         ok = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=solved, capture_output=True, text=True,
+            ["bash", str(src / "checker.sh")], cwd=solved, capture_output=True, text=True, env=overlay,
         )
         self.assertEqual(ok.returncode, 0, ok.stderr)
 
@@ -356,16 +372,16 @@ class EvidenceGrepTests(unittest.TestCase):
         modern.write_text('{"output":"<content>\\n1: print(\\"hi\\") "}\n', encoding="utf-8")
 
         # Backreference: offset 3 must be followed by content starting at line 3 (PR 13198).
-        cell("13198", "with", "trig-read-edge", 1, None)
-        hit = out / "13198" / "transcripts" / "with" / "trig-read-edge" / "1" / "storage" / "read.json"
+        cell("13198", "with", "trig-read-lines", 1, None)
+        hit = out / "13198" / "transcripts" / "with" / "trig-read-lines" / "1" / "storage" / "read.json"
         hit.parent.mkdir(parents=True, exist_ok=True)
         hit.write_text(
             '{"tool":"read","state":{"status":"completed","input":{"offset":3},'
             '"output":"<path>catalog/books.py</path>\\n<type>file</type>\\n<content>3: def load"}}\n',
             encoding="utf-8",
         )
-        cell("13198", "without", "trig-read-edge", 1, None)
-        miss = out / "13198" / "transcripts" / "without" / "trig-read-edge" / "1" / "log" / "opencode.log"
+        cell("13198", "without", "trig-read-lines", 1, None)
+        miss = out / "13198" / "transcripts" / "without" / "trig-read-lines" / "1" / "log" / "opencode.log"
         miss.parent.mkdir(parents=True, exist_ok=True)
         miss.write_text(
             '{"tool":"read","state":{"status":"completed","input":{"offset":3},'
@@ -387,8 +403,8 @@ class EvidenceGrepTests(unittest.TestCase):
         self.assertEqual(status("5066", "without", task="trig-bash-limits"), NOT_EXERCISED)
         self.assertEqual(status("3115", "without", task="trig-list"), EXERCISED)
         self.assertEqual(status("21070", "with", task="make-it-run"), EXERCISED)
-        self.assertEqual(status("13198", "with", task="trig-read-edge"), EXERCISED)
-        self.assertEqual(status("13198", "without", task="trig-read-edge"), NOT_EXERCISED)
+        self.assertEqual(status("13198", "with", task="trig-read-lines"), EXERCISED)
+        self.assertEqual(status("13198", "without", task="trig-read-lines"), NOT_EXERCISED)
         self.assertEqual(status("623", "with", task="make-it-run"), UNDETERMINABLE)
         self.assertEqual(sides["5066"]["sides"]["with"][EXERCISED], 1)
         self.assertEqual(sides["5066"]["sides"]["without"][NOT_EXERCISED], 1)
@@ -490,6 +506,82 @@ class EvidenceGrepTests(unittest.TestCase):
         )
         self.assertIsNotNone(pattern.search(with_id))
         self.assertIsNotNone(pattern.search(without))
+        prompt = (TASKS / "trig-tmpdir" / "instruction.md").read_text(encoding="utf-8")
+        self.assertNotIn("/tmp/opencode", prompt)
+
+    def test_lsp_outside_pattern_matches_touching_file_only(self):
+        pattern = load_patterns(PATTERNS)["19058"].compiled
+        outside = "/tmp/obench-shared-abc123/greeter_copy.py"
+        parent = (
+            f'lsp.client serverID=pyright path={outside} method=textDocument/didOpen'
+        )
+        touched = f'service=lsp file={outside} touching file'
+        self.assertIsNone(pattern.search(parent))
+        self.assertIsNotNone(pattern.search(touched))
+        self.assertIsNotNone(pattern.search(f"touching file before {outside}"))
+
+    def test_cell_metrics_record_reads_writes_tasks_and_rule_prefix(self):
+        from thesis.ab.evidence import attach_cell_metrics
+        root = Path(tempfile.mkdtemp())
+        storage = root / "storage" / "part.json"
+        storage.parent.mkdir(parents=True)
+        storage.write_text(
+            "\n".join([
+                '{"id":"ses_child","parentID":"ses_parent"}',
+                '{"tool":"read","sessionID":"ses_parent","state":{"input":{"filePath":"catalog/books.py","offset":3,"limit":5}}}',
+                '{"tool":"read","sessionID":"ses_parent","state":{"input":{"filePath":"catalog/books.py","offset":4,"limit":2}}}',
+                '{"tool":"bash","sessionID":"ses_child","state":{"input":{"command":"ls"}}}',
+                '{"tool":"task","state":{"input":{},"metadata":{"session_id":"ses_child"}}}',
+                '{"tool":"task","state":{"input":{"session_id":"ses_child"}}}',
+            ]),
+            encoding="utf-8",
+        )
+        (root / "streamed-text.txt").write_text("GLOBAL-RULE PROJECT-RULE done\n", encoding="utf-8")
+        row = attach_cell_metrics({}, root)
+        self.assertEqual(row["read_calls"], 2)
+        self.assertTrue(row["reread"])
+        self.assertEqual(row["subagent_write_calls"], 1)
+        self.assertEqual(row["task_calls"], 2)
+        self.assertTrue(row["subagent_resumed"])
+        self.assertEqual(row["fresh_subagents"], 1)
+        self.assertEqual(row["rule_prefix"], "both")
+
+    def test_followup_checker_requires_the_three_read_sites_when_evidence_exists(self):
+        import os
+        import shutil
+        import subprocess
+        src = TASKS / "trig-subagent-followup"
+        work = Path(tempfile.mkdtemp())
+        shutil.copytree(src / "workspace", work, dirs_exist_ok=True)
+        shutil.copy(src / "solution" / "settings.json", work / "settings.json")
+        env = os.environ.copy()
+        env["TASK_DIR"] = str(src)
+        evidence = Path(tempfile.mkdtemp())
+        (evidence / "streamed-text.txt").write_text(
+            "See main.py, billing/report.py, and billing/export/csv_writer.py.\n",
+            encoding="utf-8",
+        )
+        env["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(evidence)
+        ok = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        (evidence / "streamed-text.txt").write_text("only main.py\n", encoding="utf-8")
+        missed = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(missed.returncode, 1)
+        overlay = os.environ.copy()
+        overlay["OPENBENCH_SOLUTION_OVERLAY"] = "1"
+        overlay["TASK_DIR"] = str(src)
+        golden = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=overlay,
+        )
+        self.assertEqual(golden.returncode, 0, golden.stderr)
+        text = (src / "instruction.md").read_text(encoding="utf-8")
+        self.assertIn("__OBENCH_USER_TURN__", text)
+        self.assertNotIn("resume", text.lower())
+        self.assertNotIn("session", text.lower())
 
 
 if __name__ == "__main__":
