@@ -25,7 +25,14 @@ from pathlib import Path
 from obench.validate_tasks import build_task_roots, discover_tasks
 
 from thesis.ab.build_opencode import binary as build_opencode
-from thesis.ab.cell_fixtures import CellFixtures, FixtureError, apply_context_limit, parse_options
+from thesis.ab.cell_fixtures import (
+    CellFixtures,
+    FixtureError,
+    apply_context_limit,
+    apply_image_modalities,
+    bind_local_webfetch,
+    parse_options,
+)
 from thesis.ab.compat import assess
 from thesis.ab.durable import exclusive_lock, publish_text
 from thesis.ab.errors import BuildError, Incompatible
@@ -368,10 +375,12 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_GLOBAL_AGENTS",
         "OBENCH_OPENCODE_LSP",
         "OBENCH_OPENCODE_BUN",
+        "OBENCH_OPENCODE_WEBFETCH_URL",
         "OBENCH_PI_VERTEX",
         "OBENCH_PI_BIN",
     )
     saved = {key: os.environ.get(key) for key in keys}
+    png_server = None
     try:
         if harness == "opencode":
             os.environ["OBENCH_OPENCODE_BIN"] = spec["binary"]
@@ -417,6 +426,7 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_BUN"] = bun
             else:
                 os.environ.pop("OBENCH_OPENCODE_BUN", None)
+            png_server = bind_local_webfetch(os.environ, fixtures)
             evidence = str(spec.get("evidence_dir") or "").strip()
             if evidence:
                 os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = evidence
@@ -435,6 +445,7 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_GLOBAL_AGENTS", None)
             os.environ.pop("OBENCH_OPENCODE_LSP", None)
             os.environ.pop("OBENCH_OPENCODE_BUN", None)
+            os.environ.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
             vertex = spec.get("vertex") or {}
             os.environ["OBENCH_PI_VERTEX"] = json.dumps(vertex)
             os.environ["OBENCH_PI_BIN"] = vertex.get("bin") or spec["binary"]
@@ -467,6 +478,8 @@ def execute_cell(spec: dict) -> None:
             publish_side_toolchain(Path(toolchain_path), spec.get("toolchain"), installed_text)
         publish_text(Path(spec["cell_path"]), json.dumps(row, sort_keys=True))
     finally:
+        if png_server is not None:
+            png_server.close()
         for key, value in saved.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -515,9 +528,17 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         )),
     })
     fixtures = filled.get("fixtures") if isinstance(filled.get("fixtures"), dict) else {}
+    config = filled.get("config") or {}
+    changed = False
     context = fixtures.get("context")
     if isinstance(context, int) and context > 0:
-        filled["config"] = apply_context_limit(filled.get("config") or {}, context)
+        config = apply_context_limit(config, context)
+        changed = True
+    if fixtures.get("modalities") == "image":
+        config = apply_image_modalities(config)
+        changed = True
+    if changed:
+        filled["config"] = config
     return filled
 
 

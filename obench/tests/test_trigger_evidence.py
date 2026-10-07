@@ -134,6 +134,7 @@ class TriggerTaskTests(unittest.TestCase):
             "913": "trig-list-noise",
             "984": "make-ci-green",
             "1248": "trig-plan-subagent",
+            "13331": "trig-webfetch-image",
         }
         triggerable = {pr: row.tasks for pr, row in mapping.items() if row.status == "triggerable"}
         self.assertEqual(triggerable, {pr: (task,) for pr, task in expected.items()})
@@ -151,11 +152,12 @@ class TriggerTaskTests(unittest.TestCase):
         self.assertEqual(mapping["1248"].options.mode, "plan")
         self.assertEqual(mapping["913"].tasks, ("trig-list-noise",))
         self.assertEqual(mapping["984"].tasks, ("make-ci-green",))
+        self.assertEqual(mapping["3052"].options.modalities, "image")
+        self.assertEqual(mapping["13331"].options.webfetch, "local")
         held = {
             "3369": ("make-it-run", "incompatible"),
             "3418": ("trig-dup-edit", "incompatible"),
             "5527": ("make-it-run", "needs fixture"),
-            "13331": ("trig-webfetch-image", "needs fixture"),
             "23771": ("trig-lsp-csharp", "needs fixture"),
             "18140": ("make-it-run", "untriggerable"),
         }
@@ -199,6 +201,37 @@ class TriggerTaskTests(unittest.TestCase):
             (TASKS / "trig-lsp-ts" / "instruction.md").read_text(encoding="utf-8"),
         )
         self.assertIn("8417", (TASKS / "trig-lsp-ts" / "workspace" / "src" / "index.ts").read_text(encoding="utf-8"))
+
+    def test_remaining_trigger_workspaces_match_the_brief(self):
+        dup = (TASKS / "trig-dup-edit" / "instruction.md").read_text(encoding="utf-8")
+        self.assertTrue(dup.startswith(
+            "In fetch_remote() only, change retries to 5. Use a single edit call whose oldString is exactly `retries = 3`"
+        ))
+        limits = (TASKS / "trig-dup-edit" / "workspace" / "limits.py").read_text(encoding="utf-8")
+        self.assertEqual(limits.count("retries = 3"), 2)
+        self.assertEqual(limits.count("backoff = 2"), 2)
+        self.assertIn(
+            "retries = 5",
+            (TASKS / "trig-dup-edit" / "solution" / "limits.py").read_text(encoding="utf-8"),
+        )
+        fetched = (TASKS / "trig-webfetch-image" / "instruction.md").read_text(encoding="utf-8")
+        self.assertIn("__OBENCH_WEBFETCH_URL__", fetched)
+        self.assertIn("dominant colour", fetched)
+        self.assertEqual(
+            (TASKS / "trig-webfetch-image" / "solution" / "answer.txt").read_text(encoding="utf-8").strip(),
+            "red",
+        )
+        self.assertEqual(
+            (TASKS / "trig-lsp-csharp" / "instruction.md").read_text(encoding="utf-8").strip(),
+            "Fix the compile error in Program.cs.",
+        )
+        broken = (TASKS / "trig-lsp-csharp" / "workspace" / "Program.cs").read_text(encoding="utf-8")
+        self.assertIn("missingPort", broken)
+        fixed = (TASKS / "trig-lsp-csharp" / "solution" / "Program.cs").read_text(encoding="utf-8")
+        self.assertNotIn("missingPort", fixed)
+        self.assertIn("8417", fixed)
+        for name in ("trig-dup-edit", "trig-webfetch-image", "trig-lsp-csharp"):
+            self.assertTrue((TASKS / name / "checker.sh").is_file(), name)
 
 
 class EvidenceGrepTests(unittest.TestCase):
