@@ -708,14 +708,22 @@ def _apply_lsp_enable(body):
     ``OBENCH_OPENCODE_LSP`` names the servers to install. Trees whose schema
     is ``boolean | record`` still log "all LSPs are disabled" until the config
     sets ``lsp`` to true. Trees that reject boolean true are left unchanged.
+    A requested LSP whose worktree cannot be found fails the cell: the config
+    that would enable LSP cannot be written.
     """
     if not os.environ.get("OBENCH_OPENCODE_LSP", "").strip():
         return
     if "lsp" in body:
         return
-    from obench.lsp_cell import lsp_boolean_enables_all, worktree_root
+    from obench.lsp_cell import LspProvisionError, lsp_boolean_enables_all, worktree_root
     root = worktree_root(_exe())
-    if root and lsp_boolean_enables_all(root):
+    if not root:
+        raise LspProvisionError(
+            "LSP was requested but the OpenCode worktree for this binary "
+            "could not be found, so lsp: true cannot be written to opencode.json",
+            infra=True,
+        )
+    if lsp_boolean_enables_all(root):
         body["lsp"] = True
 
 
@@ -746,6 +754,10 @@ def _config_body(include_permissions):
 
 
 _WEBFETCH_PLACEHOLDER = "__OBENCH_WEBFETCH_URL__"
+_OUTSIDE_PLACEHOLDER = "__OBENCH_OUTSIDE_PATH__"
+_TURN_MARK = "__OBENCH_USER_TURN__"
+_SINGLE_MARK = "__OBENCH_SINGLE_TURN__"
+_SESSION_ID = re.compile(r'"(?:sessionID|sessionId|session_id)"\s*:\s*"(ses_[^"]+)"')
 
 
 def _apply_webfetch_url(instruction):
@@ -758,6 +770,71 @@ def _apply_webfetch_url(instruction):
     if not url or _WEBFETCH_PLACEHOLDER not in instruction:
         return instruction
     return instruction.replace(_WEBFETCH_PLACEHOLDER, url)
+
+
+def _apply_outside_path(instruction):
+    """Swap the outside-file token for this cell's clean path."""
+    path = os.environ.get("OBENCH_OPENCODE_OUTSIDE_PATH", "").strip()
+    if not path or _OUTSIDE_PLACEHOLDER not in instruction:
+        return instruction
+    return instruction.replace(_OUTSIDE_PLACEHOLDER, path)
+
+
+def _session_flags(help_text):
+    """Whether ``run --help`` lists ``--session`` and ``--continue``.
+
+    An empty help text means the probe failed. Treat that as the modern
+    flag set, which has both.
+    """
+    if not (help_text or "").strip():
+        return True, True
+    return _flag_present(help_text, "--session"), _flag_present(help_text, "--continue")
+
+
+def _split_turns(instruction):
+    """Return ``(turn1, turn2, fallback)`` or None when the prompt is one turn.
+
+    The markers are runner bookkeeping. They are stripped before the model
+    sees a turn.
+    """
+    if _TURN_MARK not in instruction or _SINGLE_MARK not in instruction:
+        return None
+    head, rest = instruction.split(_TURN_MARK, 1)
+    if _SINGLE_MARK not in rest:
+        return None
+    turn2, single = rest.split(_SINGLE_MARK, 1)
+    turn1 = head.strip()
+    turn2 = turn2.strip()
+    single = single.strip()
+    if not turn1 or not turn2 or not single:
+        return None
+    return turn1, turn2, single
+
+
+def _prompts_for(instruction, help_text):
+    """Prompts to send, and whether a second turn should continue the session."""
+    plan = _split_turns(instruction)
+    if plan is None:
+        return [instruction], False
+    turn1, turn2, single = plan
+    has_session, has_continue = _session_flags(help_text)
+    if has_session or has_continue:
+        return [turn1, turn2], True
+    return [single], False
+
+
+def _extract_session_id(text):
+    match = _SESSION_ID.search(text or "")
+    return match.group(1) if match else ""
+
+
+def _combine_procs(first, second):
+    return subprocess.CompletedProcess(
+        args=[],
+        returncode=second.returncode,
+        stdout=(first.stdout or "") + (second.stdout or ""),
+        stderr=(first.stderr or "") + (second.stderr or ""),
+    )
 
 
 def _install_global_agents(env):
@@ -1064,8 +1141,27 @@ def _isolated_env():
     return env, iso_home
 
 
+def _lsp_failure(exc, iso_home, cmd=None):
+    from obench.lsp_cell import LspProvisionError
+    if not isinstance(exc, LspProvisionError):
+        return None
+    shutil.rmtree(iso_home, ignore_errors=True)
+    row = {
+        "completed": False,
+        "error": str(exc),
+        "output_tail": "",
+        "tokens": None,
+        "turns": None,
+        "cmd": cmd,
+        **_empty_token_usage(),
+    }
+    if getattr(exc, "infra", False):
+        row["failure_class"] = "infra"
+    return row
+
+
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
-    instruction = _apply_webfetch_url(instruction)
+    instruction = _apply_outside_path(_apply_webfetch_url(instruction))
     auth_source = next((path for path in _AUTH_CANDIDATES if os.path.isfile(path)), None)
     env, iso_home = _isolated_env()
     installed_anthropic = ""
@@ -1100,12 +1196,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         _install_global_agents(env)
         _provision_lsp(env, workdir)
     except Exception as exc:  # noqa: BLE001 - a missing toolchain is a cell error, not a crash
-        from obench.lsp_cell import LspProvisionError
-        if isinstance(exc, LspProvisionError):
-            shutil.rmtree(iso_home, ignore_errors=True)
-            return {"completed": False, "error": str(exc),
-                    "output_tail": "", "tokens": None, "turns": None, "cmd": None,
-                    **_empty_token_usage()}
+        stopped = _lsp_failure(exc, iso_home)
+        if stopped is not None:
+            return stopped
         raise
     probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model == "claude-opus-5-5"
     watch_prompt = False
@@ -1164,7 +1257,12 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             env["VERTEX_LOCATION"] = "global"
         try:
             _install_config(env, _config_body(watch_prompt))
-        except ValueError as exc:
+        except (ValueError, Exception) as exc:
+            stopped = _lsp_failure(exc, iso_home, cmd)
+            if stopped is not None:
+                return _stamp(stopped)
+            if not isinstance(exc, ValueError):
+                raise
             shutil.rmtree(iso_home, ignore_errors=True)
             return _stamp({"completed": False, "error": str(exc),
                     "output_tail": "", "tokens": None, "turns": None, "cmd": cmd,
@@ -1200,7 +1298,12 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         try:
             env["OPENCODE_CONFIG_CONTENT"] = _open_config_content(spec)
             _install_config(env, _config_body(watch_prompt))
-        except ValueError as exc:
+        except (ValueError, Exception) as exc:
+            stopped = _lsp_failure(exc, iso_home, cmd)
+            if stopped is not None:
+                return stopped
+            if not isinstance(exc, ValueError):
+                raise
             shutil.rmtree(iso_home, ignore_errors=True)
             return {"completed": False, "error": str(exc),
                     "output_tail": "", "tokens": None, "turns": None, "cmd": cmd,
@@ -1209,9 +1312,26 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         shutil.rmtree(iso_home, ignore_errors=True)
         return _unsupported(model)
 
+    turn_help = _run_help(exe, timeout_s) if os.environ.get("OBENCH_OPENCODE_BIN", "").strip() else ""
+    prompts, two_turn = _prompts_for(instruction, turn_help)
+    cmd = list(cmd)
+    cmd[-1] = prompts[0]
+
     try:
         try:
             proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
+            if two_turn and proc.returncode == 0 and len(prompts) == 2:
+                session_id = _extract_session_id((proc.stdout or "") + (proc.stderr or ""))
+                has_session, has_continue = _session_flags(turn_help)
+                extra = []
+                if has_session and session_id:
+                    extra = ["--session", session_id]
+                elif has_continue:
+                    extra = ["--continue"]
+                if extra:
+                    cmd = list(cmd[:-1]) + extra + [prompts[1]]
+                    second = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
+                    proc = _combine_procs(proc, second)
         except _PromptWait as e:
             full_output = e.output or ""
             return _finish({

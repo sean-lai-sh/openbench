@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import tempfile
 import threading
@@ -158,6 +159,35 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual(
             prepared_config["provider"]["anthropic"]["models"]["claude-opus-5-5"]["limit"]["context"],
             1_000_000,
+        )
+
+    def test_relative_out_dir_becomes_an_absolute_evidence_path(self):
+        prepared = {
+            "binary": "/bin/true",
+            "config": {},
+            "permission_config": False,
+            "harness": "opencode",
+            "proxy": {},
+        }
+        spec = {
+            "pr": "1248",
+            "side": "without",
+            "task": "trig-plan-subagent",
+            "trial": 1,
+            "fixtures": {},
+        }
+        out = Path(tempfile.mkdtemp())
+        previous = Path.cwd()
+        os.chdir(out)
+        try:
+            filled = _fill(spec, prepared, Path("rel-out"), "tasks", "adapters", "claude-opus-5-5", 60)
+        finally:
+            os.chdir(previous)
+        for key in ("evidence_dir", "transcripts_dir", "cell_path", "toolchain_path"):
+            self.assertTrue(Path(filled[key]).is_absolute(), key)
+        self.assertEqual(
+            Path(filled["evidence_dir"]),
+            (out / "rel-out" / "1248" / "transcripts" / "without" / "trig-plan-subagent" / "1").resolve(),
         )
 
     def test_image_modalities_copy_the_model_and_keep_the_limit(self):
@@ -442,6 +472,50 @@ class FaultInjectionTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(len(self.httpd.seen), 1)
+
+    def test_injected_faults_are_logged_beside_the_ledger(self):
+        ledger = Path(tempfile.mkdtemp())
+        host, port = self.httpd.server_address
+        proxy = start_proxy(
+            "proj", token="tok", upstream=f"http://{host}:{port}", ledger_dir=ledger,
+        )
+        self.addCleanup(proxy.close)
+        proxy.arm_fault("cell-1", "http-529", 2)
+        title = json.dumps({
+            "model": "claude-opus-5-5",
+            "max_tokens": 20,
+            "system": "You are a title generator. Never use tools.",
+            "messages": [{"role": "user", "content": "hello"}],
+        }).encode()
+        status, _headers, _payload = _post(proxy.base_url + "/c/cell-1/v1/messages", title)
+        self.assertEqual(status, 200)
+        status, _headers, _payload = _post(
+            proxy.base_url + "/c/cell-1/v1/messages", self.body,
+        )
+        self.assertEqual(status, 529)
+        child = json.dumps({
+            "model": "claude-opus-5-5",
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "subagent"}],
+            "tools": [{"name": "bash", "input_schema": {"type": "object"}}],
+        }).encode()
+        status, _headers, _payload = _post(
+            proxy.base_url + "/c/cell-1/v1/messages", child,
+        )
+        self.assertEqual(status, 529)
+        rows = [
+            json.loads(line)
+            for line in (ledger / "cell-1.faults.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual([row["request_index"] for row in rows], [2, 3])
+        self.assertEqual([row["status"] for row in rows], [529, 529])
+        self.assertEqual([row["audience"] for row in rows], ["main-loop", "subagent"])
+        self.assertTrue(all(row["timestamp"] for row in rows))
+        usage = (ledger / "cell-1.jsonl").read_text(encoding="utf-8")
+        self.assertNotIn("529", usage)
+        metered = {}
+        apply_cell_meter(metered, {"ledger_dir": str(ledger), "cell_id": "cell-1"})
+        self.assertEqual(metered["faults_served"], 2)
 
 
 class SubagentMeterTests(unittest.TestCase):

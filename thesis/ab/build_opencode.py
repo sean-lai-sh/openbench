@@ -289,19 +289,19 @@ def _compile_old(root: Path, env: dict) -> Path:
             env={**env, "CGO_ENABLED": "0", "GOOS": system, "GOARCH": goarch},
         )
     outfile = dist / "opencode"
-    # Same command as publish.ts: --compile, no --minify. The wasm embed is
-    # apply_tree_sitter_wasm_fix, which runs before this. Minify stays off
-    # because that is the upstream command and a minified stamp is stale.
+    # Same command as publish.ts: one entry point, no --minify. A second
+    # entry under dist/.../bin makes bun embed tree-sitter wasm at
+    # /$bunfs/root/../ which does not resolve. The tui path is a define.
     cmd = [
         "bun", "build",
         "--define", "OPENCODE_VERSION='openbench'",
         "--compile",
         f"--target=bun-{system}-{machine}",
         f"--outfile={outfile}",
-        "./src/index.ts",
     ]
     if tui_out.is_file():
-        cmd.append(str(tui_out))
+        cmd.extend(["--define", f"OPENCODE_TUI_PATH='{tui_out}'"])
+    cmd.append("./src/index.ts")
     _run(cmd, cwd=pkg, env=env)
     if not outfile.is_file():
         raise BuildError(f"compile did not produce {outfile}")
@@ -520,15 +520,18 @@ def _build_stamp(plan: dict) -> dict:
     """Identity of the recipe that produced a cached binary.
 
     ``binary()`` refuses a cache hit whose stamp does not match the recipe
-    this process would write. A missing stamp, a compile stamp that still
-    records ``minify: true``, or a compile stamp with no ``tree_sitter_wasm``
-    marker is rebuilt. That drops cached binaries from before the wasm embed
-    fix on the old ``bun build --compile`` trees (#2334 and #2367).
+    this process would write.     A missing stamp, a compile stamp that still
+    records ``minify: true``, a compile stamp with no ``tree_sitter_wasm``
+    marker, or the old ``file`` marker from the two-entry compile is rebuilt.
+    ``file`` becomes ``file-single-entry`` so cached #2334 and #2367 binaries
+    pick up the single-entry embed.
     """
     kind = plan.get("kind")
     if kind == "compile":
         mode = plan.get("tree_sitter_wasm")
-        if mode not in {"file", "unchanged"}:
+        if mode == "file":
+            mode = "file-single-entry"
+        if mode not in {"file-single-entry", "unchanged"}:
             mode = "unchanged"
         return {
             "flags": ["--compile"],
@@ -557,7 +560,7 @@ def _stamp_current(stamp: dict | None) -> bool:
     if kind == "compile":
         return (
             stamp.get("minify") is False
-            and stamp.get("tree_sitter_wasm") in {"file", "unchanged"}
+            and stamp.get("tree_sitter_wasm") in {"file-single-entry", "unchanged"}
         )
     return kind in {"build.ts", "bun-run"}
 

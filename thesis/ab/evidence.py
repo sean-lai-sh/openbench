@@ -184,6 +184,262 @@ def classify_files(paths: list[Path], pattern: re.Pattern[str]) -> str:
     return NOT_EXERCISED
 
 
+_TOOL = re.compile(r'"tool"\s*:\s*"([^"]+)"')
+_READ_PATH = re.compile(r'"(?:filePath|path)"\s*:\s*"([^"]+)"|<path>([^<]+)</path>')
+_OFFSET = re.compile(r'"offset"\s*:\s*"?(\d+)"?')
+_LIMIT = re.compile(r'"limit"\s*:\s*"?(\d+)"?')
+_SESSION = re.compile(r'"(?:sessionID|session_id|task_id)"\s*:\s*"(ses_[^"]+)"')
+_CHILD_ID_PARENT = re.compile(
+    r'"id"\s*:\s*"(ses_[^"]+)"[^}]{0,800}?"parentID"\s*:\s*"(ses_[^"]+)"'
+)
+_CHILD_PARENT_ID = re.compile(
+    r'"parentID"\s*:\s*"(ses_[^"]+)"[^}]{0,800}?"id"\s*:\s*"(ses_[^"]+)"'
+)
+_WRITE_TOOLS = frozenset({"bash", "edit", "write", "patch"})
+_RULE_TOKENS = (("GLOBAL-RULE", "global"), ("PROJECT-RULE", "project"))
+_EOF = 10**12
+
+
+def _tool_windows(text: str) -> list[tuple[str, str]]:
+    matches = list(_TOOL.finditer(text))
+    found = []
+    for index, match in enumerate(matches):
+        previous = matches[index - 1].end() if index else 0
+        start = max(previous, match.start() - 400)
+        end = matches[index + 1].start() if index + 1 < len(matches) else min(len(text), match.end() + 2000)
+        found.append((match.group(1), text[start:end]))
+    return found
+
+
+def _norm_path(path: str) -> str:
+    text = (path or "").replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    return text.lstrip("/")
+
+
+def _same_path(left: str, right: str) -> bool:
+    a = _norm_path(left)
+    b = _norm_path(right)
+    if not a or not b:
+        return False
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
+def _read_span(window: str) -> tuple[str, int, int | None]:
+    path = ""
+    match = _READ_PATH.search(window)
+    if match:
+        path = match.group(1) or match.group(2) or ""
+    offset_match = _OFFSET.search(window)
+    limit_match = _LIMIT.search(window)
+    offset = int(offset_match.group(1)) if offset_match else 1
+    limit = int(limit_match.group(1)) if limit_match else None
+    return path, offset, limit
+
+
+def _ranges_overlap(left: tuple[int, int | None], right: tuple[int, int | None]) -> bool:
+    left_end = _EOF if left[1] is None else left[0] + left[1]
+    right_end = _EOF if right[1] is None else right[0] + right[1]
+    return left[0] < right_end and right[0] < left_end
+
+
+def _richest(paths: list[Path], kind: str) -> str:
+    best = ""
+    best_count = -1
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        count = sum(1 for name, _window in _tool_windows(text) if name == kind)
+        if count > best_count:
+            best = text
+            best_count = count
+    return best
+
+
+def read_call_stats(paths: list[Path]) -> tuple[int, bool]:
+    """Read-tool calls in the file with the most of them, and whether one rereads.
+
+    A reread is a later read of the same path whose range overlaps an earlier
+    one. A missing offset starts at the beginning of the file. A missing limit
+    runs through EOF, so it overlaps a later read of that path.
+    """
+    text = _richest(paths, "read")
+    if not text:
+        return 0, False
+    calls = []
+    for name, window in _tool_windows(text):
+        if name != "read":
+            continue
+        path, offset, limit = _read_span(window)
+        calls.append((path, offset, limit))
+    reread = False
+    for index, (path, offset, limit) in enumerate(calls):
+        for earlier, earlier_offset, earlier_limit in calls[:index]:
+            if _same_path(path, earlier) and _ranges_overlap(
+                (earlier_offset, earlier_limit), (offset, limit),
+            ):
+                reread = True
+                break
+        if reread:
+            break
+    return len(calls), reread
+
+
+def _child_sessions(text: str) -> set[str]:
+    children = set()
+    for match in _CHILD_ID_PARENT.finditer(text):
+        children.add(match.group(1))
+    for match in _CHILD_PARENT_ID.finditer(text):
+        children.add(match.group(2))
+    return children
+
+
+def subagent_write_call_count(paths: list[Path]) -> int:
+    """Non-read-only tool calls inside a child session.
+
+    Counts bash, edit, write, and patch whose session id has a parent. Child
+    ids are collected across the evidence files. The file with the most such
+    calls wins, so a copied transcript is not added to the storage copy.
+    """
+    texts: list[tuple[Path, str]] = []
+    children: set[str] = set()
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        texts.append((path, text))
+        children.update(_child_sessions(text))
+    if not children:
+        return 0
+    best = 0
+    for path, text in texts:
+        count = 0
+        for name, window in _tool_windows(text):
+            if name not in _WRITE_TOOLS:
+                continue
+            sessions = _SESSION.findall(window)
+            if any(session in children for session in sessions):
+                count += 1
+                continue
+            if any(session in str(path) for session in children):
+                count += 1
+        best = max(best, count)
+    return best
+
+
+def _forward_windows(text: str, kind: str) -> list[str]:
+    """Text after each ``tool`` key of ``kind``, up to the next tool key."""
+    matches = list(_TOOL.finditer(text))
+    found = []
+    for index, match in enumerate(matches):
+        if match.group(1) != kind:
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else min(len(text), match.end() + 2000)
+        found.append(text[match.end():end])
+    return found
+
+
+def task_call_stats(paths: list[Path]) -> tuple[int, bool, int]:
+    """Return ``(task_calls, subagent_resumed, fresh_subagents)``.
+
+    A task call that passes a session id already seen on an earlier task call
+    resumes that subagent. Every other task call starts a fresh subagent.
+    """
+    text = _richest(paths, "task")
+    if not text:
+        return 0, False, 0
+    seen: list[str] = []
+    calls = 0
+    fresh = 0
+    resumed = False
+    for window in _forward_windows(text, "task"):
+        calls += 1
+        ids = _SESSION.findall(window)
+        if any(session in seen for session in ids):
+            resumed = True
+        else:
+            fresh += 1
+        for session in ids:
+            if session not in seen:
+                seen.append(session)
+    return calls, resumed, fresh
+
+
+def classify_rule_prefix(text: str) -> str:
+    """Classify the start of a final answer.
+
+    ``both`` when the first non-empty line starts with GLOBAL-RULE and
+    PROJECT-RULE in either order. One of those tokens alone is ``global`` or
+    ``project``. Anything else is ``neither``.
+    """
+    line = ""
+    for raw in (text or "").splitlines():
+        if raw.strip():
+            line = raw.strip()
+            break
+    if not line:
+        line = (text or "").strip()
+    rest = line
+    seen: list[str] = []
+    while rest:
+        rest = rest.lstrip(" \t:.-")
+        matched = False
+        for token, label in _RULE_TOKENS:
+            if rest.startswith(token):
+                seen.append(label)
+                rest = rest[len(token):]
+                matched = True
+                break
+        if not matched:
+            break
+    if "global" in seen and "project" in seen:
+        return "both"
+    if seen:
+        return seen[0]
+    return "neither"
+
+
+def rule_prefix_from_dir(root: Path | None) -> str:
+    if root is None:
+        return "neither"
+    directory = Path(root)
+    streamed = directory / "streamed-text.txt"
+    agent = directory / "agent-output.txt"
+    if streamed.is_file():
+        try:
+            return classify_rule_prefix(streamed.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            return "neither"
+    if agent.is_file():
+        try:
+            return classify_rule_prefix(agent.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            return "neither"
+    return "neither"
+
+
+def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list[Path] | None = None) -> dict:
+    """Record read, subagent, task, and rule-prefix facts on a cell row."""
+    if not isinstance(row, dict):
+        return row
+    paths = list(files or [])
+    root = Path(evidence_root) if evidence_root else None
+    if not paths and root is not None and root.is_dir():
+        paths = [path for path in sorted(root.rglob("*")) if path.is_file()]
+    reads, reread = read_call_stats(paths)
+    task_calls, resumed, fresh = task_call_stats(paths)
+    row["read_calls"] = reads
+    row["reread"] = reread
+    row["subagent_write_calls"] = subagent_write_call_count(paths)
+    row["task_calls"] = task_calls
+    row["subagent_resumed"] = resumed
+    row["fresh_subagents"] = fresh
+    row["rule_prefix"] = rule_prefix_from_dir(root)
+    return row
+
+
 def iter_cells(out_dir: Path):
     root = Path(out_dir)
     if not root.is_dir():
@@ -234,6 +490,8 @@ def annotate(out_dir: Path, patterns: dict[str, EvidencePattern]) -> dict:
         else:
             status = classify_files(unique, spec.compiled)
         row["exercised"] = status
+        evidence_root = out_dir / pr / "transcripts" / side / task_component(task_name) / str(trial)
+        attach_cell_metrics(row, evidence_root, unique)
         publish_text(path, json.dumps(row, sort_keys=True))
         pr_summary = summary.setdefault(pr, {"task": spec.task, "sides": {}})
         side_summary = pr_summary["sides"].setdefault(side, _empty_counts())

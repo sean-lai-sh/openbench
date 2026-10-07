@@ -395,8 +395,12 @@ class LocalPngServer:
         self._thread.join(timeout=5)
 
 
-def bind_local_webfetch(env: dict, fixtures: dict | None) -> LocalPngServer | None:
-    """Start the PNG server when this cell's options say ``webfetch=local``."""
+def bind_local_webfetch(env: dict, fixtures: dict | None, seed: int | None = None) -> LocalPngServer | None:
+    """Start the PNG server when this cell's options say ``webfetch=local``.
+
+    ``seed`` picks the colour. The same seed always serves the same PNG.
+    Without a seed the colour is a fresh random draw.
+    """
     body = fixtures if isinstance(fixtures, dict) else {}
     kind = str(body.get("webfetch") or "").strip()
     if kind != "local":
@@ -404,7 +408,8 @@ def bind_local_webfetch(env: dict, fixtures: dict | None) -> LocalPngServer | No
         env.pop("OBENCH_WEBFETCH_COLOUR", None)
         env.pop("OBENCH_WEBFETCH_SEED", None)
         return None
-    seed = secrets.randbits(32)
+    if seed is None:
+        seed = secrets.randbits(32)
     colour, _rgb = colour_for_seed(seed)
     server = LocalPngServer(png_for_colour(colour), seed, colour)
     env["OBENCH_OPENCODE_WEBFETCH_URL"] = server.url

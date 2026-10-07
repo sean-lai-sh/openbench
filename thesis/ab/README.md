@@ -75,7 +75,7 @@ python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
   --out results/ab-aa
 ```
 
-The default launch order runs every cell of side A, then every cell of side B. `--order interleave` alternates the two sides inside each trial, so a rate limit or a warm prompt cache hits both sides in the same window. `--order random --seed N` shuffles the cells inside each trial block and leaves the blocks themselves in trial order. Both orders apply to a normal A/B and to `--aa`. `--jobs 1` runs that schedule one cell at a time. A higher `--jobs` still submits in that order.
+The default launch order runs every cell of side A, then every cell of side B. `--order interleave` alternates the two sides inside each trial, so a rate limit or a warm prompt cache hits both sides in the same window. `--order random --seed N` shuffles the cells inside each trial block and leaves the blocks themselves in trial order. `--seed N` with `--order interleave` does not shuffle: the order stays fixed, and the seed only drives per-cell randomness (for example the webfetch colour on PR 13331). Each cell records `run_seed` and a derived `cell_seed`. Both orders apply to a normal A/B and to `--aa`. `--jobs 1` runs that schedule one cell at a time. A higher `--jobs` still submits in that order.
 
 ```bash
 python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
