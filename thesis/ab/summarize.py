@@ -145,11 +145,39 @@ def _token_total(row: dict) -> float | None:
     return sum(split.values())
 
 
+def _output_tokens(row: dict) -> float | None:
+    split = billable_tokens(row)
+    if split is not None:
+        return split["tokens_output"]
+    return _number(row.get("tokens_output"))
+
+
+def _uncached_input(row: dict) -> float | None:
+    split = billable_tokens(row)
+    if split is not None:
+        return split["tokens_input_uncached"]
+    return _number(row.get("tokens_input_uncached"))
+
+
+def _requests_count(row: dict) -> float | None:
+    return _number(row.get("requests_count"))
+
+
 TASK_DELTAS = (
     ("time_s", "Time s", _wall_time, 3),
     ("turns", "Turns", _turns, 3),
     ("tokens", "Tokens", _token_total, 1),
     ("cost_usd", "Cost USD", row_cost, 3),
+)
+
+# Shown as a percent next to the raw per-cell mean difference.
+PERCENT_METRICS = (
+    ("output_tokens", "Output tokens", _output_tokens, 1),
+    ("uncached_input", "Uncached input", _uncached_input, 1),
+    ("total_tokens", "Total tokens", _token_total, 1),
+    ("requests_count", "Requests", _requests_count, 1),
+    ("wall_s", "Wall s", _wall_time, 3),
+    ("spend_usd", "Cost USD", row_cost, 3),
 )
 
 
@@ -234,17 +262,26 @@ def _paired_metric(without_rows: list[dict], with_rows: list[dict], value_of) ->
     right = task_samples(with_rows, value_of)
     paired = {}
     for task in set(left) & set(right):
+        left_mean = sum(left[task]) / len(left[task])
+        right_mean = sum(right[task]) / len(right[task])
+        delta = right_mean - left_mean
+        percent = None if left_mean == 0 else (delta / left_mean) * 100.0
         paired[task] = {
-            "delta": (sum(right[task]) / len(right[task])) - (sum(left[task]) / len(left[task])),
+            "delta": delta,
+            "percent": percent,
             "ci": bootstrap_mean_diff(left[task], right[task]),
         }
     return paired
 
 
+def _metric_specs():
+    return tuple(TASK_DELTAS) + tuple(PERCENT_METRICS)
+
+
 def task_metric_deltas(without_rows: list[dict], with_rows: list[dict]) -> list[dict]:
     computed = [
         (key, digits, _paired_metric(without_rows, with_rows, value_of))
-        for key, _label, value_of, digits in TASK_DELTAS
+        for key, _label, value_of, digits in _metric_specs()
     ]
     names: set[str] = set()
     for _key, _digits, paired in computed:
@@ -256,6 +293,7 @@ def task_metric_deltas(without_rows: list[dict], with_rows: list[dict]) -> list[
             found = paired.get(task)
             metrics[key] = {
                 "delta": None if found is None else found["delta"],
+                "percent": None if found is None else found.get("percent"),
                 "ci": None if found is None else found["ci"],
                 "digits": digits,
             }
@@ -294,6 +332,42 @@ def _fmt(value, digits=3) -> str:
     if value is None:
         return ""
     return f"{value:.{digits}f}"
+
+
+def _pct(value) -> str:
+    if value is None:
+        return ""
+    return f"{value:.1f}%"
+
+
+def pooled_usage_deltas(without_rows: list[dict], with_rows: list[dict]) -> dict:
+    """Side means, the percent change, and the raw per-cell mean difference."""
+    block = {}
+    for key, _label, value_of, digits in PERCENT_METRICS:
+        left = [
+            value_of(row) for row in without_rows
+            if countable(row) and value_of(row) is not None
+        ]
+        right = [
+            value_of(row) for row in with_rows
+            if countable(row) and value_of(row) is not None
+        ]
+        left_mean = _mean(left)
+        right_mean = _mean(right)
+        delta = None
+        percent = None
+        if left_mean is not None and right_mean is not None:
+            delta = right_mean - left_mean
+            if left_mean != 0:
+                percent = (delta / left_mean) * 100.0
+        block[key] = {
+            "without": left_mean,
+            "with": right_mean,
+            "delta": delta,
+            "percent": percent,
+            "digits": digits,
+        }
+    return block
 
 
 def _ci_text(ci, digits=3) -> str:
@@ -490,6 +564,7 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         "delta_ci": interval,
         "paired_tasks": len(deltas),
         "task_deltas": task_metric_deltas(without_rows, with_rows),
+        "usage_deltas": pooled_usage_deltas(without_rows, with_rows),
         "headroom": headroom_report(without_rows, with_rows),
         "comparison": "ab",
         "no_progress": {
@@ -504,6 +579,7 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         record["delta_ci"] = None
         record["paired_tasks"] = 0
         record["task_deltas"] = []
+        record["usage_deltas"] = {}
         record["headroom"] = {"tasks": [], "delta_pass_rate": None, "delta_ci": None, "n": 0}
         record["incompatible"] = {}
     elif has_aa:
@@ -690,6 +766,7 @@ def _render_ab_markdown(records: list[dict]) -> str:
         lines.append("| --- | --- | --- | --- | --- |")
         lines.append("| without | " + " | ".join(_side_cells(item["without"])) + " |")
         lines.append("| with | " + " | ".join(_side_cells(item["with"])) + " |")
+        lines.extend(_usage_delta_lines(item.get("usage_deltas") or {}))
         kills = item.get("no_progress") or {}
         lines.append(
             "Watchdog kills (no_progress): "
@@ -718,6 +795,8 @@ def _task_delta_lines(rows: list[dict]) -> list[str]:
     headers = ["Task"]
     for _key, label, _value_of, _digits in TASK_DELTAS:
         headers.extend([label, "95% CI"])
+    for _key, label, _value_of, _digits in PERCENT_METRICS:
+        headers.extend([f"{label} %", f"{label} diff"])
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join("---" for _ in headers) + " |")
     for row in rows:
@@ -726,7 +805,31 @@ def _task_delta_lines(rows: list[dict]) -> list[str]:
             metric = row["metrics"][key]
             cells.append(_fmt(metric["delta"], metric["digits"]))
             cells.append(_ci_text(metric["ci"], metric["digits"]))
+        for key, _label, _value_of, _digits in PERCENT_METRICS:
+            metric = row["metrics"][key]
+            cells.append(_pct(metric.get("percent")))
+            cells.append(_fmt(metric["delta"], metric["digits"]))
         lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
+def _usage_delta_lines(block: dict) -> list[str]:
+    if not block:
+        return []
+    lines = [
+        "",
+        "| Metric | % delta | Raw mean diff |",
+        "| --- | --- | --- |",
+    ]
+    for key, label, _value_of, digits in PERCENT_METRICS:
+        metric = block.get(key) or {}
+        lines.append(
+            "| " + " | ".join([
+                label,
+                _pct(metric.get("percent")),
+                _fmt(metric.get("delta"), digits),
+            ]) + " |"
+        )
     return lines
 
 
@@ -770,6 +873,15 @@ def render_csv(records: list[dict]) -> str:
         "delta_ci_low", "delta_ci_high", "paired_tasks",
         "without_median_time_s", "with_median_time_s",
         "without_mean_tokens", "with_mean_tokens",
+        "without_mean_output_tokens", "with_mean_output_tokens",
+        "delta_output_tokens_pct", "delta_output_tokens",
+        "without_mean_uncached_input", "with_mean_uncached_input",
+        "delta_uncached_input_pct", "delta_uncached_input",
+        "delta_total_tokens_pct", "delta_total_tokens",
+        "without_requests_count", "with_requests_count",
+        "delta_requests_count_pct", "delta_requests_count",
+        "delta_wall_s_pct", "delta_wall_s",
+        "delta_cost_usd_pct", "delta_cost_usd",
         "without_no_progress", "with_no_progress",
         "headroom_tasks", "headroom_n", "headroom_pass_delta",
         "headroom_pass_ci_low", "headroom_pass_ci_high",
@@ -785,6 +897,14 @@ def render_csv(records: list[dict]) -> str:
         ci = item["delta_ci"] or (None, None)
         headroom = item["headroom"]
         head_ci = headroom["delta_ci"] or (None, None)
+        usage = item.get("usage_deltas") or {}
+
+        def _usage(key, field, digits=None):
+            metric = usage.get(key) or {}
+            if field == "percent":
+                return _pct(metric.get("percent")).rstrip("%")
+            return _fmt(metric.get(field), digits if digits is not None else metric.get("digits") or 3)
+
         writer.writerow({
             "pr": item["pr"],
             "repo": item.get("repo") or "",
@@ -803,6 +923,24 @@ def render_csv(records: list[dict]) -> str:
             "with_median_time_s": _fmt(item["with"]["median_time_s"]),
             "without_mean_tokens": _fmt(item["without"]["mean_tokens"], 1),
             "with_mean_tokens": _fmt(item["with"]["mean_tokens"], 1),
+            "without_mean_output_tokens": _usage("output_tokens", "without"),
+            "with_mean_output_tokens": _usage("output_tokens", "with"),
+            "delta_output_tokens_pct": _usage("output_tokens", "percent"),
+            "delta_output_tokens": _usage("output_tokens", "delta"),
+            "without_mean_uncached_input": _usage("uncached_input", "without"),
+            "with_mean_uncached_input": _usage("uncached_input", "with"),
+            "delta_uncached_input_pct": _usage("uncached_input", "percent"),
+            "delta_uncached_input": _usage("uncached_input", "delta"),
+            "delta_total_tokens_pct": _usage("total_tokens", "percent"),
+            "delta_total_tokens": _usage("total_tokens", "delta"),
+            "without_requests_count": _usage("requests_count", "without"),
+            "with_requests_count": _usage("requests_count", "with"),
+            "delta_requests_count_pct": _usage("requests_count", "percent"),
+            "delta_requests_count": _usage("requests_count", "delta"),
+            "delta_wall_s_pct": _usage("wall_s", "percent"),
+            "delta_wall_s": _usage("wall_s", "delta"),
+            "delta_cost_usd_pct": _usage("spend_usd", "percent"),
+            "delta_cost_usd": _usage("spend_usd", "delta"),
             "without_no_progress": int((item.get("no_progress") or {}).get("without") or 0),
             "with_no_progress": int((item.get("no_progress") or {}).get("with") or 0),
             "headroom_tasks": ";".join(task["task"] for task in headroom["tasks"]),

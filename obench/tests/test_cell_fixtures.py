@@ -16,14 +16,18 @@ from pathlib import Path
 
 from thesis.ab.cell_fixtures import (
     IMAGE_MODALITIES,
+    NAMED_COLOURS,
+    PNG_SIDE,
     WEBFETCH_PLACEHOLDER,
     FixtureError,
     apply_context_limit,
     apply_image_modalities,
     bind_local_webfetch,
+    colour_for_seed,
     compaction_overflow,
     compaction_usable,
     parse_options,
+    png_for_colour,
 )
 from thesis.ab.compat import anthropic_proxy_config
 from thesis.ab.run_ab import _fill, apply_cell_meter
@@ -201,24 +205,57 @@ class CompactionTests(unittest.TestCase):
         )
 
 
-def _png_pixel(png: bytes) -> tuple[int, int, int]:
+def _png_facts(png: bytes) -> tuple[int, int, list[bytes], tuple[int, int, int]]:
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     pos = 8
+    tags = []
+    width = height = None
     payload = b""
     while pos + 8 <= len(png):
         length = struct.unpack(">I", png[pos:pos + 4])[0]
         tag = png[pos + 4:pos + 8]
         data = png[pos + 8:pos + 8 + length]
+        tags.append(tag)
+        if tag == b"IHDR":
+            width, height = struct.unpack(">II", data[:8])
         if tag == b"IDAT":
             payload += data
         pos += 12 + length
     raw = zlib.decompress(payload)
     assert raw[0] == 0
-    return raw[1], raw[2], raw[3]
+    return width, height, tags, (raw[1], raw[2], raw[3])
 
 
 class LocalImageTests(unittest.TestCase):
-    def test_local_png_is_red_and_served_as_an_image(self):
+    def test_named_colours_are_far_apart(self):
+        import math
+        colours = dict(NAMED_COLOURS)
+        self.assertEqual(
+            list(colours),
+            ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown", "grey"],
+        )
+        names = list(colours)
+        worst = min(
+            math.dist(colours[a], colours[b])
+            for i, a in enumerate(names)
+            for b in names[i + 1:]
+        )
+        self.assertGreater(worst, 100)
+
+    def test_seed_picks_a_stable_named_colour(self):
+        name, rgb = colour_for_seed(3)
+        self.assertEqual(name, NAMED_COLOURS[3][0])
+        self.assertEqual(rgb, NAMED_COLOURS[3][1])
+        self.assertEqual(colour_for_seed(3), colour_for_seed(3 + len(NAMED_COLOURS)))
+
+    def test_png_is_a_metadata_free_square(self):
+        png = png_for_colour("cyan")
+        width, height, tags, pixel = _png_facts(png)
+        self.assertEqual((width, height), (PNG_SIDE, PNG_SIDE))
+        self.assertEqual(pixel, dict(NAMED_COLOURS)["cyan"])
+        self.assertEqual(set(tags), {b"IHDR", b"IDAT", b"IEND"})
+
+    def test_local_png_is_a_named_colour_and_served_as_an_image(self):
         env = {}
         server = bind_local_webfetch(env, {"webfetch": "local"})
         self.addCleanup(server.close)
@@ -226,13 +263,20 @@ class LocalImageTests(unittest.TestCase):
         url = env["OBENCH_OPENCODE_WEBFETCH_URL"]
         self.assertTrue(url.startswith("http://127.0.0.1:"))
         self.assertTrue(url.endswith("/color.png"))
+        self.assertEqual(env["OBENCH_WEBFETCH_COLOUR"], server.colour)
+        self.assertEqual(env["OBENCH_WEBFETCH_SEED"], str(server.seed))
+        self.assertIn(server.colour, dict(NAMED_COLOURS))
         with urllib.request.urlopen(url, timeout=5) as response:
             self.assertEqual(response.status, 200)
             self.assertTrue(response.headers["Content-Type"].startswith("image/png"))
             body = response.read()
-        self.assertEqual(_png_pixel(body), (255, 0, 0))
+        width, height, tags, pixel = _png_facts(body)
+        self.assertEqual((width, height), (PNG_SIDE, PNG_SIDE))
+        self.assertEqual(pixel, dict(NAMED_COLOURS)[server.colour])
+        self.assertEqual(set(tags), {b"IHDR", b"IDAT", b"IEND"})
         self.assertIsNone(bind_local_webfetch(env, {}))
         self.assertNotIn("OBENCH_OPENCODE_WEBFETCH_URL", env)
+        self.assertNotIn("OBENCH_WEBFETCH_COLOUR", env)
 
 
 class _Upstream(BaseHTTPRequestHandler):
@@ -306,7 +350,12 @@ class FaultInjectionTests(unittest.TestCase):
         self.addCleanup(self.httpd.shutdown)
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(lambda: self.thread.join(timeout=2))
-        self.body = b'{"model":"claude-opus-5-5","max_tokens":8,"messages":[]}'
+        self.body = json.dumps({
+            "model": "claude-opus-5-5",
+            "max_tokens": 8,
+            "messages": [],
+            "tools": [{"name": "bash", "input_schema": {"type": "object"}}],
+        }).encode()
 
     def test_first_messages_post_is_the_fault_and_later_posts_forward(self):
         self.proxy.arm_fault("cell-1", "http-529")
@@ -352,6 +401,47 @@ class FaultInjectionTests(unittest.TestCase):
     def test_unknown_fault_is_rejected(self):
         with self.assertRaises(ProxyError):
             self.proxy.arm_fault("cell-1", "http-500")
+
+    def test_title_and_tiny_requests_do_not_consume_the_fault(self):
+        self.proxy.arm_fault("cell-1", "http-529", 1)
+        title = json.dumps({
+            "model": "claude-opus-5-5",
+            "max_tokens": 20,
+            "system": "You are a title generator. Never use tools.",
+            "messages": [{"role": "user", "content": "hello"}],
+        }).encode()
+        status, _headers, _payload = _post(
+            self.proxy.base_url + "/c/cell-1/v1/messages", title,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.httpd.seen), 1)
+        tiny = b'{"model":"claude-opus-5-5","max_tokens":8,"messages":[]}'
+        status, _headers, _payload = _post(
+            self.proxy.base_url + "/c/cell-1/v1/messages", tiny,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.httpd.seen), 2)
+        status, _headers, payload = _post(
+            self.proxy.base_url + "/c/cell-1/v1/messages", self.body,
+        )
+        self.assertEqual(status, 529)
+        self.assertIn(b"overloaded_error", payload)
+        self.assertEqual(len(self.httpd.seen), 2)
+
+    def test_fault_count_covers_that_many_main_loop_requests(self):
+        self.proxy.arm_fault("cell-1", "http-529", 3)
+        for _ in range(3):
+            status, _headers, payload = _post(
+                self.proxy.base_url + "/c/cell-1/v1/messages", self.body,
+            )
+            self.assertEqual(status, 529)
+            self.assertIn(b"overloaded_error", payload)
+        self.assertEqual(len(self.httpd.seen), 0)
+        status, _headers, _payload = _post(
+            self.proxy.base_url + "/c/cell-1/v1/messages", self.body,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.httpd.seen), 1)
 
 
 class SubagentMeterTests(unittest.TestCase):
@@ -424,6 +514,99 @@ class SubagentMeterTests(unittest.TestCase):
         self.assertEqual(other["requests_count"], 1)
         self.assertEqual(other["requests_input_uncached"], 100)
         self.assertEqual(other["tokens_main_calls"], 1)
+
+
+class _ToolAndUsage(BaseHTTPRequestHandler):
+    """A messages response that carries both a tool call and token usage."""
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        if b"tool-only" in raw:
+            body = {
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_9",
+                    "name": "bash",
+                    "input": {"command": "pwd"},
+                }],
+            }
+        else:
+            body = {
+                "id": "msg",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "bash",
+                    "input": {"command": "ls /tmp"},
+                }],
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 9,
+                    "cache_read_input_tokens": 1,
+                    "cache_creation_input_tokens": 0,
+                    "duration_ms": 15,
+                },
+            }
+        payload = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt, *args):
+        return
+
+
+class LedgerTrimTests(unittest.TestCase):
+    def test_ledger_rows_keep_usage_and_timing_and_the_same_count(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _ToolAndUsage)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        host, port = httpd.server_address
+        ledger = Path(tempfile.mkdtemp())
+        proxy = start_proxy(
+            "proj", token="tok", upstream=f"http://{host}:{port}", ledger_dir=ledger,
+        )
+        self.addCleanup(proxy.close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        body = json.dumps({
+            "model": "claude-opus-5-5",
+            "max_tokens": 64,
+            "tools": [{"name": "bash"}],
+            "messages": [{"role": "user", "content": "main"}],
+        }).encode()
+        tool_only = json.dumps({
+            "model": "claude-opus-5-5",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "tool-only"}],
+        }).encode()
+        for url, payload in (
+            (proxy.base_url + "/c/cell-trim/v1/messages", body),
+            (proxy.base_url + "/c/cell-trim/v1/messages", body),
+            (proxy.base_url + "/c/cell-tool/v1/messages", tool_only),
+        ):
+            status, _headers, _response = _post(url, payload)
+            self.assertEqual(status, 200)
+        mixed = (ledger / "cell-trim.jsonl").read_text(encoding="utf-8").splitlines()
+        only = (ledger / "cell-tool.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(mixed), 2)
+        self.assertEqual(len(only), 1)
+        row = json.loads(mixed[0])
+        self.assertEqual(row["usage"]["input_tokens"], 7)
+        self.assertEqual(row["usage"]["output_tokens"], 9)
+        self.assertEqual(row["duration_ms"], 15)
+        self.assertNotIn("name", row["usage"])
+        self.assertNotIn("input", row["usage"])
+        self.assertNotIn("bash", mixed[0])
+        self.assertNotIn("toolu_1", mixed[0])
+        tool_row = json.loads(only[0])
+        self.assertEqual(tool_row["usage"], {})
+        self.assertNotIn("toolu_9", only[0])
+        self.assertNotIn("bash", only[0])
 
 
 class _SlowStream(BaseHTTPRequestHandler):

@@ -69,12 +69,13 @@ PREFIXES = {
         "and report the file and line. Then fix the bug."
     ),
     "trig-tmpdir": (
-        "Do any scratch work (for example a quick test script) in a temporary directory outside "
-        "this project, not in the workspace."
+        "Write a scratch file in the system temporary directory before editing the project. "
+        "Use the shell's temp dir (the directory in $TMPDIR, or /tmp) and put the file under "
+        "/tmp/opencode so the write stays outside this workspace."
     ),
     "trig-lsp-outside": (
-        "Also write a copy of the fixed greeter module to `/tmp/obench-shared/greeter_copy.py` "
-        "(outside this project)."
+        "Use the write tool to save a copy of the fixed greeter module to "
+        "`/tmp/obench-shared/greeter_copy.py` (outside this project). Do not copy it with bash."
     ),
 }
 
@@ -93,8 +94,12 @@ class TriggerTaskTests(unittest.TestCase):
             with self.subTest(task=name):
                 original = _files(TASKS / base)
                 copied = _files(TASKS / name)
+                skip = {"instruction.md", "PROVENANCE.md"}
+                # Plan mode scores the plan text. The file-only checker cannot pass.
+                if name == "trig-plan-subagent":
+                    skip.add("checker.sh")
                 for rel, body in original.items():
-                    if rel in {"instruction.md", "PROVENANCE.md"}:
+                    if rel in skip:
                         continue
                     self.assertEqual(copied[rel], body, rel)
                 prefix = PREFIXES[name]
@@ -120,6 +125,8 @@ class TriggerTaskTests(unittest.TestCase):
             "13269": "trig-grep-trunc",
             "17053": "make-it-run",
             "21070": "make-it-run",
+            "3369": "make-it-run",
+            "23771": "trig-lsp-csharp",
             "22390": "trig-bash-limits",
             "2334": "trig-lsp-ts",
             "2367": "trig-list-noise",
@@ -145,6 +152,7 @@ class TriggerTaskTests(unittest.TestCase):
         self.assertEqual(mapping["2334"].options.lsp, ("typescript",))
         self.assertEqual(mapping["6524"].options.lsp, ("pyright",))
         self.assertEqual(mapping["19058"].options.lsp, ("pyright",))
+        self.assertEqual(mapping["19058"].options.disable_tools, ("bash",))
         self.assertTrue(mapping["24974"].options.global_agents)
         self.assertEqual(mapping["25226"].options.permissions, "workspace")
         self.assertEqual(mapping["22390"].options.as_text(), "")
@@ -162,18 +170,19 @@ class TriggerTaskTests(unittest.TestCase):
         self.assertEqual(mapping["3052"].options.modalities, "image")
         self.assertEqual(mapping["13331"].options.webfetch, "local")
         held = {
-            "3369": ("make-it-run", "incompatible"),
             "3418": ("trig-dup-edit", "incompatible"),
             "5527": ("make-it-run", "needs fixture"),
-            "23771": ("trig-lsp-csharp", "needs fixture"),
             "18140": ("make-it-run", "untriggerable"),
         }
         for pr, (task, status) in held.items():
             self.assertEqual(mapping[pr].tasks, (task,), pr)
             self.assertEqual(mapping[pr].status, status, pr)
         self.assertEqual(mapping["3369"].options.fault, "http-529")
+        self.assertEqual(mapping["3369"].options.fault_count, 3)
+        self.assertEqual(mapping["3369"].status, "triggerable")
         self.assertEqual(mapping["5527"].options.fault, "sse-server-error")
         self.assertEqual(mapping["23771"].options.lsp, ("dotnet",))
+        self.assertEqual(mapping["23771"].status, "triggerable")
         self.assertEqual(len(mapping), 34)
         for pr, row in mapping.items():
             self.assertTrue(row.tasks, pr)
@@ -224,6 +233,8 @@ class TriggerTaskTests(unittest.TestCase):
         fetched = (TASKS / "trig-webfetch-image" / "instruction.md").read_text(encoding="utf-8")
         self.assertIn("__OBENCH_WEBFETCH_URL__", fetched)
         self.assertIn("dominant colour", fetched)
+        for name in ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown", "grey"):
+            self.assertIn(name, fetched)
         self.assertEqual(
             (TASKS / "trig-webfetch-image" / "solution" / "answer.txt").read_text(encoding="utf-8").strip(),
             "red",
@@ -239,6 +250,60 @@ class TriggerTaskTests(unittest.TestCase):
         self.assertIn("8417", fixed)
         for name in ("trig-dup-edit", "trig-webfetch-image", "trig-lsp-csharp"):
             self.assertTrue((TASKS / name / "checker.sh").is_file(), name)
+
+    def test_plan_checker_accepts_the_program_or_a_plan(self):
+        import os
+        import shutil
+        import subprocess
+        src = TASKS / "trig-plan-subagent"
+        work = Path(tempfile.mkdtemp())
+        shutil.copytree(src / "workspace", work, dirs_exist_ok=True)
+        failed = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True,
+        )
+        self.assertEqual(failed.returncode, 1)
+        evidence = Path(tempfile.mkdtemp())
+        (evidence / "agent-output.txt").write_text(
+            '{"mode": "plan"}\nThe key is written "rat" and should be rate.\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(evidence)
+        planned = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        solved = Path(tempfile.mkdtemp())
+        shutil.copytree(src / "workspace", solved, dirs_exist_ok=True)
+        shutil.copy(src / "solution" / "settings.json", solved / "settings.json")
+        ok = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=solved, capture_output=True, text=True,
+        )
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+
+    def test_webfetch_checker_matches_the_colour_name(self):
+        import os
+        import subprocess
+        src = TASKS / "trig-webfetch-image"
+        work = Path(tempfile.mkdtemp())
+        (work / "answer.txt").write_text("Blue\n", encoding="utf-8")
+        env = os.environ.copy()
+        env.pop("OBENCH_WEBFETCH_COLOUR", None)
+        missed = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(missed.returncode, 1)
+        (work / "answer.txt").write_text("red\n", encoding="utf-8")
+        default = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(default.returncode, 0, default.stderr)
+        env["OBENCH_WEBFETCH_COLOUR"] = "cyan"
+        (work / "answer.txt").write_text("CYAN.\n", encoding="utf-8")
+        named = subprocess.run(
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(named.returncode, 0, named.stderr)
 
 
 class EvidenceGrepTests(unittest.TestCase):
@@ -412,6 +477,19 @@ class EvidenceGrepTests(unittest.TestCase):
         self.assertEqual(text["edit_calls"], 1)
         self.assertEqual(payload["prs"]["984"]["sides"]["with"][EXERCISED], 1)
         self.assertEqual(payload["prs"]["984"]["sides"]["without"][NOT_EXERCISED], 1)
+
+    def test_tmpdir_pattern_allows_call_id_between_tool_and_state(self):
+        pattern = load_patterns(PATTERNS)["25226"].compiled
+        with_id = (
+            '{"tool":"bash","callID":"abc","state":{"status":"completed",'
+            '"input":{"command":"cat /tmp/opencode/x"}}}'
+        )
+        without = (
+            '{"tool":"bash","state":{"status":"completed",'
+            '"input":{"command":"cat /tmp/opencode/x"}}}'
+        )
+        self.assertIsNotNone(pattern.search(with_id))
+        self.assertIsNotNone(pattern.search(without))
 
 
 if __name__ == "__main__":

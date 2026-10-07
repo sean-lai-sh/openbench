@@ -344,7 +344,14 @@ def has_checker_owned_verdict(row, text=""):
         and row.get(field) > 0
         for field in ("tokens_output", "tokens_proxy_output")
     )
-    if not produced_output and not row.get("workspace_changed"):
+    # Plan mode proposes a plan and does not edit the workspace. The token
+    # parser can also miss the text, so a finished plan with real model text
+    # is still a checker verdict rather than an infra hole.
+    plan_text = (
+        str(row.get("agent_mode") or "") == "plan"
+        and len(_meaningful_work_text(text)) >= 10
+    )
+    if not produced_output and not row.get("workspace_changed") and not plan_text:
         return False
     if has_zero_output_and_minimal_turns(row, text):
         return False

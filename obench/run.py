@@ -96,7 +96,7 @@ ROW_FIELDS = (
     "usage_evidence_grade", "usage_ranking_eligible",
     "usage_ranking_exclusion_reason",
     "tokens_fresh", "turns", "cmd", "checker_exit", "exec_mode", "score", "harness_version",
-    "harness_version_source", "failure_class", "failure_reason", "workspace_changed", "checker_stdout", "checker_stderr", "checker_workspace_files",
+    "harness_version_source", "failure_class", "failure_reason", "agent_mode", "workspace_changed", "checker_stdout", "checker_stderr", "checker_workspace_files",
     "image_digest", "candidate_provenance", "version_drift", "timeout_s",
     "workspace_source",
     "last_activity_age_s",
@@ -2172,6 +2172,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["turns"] = result.get("turns")
         row["cmd"] = result.get("cmd")
         row["output_tail"] = result.get("output_tail") or ""
+        row["agent_mode"] = result.get("agent_mode")
         installed_sdk = result.get("installed_anthropic")
         if isinstance(installed_sdk, str) and installed_sdk.strip():
             row["installed_anthropic"] = installed_sdk.strip()

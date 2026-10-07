@@ -8,6 +8,7 @@ options are allowed. A typo is an error so a misspelled flag is not skipped.
 from __future__ import annotations
 
 import json
+import secrets
 import struct
 import threading
 import zlib
@@ -28,14 +29,32 @@ _WEBFETCH = frozenset({"local"})
 # not given a permission map by this option; that schema key is rejected here.
 _DISABLE_TOOLS = frozenset({"bash", "write", "edit", "patch", "webfetch"})
 _KEYS = frozenset({
-    "context", "fault", "mode", "permissions", "global-agents", "lsp",
+    "context", "fault", "fault-count", "mode", "permissions", "global-agents", "lsp",
     "modalities", "webfetch", "disable-tools",
 })
 
 # The task instruction contains this token. The cell replaces it with the
 # local server URL so the prompt never depends on a public image host.
 WEBFETCH_PLACEHOLDER = "__OBENCH_WEBFETCH_URL__"
+# Polarity validation has no cell seed, so the checker expects this name
+# unless OBENCH_WEBFETCH_COLOUR is set. The solution file is the same word.
 FIXTURE_COLOUR = "red"
+# One canonical RGB per name. Neighbours stay more than 100 apart in RGB
+# space so a vision model can name the swatch without reading a hex value.
+NAMED_COLOURS = (
+    ("red", (220, 20, 20)),
+    ("orange", (255, 130, 0)),
+    ("yellow", (255, 245, 0)),
+    ("green", (0, 170, 40)),
+    ("cyan", (0, 200, 210)),
+    ("blue", (20, 30, 240)),
+    ("purple", (150, 20, 190)),
+    ("pink", (240, 90, 180)),
+    ("brown", (100, 50, 10)),
+    ("grey", (160, 160, 160)),
+)
+_COLOUR_BY_NAME = dict(NAMED_COLOURS)
+PNG_SIDE = 64
 
 # Zod at PR 3052 requires both arrays when ``modalities`` is present.
 # The read tool only checks that input includes "image".
@@ -50,6 +69,7 @@ class FixtureError(ValueError):
 class CellFixtures:
     context: int | None = None
     fault: str | None = None
+    fault_count: int | None = None
     mode: str | None = None
     permissions: str | None = None
     global_agents: bool = False
@@ -64,6 +84,8 @@ class CellFixtures:
             parts.append(f"context={self.context}")
         if self.fault:
             parts.append(f"fault={self.fault}")
+        if self.fault_count is not None:
+            parts.append(f"fault-count={self.fault_count}")
         if self.mode:
             parts.append(f"mode={self.mode}")
         if self.permissions:
@@ -84,6 +106,7 @@ class CellFixtures:
         return {
             "context": self.context,
             "fault": self.fault,
+            "fault_count": self.fault_count,
             "mode": self.mode,
             "permissions": self.permissions,
             "global_agents": self.global_agents,
@@ -127,6 +150,18 @@ def parse_options(text: str) -> CellFixtures:
     fault = found.get("fault")
     if fault is not None and fault not in _FAULTS:
         raise FixtureError(f"unknown fault {fault!r}")
+    fault_count = None
+    if "fault-count" in found:
+        if fault is None:
+            raise FixtureError("fault-count requires fault")
+        try:
+            fault_count = int(found["fault-count"])
+        except ValueError as exc:
+            raise FixtureError(
+                f"fault-count must be an integer, got {found['fault-count']!r}"
+            ) from exc
+        if fault_count < 1:
+            raise FixtureError("fault-count must be >= 1")
     permissions = found.get("permissions")
     if permissions is not None and permissions != "workspace":
         raise FixtureError(f"unknown permissions mode {permissions!r}")
@@ -164,6 +199,7 @@ def parse_options(text: str) -> CellFixtures:
     return CellFixtures(
         context=context,
         fault=fault,
+        fault_count=fault_count,
         mode=found.get("mode"),
         permissions=permissions,
         global_agents=global_agents,
@@ -282,23 +318,32 @@ def apply_image_modalities(config: dict) -> dict:
     return body
 
 
-def _png_rgb(red: int, green: int, blue: int) -> bytes:
-    """One uncompressed RGB pixel, so the dominant colour is unambiguous."""
+def colour_for_seed(seed: int) -> tuple[str, tuple[int, int, int]]:
+    """Pick one palette entry. The same seed always yields the same name."""
+    name, rgb = NAMED_COLOURS[int(seed) % len(NAMED_COLOURS)]
+    return name, rgb
+
+
+def _png_rgb(red: int, green: int, blue: int, side: int = PNG_SIDE) -> bytes:
+    """Uncompressed RGB square. IHDR, IDAT, and IEND only — no text chunks."""
     def chunk(tag: bytes, data: bytes) -> bytes:
         crc = zlib.crc32(tag + data) & 0xFFFFFFFF
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
-    raw = b"\x00" + bytes((red, green, blue))
-    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    pixel = bytes((red, green, blue))
+    rows = b"".join(b"\x00" + pixel * side for _ in range(side))
+    ihdr = struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IDAT", zlib.compress(rows, 9))
         + chunk(b"IEND", b"")
     )
 
 
-RED_PNG = _png_rgb(255, 0, 0)
+def png_for_colour(name: str) -> bytes:
+    rgb = _COLOUR_BY_NAME[name]
+    return _png_rgb(*rgb)
 
 
 class _PngHandler(BaseHTTPRequestHandler):
@@ -307,7 +352,7 @@ class _PngHandler(BaseHTTPRequestHandler):
         if path != "/color.png":
             self.send_error(404)
             return
-        body = RED_PNG
+        body = getattr(self.server, "png", b"")
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(body)))
@@ -327,8 +372,11 @@ class LocalPngServer:
     share a port.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, png: bytes, seed: int, colour: str) -> None:
+        self.seed = int(seed)
+        self.colour = colour
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _PngHandler)
+        self._httpd.png = png
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         self._closed = False
@@ -353,7 +401,13 @@ def bind_local_webfetch(env: dict, fixtures: dict | None) -> LocalPngServer | No
     kind = str(body.get("webfetch") or "").strip()
     if kind != "local":
         env.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
+        env.pop("OBENCH_WEBFETCH_COLOUR", None)
+        env.pop("OBENCH_WEBFETCH_SEED", None)
         return None
-    server = LocalPngServer()
+    seed = secrets.randbits(32)
+    colour, _rgb = colour_for_seed(seed)
+    server = LocalPngServer(png_for_colour(colour), seed, colour)
     env["OBENCH_OPENCODE_WEBFETCH_URL"] = server.url
+    env["OBENCH_WEBFETCH_COLOUR"] = colour
+    env["OBENCH_WEBFETCH_SEED"] = str(seed)
     return server

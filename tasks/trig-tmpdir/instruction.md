@@ -1,4 +1,4 @@
-Do any scratch work (for example a quick test script) in a temporary directory outside this project, not in the workspace.
+Write a scratch file in the system temporary directory before editing the project. Use the shell's temp dir (the directory in $TMPDIR, or /tmp) and put the file under /tmp/opencode so the write stays outside this workspace.
 
 # Get the greeting program running
 

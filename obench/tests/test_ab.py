@@ -479,6 +479,50 @@ class TestSchedule(unittest.TestCase):
         self.assertEqual(parsed[0]["headroom_pass_ci_low"], "1.000")
         self.assertEqual(parsed[0]["headroom_pass_ci_high"], "1.000")
 
+    def test_usage_deltas_show_percent_and_raw_mean_diff(self):
+        out = Path(tempfile.mkdtemp())
+        root = out / "9"
+        root.mkdir()
+
+        def row(requests, output, uncached, wall):
+            return {
+                "task": "make-it-run",
+                "score": 1,
+                "success": True,
+                "wall_time_s": wall,
+                "turns": 1,
+                "tokens_input_uncached": uncached,
+                "tokens_output": output,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+                "requests_count": requests,
+            }
+
+        (root / "without.jsonl").write_text(
+            json.dumps(row(2, 10, 100, 10)) + "\n", encoding="utf-8")
+        (root / "with.jsonl").write_text(
+            json.dumps(row(5, 40, 250, 15)) + "\n", encoding="utf-8")
+        pr = PullRequest(
+            pr="9", title="Limit", merged="yes", with_sha=SHA_B, without_sha=SHA_A,
+            nearest_release="", category="tool", files_changed="", key_paths="",
+            one_line="", harness_change="Adds a limit.", bugfix_check="",
+        )
+        record = pr_record(pr, out)
+        text = render_markdown([record])
+        self.assertIn("| Requests | 150.0% | 3.0 |", text)
+        self.assertIn("| Output tokens | 300.0% | 30.0 |", text)
+        self.assertIn("| Uncached input | 150.0% | 150.0 |", text)
+        self.assertIn("| Wall s | 50.0% | 5.000 |", text)
+        parsed = list(csv.DictReader(io.StringIO(render_csv([record]))))
+        self.assertEqual(parsed[0]["delta_requests_count"], "3.0")
+        self.assertEqual(parsed[0]["delta_requests_count_pct"], "150.0")
+        self.assertEqual(parsed[0]["without_requests_count"], "2.0")
+        self.assertEqual(parsed[0]["with_requests_count"], "5.0")
+        self.assertEqual(parsed[0]["delta_output_tokens"], "30.0")
+        self.assertEqual(parsed[0]["delta_output_tokens_pct"], "300.0")
+        self.assertIn("without_mean_tokens", parsed[0])
+        self.assertIn("delta_cost_usd", parsed[0])
+
 
 class TestBuildPlan(unittest.TestCase):
     def test_publish_script_selects_host_compile(self):

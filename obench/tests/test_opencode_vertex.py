@@ -591,6 +591,7 @@ class TestProviderSdkPin(unittest.TestCase):
             (modern / "log").mkdir()
             (modern / "log" / "opencode.log").write_text("INFO service=session\n", encoding="utf-8")
             (modern / "opencode.db").write_bytes(b"sqlite-session")
+            (modern / "opencode-local.db").write_bytes(b"GLOBAL-RULE channel db")
             modern_dest = Path(tempfile.mkdtemp())
             os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(modern_dest)
             opencode._preserve_opencode_evidence({"XDG_DATA_HOME": str(modern_home)})
@@ -603,6 +604,10 @@ class TestProviderSdkPin(unittest.TestCase):
                 (modern_dest / "log" / "opencode.log").read_text(encoding="utf-8"),
             )
             self.assertEqual((modern_dest / "opencode.db").read_bytes(), b"sqlite-session")
+            self.assertEqual(
+                (modern_dest / "opencode-local.db").read_bytes(),
+                b"GLOBAL-RULE channel db",
+            )
             self.assertFalse((modern_dest / "project").exists())
 
             old_home = Path(tempfile.mkdtemp())
