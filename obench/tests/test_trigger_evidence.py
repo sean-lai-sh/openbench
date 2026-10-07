@@ -8,11 +8,13 @@ import unittest
 from pathlib import Path
 
 from thesis.ab.evidence import (
+    DEFAULT_PATTERNS,
     EXERCISED,
     NOT_EXERCISED,
     UNDETERMINABLE,
     annotate,
     load_patterns,
+    main,
 )
 from thesis.ab.run_ab import load_task_map
 
@@ -204,6 +206,19 @@ class EvidenceGrepTests(unittest.TestCase):
         self.assertEqual(sides["5066"]["sides"]["without"][NOT_EXERCISED], 1)
         self.assertEqual(sides["623"]["sides"]["with"][UNDETERMINABLE], 1)
         self.assertTrue((out / "evidence-summary.json").is_file())
+
+    def test_cli_defaults_to_the_committed_pattern_file(self):
+        fixtures = ROOT / "thesis" / "ab" / "fixtures"
+        self.assertEqual(DEFAULT_PATTERNS, fixtures / "trigger-evidence.csv")
+        self.assertEqual(PATTERNS, DEFAULT_PATTERNS)
+        for name in ("trigger-tasks-34.md", "trigger-tasks-34.csv", "trigger-evidence.csv"):
+            self.assertTrue((fixtures / name).is_file(), name)
+        self.assertEqual(len(load_patterns(DEFAULT_PATTERNS)), 34)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.assertEqual(main([str(out)]), 0)
+            summary = json.loads((out / "evidence-summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary, {"prs": {}})
 
 
 if __name__ == "__main__":

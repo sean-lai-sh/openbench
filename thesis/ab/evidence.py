@@ -2,7 +2,7 @@
 
 The A/B runner keeps a transcript plus the copied OpenCode storage and logs
 for each cell. This module greps those files with the pattern from
-``trigger-evidence.csv`` and writes ``exercised`` on the cell:
+``thesis/ab/fixtures/trigger-evidence.csv`` and writes ``exercised`` on the cell:
 
 - ``exercised`` when a transcript or copied storage/log matches
 - ``not exercised`` when those files exist and none match
@@ -29,6 +29,8 @@ NOT_EXERCISED = "not exercised"
 UNDETERMINABLE = "undeterminable"
 _STATUSES = (EXERCISED, NOT_EXERCISED, UNDETERMINABLE)
 _MAX_BYTES = 32 * 1024 * 1024
+# Researcher's pattern table, committed next to this module.
+DEFAULT_PATTERNS = Path(__file__).resolve().parent / "fixtures" / "trigger-evidence.csv"
 
 
 class EvidenceError(ValueError):
@@ -219,7 +221,13 @@ def main(argv: list[str] | None = None) -> int:
         description="Grep A/B transcripts and copied OpenCode storage for each PR's evidence pattern",
     )
     parser.add_argument("out", type=Path, help="A/B output directory (results/ab)")
-    parser.add_argument("patterns", type=Path, help="CSV with pr,task,evidence_pattern")
+    parser.add_argument(
+        "patterns",
+        nargs="?",
+        type=Path,
+        default=DEFAULT_PATTERNS,
+        help="CSV with pr,task,evidence_pattern (default: thesis/ab/fixtures/trigger-evidence.csv)",
+    )
     args = parser.parse_args(argv)
     try:
         patterns = load_patterns(args.patterns)

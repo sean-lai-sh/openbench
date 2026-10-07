@@ -53,10 +53,10 @@ python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
   --out results/ab-aa
 ```
 
-After the cells exist, grep the transcript and the copied storage for that PR's pattern:
+After the cells exist, grep the transcript and the copied storage for that PR's pattern. The pattern file defaults to `thesis/ab/fixtures/trigger-evidence.csv` (the researcher's table, also stored as `trigger-tasks-34.md` and `trigger-tasks-34.csv` in that directory):
 
 ```bash
-python -m thesis.ab.evidence results/ab thesis/ab/fixtures/trigger-evidence.csv
+python -m thesis.ab.evidence results/ab
 ```
 
 The cell gains `exercised` (`exercised`, `not exercised`, or `undeterminable` when no evidence file was copied). `results/ab/evidence-summary.json` counts those per PR and side.
