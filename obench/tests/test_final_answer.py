@@ -16,6 +16,7 @@ from obench.final_answer import (
     extract_final_answer,
     publish_final_answer,
 )
+from obench.tests.bare_python import checker_environ
 
 ROOT = Path(__file__).resolve().parents[2]
 TASKS = ROOT / "tasks"
@@ -107,7 +108,11 @@ class CheckerEchoTests(unittest.TestCase):
         elif evidence is not None:
             env["OBENCH_OPENCODE_EVIDENCE_DIR"] = str(evidence)
         return subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")],
+            cwd=work,
+            capture_output=True,
+            text=True,
+            env=checker_environ(env),
         )
 
     def test_read_lines_quote_must_be_in_the_final_answer(self):

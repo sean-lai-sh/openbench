@@ -121,6 +121,8 @@ def run_checker(task_dir, overlay_solution_flag):
 
         env = dict(os.environ)
         env["TASK_DIR"] = task_dir
+        from .checker_verdict import prepend_checker_pythonpath
+        prepend_checker_pythonpath(env)
         # Imported Docker-backed checkers create a second host directory for
         # `/logs/verifier`. Keep that mount under the same Colima-visible root
         # as the workspace; inheriting macOS's /var/folders TMPDIR makes tests

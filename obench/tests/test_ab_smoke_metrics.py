@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from obench.validate_tasks import checker_column, sdk_missing_polarity
+from obench.tests.bare_python import checker_environ
 from thesis.ab.evidence import (
     EXERCISED,
     NOT_EXERCISED,
@@ -265,7 +266,7 @@ class CSharpCheckerTests(unittest.TestCase):
         return subprocess.run(
             [sys.executable, str(CHECK)],
             cwd=work,
-            env=env,
+            env=checker_environ(env),
             capture_output=True,
             text=True,
         )
@@ -281,6 +282,7 @@ class CSharpCheckerTests(unittest.TestCase):
         env["HOME"] = "/no/such/home"
         env["FAKE_DOTNET_LOG"] = str(log)
         env.pop("DOTNET_CLI_HOME", None)
+        env["OBENCH_HOST_DOTNET"] = "/no/such/obench-dotnet"
         proc = self._run(env, work)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("dotnet build passed", proc.stdout)
@@ -299,6 +301,7 @@ class CSharpCheckerTests(unittest.TestCase):
         env["PATH"] = os.pathsep.join([str(path_root), "/usr/bin", "/bin"])
         env["DOTNET_ROOT"] = str(other)
         env["HOME"] = str(Path(tempfile.mkdtemp()))
+        env["OBENCH_HOST_DOTNET"] = "/no/such/obench-dotnet"
         proc = self._run(env, work)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("build failed", proc.stderr + proc.stdout)
@@ -307,6 +310,7 @@ class CSharpCheckerTests(unittest.TestCase):
         missing["PATH"] = "/usr/bin:/bin"
         missing.pop("DOTNET_ROOT", None)
         missing["HOME"] = str(Path(tempfile.mkdtemp()))
+        missing["OBENCH_HOST_DOTNET"] = "/no/such/obench-dotnet"
         gone = self._run(missing, work)
         self.assertEqual(gone.returncode, 2)
         self.assertIn("dotnet SDK was not found", gone.stderr)
@@ -354,12 +358,12 @@ class OutsideAndAnswerTests(unittest.TestCase):
         env["TASK_DIR"] = str(src)
         env["OBENCH_OPENCODE_OUTSIDE_PATH"] = str(outside)
         ok = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(ok.returncode, 0, ok.stderr)
         outside.write_text((src / "solution" / "greeter.py").read_text(encoding="utf-8"), encoding="utf-8")
         missed = subprocess.run(
-            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=env,
+            ["bash", str(src / "checker.sh")], cwd=work, capture_output=True, text=True, env=checker_environ(env),
         )
         self.assertEqual(missed.returncode, 1)
 

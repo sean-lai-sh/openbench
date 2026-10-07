@@ -17,6 +17,13 @@ HOST_DOTNET = "/home/box/.dotnet/dotnet"
 SDK_MISSING = "dotnet SDK was not found"
 
 
+def host_dotnet(env: dict | None = None) -> str:
+    """Box SDK path. ``OBENCH_HOST_DOTNET`` overrides the default."""
+    base = os.environ if env is None else env
+    override = (base.get("OBENCH_HOST_DOTNET") or "").strip()
+    return override or HOST_DOTNET
+
+
 def resolve_dotnet(env: dict | None = None) -> str | None:
     """PATH, then ``DOTNET_ROOT``, then the box SDK."""
     base = os.environ if env is None else env
@@ -28,7 +35,7 @@ def resolve_dotnet(env: dict | None = None) -> str | None:
         candidate = os.path.join(root, "dotnet")
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
-    host = HOST_DOTNET
+    host = host_dotnet(base)
     if host and os.path.isfile(host) and os.access(host, os.X_OK):
         return host
     return None
@@ -68,10 +75,19 @@ def main() -> int:
     )
     if proc.returncode == 0:
         print("dotnet build passed")
+        print("OBENCH_VERDICT: pass")
         return 0
     sys.stdout.write(proc.stdout or "")
+    print("OBENCH_VERDICT: fail")
     return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import traceback
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception:
+        traceback.print_exc()
+        raise SystemExit(2)
