@@ -31,6 +31,9 @@ COPIES = {
     "trig-read-edge": "make-ci-green",
     "trig-grep-trunc": "taskflow",
     "trig-todo-task": "make-ci-green",
+    "trig-plan-subagent": "misleading-error",
+    "trig-tmpdir": "make-it-run",
+    "trig-lsp-outside": "make-it-run",
 }
 PREFIXES = {
     "trig-list": "Start by listing the project with the list tool.",
@@ -59,6 +62,18 @@ PREFIXES = {
     "trig-todo-task": (
         "Track your work with the todo list tool, and delegate investigation of at least one "
         "failing test file to a subagent with the task tool."
+    ),
+    "trig-plan-subagent": (
+        "Use the task tool to have a subagent find which settings key `rate` should come from "
+        "and report the file and line. Then fix the bug."
+    ),
+    "trig-tmpdir": (
+        "Do any scratch work (for example a quick test script) in a temporary directory outside "
+        "this project, not in the workspace."
+    ),
+    "trig-lsp-outside": (
+        "Also write a copy of the fixed greeter module to `/tmp/obench-shared/greeter_copy.py` "
+        "(outside this project)."
     ),
 }
 
@@ -105,17 +120,85 @@ class TriggerTaskTests(unittest.TestCase):
             "17053": "make-it-run",
             "21070": "make-it-run",
             "22390": "trig-bash-limits",
+            "2334": "trig-lsp-ts",
+            "2367": "trig-list-noise",
+            "24974": "trig-prompt-order",
+            "25226": "trig-tmpdir",
             "25431": "trig-read-edge",
             "26821": "trig-todo-task",
+            "3052": "trig-image-read",
+            "4838": "taskflow",
+            "6524": "make-it-run",
+            "17098": "trig-skills",
+            "19058": "trig-lsp-outside",
+            "913": "trig-list-noise",
+            "984": "make-ci-green",
+            "1248": "trig-plan-subagent",
         }
         triggerable = {pr: row.tasks for pr, row in mapping.items() if row.status == "triggerable"}
         self.assertEqual(triggerable, {pr: (task,) for pr, task in expected.items()})
         for task in set(expected.values()):
             self.assertTrue((TASKS / task / "checker.sh").is_file(), task)
-        self.assertEqual(mapping["2334"].status, "needs fixture")
-        self.assertEqual(mapping["1248"].status, "incompatible")
-        self.assertEqual(mapping["18140"].status, "untriggerable")
-        self.assertEqual(mapping["18140"].tasks, ())
+        self.assertEqual(mapping["4838"].options.context, 72000)
+        self.assertEqual(mapping["2334"].options.lsp, ("typescript",))
+        self.assertEqual(mapping["6524"].options.lsp, ("pyright",))
+        self.assertEqual(mapping["19058"].options.lsp, ("pyright",))
+        self.assertTrue(mapping["24974"].options.global_agents)
+        self.assertEqual(mapping["25226"].options.permissions, "workspace")
+        self.assertEqual(mapping["22390"].options.as_text(), "")
+        self.assertEqual(mapping["1248"].status, "triggerable")
+        self.assertEqual(mapping["1248"].tasks, ("trig-plan-subagent",))
+        self.assertEqual(mapping["1248"].options.mode, "plan")
+        self.assertEqual(mapping["913"].tasks, ("trig-list-noise",))
+        self.assertEqual(mapping["984"].tasks, ("make-ci-green",))
+        held = {
+            "3369": ("make-it-run", "incompatible"),
+            "3418": ("trig-dup-edit", "incompatible"),
+            "5527": ("make-it-run", "needs fixture"),
+            "13331": ("trig-webfetch-image", "needs fixture"),
+            "23771": ("trig-lsp-csharp", "needs fixture"),
+            "18140": ("make-it-run", "untriggerable"),
+        }
+        for pr, (task, status) in held.items():
+            self.assertEqual(mapping[pr].tasks, (task,), pr)
+            self.assertEqual(mapping[pr].status, status, pr)
+        self.assertEqual(mapping["3369"].options.fault, "http-529")
+        self.assertEqual(mapping["5527"].options.fault, "sse-server-error")
+        self.assertEqual(mapping["23771"].options.lsp, ("dotnet",))
+        self.assertEqual(len(mapping), 34)
+        for pr, row in mapping.items():
+            self.assertTrue(row.tasks, pr)
+            self.assertTrue(row.status, pr)
+
+    def test_skill_and_prompt_order_keep_the_instruction_and_add_files(self):
+        original = (TASKS / "make-it-run" / "instruction.md").read_bytes()
+        for name in ("trig-skills", "trig-prompt-order"):
+            with self.subTest(task=name):
+                text = (TASKS / name / "instruction.md").read_bytes()
+                self.assertEqual(text, original)
+                skill = TASKS / name / "workspace" / ".claude" / "skills" / "python-run-check" / "SKILL.md"
+                body = skill.read_text(encoding="utf-8")
+                self.assertIn(
+                    "Use when asked to make a Python program run; lists the exact verification command",
+                    body,
+                )
+        notes = (TASKS / "trig-skills" / "workspace" / ".claude" / "skills" / "notes" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Use when writing a short note that is not the program itself", notes)
+        agents = (TASKS / "trig-prompt-order" / "workspace" / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertEqual(agents, "Prefix every final answer with PROJECT-RULE.\n")
+        listed = (TASKS / "trig-list-noise" / "instruction.md").read_text(encoding="utf-8")
+        self.assertTrue(listed.startswith(
+            "Start by listing the project with the list tool, then fix the failing test in tests/test_app.py."
+        ))
+        self.assertTrue((TASKS / "trig-list-noise" / "workspace" / ".ignore").is_file())
+        self.assertTrue((TASKS / "trig-image-read" / "workspace" / "spec.png").is_file())
+        self.assertIn(
+            "node node_modules/typescript/bin/tsc --noEmit",
+            (TASKS / "trig-lsp-ts" / "instruction.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn("8417", (TASKS / "trig-lsp-ts" / "workspace" / "src" / "index.ts").read_text(encoding="utf-8"))
 
 
 class EvidenceGrepTests(unittest.TestCase):
@@ -206,6 +289,30 @@ class EvidenceGrepTests(unittest.TestCase):
         self.assertEqual(sides["5066"]["sides"]["without"][NOT_EXERCISED], 1)
         self.assertEqual(sides["623"]["sides"]["with"][UNDETERMINABLE], 1)
         self.assertTrue((out / "evidence-summary.json").is_file())
+
+    def test_list_noise_pattern_reads_ignored_dirs_in_the_listing(self):
+        pattern = load_patterns(PATTERNS)["913"].compiled
+        present = (
+            '{"tool":"list","state":{"output":"'
+            'src/app.py\\nvendor/leftpad.py\\nvenv/pyvenv.cfg\\n'
+            'coverage/index.txt\\nlogs/app.log\\ntmp/out.txt"}}'
+        )
+        absent = '{"tool":"list","state":{"output":"src/app.py\\ntests/test_app.py\\n"}}'
+        bare = '{\n  "tool": "list"\n}\n'
+        text_present = "|  List  \nvendor/leftpad.py\nsrc/app.py\n"
+        text_absent = "|  List  \nsrc/app.py\ntests/test_app.py\n"
+        self.assertIsNotNone(pattern.search(present))
+        self.assertIsNotNone(pattern.search(absent))
+        self.assertIsNone(pattern.search(bare))
+        self.assertIsNotNone(pattern.search(text_present))
+        self.assertIsNotNone(pattern.search(text_absent))
+        # 2367 still treats any list call as exercised. 913 does not.
+        list_only = load_patterns(PATTERNS)["2367"].compiled
+        self.assertIsNotNone(list_only.search(bare))
+        noise = TASKS / "trig-list-noise" / "workspace"
+        for name in ("vendor", "venv", "coverage", "logs", "tmp"):
+            files = [path for path in (noise / name).iterdir() if path.is_file()]
+            self.assertGreaterEqual(len(files), 2, name)
 
     def test_cli_defaults_to_the_committed_pattern_file(self):
         fixtures = ROOT / "thesis" / "ab" / "fixtures"
