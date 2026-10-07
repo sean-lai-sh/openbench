@@ -25,7 +25,8 @@ from thesis.ab.cell_fixtures import (
     parse_options,
 )
 from thesis.ab.compat import anthropic_proxy_config
-from thesis.ab.run_ab import _fill
+from thesis.ab.run_ab import _fill, apply_cell_meter
+from thesis.ab.summarize import row_cost
 from thesis.ab.vertex_anthropic_proxy import ProxyError, start_proxy
 
 
@@ -40,7 +41,7 @@ class OptionParseTests(unittest.TestCase):
         parsed = parse_options(
             "context=72000; fault=sse-server-error; mode=plan; "
             "permissions=workspace; global-agents=1; lsp=pyright,typescript; "
-            "modalities=image; webfetch=local"
+            "modalities=image; webfetch=local; disable-tools=bash,write"
         )
         self.assertEqual(parsed.context, 72000)
         self.assertEqual(parsed.fault, "sse-server-error")
@@ -50,11 +51,31 @@ class OptionParseTests(unittest.TestCase):
         self.assertEqual(parsed.lsp, ("pyright", "typescript"))
         self.assertEqual(parsed.modalities, "image")
         self.assertEqual(parsed.webfetch, "local")
+        self.assertEqual(parsed.disable_tools, ("bash", "write"))
         self.assertIn("context=72000", parsed.as_text())
         self.assertIn("lsp=pyright,typescript", parsed.as_text())
         self.assertIn("modalities=image", parsed.as_text())
         self.assertIn("webfetch=local", parsed.as_text())
+        self.assertIn("disable-tools=bash,write", parsed.as_text())
         self.assertEqual(parsed.payload()["modalities"], "image")
+        self.assertEqual(parsed.payload()["disable_tools"], ["bash", "write"])
+        self.assertEqual(parsed.payload()["mode"], "plan")
+
+    def test_disable_tools_combines_with_mode_and_rejects_unknown_names(self):
+        parsed = parse_options("mode=build;disable-tools=bash, write")
+        self.assertEqual(parsed.mode, "build")
+        self.assertEqual(parsed.disable_tools, ("bash", "write"))
+        self.assertEqual(parsed.as_text(), "mode=build disable-tools=bash,write")
+        for text in (
+            "disable-tools=read",
+            "disable-tools=bash,bash",
+            "disable-tools=",
+            "disable-tools=bash,",
+            "disable-tools=bash,write;disable-tools=edit",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(FixtureError):
+                    parse_options(text)
 
     def test_unknown_duplicate_and_empty_values_are_errors(self):
         for text in (
@@ -70,6 +91,7 @@ class OptionParseTests(unittest.TestCase):
             "lsp=vue",
             "modalities=pdf",
             "webfetch=httpbin",
+            "disable-tools=read",
             "bare",
         ):
             with self.subTest(text=text):
@@ -240,6 +262,37 @@ def _post(url, body):
         return exc.code, dict(exc.headers), exc.read()
 
 
+class _UsageUpstream(BaseHTTPRequestHandler):
+    """Main-session and subagent responses, chosen from the forwarded prompt."""
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        if b"subagent" in body:
+            usage = {
+                "input_tokens": 50,
+                "output_tokens": 20,
+                "cache_read_input_tokens": 3,
+                "cache_creation_input_tokens": 1,
+            }
+        else:
+            usage = {
+                "input_tokens": 100,
+                "output_tokens": 40,
+                "cache_read_input_tokens": 10,
+                "cache_creation_input_tokens": 5,
+            }
+        payload = json.dumps({"id": "msg", "usage": usage}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt, *args):
+        return
+
+
 class FaultInjectionTests(unittest.TestCase):
     def setUp(self):
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Upstream)
@@ -298,6 +351,78 @@ class FaultInjectionTests(unittest.TestCase):
     def test_unknown_fault_is_rejected(self):
         with self.assertRaises(ProxyError):
             self.proxy.arm_fault("cell-1", "http-500")
+
+
+class SubagentMeterTests(unittest.TestCase):
+    def test_subagent_request_is_included_in_the_cell_total(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _UsageUpstream)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        host, port = httpd.server_address
+        ledger = Path(tempfile.mkdtemp())
+        proxy = start_proxy(
+            "proj", token="tok", upstream=f"http://{host}:{port}", ledger_dir=ledger,
+        )
+        self.addCleanup(proxy.close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        main_body = json.dumps({
+            "model": "claude-opus-5-5",
+            "messages": [{"role": "user", "content": "main"}],
+        }).encode()
+        child_body = json.dumps({
+            "model": "claude-opus-5-5",
+            "messages": [{"role": "user", "content": "subagent"}],
+        }).encode()
+        for url, body in (
+            (proxy.base_url + "/c/cell-main/v1/messages", main_body),
+            (proxy.base_url + "/c/cell-main/v1/messages", child_body),
+            (proxy.base_url + "/c/cell-other/v1/messages", main_body),
+        ):
+            status, _headers, _payload = _post(url, body)
+            self.assertEqual(status, 200)
+        self.assertEqual(len((ledger / "cell-main.jsonl").read_text().splitlines()), 2)
+        self.assertEqual(len((ledger / "cell-other.jsonl").read_text().splitlines()), 1)
+        row = {
+            "tokens_input_uncached": 100,
+            "tokens_output": 40,
+            "tokens_cache_read": 10,
+            "tokens_cache_write": 5,
+            "token_basis": "vendor_split",
+            "usage_raw": [{"input": 100, "output": 40}],
+        }
+        apply_cell_meter(row, {"ledger_dir": str(ledger), "cell_id": "cell-main"})
+        self.assertEqual(row["requests_count"], 2)
+        self.assertEqual(row["requests_input_uncached"], 150)
+        self.assertEqual(row["requests_output"], 60)
+        self.assertEqual(row["requests_cache_read"], 13)
+        self.assertEqual(row["requests_cache_write"], 6)
+        self.assertEqual(row["tokens_input_uncached"], 150)
+        self.assertEqual(row["tokens_output"], 60)
+        self.assertEqual(row["tokens_cache_read"], 13)
+        self.assertEqual(row["tokens_cache_write"], 6)
+        self.assertEqual(row["tokens_main_input_uncached"], 100)
+        self.assertEqual(row["tokens_main_output"], 40)
+        self.assertEqual(row["tokens_main_cache_read"], 10)
+        self.assertEqual(row["tokens_main_cache_write"], 5)
+        self.assertEqual(row["tokens_main_calls"], 1)
+        self.assertEqual(row["token_basis_main"], "vendor_split")
+        self.assertEqual(row["usage_raw"], [{"input": 100, "output": 40}])
+        self.assertAlmostEqual(row["requests_cost_usd"], 0.0018326)
+        self.assertAlmostEqual(row["requests_cost_usd"], row_cost(row))
+        other = {
+            "tokens_input_uncached": 100,
+            "tokens_output": 40,
+            "tokens_cache_read": 10,
+            "tokens_cache_write": 5,
+            "token_basis": "vendor_split",
+            "usage_raw": [{"input": 100}],
+        }
+        apply_cell_meter(other, {"ledger_dir": str(ledger), "cell_id": "cell-other"})
+        self.assertEqual(other["requests_count"], 1)
+        self.assertEqual(other["requests_input_uncached"], 100)
+        self.assertEqual(other["tokens_main_calls"], 1)
 
 
 if __name__ == "__main__":

@@ -14,12 +14,14 @@ import argparse
 import csv
 import json
 import os
+import random
 import re
 import secrets
 import sys
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from obench.validate_tasks import build_task_roots, discover_tasks
@@ -121,7 +123,7 @@ def load_task_map(path: Path) -> dict[str, TriggerTasks]:
 
     ``task`` may list several names separated by commas. ``options`` is a
     semicolon-separated ``key=value`` list (context, fault, mode, permissions,
-    global-agents, lsp).
+    global-agents, lsp, disable-tools).
     """
     path = Path(path)
     if not path.is_file():
@@ -229,9 +231,29 @@ def _fixture_suffix(fixtures, pr: str) -> str:
     return " options " + text
 
 
-def plan_cells(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> list[dict]:
+def _cell_arms(*, aa: bool, with_aa: bool) -> tuple[tuple[str, str, bool], ...]:
+    """``(side, arm, use_merge_sha)`` in side-major order."""
+    if aa and with_aa:
+        raise RunError("pass either --aa or --with-aa")
+    if with_aa:
+        return (
+            (Side.WITHOUT.value, "ab", False),
+            (Side.WITH.value, "ab", True),
+            (AA_SIDES[0], "parent-vs-parent", False),
+            (AA_SIDES[1], "parent-vs-parent", False),
+        )
+    if aa:
+        return tuple((label, "parent-vs-parent", False) for label in AA_SIDES)
+    return (
+        (Side.WITHOUT.value, "ab", False),
+        (Side.WITH.value, "ab", True),
+    )
+
+
+def plan_cells(prs, tasks, trials: int, *, aa: bool = False, fixtures=None,
+               with_aa: bool = False) -> list[dict]:
     cells = []
-    labels = AA_SIDES if aa else (Side.WITHOUT.value, Side.WITH.value)
+    arms = _cell_arms(aa=aa, with_aa=with_aa)
     for pr in prs:
         chosen = tasks_for(tasks, pr.pr)
         payload = {}
@@ -239,8 +261,8 @@ def plan_cells(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> l
             options = fixtures[pr.pr]
             if isinstance(options, CellFixtures):
                 payload = options.payload()
-        for label in labels:
-            sha = pr.without_sha if aa or label == Side.WITHOUT.value else pr.with_sha
+        for label, arm, use_merge in arms:
+            sha = pr.with_sha if use_merge else pr.without_sha
             for task in chosen:
                 for trial in range(1, trials + 1):
                     cell = {
@@ -250,7 +272,7 @@ def plan_cells(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> l
                         "sha": sha,
                         "task": task,
                         "trial": trial,
-                        "arm": "parent-vs-parent" if aa else "ab",
+                        "arm": arm,
                     }
                     if payload:
                         cell["fixtures"] = payload
@@ -258,12 +280,62 @@ def plan_cells(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> l
     return cells
 
 
-def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> str:
+def _trial_blocks(cells: list[dict]) -> list[list[dict]]:
+    """Group cells that share one PR, task, and trial. Trial is the outer key."""
+    grouped: dict[tuple, list[dict]] = {}
+    pr_order: list[str] = []
+    for cell in cells:
+        pr = str(cell.get("pr"))
+        if pr not in pr_order:
+            pr_order.append(pr)
+        key = (pr, int(cell.get("trial") or 0), str(cell.get("task")))
+        grouped.setdefault(key, []).append(cell)
+    pr_index = {pr: index for index, pr in enumerate(pr_order)}
+    keys = sorted(grouped, key=lambda key: (pr_index[key[0]], key[1], key[2]))
+    return [grouped[key] for key in keys]
+
+
+def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = None) -> list[dict]:
+    """Launch order. Each cell gets ``schedule_index`` from 0.
+
+    ``sides`` keeps the historical order: every cell of side A, then side B.
+    ``interleave`` keeps both sides of one trial together, A then B.
+    ``random`` shuffles inside each trial block with ``random.Random(seed)``.
+    A trial block is one PR, one task, and one trial number.
+    """
+    if order not in {"sides", "interleave", "random"}:
+        raise RunError(f"unknown order {order!r}")
+    if order == "random" and seed is None:
+        raise RunError("random order requires a seed")
+    if order == "sides":
+        ordered = [dict(cell) for cell in cells]
+    else:
+        rng = random.Random(seed) if order == "random" else None
+        ordered = []
+        for block in _trial_blocks(cells):
+            group = [dict(cell) for cell in block]
+            if rng is not None:
+                rng.shuffle(group)
+            ordered.extend(group)
+    for index, cell in enumerate(ordered):
+        cell["schedule_index"] = index
+    return ordered
+
+
+def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None,
+                with_aa: bool = False, order: str = "sides", seed: int | None = None) -> str:
     lines = []
+    arms = _cell_arms(aa=aa, with_aa=with_aa)
     for pr in prs:
         chosen = ",".join(tasks_for(tasks, pr.pr))
         suffix = _fixture_suffix(fixtures, pr.pr)
-        if aa:
+        if with_aa:
+            lines.append(
+                f"{pr.pr} without {pr.without_sha} with {pr.with_sha} "
+                f"parent {pr.without_sha} sides without,with,{','.join(AA_SIDES)} "
+                f"tasks {chosen}{suffix}"
+            )
+        elif aa:
             lines.append(
                 f"{pr.pr} parent-vs-parent {pr.without_sha} "
                 f"sides {','.join(AA_SIDES)} tasks {chosen}{suffix}"
@@ -279,9 +351,15 @@ def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None) -> 
     else:
         lines.append("tasks: " + ",".join(tasks))
     lines.append(f"trials: {trials}")
-    cell_count = sum(2 * len(tasks_for(tasks, pr.pr)) * trials for pr in prs)
+    cell_count = sum(len(arms) * len(tasks_for(tasks, pr.pr)) * trials for pr in prs)
     lines.append(f"cells: {cell_count}")
-    if aa:
+    if order == "random":
+        lines.append(f"order: random seed={seed}")
+    else:
+        lines.append(f"order: {order}")
+    if with_aa:
+        lines.append("arm: ab+aa")
+    elif aa:
         lines.append("arm: parent-vs-parent")
     return "\n".join(lines) + "\n"
 
@@ -376,11 +454,13 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_LSP",
         "OBENCH_OPENCODE_BUN",
         "OBENCH_OPENCODE_WEBFETCH_URL",
+        "OBENCH_OPENCODE_DISABLE_TOOLS",
         "OBENCH_PI_VERTEX",
         "OBENCH_PI_BIN",
     )
     saved = {key: os.environ.get(key) for key in keys}
     png_server = None
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
         if harness == "opencode":
             os.environ["OBENCH_OPENCODE_BIN"] = spec["binary"]
@@ -418,6 +498,16 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_LSP"] = lsp_text
             else:
                 os.environ.pop("OBENCH_OPENCODE_LSP", None)
+            disabled = fixtures.get("disable_tools") or []
+            if isinstance(disabled, str):
+                disabled = disabled.split(",")
+            disabled_text = ",".join(
+                str(name).strip() for name in disabled if str(name).strip()
+            )
+            if disabled_text:
+                os.environ["OBENCH_OPENCODE_DISABLE_TOOLS"] = disabled_text
+            else:
+                os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
             bun = ""
             proxy = spec.get("proxy")
             if isinstance(proxy, dict):
@@ -446,6 +536,7 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_LSP", None)
             os.environ.pop("OBENCH_OPENCODE_BUN", None)
             os.environ.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
+            os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
             vertex = spec.get("vertex") or {}
             os.environ["OBENCH_PI_VERTEX"] = json.dumps(vertex)
             os.environ["OBENCH_PI_BIN"] = vertex.get("bin") or spec["binary"]
@@ -472,6 +563,7 @@ def execute_cell(spec: dict) -> None:
         installed_text = installed if isinstance(installed, str) else None
         if isinstance(row, dict):
             apply_cell_meter(row, spec.get("proxy"))
+            attach_schedule(row, spec, started_at)
         apply_toolchain(row, spec.get("toolchain"), installed_text)
         toolchain_path = spec.get("toolchain_path")
         if toolchain_path:
@@ -633,6 +725,68 @@ def zero_metered(row: dict) -> bool:
     return True
 
 
+def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
+    """Record where this cell sat in the launch schedule and when it started."""
+    if not isinstance(row, dict):
+        return
+    index = spec.get("schedule_index")
+    if isinstance(index, int) and not isinstance(index, bool):
+        row["schedule_index"] = index
+    if started_at:
+        row["started_at"] = started_at
+
+
+def expose_request_totals(row: dict) -> dict:
+    """Publish every proxy request and keep the main session under other names.
+
+    The ledger is every model request for this cell, including subagent and
+    child sessions that reused the cell base URL. ``requests_*`` and the
+    ``tokens_*`` split become that total. The harness main-session split is
+    kept as ``tokens_main_*`` and ``token_basis_main``.
+    """
+    if row.get("token_basis_proxy") != "proxy_measured":
+        return row
+    pairs = (
+        ("tokens_input_uncached", "tokens_proxy_input_uncached", "requests_input_uncached",
+         "tokens_main_input_uncached"),
+        ("tokens_output", "tokens_proxy_output", "requests_output", "tokens_main_output"),
+        ("tokens_cache_read", "tokens_proxy_cache_read", "requests_cache_read",
+         "tokens_main_cache_read"),
+        ("tokens_cache_write", "tokens_proxy_cache_write", "requests_cache_write",
+         "tokens_main_cache_write"),
+    )
+    split: dict[str, int | float] = {}
+    for name, proxy_name, _request_name, _main_name in pairs:
+        value = row.get(proxy_name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return row
+        split[name] = int(value) if float(value).is_integer() else float(value)
+    calls = row.get("tokens_proxy_calls")
+    if isinstance(calls, bool) or not isinstance(calls, (int, float)):
+        return row
+    basis = row.get("token_basis")
+    if basis not in (None, "proxy_measured"):
+        for name, _proxy_name, _request_name, main_name in pairs:
+            if main_name not in row and name in row:
+                row[main_name] = row[name]
+        raw = row.get("usage_raw")
+        if isinstance(raw, list) and "tokens_main_calls" not in row:
+            row["tokens_main_calls"] = len(raw)
+        if "token_basis_main" not in row and isinstance(basis, str) and basis:
+            row["token_basis_main"] = basis
+    for name, _proxy_name, request_name, _main_name in pairs:
+        row[name] = split[name]
+        row[request_name] = split[name]
+    row["requests_count"] = int(calls)
+    fresh = split["tokens_input_uncached"] + split["tokens_output"]
+    row["tokens"] = int(fresh) if float(fresh).is_integer() else fresh
+    row["token_basis"] = "proxy_measured"
+    cost = row_cost(row)
+    if cost is not None:
+        row["requests_cost_usd"] = cost
+    return row
+
+
 def promote_proxy_meter(row: dict) -> dict:
     if row.get("token_basis_proxy") != "proxy_measured":
         return row
@@ -667,6 +821,7 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     if not records:
         return row
     apply_proxy_ledger(row, records)
+    expose_request_totals(row)
     promote_proxy_meter(row)
     if row.get("usage_raw") is None:
         usages = [
@@ -993,21 +1148,27 @@ def _needs_proxy(prs, model_route: str) -> bool:
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
-          transcripts_dir=None, aa: bool = False, fixtures=None):
+          transcripts_dir=None, aa: bool = False, fixtures=None,
+          order: str = "sides", seed: int | None = None, with_aa: bool = False):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
     ``aa`` runs the parent SHA on ``aa-1`` and ``aa-2``. Both sides share
-    the prepared binary for that SHA.
+    the prepared binary for that SHA. ``with_aa`` runs without, with, aa-1,
+    and aa-2 into the same output directory. ``order`` is ``sides``,
+    ``interleave``, or ``random`` (with ``seed``).
     """
     out_dir = Path(out_dir)
     cache = Path(cache).resolve()
     if not isinstance(tasks, dict):
         tasks = tuple(tasks)
-    plan = format_plan(prs, tasks, trials, aa=aa, fixtures=fixtures)
+    plan = format_plan(
+        prs, tasks, trials, aa=aa, fixtures=fixtures, with_aa=with_aa,
+        order=order, seed=seed,
+    )
     if dry_run:
         return plan, 0, None
-    if aa:
+    if aa or with_aa:
         for pr in prs:
             publish_text(out_dir / pr.pr / "arm.json", json.dumps({
                 "arm": "parent-vs-parent",
@@ -1023,7 +1184,12 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     adapters = _adapters_dir()
     prepared: dict[tuple[str, str], dict] = {}
     pending = []
-    for spec in plan_cells(prs, tasks, trials, aa=aa, fixtures=fixtures):
+    scheduled = order_cells(
+        plan_cells(prs, tasks, trials, aa=aa, fixtures=fixtures, with_aa=with_aa),
+        order=order,
+        seed=seed,
+    )
+    for spec in scheduled:
         path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
         if read_cell(path) is not None:
             _absorb_finished(spec, out_dir, prepared)
@@ -1222,6 +1388,32 @@ def main(argv: list[str] | None = None) -> int:
             "Not a without/with harness comparison. Both sides reuse that parent binary."
         ),
     )
+    parser.add_argument(
+        "--with-aa",
+        action="store_true",
+        help=(
+            "Run without, with, aa-1, and aa-2 in one schedule. Cells land in the "
+            "same --out directory (without.jsonl, with.jsonl, aa-1.jsonl, aa-2.jsonl, "
+            "arm.json). The default order shuffles those four inside each trial block; "
+            "pass --seed, or --order interleave for a fixed order."
+        ),
+    )
+    parser.add_argument(
+        "--order",
+        choices=("sides", "interleave", "random"),
+        default="sides",
+        help=(
+            "Launch order. sides runs every A cell, then every B cell. "
+            "interleave alternates sides inside each trial. "
+            "random shuffles each trial block; requires --seed."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for --order random. Required when the schedule is shuffled.",
+    )
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--model", default="claude-opus-5-5")
@@ -1258,6 +1450,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.tasks and args.task_map is not None:
         print("error: pass --tasks or --task-map, not both", file=sys.stderr)
         return 2
+    if args.aa and args.with_aa:
+        print("error: pass either --aa or --with-aa", file=sys.stderr)
+        return 2
+    order = args.order
+    if args.with_aa and order == "sides":
+        order = "random"
+    if order == "random" and args.seed is None:
+        if args.with_aa and args.order == "sides":
+            print(
+                "error: --with-aa shuffles each trial block; pass --seed N, "
+                "or --order interleave for a fixed order",
+                file=sys.stderr,
+            )
+        else:
+            print("error: --order random requires --seed", file=sys.stderr)
+        return 2
+    if args.seed is not None and order != "random":
+        print("error: --seed applies to --order random", file=sys.stderr)
+        return 2
     try:
         prs = select_prs(parse_prs(args.prs), args.pr or None)
         fixtures = None
@@ -1281,7 +1492,7 @@ def main(argv: list[str] | None = None) -> int:
             cache=cache, max_cost_usd=args.max_cost_usd, dry_run=args.dry_run,
             tasks_dir=tasks_dir, model_route=args.model_route,
             transcripts_dir=args.transcripts_dir, aa=args.aa,
-            fixtures=fixtures,
+            fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

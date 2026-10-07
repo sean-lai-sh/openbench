@@ -9,6 +9,11 @@ for each cell. This module greps those files with the pattern from
 - ``undeterminable`` when no evidence file is present
 
 It also writes ``evidence-summary.json`` with a count per PR and side.
+
+PR 984 is stricter than its pattern row. ``classify_edit_only`` marks a cell
+exercised only when the evidence has at least one edit call and zero
+``"tool": "bash"`` or ``"tool": "write"`` parts. The cell records
+``edit_calls`` and ``bash_write_calls`` (the largest count in any one file).
 """
 
 from __future__ import annotations
@@ -29,6 +34,10 @@ NOT_EXERCISED = "not exercised"
 UNDETERMINABLE = "undeterminable"
 _STATUSES = (EXERCISED, NOT_EXERCISED, UNDETERMINABLE)
 _MAX_BYTES = 32 * 1024 * 1024
+# make-ci-green for #984 must actually call edit, and the mode.build.tools
+# config must have removed bash and write. The pattern file still matches edit.
+EDIT_ONLY_PRS = frozenset({"984"})
+_BASH_OR_WRITE = re.compile(r'"tool": ?"(bash|write)"')
 # Researcher's pattern table, committed next to this module.
 DEFAULT_PATTERNS = Path(__file__).resolve().parent / "fixtures" / "trigger-evidence.csv"
 
@@ -116,21 +125,54 @@ def evidence_files(out_dir: Path, pr: str, side: str, task: str, trial: int) -> 
     return [path for path in sorted(root.rglob("*")) if path.is_file()]
 
 
-def file_matches(path: Path, pattern: re.Pattern[str]) -> bool:
+def _read_text(path: Path) -> str | None:
     try:
         size = path.stat().st_size
     except OSError:
-        return False
+        return None
     if size > _MAX_BYTES:
-        return False
+        return None
     try:
         data = path.read_bytes()
     except OSError:
-        return False
+        return None
     # Latin-1 keeps every byte. Without DOTALL, `.` stays on one line, which
     # matches the line-oriented patterns checked with grep -E.
-    text = data.decode("latin-1")
+    return data.decode("latin-1")
+
+
+def file_matches(path: Path, pattern: re.Pattern[str]) -> bool:
+    text = _read_text(path)
+    if text is None:
+        return False
     return pattern.search(text) is not None
+
+
+def tool_call_counts(paths: list[Path], edit_pattern: re.Pattern[str]) -> tuple[int, int]:
+    """Largest edit-match count and largest bash/write count in any one file."""
+    edits = 0
+    denied = 0
+    for path in paths:
+        text = _read_text(path)
+        if text is None:
+            continue
+        edits = max(edits, sum(1 for _ in edit_pattern.finditer(text)))
+        denied = max(denied, sum(1 for _ in _BASH_OR_WRITE.finditer(text)))
+    return edits, denied
+
+
+def classify_edit_only(paths: list[Path], edit_pattern: re.Pattern[str]) -> tuple[str, int, int]:
+    """Exercised only with at least one edit and no bash or write tool part.
+
+    Returns ``(status, edit_calls, bash_write_calls)``. No evidence files is
+    undeterminable. Files that exist but fail the gate are not exercised.
+    """
+    if not paths:
+        return UNDETERMINABLE, 0, 0
+    edits, denied = tool_call_counts(paths, edit_pattern)
+    if edits >= 1 and denied == 0:
+        return EXERCISED, edits, denied
+    return NOT_EXERCISED, edits, denied
 
 
 def classify_files(paths: list[Path], pattern: re.Pattern[str]) -> str:
@@ -185,7 +227,12 @@ def annotate(out_dir: Path, patterns: dict[str, EvidencePattern]) -> dict:
                 continue
             seen.add(resolved)
             unique.append(item)
-        status = classify_files(unique, spec.compiled)
+        if pr in EDIT_ONLY_PRS:
+            status, edits, denied = classify_edit_only(unique, spec.compiled)
+            row["edit_calls"] = edits
+            row["bash_write_calls"] = denied
+        else:
+            status = classify_files(unique, spec.compiled)
         row["exercised"] = status
         publish_text(path, json.dumps(row, sort_keys=True))
         pr_summary = summary.setdefault(pr, {"task": spec.task, "sides": {}})

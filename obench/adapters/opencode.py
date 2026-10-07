@@ -604,6 +604,35 @@ def _build_cmd(exe, model_id, variant, workdir, instruction, help_text):
     return cmd, watched
 
 
+def _apply_disabled_tools(body):
+    """Merge ``mode.build.tools`` false entries. Does not write ``permission``.
+
+    The July 2025 schema is ``.strict()`` and rejects a ``permission`` key.
+    ``OBENCH_OPENCODE_DISABLE_TOOLS`` is a comma-separated tool list. Combined
+    with ``--mode build``, the binary drops those tools from the model request.
+    """
+    raw = os.environ.get("OBENCH_OPENCODE_DISABLE_TOOLS", "").strip()
+    if not raw:
+        return
+    names = [part.strip() for part in raw.split(",") if part.strip()]
+    if not names:
+        return
+    mode = body.get("mode")
+    if not isinstance(mode, dict):
+        mode = {}
+        body["mode"] = mode
+    build = mode.get("build")
+    if not isinstance(build, dict):
+        build = {}
+        mode["build"] = build
+    tools = build.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+        build["tools"] = tools
+    for name in names:
+        tools[name] = False
+
+
 def _config_body(include_permissions):
     body = {}
     raw = os.environ.get("OBENCH_OPENCODE_CONFIG_JSON", "").strip()
@@ -616,6 +645,7 @@ def _config_body(include_permissions):
         # Force the map even when the runner set permission config off because
         # the binary has --auto. That flag is omitted for this cell.
         body["permission"] = dict(_WORKSPACE_PERMISSIONS)
+        _apply_disabled_tools(body)
         return body
     flag = os.environ.get("OBENCH_OPENCODE_PERMISSION_CONFIG", "").strip()
     write_permissions = include_permissions and flag != "0"
@@ -623,6 +653,7 @@ def _config_body(include_permissions):
         write_permissions = True
     if write_permissions:
         body.setdefault("permission", dict(_ALLOW_PERMISSIONS))
+    _apply_disabled_tools(body)
     return body
 
 

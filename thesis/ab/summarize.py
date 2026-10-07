@@ -31,6 +31,14 @@ _PROXY_FIELDS = (
     "tokens_proxy_cache_read",
     "tokens_proxy_cache_write",
 )
+# Every model request the cell proxy saw, including subagent sessions.
+# Present only after the A/B runner folds the ledger into the cell.
+_REQUEST_FIELDS = (
+    "requests_input_uncached",
+    "requests_output",
+    "requests_cache_read",
+    "requests_cache_write",
+)
 
 
 def _number(value) -> float | None:
@@ -40,6 +48,14 @@ def _number(value) -> float | None:
 
 
 def billable_tokens(row: dict) -> dict[str, float] | None:
+    """Token split used for cost. All proxy requests win when the cell has them.
+
+    ``requests_*`` is every model call the metering proxy attributed to the
+    cell. Older rows keep the vendor main-session split, then the proxy split.
+    """
+    requested = [_number(row.get(field)) for field in _REQUEST_FIELDS]
+    if all(value is not None for value in requested):
+        return dict(zip(TOKEN_FIELDS, requested))
     vendor = [_number(row.get(field)) for field in TOKEN_FIELDS]
     if all(value is not None for value in vendor) and any(value > 0 for value in vendor):
         return dict(zip(TOKEN_FIELDS, vendor))
