@@ -378,6 +378,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             self.wfile.flush()
 
         def _record(self, cell: str | None, usage: dict | None) -> None:
+            # One row per messages POST on /c/<cell-id>/. A subagent or child
+            # session that reused that base URL is included in the cell total.
             if ledger is None or not cell or not usage:
                 return
             _append_ledger(ledger, cell, usage)

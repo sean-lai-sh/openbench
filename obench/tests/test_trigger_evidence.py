@@ -13,6 +13,7 @@ from thesis.ab.evidence import (
     NOT_EXERCISED,
     UNDETERMINABLE,
     annotate,
+    classify_edit_only,
     load_patterns,
     main,
 )
@@ -152,6 +153,12 @@ class TriggerTaskTests(unittest.TestCase):
         self.assertEqual(mapping["1248"].options.mode, "plan")
         self.assertEqual(mapping["913"].tasks, ("trig-list-noise",))
         self.assertEqual(mapping["984"].tasks, ("make-ci-green",))
+        self.assertEqual(mapping["984"].options.mode, "build")
+        self.assertEqual(mapping["984"].options.disable_tools, ("bash", "write"))
+        self.assertEqual(
+            mapping["984"].options.as_text(),
+            "mode=build disable-tools=bash,write",
+        )
         self.assertEqual(mapping["3052"].options.modalities, "image")
         self.assertEqual(mapping["13331"].options.webfetch, "local")
         held = {
@@ -359,6 +366,52 @@ class EvidenceGrepTests(unittest.TestCase):
             self.assertEqual(main([str(out)]), 0)
             summary = json.loads((out / "evidence-summary.json").read_text(encoding="utf-8"))
         self.assertEqual(summary, {"prs": {}})
+
+    def test_984_is_exercised_only_with_edit_and_no_bash_or_write(self):
+        pattern = load_patterns(PATTERNS)["984"].compiled
+        edit = '{\n  "tool": "edit"\n}\n'
+        bash = '{\n  "tool": "bash"\n}\n'
+        write = '{"tool":"write"}'
+        text_ui = "| Edit  catalog/books.py\n"
+        self.assertEqual(classify_edit_only([], pattern), (UNDETERMINABLE, 0, 0))
+
+        out = Path(tempfile.mkdtemp())
+
+        def plant(side, body):
+            cell = out / "984" / "cells" / side / "make-ci-green" / "1.json"
+            cell.parent.mkdir(parents=True, exist_ok=True)
+            cell.write_text(json.dumps({
+                "task": "make-ci-green", "trial": 1, "run_id": f"984:{side}",
+            }), encoding="utf-8")
+            evidence = out / "984" / "transcripts" / side / "make-ci-green" / "1" / "part.json"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text(body, encoding="utf-8")
+
+        plant("with", edit + edit)
+        plant("without", edit + bash)
+        plant("aa-1", write + edit)
+        plant("aa-2", text_ui)
+        payload = annotate(out, load_patterns(PATTERNS))
+
+        def row(side):
+            path = out / "984" / "cells" / side / "make-ci-green" / "1.json"
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        exercised = row("with")
+        self.assertEqual(exercised["exercised"], EXERCISED)
+        self.assertEqual(exercised["edit_calls"], 2)
+        self.assertEqual(exercised["bash_write_calls"], 0)
+        denied = row("without")
+        self.assertEqual(denied["exercised"], NOT_EXERCISED)
+        self.assertEqual(denied["edit_calls"], 1)
+        self.assertEqual(denied["bash_write_calls"], 1)
+        self.assertEqual(row("aa-1")["exercised"], NOT_EXERCISED)
+        self.assertEqual(row("aa-1")["bash_write_calls"], 1)
+        text = row("aa-2")
+        self.assertEqual(text["exercised"], EXERCISED)
+        self.assertEqual(text["edit_calls"], 1)
+        self.assertEqual(payload["prs"]["984"]["sides"]["with"][EXERCISED], 1)
+        self.assertEqual(payload["prs"]["984"]["sides"]["without"][NOT_EXERCISED], 1)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ The map's optional `options` column is a semicolon-separated `key=value` list ap
 | `lsp` | Installs `pyright`, `typescript` (`typescript@5.8.3` into the workspace), and/or `dotnet` (Roslyn with `--tool-path` into `$XDG_DATA_HOME/opencode/bin`; needs the .NET 10 SDK on PATH or `DOTNET_ROOT`) before the cell starts. A cell without that SDK fails closed. |
 | `modalities=image` | Sets every model `modalities` to image input and text output, so the read tool attaches a PNG. |
 | `webfetch=local` | Serves a one-pixel red PNG at `http://127.0.0.1:<port>/color.png` (`Content-Type: image/png`) and replaces `__OBENCH_WEBFETCH_URL__` in the prompt. No public image host. |
+| `disable-tools` | Comma-separated names from `bash`, `write`, `edit`, `patch`, `webfetch`. Writes `mode.build.tools.{name}=false` into the cell's `opencode.json`. It does not write a `permission` key (the July 2025 schema rejects that key). Combine it with `mode=build` so the run passes `--mode build`. Quote the CSV cell when the value contains a comma. |
 
 ```bash
 python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
@@ -74,6 +75,51 @@ python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
   --out results/ab-aa
 ```
 
+The default launch order runs every cell of side A, then every cell of side B. `--order interleave` alternates the two sides inside each trial, so a rate limit or a warm prompt cache hits both sides in the same window. `--order random --seed N` shuffles the cells inside each trial block and leaves the blocks themselves in trial order. Both orders apply to a normal A/B and to `--aa`. `--jobs 1` runs that schedule one cell at a time. A higher `--jobs` still submits in that order.
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 22390 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 5 \
+  --order interleave \
+  --out results/ab
+```
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 22390 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 5 \
+  --aa \
+  --order random \
+  --seed 7 \
+  --out results/ab-aa
+```
+
+`--with-aa` runs the A/B pair and the parent-vs-parent pair in one schedule. Each trial block is without, with, aa-1, and aa-2, shuffled when you pass `--seed`. `--order interleave` keeps that block in the fixed order without, with, aa-1, aa-2. The cells land in the same `--out` directory the summary already reads: `without.jsonl`, `with.jsonl`, `aa-1.jsonl`, `aa-2.jsonl`, and `arm.json`. `--aa` and `--with-aa` together are an error.
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 22390 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 5 \
+  --with-aa \
+  --seed 7 \
+  --out results/ab
+```
+
+PR 984's map row is `mode=build;disable-tools=bash,write` on `make-ci-green`. A one-trial smoke is two cells (without and with):
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 984 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 1 \
+  --order interleave \
+  --out results/ab-984
+```
+
 After the cells exist, grep the transcript and the copied storage for that PR's pattern. The pattern file defaults to `thesis/ab/fixtures/trigger-evidence.csv` (the researcher's table, also stored as `trigger-tasks-34.md` and `trigger-tasks-34.csv` in that directory):
 
 ```bash
@@ -81,6 +127,8 @@ python -m thesis.ab.evidence results/ab
 ```
 
 The cell gains `exercised` (`exercised`, `not exercised`, or `undeterminable` when no evidence file was copied). `results/ab/evidence-summary.json` counts those per PR and side.
+
+PR 984 uses `classify_edit_only` in `thesis.ab.evidence`. A 984 cell is exercised only when the evidence has at least one edit call and zero `"tool": "bash"` or `"tool": "write"` parts. The pattern row still matches edit. The cell records `edit_calls` and `bash_write_calls`, each the largest count in any one evidence file.
 
 ## What each binary gets
 
@@ -96,7 +144,20 @@ Stock OpenCode from v1.0.123 (PR 4838) through v1.15.2 (PR 26821) imports `@ai-s
 
 ## Results
 
-Finished cells are `results/ab/<pr>/cells/<side>/<task>/<trial>.json`. The runner rewrites `results/ab/<pr>/without.jsonl` and `with.jsonl` from those files. `--aa` writes `aa-1.jsonl` and `aa-2.jsonl` instead, plus `arm.json` naming the parent SHA. The summary labels that arm parent-vs-parent noise and does not report it as a with-minus-without harness delta. An incompatible side writes `results/ab/<pr>/<side>.incompatible.json`. Each side also writes `<side>.toolchain.json` with the Bun version, the `ai` version, and the installed `@ai-sdk/anthropic` version. The same object is on each cell row. The summary prints both sides. When the installed SDK versions differ, it says `SDK changed: harness delta may be confounded`.
+Finished cells are `results/ab/<pr>/cells/<side>/<task>/<trial>.json`. The runner rewrites `results/ab/<pr>/without.jsonl` and `with.jsonl` from those files. `--aa` writes `aa-1.jsonl` and `aa-2.jsonl` instead, plus `arm.json` naming the parent SHA. `--with-aa` writes all four side files and `arm.json` in that same directory. The summary labels the aa sides parent-vs-parent noise and does not report them as a with-minus-without harness delta. An incompatible side writes `results/ab/<pr>/<side>.incompatible.json`. Each side also writes `<side>.toolchain.json` with the Bun version, the `ai` version, and the installed `@ai-sdk/anthropic` version. The same object is on each cell row. The summary prints both sides. When the installed SDK versions differ, it says `SDK changed: harness delta may be confounded`.
+
+Each cell records `schedule_index` (its place in the launch schedule, from 0) and `started_at` (UTC timestamp when that cell process began).
+
+Token totals count every model request the metering proxy attributed to the cell, including subagent and child sessions that used the same `/c/<cell-id>/` base URL. The cell stores:
+
+| Field | Meaning |
+| --- | --- |
+| `requests_input_uncached`, `requests_output`, `requests_cache_read`, `requests_cache_write` | Sum of those buckets over every proxy request for the cell. |
+| `requests_count` | How many of those requests carried usage. |
+| `requests_cost_usd` | Those buckets at $4 / $20 / $0.20 / $5 per million tokens. |
+| `tokens_input_uncached`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write` | The same all-request totals. Cost and the summary read these. |
+| `tokens_main_input_uncached`, `tokens_main_output`, `tokens_main_cache_read`, `tokens_main_cache_write`, `tokens_main_calls` | The main session only, from the harness event stream, when that split existed. |
+| `tokens_proxy_*` | The proxy ledger split. It matches the `requests_*` buckets. |
 
 A cell that dies in under 10 seconds with `Unhandled chunk type`, `ProviderInitError`, `DecimalError`, or `prepare wasm` in its output is `failure_class=infra`, not a wrong answer. If the first three cells of a side all die that way, the runner writes `<side>.infra.json` and does not launch the rest. Infra and incompatible cells are not scored.
 

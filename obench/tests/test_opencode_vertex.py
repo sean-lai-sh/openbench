@@ -134,6 +134,7 @@ class TestVertexFlags(unittest.TestCase):
             env.pop("OBENCH_OPENCODE_LSP", None)
             env.pop("OBENCH_OPENCODE_BUN", None)
             env.pop("OBENCH_OPENCODE_WEBFETCH_URL", None)
+            env.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
             if extra:
                 env.update(extra)
             return self.openc.run(instruction, str(self.work), "claude-opus-5-5", 30)
@@ -212,6 +213,22 @@ class TestVertexFlags(unittest.TestCase):
         self.assertEqual(dumped["anthropic"], "proxy")
         self.assertEqual(dumped["base_url"], "http://127.0.0.1:9")
         self.assertIsNone(dumped["location"])
+
+    def test_disable_tools_writes_mode_build_and_not_permission(self):
+        res = self._run(HELP_BARE + "\n--mode\n", {
+            "OBENCH_OPENCODE_MODE": "build",
+            "OBENCH_OPENCODE_DISABLE_TOOLS": "bash,write",
+            "OBENCH_OPENCODE_PERMISSION_CONFIG": "0",
+            "OBENCH_OPENCODE_CONFIG_JSON": json.dumps({
+                "provider": {"anthropic": {"name": "Anthropic"}},
+            }),
+        })
+        self.assertTrue(res["completed"], res.get("error"))
+        self.assertEqual(res["cmd"][res["cmd"].index("--mode") + 1], "build")
+        body = json.loads(self._dump()["config"])
+        self.assertEqual(body["mode"]["build"]["tools"], {"bash": False, "write": False})
+        self.assertNotIn("permission", body)
+        self.assertEqual(body["provider"]["anthropic"]["name"], "Anthropic")
 
     def test_mode_is_passed_when_the_binary_lists_it(self):
         help_text = HELP_MODERN + "--mode\n"

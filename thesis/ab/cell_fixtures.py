@@ -24,9 +24,12 @@ _FAULTS = frozenset({"http-529", "http-429", "sse-server-error"})
 _LSP = frozenset({"pyright", "typescript", "dotnet"})
 _MODALITIES = frozenset({"image"})
 _WEBFETCH = frozenset({"local"})
+# Tools the July 2025 config can drop via mode.build.tools. Later trees are
+# not given a permission map by this option; that schema key is rejected here.
+_DISABLE_TOOLS = frozenset({"bash", "write", "edit", "patch", "webfetch"})
 _KEYS = frozenset({
     "context", "fault", "mode", "permissions", "global-agents", "lsp",
-    "modalities", "webfetch",
+    "modalities", "webfetch", "disable-tools",
 })
 
 # The task instruction contains this token. The cell replaces it with the
@@ -53,6 +56,7 @@ class CellFixtures:
     lsp: tuple[str, ...] = ()
     modalities: str | None = None
     webfetch: str | None = None
+    disable_tools: tuple[str, ...] = ()
 
     def as_text(self) -> str:
         parts: list[str] = []
@@ -72,6 +76,8 @@ class CellFixtures:
             parts.append(f"modalities={self.modalities}")
         if self.webfetch:
             parts.append(f"webfetch={self.webfetch}")
+        if self.disable_tools:
+            parts.append("disable-tools=" + ",".join(self.disable_tools))
         return " ".join(parts)
 
     def payload(self) -> dict:
@@ -84,6 +90,7 @@ class CellFixtures:
             "lsp": list(self.lsp),
             "modalities": self.modalities,
             "webfetch": self.webfetch,
+            "disable_tools": list(self.disable_tools),
         }
 
 
@@ -143,6 +150,17 @@ def parse_options(text: str) -> CellFixtures:
     webfetch = found.get("webfetch")
     if webfetch is not None and webfetch not in _WEBFETCH:
         raise FixtureError(f"unknown webfetch {webfetch!r}")
+    disable_tools: tuple[str, ...] = ()
+    if "disable-tools" in found:
+        names = tuple(part.strip() for part in found["disable-tools"].split(","))
+        if not names or any(not name for name in names):
+            raise FixtureError("disable-tools has an empty name")
+        if len(names) != len(set(names)):
+            raise FixtureError("disable-tools repeats a name")
+        unknown = [name for name in names if name not in _DISABLE_TOOLS]
+        if unknown:
+            raise FixtureError("unknown disable-tools " + ", ".join(unknown))
+        disable_tools = names
     return CellFixtures(
         context=context,
         fault=fault,
@@ -152,6 +170,7 @@ def parse_options(text: str) -> CellFixtures:
         lsp=lsp,
         modalities=modalities,
         webfetch=webfetch,
+        disable_tools=disable_tools,
     )
 
 
