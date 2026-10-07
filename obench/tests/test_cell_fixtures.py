@@ -6,6 +6,7 @@ import json
 import struct
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -27,7 +28,7 @@ from thesis.ab.cell_fixtures import (
 from thesis.ab.compat import anthropic_proxy_config
 from thesis.ab.run_ab import _fill, apply_cell_meter
 from thesis.ab.summarize import row_cost
-from thesis.ab.vertex_anthropic_proxy import ProxyError, start_proxy
+from thesis.ab.vertex_anthropic_proxy import ProxyError, cell_bytes_path, start_proxy
 
 
 class OptionParseTests(unittest.TestCase):
@@ -423,6 +424,93 @@ class SubagentMeterTests(unittest.TestCase):
         self.assertEqual(other["requests_count"], 1)
         self.assertEqual(other["requests_input_uncached"], 100)
         self.assertEqual(other["tokens_main_calls"], 1)
+
+
+class _SlowStream(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        def chunk(payload: bytes) -> None:
+            self.wfile.write(f"{len(payload):X}\r\n".encode("ascii"))
+            self.wfile.write(payload)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
+
+        chunk(b"data: {\"type\":\"ping\"}\n\n")
+        time.sleep(0.45)
+        chunk(b"data: {\"type\":\"message_stop\"}\n\n")
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def log_message(self, fmt, *args):
+        return
+
+
+class ProxyByteTests(unittest.TestCase):
+    def test_stream_bytes_grow_before_the_response_finishes(self):
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _SlowStream)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        host, port = upstream.server_address
+        ledger = Path(tempfile.mkdtemp())
+        proxy = start_proxy(
+            "proj", token="tok", upstream=f"http://{host}:{port}", ledger_dir=ledger,
+        )
+        self.addCleanup(proxy.close)
+        self.addCleanup(upstream.shutdown)
+        self.addCleanup(upstream.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        path = cell_bytes_path(ledger, "cell-9")
+        body = b'{"stream":true,"messages":[]}'
+
+        def client():
+            _post(proxy.base_url + "/c/cell-9/v1/messages", body)
+
+        worker = threading.Thread(target=client)
+        worker.start()
+        self.addCleanup(lambda: worker.join(timeout=3))
+        deadline = time.time() + 3
+        seen = []
+        while time.time() < deadline:
+            if path.is_file():
+                try:
+                    seen.append(int(path.read_text(encoding="utf-8")))
+                except ValueError:
+                    pass
+                if len(set(seen)) >= 2:
+                    break
+            time.sleep(0.05)
+        worker.join(timeout=3)
+        self.assertGreaterEqual(len(set(seen)), 2)
+        self.assertGreater(max(seen), min(seen))
+
+    def test_unscoped_post_is_not_attributed(self):
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _Upstream)
+        upstream.seen = []
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        host, port = upstream.server_address
+        ledger = Path(tempfile.mkdtemp())
+        proxy = start_proxy(
+            "proj", token="tok", upstream=f"http://{host}:{port}", ledger_dir=ledger,
+        )
+        self.addCleanup(proxy.close)
+        self.addCleanup(upstream.shutdown)
+        self.addCleanup(upstream.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        status, _headers, _payload = _post(
+            proxy.base_url + "/v1/messages",
+            b'{"messages":[]}',
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(list(ledger.glob("*.bytes")), [])
+        self.assertEqual(list(ledger.glob("*.jsonl")), [])
 
 
 if __name__ == "__main__":

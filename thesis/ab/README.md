@@ -161,6 +161,18 @@ Token totals count every model request the metering proxy attributed to the cell
 
 A cell that dies in under 10 seconds with `Unhandled chunk type`, `ProviderInitError`, `DecimalError`, or `prepare wasm` in its output is `failure_class=infra`, not a wrong answer. If the first three cells of a side all die that way, the runner writes `<side>.infra.json` and does not launch the rest. Infra and incompatible cells are not scored.
 
+`--no-progress-s` defaults to 300. The cell runner kills the agent process tree when stdout, the OpenCode data directory (`$XDG_DATA_HOME/opencode`, logs and storage), and the cell's proxy accounting are all idle for that many seconds. The cell JSON records `failure_class=infra`, `infra_reason=no_progress`, and `no_progress_idle_s` (how long it was idle). A fatal `Aborted(` or tree-sitter wasm ENOENT line kills the process immediately and records `infra_reason=wasm_abort`. `--no-progress-s 0` turns the watchdog off, including that immediate kill, because the process is not streamed. The summary counts `no_progress` kills on each side (`without`/`with`, and `aa-1`/`aa-2` on the noise arm).
+
+Proxy progress uses the same per-cell ledger as the `requests_*` totals. A finished request appends `<cell>.jsonl` under the ledger directory, and that growth counts. A streaming request is not in that file until it ends, so each chunk also updates the sibling `<cell>.bytes` counter. Both files are written only for `/c/<cell_id>/...`, which is how the runner rewrites the base URL. A request that reaches the proxy without that prefix is not attributed to a cell. `--model-route vertex` does not send OpenCode through this proxy, so those cells are watched on stdout, logs, and storage only.
+
+The longest gap between consecutive OpenCode log lines in a finished run is:
+
+```bash
+python -m thesis.ab.max_silent_gap results/ab
+```
+
+It prints each cell's longest gap and the max and nearest-rank p99 per side. The first log line's `+Nms` is from logger startup and is not a gap. Log files are preferred, then the transcript, then `output_tail`.
+
 Each cell keeps a local transcript, plus that cell's OpenCode session storage and log directory, under `results/ab/<pr>/transcripts/`. Current builds are copied from `opencode/storage` and `opencode/log`. Builds from about PR 623 through PR 2334 keep sessions at `opencode/project/<id>/storage`, and that tree is copied too. A later `opencode/opencode.db` is copied when it exists. `--transcripts-dir` changes the root. Those files are local evidence for whether the changed code path ran. They are not published.
 
 Summarize pass rate, score, time, turns, tokens, and cost. Each PR lists per-task deltas for time, turns, tokens, and cost, with a bootstrap interval. The headroom section lists tasks whose mean score is below 1.0 on either side and gives the pass-rate delta on only those tasks.
@@ -194,7 +206,7 @@ results/opencode-src/bin/0d3d48bb5964a95e939edcea3bb726a21823d1a1/opencode --ver
 
 The version line is the check. The command compiles that upstream commit.
 
-Older trees (no `script/build.ts`) compile with `bun build --compile` and without `--minify`. Minify drops the embedded tree-sitter wasm, so a bash tool call fails with `ENOENT` and the cell hangs. A cached `bin/<sha>/opencode` is reused only when `build-stamp.json` beside it matches the current recipe. A missing stamp, or a compile stamp that still says `minify: true`, is rebuilt.
+Older trees (no `script/build.ts`, and `packages/opencode/script/publish.ts` runs `bun build --compile`) import tree-sitter wasm with `type: "wasm"`. Bun 1.2 rewrites that to `/$bunfs/tree-sitter-<hash>.wasm` and does not embed the bytes, so the first bash tool call aborts with ENOENT and the process spins until the cell cap. The build step rewrites those imports to `type: "file"` before `bun build --compile`, which embeds the bytes and returns a path. The rewrite is skipped when `script/build.ts` exists, so the `Bun.build` era is left as upstream wrote it. #2334 and #2367 are in the publish.ts era and are rewritten. #3052 already has `script/build.ts`, so it is not. `--minify` stays off; that is the upstream command, and omitting it does not embed the wasm. A cached `bin/<sha>/opencode` is reused only when `build-stamp.json` beside it matches the current recipe. A missing stamp, a compile stamp that still says `minify: true`, or a compile stamp with no `tree_sitter_wasm` marker (`file` or `unchanged`) is rebuilt.
 
 ## Pi and Oh My Pi pilot
 

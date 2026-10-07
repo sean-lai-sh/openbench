@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import struct
@@ -91,6 +92,92 @@ def build_plan(root: Path) -> dict:
         "cwd": "packages/opencode",
         "args": ["bun", "run", "./src/index.ts"],
     }
+
+
+# bash.ts on the v0.x `bun build --compile` trees (no script/build.ts).
+# Bun 1.2 rewrites `type: "wasm"` to /$bunfs/tree-sitter-<hash>.wasm and does
+# not embed the bytes. The first bash call then aborts with ENOENT.
+_TREE_SITTER_WASM_IMPORT = re.compile(
+    r"""import\(\s*["'][^"']*tree-sitter[^"']*\.wasm["'][\s\S]*?type:\s*(["'])wasm\1""",
+)
+
+
+def tree_sitter_wasm_compile_bug(root: Path) -> bool:
+    """True when this checkout's ``bun build --compile`` drops tree-sitter wasm.
+
+    The gate is the publish-script era plus a ``type: "wasm"`` import of a
+    tree-sitter wasm file. #2334 and #2367 match: both sides are
+    ``packages/opencode/script/publish.ts`` with ``bun build --compile``, and
+    ``bash.ts`` imports ``web-tree-sitter/tree-sitter.wasm`` and
+    ``tree-sitter-bash/tree-sitter-bash.wasm`` that way.
+
+    #3052 is the next row and still has that import, but it ships
+    ``script/build.ts`` and compiles with ``Bun.build({ compile })``. This
+    returns false there so that build, and every later ``build.ts`` tree, is
+    left untouched.
+    """
+    script = Path(root) / "packages" / "opencode" / "script"
+    if (script / "build.ts").is_file():
+        return False
+    publish = script / "publish.ts"
+    if not publish.is_file():
+        return False
+    try:
+        publish_text = publish.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if "bun build" not in publish_text:
+        return False
+    src = Path(root) / "packages" / "opencode" / "src"
+    if not src.is_dir():
+        return False
+    for path in src.rglob("*.ts"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _TREE_SITTER_WASM_IMPORT.search(text):
+            return True
+    return False
+
+
+def _rewrite_tree_sitter_wasm_imports(text: str) -> str:
+    def repl(match: re.Match) -> str:
+        quote = match.group(1)
+        return re.sub(
+            rf"type:\s*{quote}wasm{quote}",
+            f"type: {quote}file{quote}",
+            match.group(0),
+            count=1,
+        )
+
+    return _TREE_SITTER_WASM_IMPORT.sub(repl, text)
+
+
+def apply_tree_sitter_wasm_fix(root: Path) -> str:
+    """Rewrite wasm imports to ``type: "file"`` on the compile-era bug.
+
+    Returns ``file`` when a source file changed, otherwise ``unchanged``.
+    ``type: "file"`` makes ``bun build --compile`` embed the bytes and return
+    a path. ``Parser.init({ locateFile })`` and ``Language.load`` already
+    consume that path. ``type: "wasm"`` is the loader that opens the missing
+    bunfs file and aborts the process.
+    """
+    if not tree_sitter_wasm_compile_bug(root):
+        return "unchanged"
+    changed = False
+    src = Path(root) / "packages" / "opencode" / "src"
+    for path in src.rglob("*.ts"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        updated = _rewrite_tree_sitter_wasm_imports(text)
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        changed = True
+    return "file" if changed else "unchanged"
 
 
 def _host() -> tuple[str, str, str]:
@@ -202,9 +289,9 @@ def _compile_old(root: Path, env: dict) -> Path:
             env={**env, "CGO_ENABLED": "0", "GOOS": system, "GOARCH": goarch},
         )
     outfile = dist / "opencode"
-    # Upstream publish.ts compiles without --minify. Minify drops the embedded
-    # tree-sitter wasm, and a bash tool call then fails with ENOENT under
-    # /$bunfs and hangs until the cell timeout. 2334 and 2367 hit that.
+    # Same command as publish.ts: --compile, no --minify. The wasm embed is
+    # apply_tree_sitter_wasm_fix, which runs before this. Minify stays off
+    # because that is the upstream command and a minified stamp is stale.
     cmd = [
         "bun", "build",
         "--define", "OPENCODE_VERSION='openbench'",
@@ -433,13 +520,22 @@ def _build_stamp(plan: dict) -> dict:
     """Identity of the recipe that produced a cached binary.
 
     ``binary()`` refuses a cache hit whose stamp does not match the recipe
-    this process would write. A missing stamp, or a compile stamp that still
-    records ``minify: true``, is rebuilt. That drops cached minified binaries
-    for the old ``bun build --compile`` trees (2334 and 2367).
+    this process would write. A missing stamp, a compile stamp that still
+    records ``minify: true``, or a compile stamp with no ``tree_sitter_wasm``
+    marker is rebuilt. That drops cached binaries from before the wasm embed
+    fix on the old ``bun build --compile`` trees (#2334 and #2367).
     """
     kind = plan.get("kind")
     if kind == "compile":
-        return {"flags": ["--compile"], "kind": "compile", "minify": False}
+        mode = plan.get("tree_sitter_wasm")
+        if mode not in {"file", "unchanged"}:
+            mode = "unchanged"
+        return {
+            "flags": ["--compile"],
+            "kind": "compile",
+            "minify": False,
+            "tree_sitter_wasm": mode,
+        }
     return {"args": list(plan.get("args") or []), "kind": kind}
 
 
@@ -459,7 +555,10 @@ def _stamp_current(stamp: dict | None) -> bool:
         return False
     kind = stamp.get("kind")
     if kind == "compile":
-        return stamp.get("minify") is False
+        return (
+            stamp.get("minify") is False
+            and stamp.get("tree_sitter_wasm") in {"file", "unchanged"}
+        )
     return kind in {"build.ts", "bun-run"}
 
 
@@ -474,6 +573,7 @@ def _execute_plan(root: Path, plan: dict, cache: Path) -> Path:
     env = _env_with(bun_path, go_prefix)
     _run(["bun", "install"], cwd=root, env=env)
     if plan["kind"] == "compile":
+        plan["tree_sitter_wasm"] = apply_tree_sitter_wasm_fix(root)
         return _compile_old(root, env)
     if plan["kind"] == "bun-run":
         # No compile script. A wrapper keeps ``binary()`` a single executable path.

@@ -157,9 +157,59 @@ def _usage_from_json(payload: bytes) -> dict | None:
     return merge_message_usage([usage]) if isinstance(usage, dict) else None
 
 
+def _cell_file_stem(cell_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", cell_id)
+
+
+def cell_ledger_path(directory: Path, cell_id: str) -> Path:
+    """Per-cell request ledger. One JSONL row per finished ``/c/<cell_id>/`` request.
+
+    This is the file ``read_proxy_ledger`` and ``requests_*`` totals read.
+    A post with no cell prefix is not written here.
+    """
+    return Path(directory) / f"{_cell_file_stem(cell_id)}.jsonl"
+
+
+def cell_bytes_path(directory: Path, cell_id: str) -> Path:
+    """In-flight byte total beside the cell ledger.
+
+    The ledger row is written when a request finishes. A long stream updates
+    this file on each chunk so the watchdog can see it before that row exists.
+    """
+    return cell_ledger_path(directory, cell_id).with_suffix(".bytes")
+
+
+_BYTE_TOTALS: dict[str, int] = {}
+
+
+def note_cell_bytes(directory: Path | None, cell_id: str | None, n: int) -> None:
+    """Add ``n`` streamed bytes to the cell's on-disk counter.
+
+    The proxy runs in the parent and the cell runs in a worker, so the file
+    is the progress signal. ``n <= 0``, a missing ledger, or a missing cell
+    id does nothing. The write is atomic so a reader never sees a partial
+    integer.
+    """
+    if directory is None or not cell_id or n <= 0:
+        return
+    path = cell_bytes_path(Path(directory), cell_id)
+    key = str(path)
+    with _LEDGER_LOCK:
+        if key not in _BYTE_TOTALS:
+            try:
+                _BYTE_TOTALS[key] = int(path.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                _BYTE_TOTALS[key] = 0
+        total = _BYTE_TOTALS[key] + int(n)
+        _BYTE_TOTALS[key] = total
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(str(total), encoding="utf-8")
+        os.replace(tmp, path)
+
+
 def _append_ledger(directory: Path, cell_id: str, usage: dict) -> None:
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", cell_id)
-    path = Path(directory) / f"{safe}.jsonl"
+    path = cell_ledger_path(Path(directory), cell_id)
     line = json.dumps({"record_type": "request", "usage": usage}, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -331,6 +381,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
             cell, route = split_cell_path(self.path)
+            if ledger is not None and cell and raw:
+                note_cell_bytes(ledger, cell, len(raw))
             fault = holder["proxy"].take_fault(cell, route)
             if fault:
                 self._send_fault(fault)
@@ -408,6 +460,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     response = urllib.request.urlopen(request, timeout=3600)
                 except urllib.error.HTTPError as exc:
                     payload = exc.read()
+                    note_cell_bytes(ledger, cell, len(payload))
                     content_type = exc.headers.get("Content-Type") or "application/json"
                     self._send(exc.code, content_type, payload)
                     return
@@ -429,6 +482,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     chunk = response.read1(8192)
                     if not chunk:
                         break
+                    # Count before the client write. A blocked consumer
+                    # still moves the watchdog's byte file.
+                    note_cell_bytes(ledger, cell, len(chunk))
                     raw.extend(chunk)
                     if kind == "stream":
                         pending += chunk

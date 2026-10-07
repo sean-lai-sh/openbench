@@ -297,6 +297,11 @@ class TestSchedule(unittest.TestCase):
         )
         self.assertEqual(filled["proxy"]["ledger_dir"], "/tmp/ledger")
         self.assertEqual(len(filled["proxy"]["cell_id"]), 16)
+        from thesis.ab.vertex_anthropic_proxy import cell_ledger_path
+        self.assertEqual(
+            filled["cell_ledger"],
+            str(cell_ledger_path(Path("/tmp/ledger"), filled["proxy"]["cell_id"])),
+        )
 
     def test_july_beta_tree_installs_with_the_beta_alias(self):
         from thesis.ab.sdk_pin import install_alias_for_tree
@@ -1554,6 +1559,7 @@ class TestOldCompile(unittest.TestCase):
         stamp = json.loads((published.parent / "build-stamp.json").read_text(encoding="utf-8"))
         self.assertEqual(stamp["kind"], "compile")
         self.assertIs(stamp["minify"], False)
+        self.assertEqual(stamp["tree_sitter_wasm"], "unchanged")
         again = binary(sha, cache)
         self.assertEqual(calls["n"], 1)
         self.assertEqual(again, result)
@@ -1562,7 +1568,78 @@ class TestOldCompile(unittest.TestCase):
         (published.parent / "build-stamp.json").write_text(json.dumps(stamp), encoding="utf-8")
         rebuilt = binary(sha, cache)
         self.assertEqual(calls["n"], 2)
-        self.assertFalse(json.loads((rebuilt.parent / "build-stamp.json").read_text(encoding="utf-8"))["minify"])
+        body = json.loads((rebuilt.parent / "build-stamp.json").read_text(encoding="utf-8"))
+        self.assertFalse(body["minify"])
+        self.assertEqual(body["tree_sitter_wasm"], "unchanged")
+        body.pop("tree_sitter_wasm")
+        (rebuilt.parent / "build-stamp.json").write_text(json.dumps(body), encoding="utf-8")
+        binary(sha, cache)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(
+            json.loads((rebuilt.parent / "build-stamp.json").read_text(encoding="utf-8"))["tree_sitter_wasm"],
+            "unchanged",
+        )
+
+
+_WASM_BASH = """
+const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm", { with: { type: "wasm" } })
+const { default: bashWasm } = await import(
+  "tree-sitter-bash/tree-sitter-bash.wasm",
+  { with: { type: "wasm" } },
+)
+"""
+
+
+class TestTreeSitterWasm(unittest.TestCase):
+    def _tree(self, *, publish=True, build_ts=False, bash=_WASM_BASH):
+        root = Path(tempfile.mkdtemp())
+        script = root / "packages" / "opencode" / "script"
+        script.mkdir(parents=True)
+        if publish:
+            (script / "publish.ts").write_text(
+                "await $`bun build --compile --target=bun-linux-x64`\n",
+                encoding="utf-8",
+            )
+        if build_ts:
+            (script / "build.ts").write_text(
+                "await Bun.build({ compile: { outfile: out } })\n",
+                encoding="utf-8",
+            )
+        path = root / "packages" / "opencode" / "src" / "tool" / "bash.ts"
+        path.parent.mkdir(parents=True)
+        path.write_text(bash, encoding="utf-8")
+        return root
+
+    def test_publish_era_matches_and_rewrite_clears_it(self):
+        from thesis.ab.build_opencode import (
+            apply_tree_sitter_wasm_fix,
+            tree_sitter_wasm_compile_bug,
+        )
+        root = self._tree()
+        self.assertTrue(tree_sitter_wasm_compile_bug(root))
+        self.assertEqual(apply_tree_sitter_wasm_fix(root), "file")
+        text = (root / "packages" / "opencode" / "src" / "tool" / "bash.ts").read_text(encoding="utf-8")
+        self.assertNotIn('type: "wasm"', text)
+        self.assertIn('type: "file"', text)
+        self.assertFalse(tree_sitter_wasm_compile_bug(root))
+        self.assertEqual(apply_tree_sitter_wasm_fix(root), "unchanged")
+
+    def test_build_ts_era_is_left_alone(self):
+        from thesis.ab.build_opencode import (
+            apply_tree_sitter_wasm_fix,
+            tree_sitter_wasm_compile_bug,
+        )
+        root = self._tree(build_ts=True)
+        bash = root / "packages" / "opencode" / "src" / "tool" / "bash.ts"
+        before = bash.read_text(encoding="utf-8")
+        self.assertFalse(tree_sitter_wasm_compile_bug(root))
+        self.assertEqual(apply_tree_sitter_wasm_fix(root), "unchanged")
+        self.assertEqual(bash.read_text(encoding="utf-8"), before)
+
+    def test_unrelated_wasm_import_is_not_the_bug(self):
+        from thesis.ab.build_opencode import tree_sitter_wasm_compile_bug
+        root = self._tree(bash='await import("./other.wasm", { with: { type: "wasm" } })\n')
+        self.assertFalse(tree_sitter_wasm_compile_bug(root))
 
 
 class TestSdkDriftCell(unittest.TestCase):
