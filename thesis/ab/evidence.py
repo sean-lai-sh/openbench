@@ -734,6 +734,10 @@ _REJECTION = re.compile(
 )
 _SEARCH_TOOLS = frozenset({"grep", "glob", "read"})
 _RULE_TOKENS = (("GLOBAL-RULE", "global"), ("PROJECT-RULE", "project"))
+_RULE_BULLET = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+_RULE_SEPARATOR_CHARS = frozenset(" \t:.,>-")
+# Text-UI edits have no `"tool": "edit"` part. The 984 pattern matches the same shape.
+_TEXT_UI_EDIT = re.compile(r"\| .{0,24}\bEdit {2,}")
 _EOF = 10**12
 
 
@@ -931,37 +935,90 @@ def main_agent_searched(paths: list[Path]) -> bool:
     return False
 
 
-def _leading_rule_labels(text: str) -> list[str]:
-    """GLOBAL-RULE / PROJECT-RULE labels at the start of the final answer."""
-    line = ""
-    for raw in (text or "").splitlines():
-        if raw.strip():
-            line = raw.strip()
-            break
-    if not line:
-        line = (text or "").strip()
-    rest = line
-    seen: list[str] = []
+def _normalize_rule_line(raw: str) -> str:
+    """Drop whitespace, markdown bullets, and backticks from one answer line."""
+    text = raw.replace("`", "").strip()
+    while True:
+        updated = _RULE_BULLET.sub("", text, count=1).strip()
+        if updated == text:
+            return text
+        text = updated
+
+
+def _consume_rule_separators(rest: str) -> str:
+    """Skip commas, ``>``, ``->``, ``then``, and the older punctuation separators."""
     while rest:
-        rest = rest.lstrip(" \t:.-")
+        if rest[0] in _RULE_SEPARATOR_CHARS:
+            rest = rest[1:]
+            continue
+        if rest[:4].lower() == "then" and (
+            len(rest) == 4 or not (rest[4].isalnum() or rest[4] == "_")
+        ):
+            rest = rest[4:]
+            continue
+        break
+    return rest
+
+
+def _rule_labels_in_line(raw: str) -> tuple[list[str], bool] | None:
+    """``(labels, pure)`` for one line.
+
+    ``None`` when the line is empty after stripping. ``pure`` is true when
+    the line contains only rule tokens and separators.
+    """
+    rest = _normalize_rule_line(raw)
+    if not rest:
+        return None
+    labels: list[str] = []
+    while rest:
+        rest = _consume_rule_separators(rest)
+        if not rest:
+            break
         matched = False
         for token, label in _RULE_TOKENS:
             if rest.startswith(token):
-                seen.append(label)
+                labels.append(label)
                 rest = rest[len(token):]
                 matched = True
                 break
         if not matched:
+            return labels, False
+    return labels, True
+
+
+def _leading_rule_labels(text: str) -> list[str]:
+    """GLOBAL-RULE / PROJECT-RULE labels in the leading block of the answer.
+
+    The block is the consecutive leading non-empty lines that contain only
+    those tokens and separators (comma, ``>``, ``->``, ``then``, and the
+    older punctuation), after stripping whitespace, markdown bullets, and
+    backticks. Both tokens on one line count. A line that starts with rule
+    tokens and then turns into prose still contributes those tokens and ends
+    the block. A line that does not start with a rule token ends the block
+    without contributing. Order is first appearance.
+    """
+    labels: list[str] = []
+    for raw in (text or "").splitlines():
+        if not raw.strip():
+            continue
+        parsed = _rule_labels_in_line(raw)
+        if parsed is None:
+            continue
+        found, pure = parsed
+        if not found:
             break
-    return seen
+        labels.extend(found)
+        if not pure:
+            break
+    return labels
 
 
 def classify_rule_prefix(text: str) -> str:
-    """Classify the start of a final answer.
+    """Classify the leading rule block of a final answer.
 
-    ``both`` when the first non-empty line starts with GLOBAL-RULE and
-    PROJECT-RULE in either order. One of those tokens alone is ``global`` or
-    ``project``. Anything else is ``neither``.
+    ``both`` when that block contains GLOBAL-RULE and PROJECT-RULE in either
+    order, on one line or on consecutive rule-only lines. One of those tokens
+    alone is ``global`` or ``project``. Anything else is ``neither``.
     """
     seen = _leading_rule_labels(text)
     if "global" in seen and "project" in seen:
@@ -974,9 +1031,10 @@ def classify_rule_prefix(text: str) -> str:
 def classify_rule_order(text: str) -> str:
     """Order of the leading rule tokens.
 
-    ``global_first`` or ``project_first`` when both tokens lead the answer.
-    ``one`` when only one of them does. ``none`` otherwise. ``rule_prefix``
-    still reports ``both`` and does not keep this order.
+    ``global_first`` or ``project_first`` when both tokens appear in the
+    leading block, in first-seen order. ``one`` when only one of them does.
+    ``none`` otherwise. ``rule_prefix`` still reports ``both`` and does not
+    keep this order.
     """
     kinds: list[str] = []
     for label in _leading_rule_labels(text):
@@ -1095,8 +1153,23 @@ def dotnet_build_call_count(paths: list[Path]) -> int:
 
 
 def edit_call_count(paths: list[Path]) -> int:
-    """Edit-tool calls from the deduped tool-call path."""
-    return len(_metric_calls(paths, lambda call: call.tool == "edit"))
+    """Edit and multiedit calls from the deduped tool-call path."""
+    return len(_metric_calls(paths, lambda call: call.tool in {"edit", "multiedit"}))
+
+
+def _text_ui_edit_count(paths: list[Path]) -> int:
+    """Largest ``| Edit`` count in any one text file.
+
+    ``_read_text`` skips session databases and WAL sidecars, so a repeated
+    page copy cannot inflate this count.
+    """
+    best = 0
+    for path in paths:
+        text = _read_text(path)
+        if not text:
+            continue
+        best = max(best, len(_TEXT_UI_EDIT.findall(text)))
+    return best
 
 
 def rejection_stats(paths: list[Path]) -> tuple[int, bool]:
@@ -1396,12 +1469,14 @@ def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list
     row["child_plan_reminder"] = child_received_plan_reminder(paths)
     row["list_has_generated"] = generated
     row["dotnet_build_calls"] = dotnet_build_call_count(paths)
-    # PR 984's classifier records edit_calls before this runs. Keep the
-    # larger count so a text-UI edit is not replaced by a JSON miss.
+    # Recomputed from this evidence. Do not max() with the stored edit_calls:
+    # an earlier pass counted WAL page copies, and that stale number must not
+    # survive a rescore. The other count fields above are assigned the same
+    # way. A text-UI edit has no JSON tool part, so that count fills in only
+    # when the tool-call path sees none.
     edits = edit_call_count(paths)
-    previous = row.get("edit_calls")
-    if isinstance(previous, int) and not isinstance(previous, bool):
-        edits = max(edits, previous)
+    if edits == 0:
+        edits = _text_ui_edit_count(paths)
     row["edit_calls"] = edits
     row["permission_rejections"] = rejections
     row["ended_on_rejection"] = ended

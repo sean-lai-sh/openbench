@@ -204,12 +204,29 @@ class TmpdirMetricTests(unittest.TestCase):
             ["tmp.ab12", "tmp.ab12/nested"],
         )
         self.assertEqual(scratch_dirs_left(root), 1)
+        (leaked / "__pycache__").mkdir()
+        (leaked / "nested" / "__pycache__").mkdir()
+        (emptied / "pkg").mkdir()
+        (emptied / "pkg" / "__pycache__").mkdir()
+        self.assertEqual(leaked_temp_dirs(root), 2)
+        self.assertEqual(
+            leaked_temp_dir_names(root),
+            ["tmp.ab12", "tmp.ab12/nested"],
+        )
+        self.assertEqual(scratch_dirs_left(root), 2)
         evidence = Path(tempfile.mkdtemp())
         (evidence / "scratch-tmpdir.txt").write_text(str(root) + "\n", encoding="utf-8")
         recounted = attach_cell_metrics({"task": "trig-tmpdir", "tmpdir_leaked_dirs": 0}, evidence)
         self.assertEqual(recounted["tmpdir_leaked_dirs"], 2)
         self.assertEqual(recounted["tmpdir_leaked_names"], ["tmp.ab12", "tmp.ab12/nested"])
-        self.assertEqual(recounted["scratch_dirs_left"], 1)
+        self.assertEqual(recounted["scratch_dirs_left"], 2)
+        only_cache = Path(tempfile.mkdtemp())
+        (only_cache / "opencode").mkdir()
+        bare = only_cache / "tmp.cd34"
+        bare.mkdir()
+        (bare / "__pycache__").mkdir()
+        self.assertEqual(leaked_temp_dirs(only_cache), 1)
+        self.assertEqual(leaked_temp_dir_names(only_cache), ["tmp.cd34"])
         env = scratch_env({"task": "trig-tmpdir"})
         self.addCleanup(lambda: __import__("shutil").rmtree(env["TMPDIR"], ignore_errors=True))
         opencode = Path(env["TMPDIR"]) / "opencode"
@@ -433,6 +450,25 @@ class SqliteDedupeAndScreenTests(unittest.TestCase):
         self.assertEqual(edit_call_count(paths), 2)
         self.assertEqual(read_call_stats(paths), (2, True))
         self.assertEqual(dotnet_build_call_count(paths), 2)
+        rescored = attach_cell_metrics({
+            "task": "make-ci-green",
+            "edit_calls": 39,
+            "read_calls": 39,
+            "dotnet_build_calls": 39,
+            "child_edit_calls": 39,
+            "subagent_write_calls": 39,
+            "task_calls": 39,
+            "fresh_subagents": 39,
+            "permission_rejections": 39,
+        }, root, files=paths)
+        self.assertEqual(rescored["edit_calls"], 2)
+        self.assertEqual(rescored["read_calls"], 2)
+        self.assertEqual(rescored["dotnet_build_calls"], 2)
+        self.assertEqual(rescored["child_edit_calls"], 0)
+        self.assertEqual(rescored["subagent_write_calls"], 0)
+        self.assertEqual(rescored["task_calls"], 0)
+        self.assertEqual(rescored["fresh_subagents"], 0)
+        self.assertEqual(rescored["permission_rejections"], 0)
 
         only = Path(tempfile.mkdtemp())
         import sqlite3
@@ -459,13 +495,51 @@ class SqliteDedupeAndScreenTests(unittest.TestCase):
     def test_rule_order_keeps_both_directions(self):
         self.assertEqual(classify_rule_order("GLOBAL-RULE PROJECT-RULE done"), "global_first")
         self.assertEqual(classify_rule_order("PROJECT-RULE: GLOBAL-RULE done"), "project_first")
+        self.assertEqual(classify_rule_order("GLOBAL-RULE, PROJECT-RULE"), "global_first")
+        self.assertEqual(classify_rule_order("PROJECT-RULE -> GLOBAL-RULE"), "project_first")
+        self.assertEqual(classify_rule_order("GLOBAL-RULE > PROJECT-RULE"), "global_first")
+        self.assertEqual(classify_rule_order("PROJECT-RULE then GLOBAL-RULE"), "project_first")
         self.assertEqual(classify_rule_order("GLOBAL-RULE only"), "one")
+        self.assertEqual(classify_rule_order("PROJECT-RULE"), "one")
         self.assertEqual(classify_rule_order("no tokens"), "none")
+        self.assertEqual(
+            classify_rule_order("GLOBAL-RULE\nPROJECT-RULE\n"),
+            "global_first",
+        )
+        self.assertEqual(
+            classify_rule_order("PROJECT-RULE\nGLOBAL-RULE\n"),
+            "project_first",
+        )
+        self.assertEqual(
+            classify_rule_order("GLOBAL-RULE\nPROJECT-RULE\nApplied both rules.\n"),
+            "global_first",
+        )
+        self.assertEqual(
+            classify_rule_order("The rules follow.\nGLOBAL-RULE\nPROJECT-RULE\n"),
+            "none",
+        )
+        self.assertEqual(
+            classify_rule_order("- `GLOBAL-RULE`\n- `PROJECT-RULE`\n"),
+            "global_first",
+        )
+        self.assertEqual(
+            classify_rule_order("* `PROJECT-RULE`\n* `GLOBAL-RULE`\n"),
+            "project_first",
+        )
+        self.assertEqual(classify_rule_order("`GLOBAL-RULE` then `PROJECT-RULE`"), "global_first")
         root = Path(tempfile.mkdtemp())
         (root / "streamed-text.txt").write_text("PROJECT-RULE GLOBAL-RULE\n", encoding="utf-8")
         row = attach_cell_metrics({"task": "trig-prompt-order"}, root, files=[])
         self.assertEqual(row["rule_prefix"], "both")
         self.assertEqual(row["rule_order"], "project_first")
+        two_lines = Path(tempfile.mkdtemp())
+        (two_lines / "streamed-text.txt").write_text(
+            "GLOBAL-RULE\nPROJECT-RULE\n",
+            encoding="utf-8",
+        )
+        ordered = attach_cell_metrics({"task": "trig-prompt-order"}, two_lines, files=[])
+        self.assertEqual(ordered["rule_prefix"], "both")
+        self.assertEqual(ordered["rule_order"], "global_first")
 
     def test_rejected_tmp_cleanup_is_present_but_not_complete(self):
         root = Path(tempfile.mkdtemp())
