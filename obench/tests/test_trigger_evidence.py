@@ -16,6 +16,7 @@ from thesis.ab.evidence import (
     classify_edit_only,
     load_patterns,
     main,
+    transcript_files,
 )
 from thesis.ab.run_ab import load_task_map
 from obench.tests.bare_python import checker_environ
@@ -551,6 +552,84 @@ class EvidenceGrepTests(unittest.TestCase):
         self.assertIsNotNone(pattern.search(old_root))
         self.assertIsNone(pattern.search(plain_tmp))
         self.assertIsNone(pattern.search(plain_write))
+
+    def test_25226_requires_a_boundary_after_opencode(self):
+        pattern = load_patterns(PATTERNS)["25226"].compiled
+
+        def bash(command: str) -> str:
+            return (
+                '{"tool":"bash","callID":"call_boundary","state":{"status":"completed",'
+                '"input":{"command":' + json.dumps(command) + '}}}'
+            )
+
+        def write(path: str) -> str:
+            return (
+                '{"tool":"write","state":{"input":{"filePath":'
+                + json.dumps(path) + ',"content":"x"}}}'
+            )
+
+        positives = [
+            bash("cat $TMPDIR/opencode/x"),
+            write("/tmp/obench-cell-ab12/opencode"),
+            bash("ls /tmp/obench-cell-ab12/opencode/scratch"),
+            bash("echo ${TMPDIR}/opencode"),
+            bash("echo $TMPDIR/opencode && true"),
+            write("/tmp/opencode"),
+            write("/tmp/obench-tmp-ab12/opencode"),
+            '{"tool":"bash","state":{"input":{"command":"cat $TMPDIR/opencode"',
+        ]
+        negatives = [
+            bash("ls /tmp/obench-cell-ab12/opencode_home_foo"),
+            bash("python3 /tmp/tmp.XXXX"),
+            bash("ls $TMPDIR/opencode_home_foo"),
+            bash("ls ${TMPDIR}/opencode_home_foo"),
+            bash("ls /tmp/opencode_home_foo"),
+            bash("ls /tmp/obench-tmp-ab12/opencode_home_foo"),
+            (
+                '{"tool":"bash","state":{"input":{"command":"pwd"},"output":'
+                '"allowed directories: /tmp/obench-cell-ab12/opencode_home_foo"}}'
+            ),
+        ]
+        for sample in positives:
+            self.assertIsNotNone(pattern.search(sample), sample)
+        for sample in negatives:
+            self.assertIsNone(pattern.search(sample), sample)
+
+    def test_transcript_header_trial_is_not_a_numeric_prefix(self):
+        from thesis.ab.evidence import attach_cell_metrics
+
+        out = Path(tempfile.mkdtemp())
+        root = out / "5066" / "transcripts" / "with"
+        root.mkdir(parents=True)
+        task = "trig-bash-limits"
+        trials = (1, 10, 19, 2, 20, 3, 30)
+        for trial in trials:
+            path = root / f"trial-{trial}.txt"
+            path.write_text(
+                "\n".join([
+                    f"# transcript opencode:{task}:model:trial{trial}",
+                    f"# harness=opencode model=model task={task} trial={trial} ts=t",
+                    f'{{"tool":"read","state":{{"input":{{"filePath":"notes-{trial}.txt"}}}}}}',
+                    f'{{"tool":"edit","state":{{"input":{{"filePath":"notes-{trial}.txt"}}}}}}',
+                ]) + "\n",
+                encoding="utf-8",
+            )
+        # Task ids that differ by a trailing digit live in the same directory.
+        for task_name in ("trig-1", "trig-10"):
+            (root / f"{task_name}.txt").write_text(
+                f"# harness=opencode model=model task={task_name} trial=1 ts=t\n"
+                f'{{"tool":"read","state":{{"input":{{"filePath":"{task_name}.py"}}}}}}\n',
+                encoding="utf-8",
+            )
+        for trial in trials:
+            found = transcript_files(out, "5066", "with", task, trial, {})
+            self.assertEqual([path.name for path in found], [f"trial-{trial}.txt"])
+            metrics = attach_cell_metrics({"task": task}, root, found)
+            self.assertEqual(metrics["read_calls"], 1, trial)
+            self.assertEqual(metrics["edit_calls"], 1, trial)
+        for task_name in ("trig-1", "trig-10"):
+            found = transcript_files(out, "5066", "with", task_name, 1, {})
+            self.assertEqual([path.name for path in found], [f"{task_name}.txt"])
 
     def test_lsp_outside_pattern_matches_touching_file_only(self):
         pattern = load_patterns(PATTERNS)["19058"].compiled

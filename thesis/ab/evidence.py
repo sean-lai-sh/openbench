@@ -113,12 +113,29 @@ def load_patterns(path: Path) -> dict[str, EvidencePattern]:
     return found
 
 
+def _assignment(key: str, value: object) -> str:
+    """``key=value`` that does not continue into another digit.
+
+    ``trial=1`` is a prefix of ``trial=10``. Task ids use the same boundary
+    so ``task=trig-1`` does not match ``task=trig-10``.
+    """
+    return rf"{re.escape(key)}={re.escape(str(value))}(?!\d)"
+
+
 def _header_matches(path: Path, task: str, trial: int) -> bool:
+    """True when this transcript header is exactly this task and trial.
+
+    This is the only content search of a trial, task, or arm id in this
+    module. Cell files and evidence directories are exact path components
+    (``1`` is not ``10``), and the arm is the side directory name, not a
+    substring of the header.
+    """
     try:
         head = path.read_text(encoding="utf-8", errors="replace")[:800]
     except OSError:
         return False
-    return f"task={task} trial={trial}" in head
+    pattern = rf"{_assignment('task', task)} {_assignment('trial', trial)}"
+    return re.search(pattern, head) is not None
 
 
 def transcript_files(out_dir: Path, pr: str, side: str, task: str, trial: int, row: dict) -> list[Path]:
