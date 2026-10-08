@@ -747,7 +747,9 @@ def _temp_dir_groups(root: str | Path) -> tuple[list[str], list[str]]:
     ``tmp.*`` siblings of the scratch dir. The pre-approved ``opencode``
     scratch and everything inside it are not leaks; those inner directories
     are the scratch group. Counting the scratch as leaks (and missing the
-    siblings) inverted the stored value.
+    siblings) inverted the stored value. ``__pycache__`` directories are
+    skipped at any depth, so a bytecode cache inside a leak is not a second
+    leak and one inside the scratch is not leftover scratch.
     """
     root = Path(root)
     if not root.is_dir():
@@ -758,6 +760,8 @@ def _temp_dir_groups(root: str | Path) -> tuple[list[str], list[str]]:
         if not path.is_dir():
             continue
         relative = path.relative_to(root).as_posix()
+        if "__pycache__" in relative.split("/"):
+            continue
         if relative == "opencode" or relative.startswith("opencode/"):
             if relative != "opencode":
                 scratch.append(relative)
@@ -767,7 +771,10 @@ def _temp_dir_groups(root: str | Path) -> tuple[list[str], list[str]]:
 
 
 def leaked_temp_dir_names(root: str | Path) -> list[str]:
-    """Leftover directories under the temp root, excluding the opencode scratch."""
+    """Leftover directories under the temp root, excluding the opencode scratch.
+
+    ``__pycache__`` directories are not included.
+    """
     return _temp_dir_groups(root)[0]
 
 
@@ -777,7 +784,10 @@ def leaked_temp_dirs(root: str | Path) -> int:
 
 
 def scratch_dirs_left(root: str | Path) -> int:
-    """Directories left inside the pre-approved ``opencode`` scratch."""
+    """Directories left inside the pre-approved ``opencode`` scratch.
+
+    ``__pycache__`` directories are not included.
+    """
     return len(_temp_dir_groups(root)[1])
 
 

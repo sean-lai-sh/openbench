@@ -519,6 +519,39 @@ class EvidenceGrepTests(unittest.TestCase):
         prompt = (TASKS / "trig-tmpdir" / "instruction.md").read_text(encoding="utf-8")
         self.assertNotIn("/tmp/opencode", prompt)
 
+    def test_25226_matches_cell_temp_roots_and_not_plain_mktemp(self):
+        pattern = load_patterns(PATTERNS)["25226"].compiled
+        expanded = (
+            '{"type":"tool","tool":"bash","callID":"call_01JZ","state":{'
+            '"status":"completed","input":{"command":"python3 /tmp/obench-cell-k3mq9s2a/opencode/check.py"},'
+            '"output":"ok","metadata":{}}}'
+        )
+        env_var = (
+            '{"type":"tool","tool":"bash","callID":"call_01KA","state":{'
+            '"status":"completed","input":{"command":"cat $TMPDIR/opencode/note.txt"},'
+            '"output":"ok"}}'
+        )
+        braced = (
+            '{"type":"tool","tool":"write","callID":"call_01KB","state":{'
+            '"status":"completed","input":{"filePath":"${TMPDIR}/opencode/note.txt","content":"x"}}}'
+        )
+        old_root = (
+            '{"tool":"edit","state":{"input":{"filePath":"/tmp/obench-tmp-ab12/opencode/note.txt"}}}'
+        )
+        plain_tmp = (
+            '{"type":"tool","tool":"bash","callID":"call_01KC","state":{'
+            '"status":"completed","input":{"command":"python3 /tmp/tmp.Ab12Cd/scratch.py"}}}'
+        )
+        plain_write = (
+            '{"tool":"write","state":{"input":{"filePath":"/tmp/tmp.Xy91/note.txt","content":"x"}}}'
+        )
+        self.assertIsNotNone(pattern.search(expanded))
+        self.assertIsNotNone(pattern.search(env_var))
+        self.assertIsNotNone(pattern.search(braced))
+        self.assertIsNotNone(pattern.search(old_root))
+        self.assertIsNone(pattern.search(plain_tmp))
+        self.assertIsNone(pattern.search(plain_write))
+
     def test_lsp_outside_pattern_matches_touching_file_only(self):
         pattern = load_patterns(PATTERNS)["19058"].compiled
         outside = "/tmp/obench-shared-abc123/greeter_copy.py"
