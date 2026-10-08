@@ -1860,6 +1860,68 @@ def _apply_sdk_drift(row, result):
     return row
 
 
+def _stable_temp_parent() -> str:
+    """A temp parent that is not ``tempfile.tempdir``.
+
+    ``tempfile.tempdir`` is cached per process. Once a cell's ``TMPDIR`` is
+    cached there, the next cell's ``mkdtemp(dir=None)`` is created inside the
+    previous cell. Callers pass this parent as ``dir=`` and never assign
+    ``tempfile.tempdir``.
+    """
+    override = os.environ.get("OPENBENCH_CELL_TEMP_PARENT", "").strip()
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
+    if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK):
+        return "/tmp"
+    return tempfile.gettempdir()
+
+
+def make_cell_temp_root(exec_mode: str = "local") -> str:
+    """A fresh directory owned by one cell, outside the cached tempdir."""
+    if exec_mode == "docker":
+        parent = docker_workdir_parent()
+    else:
+        parent = _stable_temp_parent()
+    return tempfile.mkdtemp(prefix="obench-cell-", dir=parent)
+
+
+@contextmanager
+def _cell_temp_scope(root: str):
+    """Point agent temp files at ``root`` without touching ``tempfile.tempdir``.
+
+    ``TMPDIR``/``TMP``/``TEMP`` are what the agent subprocess inherits.
+    ``mkdtemp`` calls in this process that omit ``dir=`` are given ``root``
+    so a cached ``tempfile.tempdir`` cannot place them in another cell.
+    """
+    keys = ("TMPDIR", "TMP", "TEMP")
+    saved_env = {key: os.environ.get(key) for key in keys}
+    original_mkdtemp = tempfile.mkdtemp
+
+    def mkdtemp(*args, **kwargs):
+        if kwargs.get("dir") is None:
+            if len(args) >= 3 and args[2] is not None:
+                return original_mkdtemp(*args, **kwargs)
+            kwargs["dir"] = root
+            if len(args) >= 3:
+                args = args[:2]
+        return original_mkdtemp(*args, **kwargs)
+
+    os.environ["TMPDIR"] = root
+    os.environ["TMP"] = root
+    os.environ["TEMP"] = root
+    tempfile.mkdtemp = mkdtemp
+    try:
+        yield
+    finally:
+        tempfile.mkdtemp = original_mkdtemp
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
              checker_timeout_s, exec_mode="local",
              docker_image=None, docker_fallback=False, harness_version=None,
@@ -1990,9 +2052,23 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
     # Docker mode bind-mounts this dir; on colima the default macOS /var/folders
     # temp path is NOT shared into the VM and mounts as an EMPTY dir, so create
     # it somewhere the VM can see (same policy as docker_exec instruction files).
+    # The cell root is explicit. mkdtemp(dir=None) would follow the process-wide
+    # tempfile.tempdir cache and drop this workspace inside another cell.
+    supplied_root = os.environ.get("OBENCH_CELL_TEMP_ROOT", "").strip()
+    owns_cell_root = not supplied_root
+    cell_root = supplied_root or make_cell_temp_root(exec_mode)
     env_setup_start = time.monotonic()
-    workdir_parent = docker_workdir_parent() if exec_mode == "docker" else None
-    workdir = tempfile.mkdtemp(prefix=f"bench_{harness}_{task.replace('/', '_')}_", dir=workdir_parent)
+    workdir_parent = cell_root
+    cell_temp_scope = _cell_temp_scope(cell_root)
+    cell_temp_scope.__enter__()
+    try:
+        workdir = tempfile.mkdtemp(
+            prefix=f"bench_{harness}_{task.replace('/', '_')}_", dir=cell_root)
+    except BaseException:
+        if owns_cell_root:
+            shutil.rmtree(cell_root, ignore_errors=True)
+        cell_temp_scope.__exit__(*sys.exc_info())
+        raise
     try:
         # Materialize a pristine workspace into the disposable temp dir. Never
         # touch the source under tasks/ (snapshot copy or git archive export).
@@ -2276,13 +2352,18 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
         )
     finally:
-        _finalize_proxy_cell(row, active_proxy_ctx, cell_token)
-        if workspace_observer is not None:
-            try:
-                workspace_observer(workdir)
-            except Exception:  # evidence collection must not alter the cell verdict
-                pass
-        shutil.rmtree(workdir, ignore_errors=True)
+        try:
+            _finalize_proxy_cell(row, active_proxy_ctx, cell_token)
+            if workspace_observer is not None:
+                try:
+                    workspace_observer(workdir)
+                except Exception:  # evidence collection must not alter the cell verdict
+                    pass
+            shutil.rmtree(workdir, ignore_errors=True)
+            if owns_cell_root:
+                shutil.rmtree(cell_root, ignore_errors=True)
+        finally:
+            cell_temp_scope.__exit__(None, None, None)
 
 
 def main(argv=None):

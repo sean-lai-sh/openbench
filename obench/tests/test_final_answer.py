@@ -51,6 +51,24 @@ class ExtractTests(unittest.TestCase):
         echo = 'INFO 2026 args=["' + COMMENT + '"]\n| Read  catalog/members.py\n'
         self.assertNotIn(COMMENT, extract_final_answer(echo))
 
+    def test_plain_text_strips_ansi_glued_logs_and_a_repeated_answer(self):
+        answer = "The rate is 5."
+        coloured = "\n".join([
+            "\x1b[31m| Task  Find rate settings key\x1b[0m",
+            answer + "INFO 2026-10-07T23:11:02 +4ms service=llm done",
+            answer,
+        ])
+        text = extract_final_answer(coloured)
+        self.assertNotIn("| Task", text)
+        self.assertNotIn("Find rate settings key", text)
+        self.assertNotIn("INFO", text)
+        self.assertNotIn("service=", text)
+        self.assertEqual(text, answer)
+        glued_time = answer + ".2026-10-07T23:11:03 INFO service=default end\n"
+        self.assertEqual(extract_final_answer(glued_time), answer + ".")
+        block = answer + "\nDone."
+        self.assertEqual(extract_final_answer(block + "\n" + block), block)
+
     def test_publish_writes_the_file_and_storage_can_fill_it(self):
         directory = Path(tempfile.mkdtemp())
         stored = directory / "message.json"

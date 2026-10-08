@@ -25,9 +25,13 @@ from thesis.ab.evidence import (
     classify_child_plan_reminder,
     classify_list_generated,
     classify_lsp_outside,
+    classify_rule_order,
     dotnet_build_call_count,
     edit_call_count,
+    final_answer_complete,
     load_patterns,
+    members_read_metrics,
+    read_call_stats,
     rejection_stats,
     subagent_write_call_count,
     task_call_stats,
@@ -186,7 +190,26 @@ class TmpdirMetricTests(unittest.TestCase):
         self.assertEqual(list(emptied.iterdir()), [])
         self.assertEqual(leaked_temp_dirs(root), 0)
         (emptied / "scratch").mkdir()
-        self.assertEqual(leaked_temp_dirs(root), 1)
+        from thesis.ab.run_ab import leaked_temp_dir_names, scratch_dirs_left
+        # The pre-approved scratch is not a leak. The old count treated it as
+        # one and reported 0 for a real tmp.* sibling.
+        self.assertEqual(leaked_temp_dirs(root), 0)
+        self.assertEqual(scratch_dirs_left(root), 1)
+        leaked = root / "tmp.ab12"
+        leaked.mkdir()
+        (leaked / "nested").mkdir()
+        self.assertEqual(leaked_temp_dirs(root), 2)
+        self.assertEqual(
+            leaked_temp_dir_names(root),
+            ["tmp.ab12", "tmp.ab12/nested"],
+        )
+        self.assertEqual(scratch_dirs_left(root), 1)
+        evidence = Path(tempfile.mkdtemp())
+        (evidence / "scratch-tmpdir.txt").write_text(str(root) + "\n", encoding="utf-8")
+        recounted = attach_cell_metrics({"task": "trig-tmpdir", "tmpdir_leaked_dirs": 0}, evidence)
+        self.assertEqual(recounted["tmpdir_leaked_dirs"], 2)
+        self.assertEqual(recounted["tmpdir_leaked_names"], ["tmp.ab12", "tmp.ab12/nested"])
+        self.assertEqual(recounted["scratch_dirs_left"], 1)
         env = scratch_env({"task": "trig-tmpdir"})
         self.addCleanup(lambda: __import__("shutil").rmtree(env["TMPDIR"], ignore_errors=True))
         opencode = Path(env["TMPDIR"]) / "opencode"
@@ -382,6 +405,357 @@ class OutsideAndAnswerTests(unittest.TestCase):
             if "fee_" in path.read_text(encoding="utf-8"):
                 hits.append(path.name)
         self.assertGreater(len(hits), 3)
+
+
+class SqliteDedupeAndScreenTests(unittest.TestCase):
+    def _tool(self, name, part, **state):
+        body = {"id": part, "type": "tool", "tool": name, "callID": "call-" + part, "state": state}
+        return json.dumps(body)
+
+    def test_wal_copies_and_part_ids_count_once(self):
+        root = Path(tempfile.mkdtemp())
+        real = "\n".join([
+            self._tool("edit", "prt_e1", input={"filePath": "a.py"}),
+            self._tool("edit", "prt_e2", input={"filePath": "b.py"}),
+            self._tool("read", "prt_r1", input={"filePath": "catalog/members.py", "offset": 3, "limit": 5}),
+            self._tool("read", "prt_r2", input={"filePath": "catalog/members.py", "offset": 4, "limit": 2}),
+            self._tool("bash", "prt_b1", input={"command": "dotnet build"}),
+            self._tool("bash", "prt_b2", input={"command": "dotnet build"}),
+        ])
+        _file(root, "part.json", real)
+        # Same calls again, plus the WAL's stale page copies.
+        _file(root, "agent-output.txt", real)
+        wal = root / "opencode-.db-wal"
+        wal.write_bytes((real + "\n").encode("utf-8") * 20 + b"\x00stale-page")
+        (root / "opencode-.db-shm").write_bytes(b"\x00" * 32)
+        paths = sorted(root.rglob("*"))
+        paths = [path for path in paths if path.is_file()]
+        self.assertEqual(edit_call_count(paths), 2)
+        self.assertEqual(read_call_stats(paths), (2, True))
+        self.assertEqual(dotnet_build_call_count(paths), 2)
+
+        only = Path(tempfile.mkdtemp())
+        import sqlite3
+        db_path = only / "opencode-.db"
+        connection = sqlite3.connect(db_path)
+        connection.execute(
+            "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT)"
+        )
+        for part, command in (("prt_b1", "dotnet build"), ("prt_b2", "dotnet build")):
+            connection.execute(
+                "INSERT INTO part (id, message_id, session_id, data) VALUES (?, ?, ?, ?)",
+                (part, "msg_1", "ses_root", json.dumps({
+                    "type": "tool", "tool": "bash", "callID": "call-" + part,
+                    "state": {"input": {"command": command}},
+                })),
+            )
+        connection.commit()
+        connection.close()
+        (only / "opencode-.db-wal").write_bytes((real + "\n").encode("utf-8") * 15)
+        db_paths = [path for path in only.iterdir() if path.is_file()]
+        self.assertEqual(dotnet_build_call_count(db_paths), 2)
+        self.assertEqual(edit_call_count(db_paths), 0)
+
+    def test_rule_order_keeps_both_directions(self):
+        self.assertEqual(classify_rule_order("GLOBAL-RULE PROJECT-RULE done"), "global_first")
+        self.assertEqual(classify_rule_order("PROJECT-RULE: GLOBAL-RULE done"), "project_first")
+        self.assertEqual(classify_rule_order("GLOBAL-RULE only"), "one")
+        self.assertEqual(classify_rule_order("no tokens"), "none")
+        root = Path(tempfile.mkdtemp())
+        (root / "streamed-text.txt").write_text("PROJECT-RULE GLOBAL-RULE\n", encoding="utf-8")
+        row = attach_cell_metrics({"task": "trig-prompt-order"}, root, files=[])
+        self.assertEqual(row["rule_prefix"], "both")
+        self.assertEqual(row["rule_order"], "project_first")
+
+    def test_rejected_tmp_cleanup_is_present_but_not_complete(self):
+        root = Path(tempfile.mkdtemp())
+        text = "Fixes work. Applying to the project:"
+        (root / "agent-output.txt").write_text("\n".join([
+            json.dumps({
+                "type": "text",
+                "part": {"type": "text", "text": text, "messageID": "m1", "id": "p1", "sessionID": "ses_root"},
+            }),
+            "permission requested: bash (rm -rf /tmp/obench-tmp-ab12/tmp.ABCD); auto-rejecting",
+            json.dumps({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "tool-calls", "sessionID": "ses_root"},
+            }),
+        ]) + "\n", encoding="utf-8")
+        row = attach_cell_metrics({}, root)
+        self.assertTrue(row["final_answer_present"])
+        self.assertFalse(row["final_answer_complete"])
+        self.assertEqual(row["final_answer_source"], "stdout")
+        self.assertFalse(final_answer_complete([root / "agent-output.txt"], root))
+        stopped = Path(tempfile.mkdtemp())
+        (stopped / "agent-output.txt").write_text(
+            json.dumps({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "stop", "sessionID": "ses_root"},
+            }) + "\n" + json.dumps({
+                "type": "text",
+                "part": {"type": "text", "text": "done", "messageID": "m1", "id": "p1"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(final_answer_complete([stopped / "agent-output.txt"], stopped))
+        self.assertTrue(attach_cell_metrics({}, stopped)["final_answer_complete"])
+        self.assertEqual(attach_cell_metrics({}, stopped)["final_answer_source"], "stdout")
+
+    def test_final_answer_comes_from_the_session_db_not_stdout(self):
+        import sqlite3
+        from obench.final_answer import final_answer_record, final_text
+
+        answer = "Fixes work. Applying to the project:"
+        root = Path(tempfile.mkdtemp())
+        db_path = root / "opencode-.db"
+        connection = sqlite3.connect(db_path)
+        connection.executescript(
+            """
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, data TEXT
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                time_created INTEGER, data TEXT
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO session (id, project_id, parent_id, data) VALUES (?, ?, ?, ?)",
+            ("ses_root", "proj", None, json.dumps({"id": "ses_root"})),
+        )
+        connection.execute(
+            "INSERT INTO session (id, project_id, parent_id, data) VALUES (?, ?, ?, ?)",
+            ("ses_child", "proj", "ses_root", json.dumps({"id": "ses_child", "parentID": "ses_root"})),
+        )
+        rows = [
+            ("msg_old", "ses_root", 1, {"role": "assistant", "id": "msg_old", "sessionID": "ses_root"}),
+            ("msg_last", "ses_root", 2, {"role": "assistant", "id": "msg_last", "sessionID": "ses_root"}),
+            ("msg_child", "ses_child", 3, {"role": "assistant", "id": "msg_child", "sessionID": "ses_child"}),
+            ("msg_user", "ses_root", 4, {"role": "user", "id": "msg_user", "sessionID": "ses_root"}),
+        ]
+        for ident, session, stamp, payload in rows:
+            connection.execute(
+                "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+                (ident, session, stamp, json.dumps(payload)),
+            )
+        parts = [
+            ("prt_old", "msg_old", "ses_root", 1, {"type": "text", "text": "draft"}),
+            ("prt_old_fin", "msg_old", "ses_root", 2, {"type": "step-finish", "reason": "tool-calls"}),
+            ("prt_text", "msg_last", "ses_root", 3, {"type": "text", "text": answer}),
+            ("prt_fin", "msg_last", "ses_root", 4, {"type": "step-finish", "reason": "stop"}),
+            ("prt_child", "msg_child", "ses_child", 5, {"type": "text", "text": "CHILD SHOULD NOT WIN"}),
+            ("prt_child_fin", "msg_child", "ses_child", 6, {"type": "step-finish", "reason": "stop"}),
+        ]
+        for ident, message, session, stamp, payload in parts:
+            connection.execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+                (ident, message, session, stamp, json.dumps(payload)),
+            )
+        connection.commit()
+        connection.close()
+        # A junk WAL must not become the answer via a text scan, and stdout
+        # does not contain the final text or a stop.
+        (root / "opencode-.db-wal").write_bytes(
+            b"STDOUT ONLY ANSWER\x00" * 8
+        )
+        (root / "agent-output.txt").write_text(
+            "permission requested: bash (rm -rf /tmp/obench-tmp-ab12/tmp.ABCD); auto-rejecting\n"
+            + json.dumps({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "tool-calls", "sessionID": "ses_root"},
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+        record = final_answer_record(root)
+        self.assertEqual(record["source"], "db")
+        self.assertEqual(record["text"], answer)
+        self.assertTrue(record["complete"])
+        self.assertEqual(final_text(root), answer)
+        row = attach_cell_metrics({"task": "trig-tmpdir"}, root)
+        self.assertTrue(row["final_answer_present"])
+        self.assertTrue(row["final_answer_complete"])
+        self.assertEqual(row["final_answer_source"], "db")
+        self.assertNotIn("CHILD SHOULD NOT WIN", final_text(root))
+        self.assertNotIn("STDOUT ONLY ANSWER", final_text(root))
+
+        # The database wins even when stdout itself ended on stop.
+        cut = Path(tempfile.mkdtemp())
+        cut_db = sqlite3.connect(cut / "opencode-local.db")
+        cut_db.executescript(
+            """
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                time_created INTEGER, data TEXT
+            );
+            """
+        )
+        cut_db.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            ("msg", "ses_root", 1, json.dumps({"role": "assistant", "id": "msg"})),
+        )
+        cut_db.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+            ("p1", "msg", "ses_root", 1, json.dumps({"type": "text", "text": "still working"})),
+        )
+        cut_db.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+            ("p2", "msg", "ses_root", 2, json.dumps({"type": "step-finish", "reason": "tool-calls"})),
+        )
+        cut_db.commit()
+        cut_db.close()
+        (cut / "agent-output.txt").write_text(
+            json.dumps({
+                "type": "text",
+                "part": {"type": "text", "text": "stdout says done", "messageID": "m1", "id": "p1"},
+            }) + "\n" + json.dumps({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "stop", "sessionID": "ses_root"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        overridden = attach_cell_metrics({}, cut)
+        self.assertEqual(overridden["final_answer_source"], "db")
+        self.assertEqual(final_text(cut), "still working")
+        self.assertFalse(overridden["final_answer_complete"])
+
+    def test_read_lines_screen_metrics(self):
+        line3 = "# The lending policy allows each member to hold five books at once."
+        output = (
+            "<path>catalog/members.py</path>\n<type>file</type>\n<content>\n"
+            "3: " + line3 + "\n"
+            "4: MAX_BORROWED = 3\n"
+            "5: \n"
+            "6: \n"
+            "7: class Member:\n"
+        )
+        body = "\n".join([
+            json.dumps({
+                "id": "prt_m1", "type": "tool", "tool": "read", "callID": "c1",
+                "state": {"input": {"filePath": "catalog/members.py", "offset": 3, "limit": 5}, "output": output},
+            }),
+            json.dumps({
+                "id": "prt_m1", "type": "tool", "tool": "read", "callID": "c1",
+                "state": {"input": {"filePath": "catalog/members.py", "offset": 3, "limit": 5}, "output": output},
+            }),
+            json.dumps({
+                "id": "prt_other", "type": "tool", "tool": "read", "callID": "c2",
+                "state": {"input": {"filePath": "catalog/books.py", "offset": 1, "limit": 20}},
+            }),
+        ])
+        root = Path(tempfile.mkdtemp())
+        _file(root, "part.json", body)
+        (root / "opencode-.db-wal").write_bytes((body + "\n").encode("utf-8") * 10 + b"\x00")
+        (root / "streamed-text.txt").write_text(line3 + "\nFixed.\n", encoding="utf-8")
+        paths = [path for path in root.rglob("*") if path.is_file()]
+        metrics = members_read_metrics(paths, line3 + "\nFixed.\n")
+        self.assertEqual(metrics["first_read_offset"], 3)
+        self.assertTrue(metrics["first_window_exact"])
+        self.assertEqual(metrics["members_read_calls"], 1)
+        self.assertTrue(metrics["exact_quote_pass"])
+        row = attach_cell_metrics({"task": "trig-read-lines"}, root, files=paths)
+        self.assertEqual(row["members_read_calls"], 1)
+        self.assertTrue(row["exact_quote_pass"])
+        self.assertEqual(row["first_read_offset"], 3)
+        wide = _file(root, "wide.json", json.dumps({
+            "id": "prt_wide", "tool": "read",
+            "state": {"input": {"filePath": "catalog/members.py", "offset": 1, "limit": 20},
+                      "output": "1: a\\n2: b\\n3: c\\n"},
+        }))
+        # The first members read is still prt_m1. A later different read does
+        # not change the first window. Counting both ids yields 2.
+        later = members_read_metrics([root / "part.json", wide], "")
+        self.assertEqual(later["members_read_calls"], 2)
+        self.assertEqual(later["first_read_offset"], 3)
+        self.assertFalse(later["exact_quote_pass"])
+
+    def test_rerun_on_sqlite_free_results_keeps_existing_columns(self):
+        import csv
+        import io
+        from thesis.ab.prs import PullRequest
+        from thesis.ab.summarize import pr_record, render_csv
+
+        out = Path(tempfile.mkdtemp())
+        pr = "3115"
+        task = "trig-list"
+        calls = "\n".join([
+            '{"tool":"read","state":{"input":{"filePath":"src/app.py","offset":1,"limit":2}}}',
+            '{"tool":"read","state":{"input":{"filePath":"src/app.py","offset":2,"limit":2}}}',
+            '{"tool":"list","state":{"output":"src/app.py\\n"}}',
+            '{"tool":"edit","state":{"input":{"filePath":"src/app.py"}}}',
+        ])
+        seeded = {
+            "task": task,
+            "trial": 1,
+            "score": 1,
+            "success": True,
+            "wall_time_s": 3,
+            "turns": 2,
+            "tokens_output": 10,
+            "tokens_input_uncached": 20,
+            "tokens_cache_read": 0,
+            "tokens_cache_write": 0,
+        }
+        patterns = load_patterns(PATTERNS)
+        for side in ("without", "with"):
+            cell = out / pr / "cells" / side / task / "1.json"
+            cell.parent.mkdir(parents=True)
+            cell.write_text(json.dumps(seeded), encoding="utf-8")
+            evidence = out / pr / "transcripts" / side / task / "1"
+            evidence.mkdir(parents=True)
+            (evidence / "part.json").write_text(calls, encoding="utf-8")
+            (evidence / "agent-output.txt").write_text(calls, encoding="utf-8")
+            (out / pr / f"{side}.jsonl").write_text(json.dumps(seeded) + "\n", encoding="utf-8")
+        annotate(out, patterns)
+        existing = (
+            "exercised", "success", "score", "read_calls", "reread", "edit_calls",
+            "dotnet_build_calls", "subagent_write_calls", "child_edit_calls",
+            "task_calls", "subagent_resumed", "fresh_subagents", "main_agent_searched",
+            "rule_prefix", "final_answer_present", "list_has_generated",
+            "permission_rejections", "ended_on_rejection", "bash_write_calls",
+        )
+        def cell_row(side):
+            return json.loads((out / pr / "cells" / side / task / "1.json").read_text(encoding="utf-8"))
+
+        first = {side: {key: cell_row(side).get(key) for key in existing} for side in ("without", "with")}
+        self.assertEqual(first["with"]["read_calls"], 2)
+        self.assertTrue(first["with"]["reread"])
+        self.assertEqual(first["with"]["edit_calls"], 1)
+        self.assertEqual(first["with"]["success"], True)
+        self.assertEqual(first["with"]["score"], 1)
+        self.assertEqual(first["with"]["exercised"], EXERCISED)
+        annotate(out, patterns)
+        second = {side: {key: cell_row(side).get(key) for key in existing} for side in ("without", "with")}
+        self.assertEqual(second, first)
+        spec = PullRequest(
+            pr=pr, title="list", merged="yes",
+            with_sha="a" * 40, without_sha="b" * 40,
+            nearest_release="", category="tool", files_changed="", key_paths="",
+            one_line="", harness_change="list", bugfix_check="",
+        )
+        csv_keys = (
+            "without_pass_rate", "with_pass_rate", "without_mean_score", "with_mean_score",
+            "without_edit_calls", "with_edit_calls", "without_final_answer", "with_final_answer",
+            "without_dotnet_build_calls", "with_dotnet_build_calls",
+            "without_subagent_write_calls", "with_subagent_write_calls",
+            "without_rule_both", "with_rule_both", "without_rule_neither", "with_rule_neither",
+        )
+        def csv_existing():
+            parsed = list(csv.DictReader(io.StringIO(render_csv([pr_record(spec, out)]))))[0]
+            return {key: parsed[key] for key in csv_keys}
+
+        before = csv_existing()
+        self.assertEqual(before["with_edit_calls"], "1")
+        self.assertEqual(before["with_pass_rate"], "1.000")
+        annotate(out, patterns)
+        self.assertEqual(csv_existing(), before)
 
 
 if __name__ == "__main__":
