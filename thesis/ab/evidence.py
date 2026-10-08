@@ -13,7 +13,10 @@ It also writes ``evidence-summary.json`` with a count per PR and side.
 PR 984 is stricter than its pattern row. ``classify_edit_only`` marks a cell
 exercised only when the evidence has at least one edit call and zero
 ``"tool": "bash"`` or ``"tool": "write"`` parts. The cell records
-``edit_calls`` and ``bash_write_calls`` (the largest count in any one file).
+``edit_calls`` and ``bash_write_calls``. A copied transcript still uses the
+largest count in any one aggregate file. Per-call storage (one tool call in
+its own file, as on the #984 and #3052 builds) sums those files, deduplicated
+by call id, part id, or file identity.
 
 PR 19058 is also stricter. The parent logs ``touching file`` and then an
 ``lsp.client`` didOpen or publishDiagnostics line for the outside path. The
@@ -585,32 +588,142 @@ def _children_for(paths: list[Path]) -> set[str]:
     return children
 
 
+def _is_split_storage(counts: list[int]) -> bool:
+    """True when matches are stored one per file, not in a copied aggregate.
+
+    Two or more single-match files, and those files outnumber any aggregate
+    that holds more than one match. A transcript (or two copies of one) stays
+    on the largest-file path.
+    """
+    single = sum(1 for count in counts if count == 1)
+    multi = sum(1 for count in counts if count > 1)
+    if single < 2:
+        return False
+    return multi == 0 or single > multi
+
+
+def _call_identity_keys(call: ToolCall) -> list[str]:
+    keys = []
+    if call.call_id:
+        keys.append("call:" + call.call_id)
+    if call.part_id:
+        keys.append("part:" + call.part_id)
+    return keys
+
+
+def _stable_call_fp(call: ToolCall) -> str:
+    """Fingerprint one call without the next object in the same file.
+
+    ``forward`` runs up to the following tool key, so a transcript copy of a
+    per-call file includes a prefix of the next JSON value. Cut that off
+    before comparing bodies.
+    """
+    body = re.split(r"\n\s*\{", call.forward, maxsplit=1)[0]
+    body = re.sub(r"\s+", "", body)
+    return call.tool + "\0" + body[:800]
+
+
+def _combine_per_call(groups: list[list[ToolCall]]) -> list[ToolCall]:
+    """Union of per-call files and any transcript beside them.
+
+    Identity is the call id, else the part id, else the file path when the
+    call has neither. A transcript copy of a per-call body is not added
+    again. Identical anonymous calls in different per-call files stay
+    distinct. Repeats inside one transcript stay distinct unless they are
+    that same per-call body.
+    """
+    per_call_fp = {
+        _stable_call_fp(group[0])
+        for group in groups
+        if len(group) == 1
+    }
+    by_id: dict[str, int] = {}
+    known_fp: set[str] = set()
+    items: list[ToolCall] = []
+
+    def find(call: ToolCall) -> int | None:
+        for key in _call_identity_keys(call):
+            if key in by_id:
+                return by_id[key]
+        return None
+
+    def bind(call: ToolCall, index: int) -> None:
+        for key in _call_identity_keys(call):
+            by_id[key] = index
+        if not _call_identity_keys(call):
+            by_id["file:" + call.source] = index
+
+    for group in groups:
+        if len(group) == 1:
+            call = group[0]
+            hit = find(call)
+            if hit is not None:
+                items[hit] = call
+                bind(call, hit)
+                known_fp.add(_stable_call_fp(call))
+                continue
+            if not call.call_id and not call.part_id:
+                file_key = "file:" + call.source
+                if file_key in by_id:
+                    continue
+            index = len(items)
+            items.append(call)
+            bind(call, index)
+            known_fp.add(_stable_call_fp(call))
+            continue
+        local_added: set[str] = set()
+        for call in group:
+            hit = find(call)
+            if hit is not None:
+                items[hit] = call
+                bind(call, hit)
+                local_added.add(_stable_call_fp(call))
+                continue
+            fingerprint = _stable_call_fp(call)
+            anonymous = not call.call_id and not call.part_id
+            if anonymous and (
+                fingerprint in per_call_fp
+                or (fingerprint in known_fp and fingerprint not in local_added)
+            ):
+                local_added.add(fingerprint)
+                continue
+            index = len(items)
+            items.append(call)
+            bind(call, index)
+            known_fp.add(fingerprint)
+            local_added.add(fingerprint)
+    return items
+
+
 def _authoritative_calls(paths: list[Path]) -> tuple[str, list[list[ToolCall]]]:
     """Return ``(mode, groups)``.
 
-    ``legacy`` keeps the per-file richest-call behavior for evidence that has
-    no sqlite sidecar and no repeated part or call id. Recomputing those
-    results stays the same. ``deduped`` is one list: text tool calls collapsed
-    by part id or call id, or the sqlite ``part`` table when text has none.
+    ``deduped`` is sqlite/WAL evidence, or text whose part or call id
+    repeats: one list collapsed by id. ``per_call`` is older storage that
+    writes each tool call to its own file (the #984 and #3052 builds): those
+    files are combined and deduplicated. ``legacy`` is one transcript, or
+    copies of one, and keeps the richest file for each count.
     """
     groups = _text_call_groups(paths)
-    dedupe = _sqlite_present(paths) or _duplicate_ids(groups)
-    if not dedupe:
-        return "legacy", groups
-    flat = [call for group in groups for call in group]
-    if not flat:
-        flat = _sqlite_calls(paths)
-    return "deduped", [_dedupe_calls(flat)]
+    if _sqlite_present(paths) or _duplicate_ids(groups):
+        flat = [call for group in groups for call in group]
+        if not flat:
+            flat = _sqlite_calls(paths)
+        return "deduped", [_dedupe_calls(flat)]
+    if _is_split_storage([len(group) for group in groups]):
+        return "per_call", [_combine_per_call(groups)]
+    return "legacy", groups
 
 
 def _metric_calls(paths: list[Path], predicate) -> list[ToolCall]:
     """Tool calls for one count, from the shared authoritative list.
 
     Legacy evidence uses the single file with the most matches so a copied
-    transcript is not added to storage. Deduped evidence uses one list.
+    transcript is not added to storage. Deduped and per-call evidence use
+    one combined list.
     """
     mode, groups = _authoritative_calls(paths)
-    if mode == "deduped":
+    if mode in {"deduped", "per_call"}:
         calls = groups[0] if groups else []
         return [call for call in calls if predicate(call)]
     best: list[ToolCall] = []
@@ -636,13 +749,14 @@ def _regex_tool_counts(paths: list[Path], edit_pattern: re.Pattern[str]) -> tupl
 def tool_call_counts(paths: list[Path], edit_pattern: re.Pattern[str]) -> tuple[int, int]:
     """Edit matches and bash/write calls from the authoritative source.
 
-    Text evidence without repeated ids keeps the largest count in any one
-    file. SQLite sidecars and repeated part ids are deduped instead of scanned
-    as bytes.
+    A single transcript, or copies of one, keeps the largest count in any
+    one file. SQLite sidecars and repeated part ids are deduped. Per-call
+    files are summed under that same dedupe, so one call per file is not
+    capped at 1.
     """
     regex_edits, regex_denied = _regex_tool_counts(paths, edit_pattern)
     mode, _groups = _authoritative_calls(paths)
-    if mode != "deduped":
+    if mode == "legacy":
         return regex_edits, regex_denied
     calls = _metric_calls(paths, lambda _call: True)
     edits = sum(
@@ -650,10 +764,13 @@ def tool_call_counts(paths: list[Path], edit_pattern: re.Pattern[str]) -> tuple[
         if call.tool in {"edit", "multiedit"} or edit_pattern.search(call.window)
     )
     denied = sum(1 for call in calls if call.tool in {"bash", "write"})
-    if edits == 0:
-        edits = regex_edits
-    if denied == 0:
-        denied = regex_denied
+    # Regex is only a fallback when the call parser saw nothing. Per-call
+    # files already summed above; the max-per-file regex would put the cap back.
+    if mode == "deduped":
+        if edits == 0:
+            edits = regex_edits
+        if denied == 0:
+            denied = regex_denied
     return edits, denied
 
 
@@ -671,21 +788,60 @@ def classify_edit_only(paths: list[Path], edit_pattern: re.Pattern[str]) -> tupl
     return NOT_EXERCISED, edits, denied
 
 
-def outside_lsp_counts(paths: list[Path]) -> tuple[int, int]:
-    """Largest ``touching file`` count and largest outside lsp.client count.
+def _combine_string_groups(groups: list[list[str]]) -> int:
+    """Sum per-file matches. A string already seen in another file counts once.
 
-    Each count is the most matches in any one evidence file, so a copied
-    transcript is not added to the storage copy.
+    Repeats inside one aggregate file still count. A copied line does not.
     """
-    touches = 0
-    clients = 0
+    seen: set[str] = set()
+    total = 0
+    for group in groups:
+        if not group:
+            continue
+        if len(group) == 1:
+            key = group[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            total += 1
+            continue
+        local: set[str] = set()
+        for key in group:
+            if key in seen and key not in local:
+                local.add(key)
+                continue
+            seen.add(key)
+            local.add(key)
+            total += 1
+    return total
+
+
+def outside_lsp_counts(paths: list[Path]) -> tuple[int, int]:
+    """``touching file`` lines and outside lsp.client lines.
+
+    A copied aggregate log keeps the larger file. Lines split one per file
+    are summed, and a line copied into a second file counts once.
+    """
+    rows: list[tuple[list[str], list[str]]] = []
     for path in paths:
         text = _read_text(path)
         if text is None:
             continue
-        touches = max(touches, len(_OUTSIDE_TOUCH.findall(text)))
-        clients = max(clients, len(_OUTSIDE_LSP_CLIENT.findall(text)))
-    return touches, clients
+        touches = _OUTSIDE_TOUCH.findall(text)
+        clients = _OUTSIDE_LSP_CLIENT.findall(text)
+        if touches or clients:
+            rows.append((touches, clients))
+    if not rows:
+        return 0, 0
+    if not _is_split_storage([len(touches) + len(clients) for touches, clients in rows]):
+        return (
+            max(len(touches) for touches, _clients in rows),
+            max(len(clients) for _touches, clients in rows),
+        )
+    return (
+        _combine_string_groups([touches for touches, _clients in rows]),
+        _combine_string_groups([clients for _touches, clients in rows]),
+    )
 
 
 def classify_lsp_outside(paths: list[Path]) -> tuple[str, int, int]:
@@ -814,9 +970,10 @@ def read_call_stats(paths: list[Path]) -> tuple[int, bool]:
     calls = []
     for call in _metric_calls(paths, lambda item: item.tool == "read"):
         # Legacy windows keep the historical lookbehind so a sqlite-free
-        # recompute stays byte-identical. Deduped calls use the text after
-        # this tool key, so a previous object's path is not this read's path.
-        span = call.forward if mode == "deduped" else call.window
+        # recompute stays byte-identical. Deduped and per-call lists use the
+        # text after this tool key, so a previous object's path is not this
+        # read's path.
+        span = call.forward if mode in {"deduped", "per_call"} else call.window
         path, offset, limit = _read_span(span)
         calls.append((path, offset, limit))
     reread = False
@@ -937,7 +1094,7 @@ def main_agent_searched(paths: list[Path]) -> bool:
     """
     children = _children_for(paths)
     mode, groups = _authoritative_calls(paths)
-    if mode == "deduped":
+    if mode in {"deduped", "per_call"}:
         calls = groups[0] if groups else []
     else:
         calls = [call for group in groups for call in group]
@@ -1189,34 +1346,90 @@ def _text_ui_edit_count(paths: list[Path]) -> int:
     return best
 
 
+_AFTER_REJECTION = re.compile(
+    r'"type"\s*:\s*"text"|"status"\s*:\s*"completed"',
+    re.IGNORECASE,
+)
+
+
+def _match_line(text: str, match: re.Match[str]) -> str:
+    start = text.rfind("\n", 0, match.start()) + 1
+    end = text.find("\n", match.end())
+    if end < 0:
+        end = len(text)
+    return text[start:end]
+
+
+def _split_rejection_stats(rows: list[tuple[str, list[re.Match[str]]]]) -> tuple[int, bool]:
+    """Sum rejections stored one per file. A copied line counts once.
+
+    The run ended on a rejection when a rejection was stored and no file
+    shows assistant text or a completed status after one (or instead of one).
+    """
+    seen: set[str] = set()
+    count = 0
+    saw_rejection = False
+    saw_completion = False
+    for text, matches in rows:
+        if not matches:
+            if _AFTER_REJECTION.search(text):
+                saw_completion = True
+            continue
+        saw_rejection = True
+        local: set[str] = set()
+        if len(matches) == 1:
+            key = _match_line(text, matches[0])
+            if key not in seen:
+                seen.add(key)
+                count += 1
+        else:
+            for match in matches:
+                key = _match_line(text, match)
+                if key in seen and key not in local:
+                    local.add(key)
+                    continue
+                seen.add(key)
+                local.add(key)
+                count += 1
+        if _AFTER_REJECTION.search(text[matches[-1].end():]):
+            saw_completion = True
+    if not saw_rejection:
+        return 0, False
+    return count, not saw_completion
+
+
 def rejection_stats(paths: list[Path]) -> tuple[int, bool]:
-    """``(permission_rejections, ended_on_rejection)`` from the richest file.
+    """``(permission_rejections, ended_on_rejection)``.
 
     A rejection is an auto-reject line or a tool state of ``rejected``.
     The cell ended on a rejection when nothing completed and no assistant
-    text was recorded after the last one.
+    text was recorded after the last one. Aggregate logs use the richest
+    file so a copy is not added twice. Per-call files are summed.
     """
-    best = ""
-    best_count = -1
+    rows: list[tuple[str, list[re.Match[str]]]] = []
     for path in paths:
         text = _read_text(path)
         if text is None:
             continue
-        count = len(_REJECTION.findall(text))
-        if count > best_count:
+        rows.append((text, list(_REJECTION.finditer(text))))
+    if not rows:
+        return 0, False
+    relevant = [matches for _text, matches in rows if matches]
+    if _is_split_storage([len(matches) for matches in relevant]):
+        return _split_rejection_stats(rows)
+    best = ""
+    best_count = -1
+    for text, matches in rows:
+        if len(matches) > best_count:
             best = text
-            best_count = count
+            best_count = len(matches)
     if best_count <= 0:
         return 0, False
     last = None
     for match in _REJECTION.finditer(best):
         last = match
     tail = best[last.end():] if last else ""
-    later = re.search(
-        r'"type"\s*:\s*"text"|"status"\s*:\s*"completed"',
-        tail,
-        re.IGNORECASE,
-    )
+    later = _AFTER_REJECTION.search(tail)
     return best_count, later is None
 
 
@@ -1240,15 +1453,17 @@ def _final_answer_text(root: Path | None) -> str:
         return ""
 
 
-def _final_answer_fields(paths: list[Path], root: Path | None) -> tuple[str, str, bool]:
+def _final_answer_fields(paths: list[Path], root: Path | None) -> tuple[str, str, bool | None]:
     """``(text, source, complete)`` for one cell.
 
     ``source`` is ``db`` when the OpenCode session database is in the evidence
-    directory, and ``stdout`` only when that database is missing. Completeness
-    for a database answer is the last assistant message's finish reason.
+    directory, and ``stdout`` only when that database is missing. ``complete``
+    is true, false, or ``None`` when the build stored no finish reason.
+    A database answer keeps its own reason; a missing database reason is not
+    filled in from stdout.
     """
     if root is None:
-        return "", "stdout", False
+        return "", "stdout", final_answer_complete(paths, None)
     from obench.final_answer import final_answer_record
     try:
         record = final_answer_record(root)
@@ -1257,7 +1472,12 @@ def _final_answer_fields(paths: list[Path], root: Path | None) -> tuple[str, str
     text = str(record.get("text") or "")
     source = str(record.get("source") or "stdout")
     if source == "db":
-        return text, "db", bool(record.get("complete"))
+        complete = record.get("complete")
+        if complete is True or complete is False:
+            return text, "db", complete
+        if _ended_on_rejection_or_error(paths, root):
+            return text, "db", False
+        return text, "db", None
     return text, "stdout", final_answer_complete(paths, root)
 
 
@@ -1387,9 +1607,85 @@ def last_finish_reason(paths: list[Path], root: Path | None = None) -> str:
     return ""
 
 
-def final_answer_complete(paths: list[Path], root: Path | None = None) -> bool:
-    """True only when the last root assistant step finished with reason ``stop``."""
-    return last_finish_reason(paths, root) == "stop"
+def _json_event_types(text: str) -> list[str]:
+    found: list[str] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] not in "{[":
+            continue
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type"):
+            found.append(str(obj["type"]))
+    if found:
+        return found
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        return found
+    if isinstance(obj, dict) and obj.get("type"):
+        found.append(str(obj["type"]))
+    return found
+
+
+def _agent_output_paths(paths: list[Path], root: Path | None) -> list[Path]:
+    agent_paths: list[Path] = []
+    if root is not None:
+        agent = Path(root) / "agent-output.txt"
+        if agent.is_file() and agent not in agent_paths:
+            agent_paths.append(agent)
+    for path in paths:
+        if path.name == "agent-output.txt" and path not in agent_paths:
+            agent_paths.append(path)
+    return agent_paths
+
+
+def _last_event_is_error(paths: list[Path], root: Path | None) -> bool:
+    """True when the last recorded stdout event is ``type: error``.
+
+    A tool error in the middle of a transcript is not enough: the last event
+    has to be the error. Builds that never write a finish reason still end
+    the run this way.
+    """
+    sources = _agent_output_paths(paths, root) or list(paths)
+    last = ""
+    saw = False
+    for path in sources:
+        text = _read_text(path)
+        if not text:
+            continue
+        kinds = _json_event_types(text)
+        if not kinds:
+            continue
+        saw = True
+        last = kinds[-1]
+    return saw and last == "error"
+
+
+def _ended_on_rejection_or_error(paths: list[Path], root: Path | None) -> bool:
+    _count, ended = rejection_stats(paths)
+    if ended:
+        return True
+    return _last_event_is_error(paths, root)
+
+
+def final_answer_complete(paths: list[Path], root: Path | None = None) -> bool | None:
+    """Whether the last root assistant step finished with reason ``stop``.
+
+    ``True`` when that reason is ``stop``. ``False`` when a finish reason was
+    stored and it is not ``stop``, or the run ended on a rejection or error.
+    ``None`` when the build stored no finish reason this scorer understands.
+    """
+    reason = last_finish_reason(paths, root)
+    if reason == "stop":
+        return True
+    if reason:
+        return False
+    if _ended_on_rejection_or_error(paths, root):
+        return False
+    return None
 
 
 def _raw_int(window: str, pattern: re.Pattern[str]) -> int | None:
