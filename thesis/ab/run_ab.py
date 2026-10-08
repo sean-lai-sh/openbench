@@ -662,7 +662,9 @@ def execute_cell(spec: dict) -> None:
             if spec.get("task") == "trig-tmpdir":
                 scratch = os.environ.get("TMPDIR", "").strip()
                 if scratch:
-                    row["tmpdir_leaked_dirs"] = leaked_temp_dirs(scratch)
+                    names = leaked_temp_dir_names(scratch)
+                    row["tmpdir_leaked_dirs"] = len(names)
+                    row["tmpdir_leaked_names"] = names
                     if evidence:
                         evidence_path = Path(evidence)
                         evidence_path.mkdir(parents=True, exist_ok=True)
@@ -733,12 +735,35 @@ def ensure_empty_opencode(root: Path) -> Path:
     return opencode
 
 
+# The runner creates ``<root>/opencode`` empty so OpenCode's whitelist has a
+# directory. Anything else under the per-cell temp root was created by the agent.
+_RUNNER_TEMP_DIRS = frozenset({"opencode"})
+
+
+def leaked_temp_dir_names(root: str | Path) -> list[str]:
+    """Relative directory names the agent left under the per-cell temp root.
+
+    Includes ``tmp.*`` siblings of ``opencode`` and directories inside
+    ``opencode``. The runner-created ``opencode`` directory itself is not a
+    leak. Names are sorted and use forward slashes.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    names = []
+    for path in root.rglob("*"):
+        if not path.is_dir():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in _RUNNER_TEMP_DIRS:
+            continue
+        names.append(relative)
+    return sorted(names)
+
+
 def leaked_temp_dirs(root: str | Path) -> int:
-    """Directories left under ``<root>/opencode`` after the cell."""
-    opencode = Path(root) / "opencode"
-    if not opencode.is_dir():
-        return 0
-    return sum(1 for path in opencode.rglob("*") if path.is_dir())
+    """How many agent-created directories remain under the per-cell temp root."""
+    return len(leaked_temp_dir_names(root))
 
 
 def scratch_env(spec: dict) -> dict[str, str]:

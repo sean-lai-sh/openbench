@@ -523,6 +523,7 @@ def no_progress_kills(rows: list[dict]) -> int:
 
 
 _RULE_PREFIXES = ("global", "project", "both", "neither")
+_RULE_ORDERS = ("global_first", "project_first", "one", "none")
 
 
 _TURN_MODES = ("two-turn", "single", "turn-failure")
@@ -558,9 +559,14 @@ def effect_counts(rows: list[dict]) -> dict:
     rejections = 0
     ended = 0
     answers = 0
+    complete = 0
     changed = 0
     leaked = 0
+    members_reads = 0
+    exact_windows = 0
+    exact_quotes = 0
     rules = {name: 0 for name in _RULE_PREFIXES}
+    orders = {name: 0 for name in _RULE_ORDERS}
     turns = {name: 0 for name in _TURN_MODES}
     for row in rows:
         writes += _count_int(row, "subagent_write_calls")
@@ -577,10 +583,17 @@ def effect_counts(rows: list[dict]) -> dict:
         generated += _count_true(row, "list_has_generated")
         ended += _count_true(row, "ended_on_rejection")
         answers += _count_true(row, "final_answer_present")
+        complete += _count_true(row, "final_answer_complete")
+        members_reads += _count_int(row, "members_read_calls")
+        exact_windows += _count_true(row, "first_window_exact")
+        exact_quotes += _count_true(row, "exact_quote_pass")
         changed += _count_true(row, "workspace_changed")
         kind = row.get("rule_prefix")
         if kind in rules:
             rules[kind] += 1
+        order = row.get("rule_order")
+        if order in orders:
+            orders[order] += 1
         mode = row.get("turn_mode")
         if mode in turns:
             turns[mode] += 1
@@ -601,6 +614,11 @@ def effect_counts(rows: list[dict]) -> dict:
         "permission_rejections": rejections,
         "ended_on_rejection": ended,
         "final_answer_present": answers,
+        "final_answer_complete": complete,
+        "rule_order": orders,
+        "members_read_calls": members_reads,
+        "first_window_exact": exact_windows,
+        "exact_quote_pass": exact_quotes,
         "tmpdir_leaked_dirs": leaked,
     }
 
@@ -613,6 +631,9 @@ def _effect_line(effects: dict) -> str:
 
     def _rules(rules: dict) -> str:
         return "/".join(str(int(rules.get(name) or 0)) for name in _RULE_PREFIXES)
+
+    def _orders(orders: dict) -> str:
+        return "/".join(str(int(orders.get(name) or 0)) for name in _RULE_ORDERS)
 
     def _turns(body: dict) -> str:
         modes = body.get("turn_mode") or {}
@@ -652,6 +673,21 @@ def _effect_line(effects: dict) -> str:
         "Final answer present: "
         f"without {int(left.get('final_answer_present') or 0)}, "
         f"with {int(right.get('final_answer_present') or 0)}. "
+        "Final answer complete: "
+        f"without {int(left.get('final_answer_complete') or 0)}, "
+        f"with {int(right.get('final_answer_complete') or 0)}. "
+        "Rule order (global_first/project_first/one/none): "
+        f"without {_orders(left.get('rule_order') or {})}, "
+        f"with {_orders(right.get('rule_order') or {})}. "
+        "members.py reads: "
+        f"without {int(left.get('members_read_calls') or 0)}, "
+        f"with {int(right.get('members_read_calls') or 0)}. "
+        "First read window is lines 3-7: "
+        f"without {int(left.get('first_window_exact') or 0)}, "
+        f"with {int(right.get('first_window_exact') or 0)}. "
+        "Exact line-3 quote: "
+        f"without {int(left.get('exact_quote_pass') or 0)}, "
+        f"with {int(right.get('exact_quote_pass') or 0)}. "
         "Leaked temp dirs: "
         f"without {int(left.get('tmpdir_leaked_dirs') or 0)}, "
         f"with {int(right.get('tmpdir_leaked_dirs') or 0)}. "
@@ -701,6 +737,13 @@ def _effect_csv(effects: dict) -> dict:
         row[f"{side}_permission_rejections"] = int(body.get("permission_rejections") or 0)
         row[f"{side}_ended_on_rejection"] = int(body.get("ended_on_rejection") or 0)
         row[f"{side}_final_answer"] = int(body.get("final_answer_present") or 0)
+        row[f"{side}_final_answer_complete"] = int(body.get("final_answer_complete") or 0)
+        orders = body.get("rule_order") or {}
+        for name in _RULE_ORDERS:
+            row[f"{side}_rule_order_{name}"] = int(orders.get(name) or 0)
+        row[f"{side}_members_read_calls"] = int(body.get("members_read_calls") or 0)
+        row[f"{side}_first_window_exact"] = int(body.get("first_window_exact") or 0)
+        row[f"{side}_exact_quote_pass"] = int(body.get("exact_quote_pass") or 0)
         row[f"{side}_tmpdir_leaked_dirs"] = int(body.get("tmpdir_leaked_dirs") or 0)
     return row
 
@@ -1093,6 +1136,14 @@ def render_csv(records: list[dict]) -> str:
         "without_permission_rejections", "with_permission_rejections",
         "without_ended_on_rejection", "with_ended_on_rejection",
         "without_final_answer", "with_final_answer",
+        "without_final_answer_complete", "with_final_answer_complete",
+        "without_rule_order_global_first", "with_rule_order_global_first",
+        "without_rule_order_project_first", "with_rule_order_project_first",
+        "without_rule_order_one", "with_rule_order_one",
+        "without_rule_order_none", "with_rule_order_none",
+        "without_members_read_calls", "with_members_read_calls",
+        "without_first_window_exact", "with_first_window_exact",
+        "without_exact_quote_pass", "with_exact_quote_pass",
         "without_tmpdir_leaked_dirs", "with_tmpdir_leaked_dirs",
         "headroom_tasks", "headroom_n", "headroom_pass_delta",
         "headroom_pass_ci_low", "headroom_pass_ci_high",

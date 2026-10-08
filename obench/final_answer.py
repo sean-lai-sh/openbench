@@ -21,7 +21,15 @@ from pathlib import Path
 FINAL_ANSWER_NAME = "final-answer.txt"
 FINAL_ANSWER_ENV = "OBENCH_FINAL_ANSWER"
 _MAX_STORAGE_BYTES = 2 * 1024 * 1024
-_LOG_LINE = re.compile(r"^(?:INFO|DEBUG|WARN|ERROR) ")
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# A timestamp or level glued onto the end of an answer line, not at column 0.
+_GLUED_LOG = re.compile(
+    r"(?<=\S)(?=(?:INFO|DEBUG|WARN|ERROR)[ \t]|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"
+)
+_LOG_LINE = re.compile(
+    r"^(?:INFO|DEBUG|WARN|ERROR)(?:\s|$)"
+    r"|^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?[^\n]{0,80}\b(?:INFO|DEBUG|WARN|ERROR)\b"
+)
 _TOOL_LINE = re.compile(r"^\|\s+\S")
 _JSON_TYPES = frozenset({
     "text",
@@ -200,13 +208,35 @@ def _json_final_answer(events: list[dict]) -> str:
     return _join_message(parts).strip()
 
 
+def _prepare_plain(raw: str) -> str:
+    """Strip colour codes and split a log fragment glued onto an answer line."""
+    text = _ANSI.sub("", raw or "")
+    return _GLUED_LOG.sub("\n", text)
+
+
+def _dedupe_exact_repeat(text: str) -> str:
+    """Drop a final answer that is the same block twice.
+
+    One-line answers that are a single token repeated without a newline stay.
+    ``hello\\nhello`` and a two-line block copied back-to-back collapse.
+    """
+    body = (text or "").strip()
+    lines = body.splitlines()
+    if len(lines) < 2 or len(lines) % 2 != 0:
+        return body
+    mid = len(lines) // 2
+    if lines[:mid] == lines[mid:] and any(line.strip() for line in lines[:mid]):
+        return "\n".join(lines[:mid]).strip()
+    return body
+
+
 def _plain_final_answer(raw: str) -> str:
     kept = []
-    for line in (raw or "").splitlines():
+    for line in _prepare_plain(raw).splitlines():
         if _LOG_LINE.match(line) or _TOOL_LINE.match(line):
             continue
         kept.append(line)
-    return "\n".join(kept).strip()
+    return _dedupe_exact_repeat("\n".join(kept))
 
 
 def extract_final_answer(raw: str) -> str:
@@ -354,7 +384,7 @@ def final_text(evidence_dir: Path | str) -> str:
     written = directory / FINAL_ANSWER_NAME
     if written.is_file() and not agent.is_file():
         try:
-            return _read(written)
+            return _plain_final_answer(_read(written))
         except OSError:
             return ""
     return extracted
