@@ -350,14 +350,294 @@ def _storage_final_text(root: Path) -> str:
     return "".join(latest[key] for key in order).strip()
 
 
-def final_text(evidence_dir: Path | str) -> str:
-    """Final answer for one cell's evidence directory.
+def _is_opencode_session_db(name: str) -> bool:
+    """``opencode.db`` and channel files such as ``opencode-local.db``."""
+    lowered = name.lower()
+    if lowered.endswith(".db-wal") or lowered.endswith(".db-shm"):
+        return False
+    if lowered == "opencode.db":
+        return True
+    return lowered.startswith("opencode-") and lowered.endswith(".db")
 
-    Prefers a JSON or plain-text extraction of ``agent-output.txt``. When that
-    is empty, uses storage text parts from the root session's last assistant
-    message, then ``streamed-text.txt`` for a delta-only capture.
+
+def _session_db_paths(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    found = []
+    for path in root.rglob("*"):
+        if path.is_file() and _is_opencode_session_db(path.name):
+            found.append(path)
+    return sorted(found)
+
+
+# sqlite3.Connection has no instance dict on Python 3.12.
+_DB_TEMPDIRS: dict[int, object] = {}
+
+
+def _copy_parent() -> str | None:
+    if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK):
+        return "/tmp"
+    return None
+
+
+def _open_session_db(path: Path):
+    """Copy the db plus WAL/SHM and return an open connection.
+
+    The copy is so a read does not checkpoint the stored evidence in place.
+    A garbage sidecar is dropped and the database file is opened alone.
     """
-    directory = Path(evidence_dir)
+    import shutil
+    import sqlite3
+    import tempfile
+
+    def prepare(keep_sidecars: bool):
+        temporary = tempfile.TemporaryDirectory(dir=_copy_parent())
+        dest = Path(temporary.name) / path.name
+        shutil.copy2(path, dest)
+        if keep_sidecars:
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(str(path) + suffix)
+                if sidecar.is_file():
+                    shutil.copy2(sidecar, Path(str(dest) + suffix))
+        connection = sqlite3.connect(str(dest))
+        try:
+            connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            connection.execute("SELECT name FROM sqlite_master LIMIT 1")
+        except sqlite3.Error:
+            connection.close()
+            temporary.cleanup()
+            raise
+        _DB_TEMPDIRS[id(connection)] = temporary
+        return connection
+
+    try:
+        return prepare(True)
+    except (OSError, sqlite3.Error):
+        try:
+            return prepare(False)
+        except (OSError, sqlite3.Error):
+            return None
+
+
+def _close_session_db(connection) -> None:
+    temporary = _DB_TEMPDIRS.pop(id(connection), None)
+    try:
+        connection.close()
+    except Exception:
+        pass
+    if temporary is not None:
+        temporary.cleanup()
+
+
+def _column_map(connection, table: str) -> dict[str, int]:
+    return {
+        str(row[1]): position
+        for position, row in enumerate(connection.execute(f"PRAGMA table_info({table})"))
+    }
+
+
+def _pick(index: dict[str, int], *names: str) -> int | None:
+    folded = {key.lower(): value for key, value in index.items()}
+    for name in names:
+        if name in index:
+            return index[name]
+        lowered = folded.get(name.lower())
+        if lowered is not None:
+            return lowered
+    return None
+
+
+def _load_json(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _message_role(payload: dict) -> str:
+    role = payload.get("role")
+    if isinstance(role, str):
+        return role
+    info = payload.get("info")
+    if isinstance(info, dict) and isinstance(info.get("role"), str):
+        return info["role"]
+    return ""
+
+
+def _message_time(payload: dict, column) -> int:
+    if isinstance(column, int):
+        return column
+    stamp = payload.get("time")
+    if isinstance(stamp, dict) and isinstance(stamp.get("created"), int):
+        return stamp["created"]
+    if isinstance(payload.get("time_created"), int):
+        return payload["time_created"]
+    return 0
+
+
+def _part_text(payload: dict) -> str:
+    kind = str(payload.get("type") or "")
+    if kind != "text":
+        nested = payload.get("part")
+        if isinstance(nested, dict):
+            return _part_text(nested)
+        return ""
+    text = payload.get("text")
+    return text if isinstance(text, str) else ""
+
+
+def _part_reason(payload: dict) -> str:
+    kind = str(payload.get("type") or "")
+    if kind in {"step-finish", "step_finish"}:
+        reason = payload.get("reason")
+        if isinstance(reason, str) and reason:
+            return reason
+    nested = payload.get("part")
+    if isinstance(nested, dict):
+        return _part_reason(nested)
+    return ""
+
+
+def _read_one_session_db(path: Path) -> tuple[int, str, str] | None:
+    """Last root assistant message in one database.
+
+    Returns ``(time, text, finish_reason)``. ``None`` when this file is not a
+    usable session database. A usable database with no assistant message
+    returns time ``-1`` and empty text.
+    """
+    import sqlite3
+
+    connection = _open_session_db(path)
+    if connection is None:
+        return None
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "message" not in tables or "part" not in tables:
+            return None
+        roots: set[str] | None = None
+        if "session" in tables:
+            roots = set()
+            columns = _column_map(connection, "session")
+            id_at = _pick(columns, "id")
+            parent_at = _pick(columns, "parent_id", "parentID")
+            data_at = _pick(columns, "data")
+            if id_at is None:
+                roots = None
+            else:
+                for row in connection.execute("SELECT * FROM session"):
+                    ident = row[id_at]
+                    if not isinstance(ident, str) or not ident:
+                        continue
+                    parent = row[parent_at] if parent_at is not None else None
+                    if not parent and data_at is not None:
+                        payload = _load_json(row[data_at])
+                        parent = payload.get("parentID") or payload.get("parentId")
+                    if not parent:
+                        roots.add(ident)
+        messages = _column_map(connection, "message")
+        id_at = _pick(messages, "id")
+        session_at = _pick(messages, "session_id", "sessionID")
+        time_at = _pick(messages, "time_created", "timeCreated")
+        data_at = _pick(messages, "data")
+        if id_at is None or data_at is None:
+            return None
+        chosen = None
+        for row in connection.execute("SELECT * FROM message"):
+            payload = _load_json(row[data_at])
+            if _message_role(payload) != "assistant":
+                continue
+            session = row[session_at] if session_at is not None else ""
+            if not isinstance(session, str) or not session:
+                session = str(payload.get("sessionID") or payload.get("sessionId") or "")
+            if roots is not None and session and session not in roots:
+                continue
+            ident = row[id_at]
+            if not isinstance(ident, str) or not ident:
+                ident = str(payload.get("id") or "")
+            if not ident:
+                continue
+            stamp = row[time_at] if time_at is not None else None
+            when = _message_time(payload, stamp if isinstance(stamp, int) else None)
+            if chosen is None or when >= chosen[0]:
+                chosen = (when, ident, payload)
+        if chosen is None:
+            return (-1, "", "")
+        when, message_id, message = chosen
+        parts = _column_map(connection, "part")
+        part_message = _pick(parts, "message_id", "messageID")
+        part_time = _pick(parts, "time_created", "timeCreated")
+        part_data = _pick(parts, "data")
+        if part_data is None:
+            return (when, "", "")
+        collected = []
+        for row in connection.execute("SELECT * FROM part"):
+            payload = _load_json(row[part_data])
+            owner = row[part_message] if part_message is not None else None
+            if not isinstance(owner, str) or not owner:
+                owner = str(payload.get("messageID") or payload.get("messageId") or "")
+            if owner != message_id:
+                continue
+            stamp = row[part_time] if part_time is not None else None
+            part_when = stamp if isinstance(stamp, int) else 0
+            collected.append((part_when, payload))
+        collected.sort(key=lambda item: item[0])
+        texts = []
+        reason = ""
+        for _part_when, payload in collected:
+            text = _part_text(payload)
+            if text:
+                texts.append(text)
+            found = _part_reason(payload)
+            if found:
+                reason = found
+        if not reason:
+            for key in ("finish", "reason"):
+                if isinstance(message.get(key), str) and message[key]:
+                    reason = message[key]
+                    break
+        return (when, "".join(texts).strip(), reason)
+    except sqlite3.Error:
+        return None
+    finally:
+        _close_session_db(connection)
+
+
+def db_final_answer(evidence_dir: Path | str) -> tuple[str, str] | None:
+    """Final answer stored in the cell's OpenCode sqlite database.
+
+    ``None`` when no usable session database is present. Otherwise
+    ``(text, finish_reason)`` from the last root-session assistant message.
+    Stdout is not consulted.
+    """
+    paths = _session_db_paths(Path(evidence_dir))
+    if not paths:
+        return None
+    best = None
+    usable = False
+    for path in paths:
+        parsed = _read_one_session_db(path)
+        if parsed is None:
+            continue
+        usable = True
+        if best is None or parsed[0] >= best[0]:
+            best = parsed
+    if not usable or best is None:
+        return None
+    return best[1], best[2]
+
+
+def _stdout_final_text(directory: Path) -> str:
+    """Final answer from stdout and the copied storage tree."""
     extracted = ""
     agent = directory / "agent-output.txt"
     if agent.is_file():
@@ -390,15 +670,45 @@ def final_text(evidence_dir: Path | str) -> str:
     return extracted
 
 
+def final_answer_record(evidence_dir: Path | str) -> dict:
+    """Extracted answer, whether it ended on ``stop``, and which source won.
+
+    The session database wins whenever it is present. ``source`` is ``db`` or
+    ``stdout``. ``complete`` is set for a database answer and left ``None``
+    when the caller still has to read the finish reason from stdout.
+    """
+    directory = Path(evidence_dir)
+    stored = db_final_answer(directory)
+    if stored is not None:
+        text, reason = stored
+        return {"text": text, "complete": reason == "stop", "source": "db"}
+    return {"text": _stdout_final_text(directory), "complete": None, "source": "stdout"}
+
+
+def final_text(evidence_dir: Path | str) -> str:
+    """Final answer for one cell's evidence directory.
+
+    The OpenCode session database is the source when it was copied into the
+    evidence directory. Stdout (``agent-output.txt``, then storage, then
+    ``streamed-text.txt``) is used only when that database is missing.
+    """
+    return final_answer_record(evidence_dir)["text"]
+
+
 def publish_final_answer(dest_root: str, raw_text: str) -> str:
     """Write ``final-answer.txt`` and export ``OBENCH_FINAL_ANSWER``.
 
-    Storage copied into ``dest_root`` fills in when the stdout has no
-    assistant text. The returned text is what checkers should score.
+    A session database already copied into ``dest_root`` supplies the text.
+    Otherwise the stdout is extracted, and storage fills in when that stdout
+    has no assistant text.
     """
-    text = extract_final_answer(raw_text or "")
-    if not text.strip():
-        text = _storage_final_text(Path(dest_root))
+    stored = db_final_answer(dest_root)
+    if stored is not None:
+        text = stored[0]
+    else:
+        text = extract_final_answer(raw_text or "")
+        if not text.strip():
+            text = _storage_final_text(Path(dest_root))
     path = os.path.join(dest_root, FINAL_ANSWER_NAME)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)

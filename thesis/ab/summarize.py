@@ -562,6 +562,7 @@ def effect_counts(rows: list[dict]) -> dict:
     complete = 0
     changed = 0
     leaked = 0
+    scratch_left = 0
     members_reads = 0
     exact_windows = 0
     exact_quotes = 0
@@ -577,6 +578,7 @@ def effect_counts(rows: list[dict]) -> dict:
         edits += _count_int(row, "edit_calls")
         rejections += _count_int(row, "permission_rejections")
         leaked += _count_int(row, "tmpdir_leaked_dirs")
+        scratch_left += _count_int(row, "scratch_dirs_left")
         resumed += _count_true(row, "subagent_resumed")
         searched += _count_true(row, "main_agent_searched")
         plan_reminders += _count_true(row, "child_plan_reminder")
@@ -620,6 +622,7 @@ def effect_counts(rows: list[dict]) -> dict:
         "first_window_exact": exact_windows,
         "exact_quote_pass": exact_quotes,
         "tmpdir_leaked_dirs": leaked,
+        "scratch_dirs_left": scratch_left,
     }
 
 
@@ -691,6 +694,9 @@ def _effect_line(effects: dict) -> str:
         "Leaked temp dirs: "
         f"without {int(left.get('tmpdir_leaked_dirs') or 0)}, "
         f"with {int(right.get('tmpdir_leaked_dirs') or 0)}. "
+        "Scratch dirs left: "
+        f"without {int(left.get('scratch_dirs_left') or 0)}, "
+        f"with {int(right.get('scratch_dirs_left') or 0)}. "
         "Rule prefix (global/project/both/neither): "
         f"without {_rules(left_rules)}, with {_rules(right_rules)}. "
         "GLOBAL-RULE share (global+both): "
@@ -745,6 +751,7 @@ def _effect_csv(effects: dict) -> dict:
         row[f"{side}_first_window_exact"] = int(body.get("first_window_exact") or 0)
         row[f"{side}_exact_quote_pass"] = int(body.get("exact_quote_pass") or 0)
         row[f"{side}_tmpdir_leaked_dirs"] = int(body.get("tmpdir_leaked_dirs") or 0)
+        row[f"{side}_scratch_dirs_left"] = int(body.get("scratch_dirs_left") or 0)
     return row
 
 
@@ -1145,6 +1152,7 @@ def render_csv(records: list[dict]) -> str:
         "without_first_window_exact", "with_first_window_exact",
         "without_exact_quote_pass", "with_exact_quote_pass",
         "without_tmpdir_leaked_dirs", "with_tmpdir_leaked_dirs",
+        "without_scratch_dirs_left", "with_scratch_dirs_left",
         "headroom_tasks", "headroom_n", "headroom_pass_delta",
         "headroom_pass_ci_low", "headroom_pass_ci_high",
         "incompatible",

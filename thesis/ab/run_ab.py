@@ -509,6 +509,7 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_OPENCODE_WEBFETCH_URL",
         "OBENCH_OPENCODE_OUTSIDE_PATH",
         "OBENCH_FINAL_ANSWER",
+        "OBENCH_CELL_TEMP_ROOT",
         "TMPDIR",
         "TMP",
         "TEMP",
@@ -593,6 +594,11 @@ def execute_cell(spec: dict) -> None:
                 os.environ.pop("OBENCH_OPENCODE_OUTSIDE_PATH", None)
             for key, value in scratch_env(spec).items():
                 os.environ[key] = value
+            if spec.get("task") == "trig-tmpdir":
+                # The scratch directory is this cell's temp root, so the
+                # workspace and the agent's mkdtemp calls land in it and the
+                # leak count sees what the agent left behind.
+                os.environ["OBENCH_CELL_TEMP_ROOT"] = os.environ.get("TMPDIR", "")
             evidence = str(spec.get("evidence_dir") or "").strip()
             if evidence:
                 evidence = str(Path(evidence).resolve())
@@ -665,6 +671,7 @@ def execute_cell(spec: dict) -> None:
                     names = leaked_temp_dir_names(scratch)
                     row["tmpdir_leaked_dirs"] = len(names)
                     row["tmpdir_leaked_names"] = names
+                    row["scratch_dirs_left"] = scratch_dirs_left(scratch)
                     if evidence:
                         evidence_path = Path(evidence)
                         evidence_path.mkdir(parents=True, exist_ok=True)
@@ -708,16 +715,14 @@ def _absolute(path: Path | str) -> str:
 def _cell_scratch_tmpdir(spec: dict) -> str | None:
     """A private temp root for PR 25226 so cells do not share ``/tmp/opencode``.
 
-    OpenCode whitelists ``<os.tmpdir()>/opencode``. Setting ``TMPDIR`` makes
-    that directory ``/tmp/obench-tmp-<token>/opencode`` for this cell only.
+    OpenCode whitelists ``<os.tmpdir()>/opencode``. This directory is also
+    ``OBENCH_CELL_TEMP_ROOT`` for the cell, so the workspace and the agent's
+    own temp files sit here and nowhere else.
     """
     if spec.get("task") != "trig-tmpdir":
         return None
-    token = secrets.token_hex(8)
-    directory = Path("/tmp") / f"obench-tmp-{token}"
-    if directory.exists():
-        shutil.rmtree(directory)
-    directory.mkdir(parents=True, mode=0o700)
+    from obench.run import make_cell_temp_root
+    directory = Path(make_cell_temp_root("local"))
     ensure_empty_opencode(directory)
     return str(directory)
 
@@ -735,35 +740,45 @@ def ensure_empty_opencode(root: Path) -> Path:
     return opencode
 
 
-# The runner creates ``<root>/opencode`` empty so OpenCode's whitelist has a
-# directory. Anything else under the per-cell temp root was created by the agent.
-_RUNNER_TEMP_DIRS = frozenset({"opencode"})
+def _temp_dir_groups(root: str | Path) -> tuple[list[str], list[str]]:
+    """``(leaks, scratch)`` as sorted relative directory names.
 
-
-def leaked_temp_dir_names(root: str | Path) -> list[str]:
-    """Relative directory names the agent left under the per-cell temp root.
-
-    Includes ``tmp.*`` siblings of ``opencode`` and directories inside
-    ``opencode``. The runner-created ``opencode`` directory itself is not a
-    leak. Names are sorted and use forward slashes.
+    Leaks are leftover directories anywhere under the temp root, including
+    ``tmp.*`` siblings of the scratch dir. The pre-approved ``opencode``
+    scratch and everything inside it are not leaks; those inner directories
+    are the scratch group. Counting the scratch as leaks (and missing the
+    siblings) inverted the stored value.
     """
     root = Path(root)
     if not root.is_dir():
-        return []
-    names = []
+        return [], []
+    leaks = []
+    scratch = []
     for path in root.rglob("*"):
         if not path.is_dir():
             continue
         relative = path.relative_to(root).as_posix()
-        if relative in _RUNNER_TEMP_DIRS:
+        if relative == "opencode" or relative.startswith("opencode/"):
+            if relative != "opencode":
+                scratch.append(relative)
             continue
-        names.append(relative)
-    return sorted(names)
+        leaks.append(relative)
+    return sorted(leaks), sorted(scratch)
+
+
+def leaked_temp_dir_names(root: str | Path) -> list[str]:
+    """Leftover directories under the temp root, excluding the opencode scratch."""
+    return _temp_dir_groups(root)[0]
 
 
 def leaked_temp_dirs(root: str | Path) -> int:
-    """How many agent-created directories remain under the per-cell temp root."""
+    """How many non-scratch directories remain under the per-cell temp root."""
     return len(leaked_temp_dir_names(root))
+
+
+def scratch_dirs_left(root: str | Path) -> int:
+    """Directories left inside the pre-approved ``opencode`` scratch."""
+    return len(_temp_dir_groups(root)[1])
 
 
 def scratch_env(spec: dict) -> dict[str, str]:

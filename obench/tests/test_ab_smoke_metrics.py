@@ -190,16 +190,26 @@ class TmpdirMetricTests(unittest.TestCase):
         self.assertEqual(list(emptied.iterdir()), [])
         self.assertEqual(leaked_temp_dirs(root), 0)
         (emptied / "scratch").mkdir()
-        self.assertEqual(leaked_temp_dirs(root), 1)
+        from thesis.ab.run_ab import leaked_temp_dir_names, scratch_dirs_left
+        # The pre-approved scratch is not a leak. The old count treated it as
+        # one and reported 0 for a real tmp.* sibling.
+        self.assertEqual(leaked_temp_dirs(root), 0)
+        self.assertEqual(scratch_dirs_left(root), 1)
         leaked = root / "tmp.ab12"
         leaked.mkdir()
         (leaked / "nested").mkdir()
-        from thesis.ab.run_ab import leaked_temp_dir_names
-        self.assertEqual(leaked_temp_dirs(root), 3)
+        self.assertEqual(leaked_temp_dirs(root), 2)
         self.assertEqual(
             leaked_temp_dir_names(root),
-            ["opencode/scratch", "tmp.ab12", "tmp.ab12/nested"],
+            ["tmp.ab12", "tmp.ab12/nested"],
         )
+        self.assertEqual(scratch_dirs_left(root), 1)
+        evidence = Path(tempfile.mkdtemp())
+        (evidence / "scratch-tmpdir.txt").write_text(str(root) + "\n", encoding="utf-8")
+        recounted = attach_cell_metrics({"task": "trig-tmpdir", "tmpdir_leaked_dirs": 0}, evidence)
+        self.assertEqual(recounted["tmpdir_leaked_dirs"], 2)
+        self.assertEqual(recounted["tmpdir_leaked_names"], ["tmp.ab12", "tmp.ab12/nested"])
+        self.assertEqual(recounted["scratch_dirs_left"], 1)
         env = scratch_env({"task": "trig-tmpdir"})
         self.addCleanup(lambda: __import__("shutil").rmtree(env["TMPDIR"], ignore_errors=True))
         opencode = Path(env["TMPDIR"]) / "opencode"
@@ -474,6 +484,7 @@ class SqliteDedupeAndScreenTests(unittest.TestCase):
         row = attach_cell_metrics({}, root)
         self.assertTrue(row["final_answer_present"])
         self.assertFalse(row["final_answer_complete"])
+        self.assertEqual(row["final_answer_source"], "stdout")
         self.assertFalse(final_answer_complete([root / "agent-output.txt"], root))
         stopped = Path(tempfile.mkdtemp())
         (stopped / "agent-output.txt").write_text(
@@ -487,6 +498,133 @@ class SqliteDedupeAndScreenTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertTrue(final_answer_complete([stopped / "agent-output.txt"], stopped))
+        self.assertTrue(attach_cell_metrics({}, stopped)["final_answer_complete"])
+        self.assertEqual(attach_cell_metrics({}, stopped)["final_answer_source"], "stdout")
+
+    def test_final_answer_comes_from_the_session_db_not_stdout(self):
+        import sqlite3
+        from obench.final_answer import final_answer_record, final_text
+
+        answer = "Fixes work. Applying to the project:"
+        root = Path(tempfile.mkdtemp())
+        db_path = root / "opencode-.db"
+        connection = sqlite3.connect(db_path)
+        connection.executescript(
+            """
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, data TEXT
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                time_created INTEGER, data TEXT
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO session (id, project_id, parent_id, data) VALUES (?, ?, ?, ?)",
+            ("ses_root", "proj", None, json.dumps({"id": "ses_root"})),
+        )
+        connection.execute(
+            "INSERT INTO session (id, project_id, parent_id, data) VALUES (?, ?, ?, ?)",
+            ("ses_child", "proj", "ses_root", json.dumps({"id": "ses_child", "parentID": "ses_root"})),
+        )
+        rows = [
+            ("msg_old", "ses_root", 1, {"role": "assistant", "id": "msg_old", "sessionID": "ses_root"}),
+            ("msg_last", "ses_root", 2, {"role": "assistant", "id": "msg_last", "sessionID": "ses_root"}),
+            ("msg_child", "ses_child", 3, {"role": "assistant", "id": "msg_child", "sessionID": "ses_child"}),
+            ("msg_user", "ses_root", 4, {"role": "user", "id": "msg_user", "sessionID": "ses_root"}),
+        ]
+        for ident, session, stamp, payload in rows:
+            connection.execute(
+                "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+                (ident, session, stamp, json.dumps(payload)),
+            )
+        parts = [
+            ("prt_old", "msg_old", "ses_root", 1, {"type": "text", "text": "draft"}),
+            ("prt_old_fin", "msg_old", "ses_root", 2, {"type": "step-finish", "reason": "tool-calls"}),
+            ("prt_text", "msg_last", "ses_root", 3, {"type": "text", "text": answer}),
+            ("prt_fin", "msg_last", "ses_root", 4, {"type": "step-finish", "reason": "stop"}),
+            ("prt_child", "msg_child", "ses_child", 5, {"type": "text", "text": "CHILD SHOULD NOT WIN"}),
+            ("prt_child_fin", "msg_child", "ses_child", 6, {"type": "step-finish", "reason": "stop"}),
+        ]
+        for ident, message, session, stamp, payload in parts:
+            connection.execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+                (ident, message, session, stamp, json.dumps(payload)),
+            )
+        connection.commit()
+        connection.close()
+        # A junk WAL must not become the answer via a text scan, and stdout
+        # does not contain the final text or a stop.
+        (root / "opencode-.db-wal").write_bytes(
+            b"STDOUT ONLY ANSWER\x00" * 8
+        )
+        (root / "agent-output.txt").write_text(
+            "permission requested: bash (rm -rf /tmp/obench-tmp-ab12/tmp.ABCD); auto-rejecting\n"
+            + json.dumps({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "tool-calls", "sessionID": "ses_root"},
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+        record = final_answer_record(root)
+        self.assertEqual(record["source"], "db")
+        self.assertEqual(record["text"], answer)
+        self.assertTrue(record["complete"])
+        self.assertEqual(final_text(root), answer)
+        row = attach_cell_metrics({"task": "trig-tmpdir"}, root)
+        self.assertTrue(row["final_answer_present"])
+        self.assertTrue(row["final_answer_complete"])
+        self.assertEqual(row["final_answer_source"], "db")
+        self.assertNotIn("CHILD SHOULD NOT WIN", final_text(root))
+        self.assertNotIn("STDOUT ONLY ANSWER", final_text(root))
+
+        # The database wins even when stdout itself ended on stop.
+        cut = Path(tempfile.mkdtemp())
+        cut_db = sqlite3.connect(cut / "opencode-local.db")
+        cut_db.executescript(
+            """
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                time_created INTEGER, data TEXT
+            );
+            """
+        )
+        cut_db.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            ("msg", "ses_root", 1, json.dumps({"role": "assistant", "id": "msg"})),
+        )
+        cut_db.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+            ("p1", "msg", "ses_root", 1, json.dumps({"type": "text", "text": "still working"})),
+        )
+        cut_db.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+            ("p2", "msg", "ses_root", 2, json.dumps({"type": "step-finish", "reason": "tool-calls"})),
+        )
+        cut_db.commit()
+        cut_db.close()
+        (cut / "agent-output.txt").write_text(
+            json.dumps({
+                "type": "text",
+                "part": {"type": "text", "text": "stdout says done", "messageID": "m1", "id": "p1"},
+            }) + "\n" + json.dumps({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "stop", "sessionID": "ses_root"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        overridden = attach_cell_metrics({}, cut)
+        self.assertEqual(overridden["final_answer_source"], "db")
+        self.assertEqual(final_text(cut), "still working")
+        self.assertFalse(overridden["final_answer_complete"])
 
     def test_read_lines_screen_metrics(self):
         line3 = "# The lending policy allows each member to hold five books at once."

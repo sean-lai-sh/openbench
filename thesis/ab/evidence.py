@@ -1150,6 +1150,27 @@ def _final_answer_text(root: Path | None) -> str:
         return ""
 
 
+def _final_answer_fields(paths: list[Path], root: Path | None) -> tuple[str, str, bool]:
+    """``(text, source, complete)`` for one cell.
+
+    ``source`` is ``db`` when the OpenCode session database is in the evidence
+    directory, and ``stdout`` only when that database is missing. Completeness
+    for a database answer is the last assistant message's finish reason.
+    """
+    if root is None:
+        return "", "stdout", False
+    from obench.final_answer import final_answer_record
+    try:
+        record = final_answer_record(root)
+    except OSError:
+        record = {"text": "", "complete": None, "source": "stdout"}
+    text = str(record.get("text") or "")
+    source = str(record.get("source") or "stdout")
+    if source == "db":
+        return text, "db", bool(record.get("complete"))
+    return text, "stdout", final_answer_complete(paths, root)
+
+
 _FINISH_TYPES = frozenset({"step_finish", "step-finish"})
 
 
@@ -1354,7 +1375,7 @@ def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list
         paths = [path for path in sorted(root.rglob("*")) if path.is_file()]
     reads, reread = read_call_stats(paths)
     task_calls, resumed, fresh = task_call_stats(paths)
-    answer = _final_answer_text(root)
+    answer, answer_source, answer_complete = _final_answer_fields(paths, root)
     generated = list_has_generated(paths)
     rejections, ended = rejection_stats(paths)
     row["read_calls"] = reads
@@ -1368,7 +1389,8 @@ def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list
     row["rule_prefix"] = classify_rule_prefix(answer)
     row["rule_order"] = classify_rule_order(answer)
     row["final_answer_present"] = bool(answer.strip())
-    row["final_answer_complete"] = final_answer_complete(paths, root)
+    row["final_answer_complete"] = answer_complete
+    row["final_answer_source"] = answer_source
     if str(row.get("task") or "") == "trig-read-lines":
         row.update(members_read_metrics(paths, answer))
     row["child_plan_reminder"] = child_received_plan_reminder(paths)
@@ -1391,10 +1413,11 @@ def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list
         except OSError:
             scratch = ""
         if scratch and Path(scratch).is_dir():
-            from thesis.ab.run_ab import leaked_temp_dir_names
+            from thesis.ab.run_ab import leaked_temp_dir_names, scratch_dirs_left
             names = leaked_temp_dir_names(scratch)
             row["tmpdir_leaked_dirs"] = len(names)
             row["tmpdir_leaked_names"] = names
+            row["scratch_dirs_left"] = scratch_dirs_left(scratch)
     elif "tmpdir_leaked_dirs" not in row:
         row["tmpdir_leaked_dirs"] = 0
     touches, clients = outside_lsp_counts(paths)
