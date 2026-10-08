@@ -670,18 +670,35 @@ def _stdout_final_text(directory: Path) -> str:
     return extracted
 
 
+def complete_from_finish_reason(reason: str | None) -> bool | None:
+    """Map one stored finish reason to the tri-state completeness flag.
+
+    ``True`` for ``stop``. ``False`` for any other non-empty reason. ``None``
+    when the build stored no reason.
+    """
+    if not reason:
+        return None
+    return reason == "stop"
+
+
 def final_answer_record(evidence_dir: Path | str) -> dict:
     """Extracted answer, whether it ended on ``stop``, and which source won.
 
     The session database wins whenever it is present. ``source`` is ``db`` or
-    ``stdout``. ``complete`` is set for a database answer and left ``None``
-    when the caller still has to read the finish reason from stdout.
+    ``stdout``. ``complete`` is true when the database answer finished with
+    ``stop``, false when it finished with another reason, and ``None`` when
+    that database stores no finish reason. Stdout leaves ``complete`` as
+    ``None`` so the caller can read the finish reason from the transcript.
     """
     directory = Path(evidence_dir)
     stored = db_final_answer(directory)
     if stored is not None:
         text, reason = stored
-        return {"text": text, "complete": reason == "stop", "source": "db"}
+        return {
+            "text": text,
+            "complete": complete_from_finish_reason(reason),
+            "source": "db",
+        }
     return {"text": _stdout_final_text(directory), "complete": None, "source": "stdout"}
 
 

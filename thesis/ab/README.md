@@ -139,7 +139,7 @@ python -m thesis.ab.evidence results/ab
 
 The cell gains `exercised` (`exercised`, `not exercised`, or `undeterminable` when no evidence file was copied). `results/ab/evidence-summary.json` counts those per PR and side.
 
-PR 984 uses `classify_edit_only` in `thesis.ab.evidence`. A 984 cell is exercised only when the evidence has at least one edit call and zero `"tool": "bash"` or `"tool": "write"` parts. The pattern row still matches edit. The cell records `edit_calls` and `bash_write_calls`, each the largest count in any one evidence file.
+PR 984 uses `classify_edit_only` in `thesis.ab.evidence`. A 984 cell is exercised only when the evidence has at least one edit call and zero `"tool": "bash"` or `"tool": "write"` parts. The pattern row still matches edit. The cell records `edit_calls` and `bash_write_calls`. A copied transcript still contributes the largest count in any one aggregate file. Per-call storage (one tool call per file, the #984 and #3052 layout) sums those files, deduplicated by call id, part id, or file identity.
 
 ## What each binary gets
 

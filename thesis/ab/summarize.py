@@ -544,7 +544,9 @@ def effect_counts(rows: list[dict]) -> dict:
     """Sum child-session writes, task calls, and final-answer rule prefixes.
 
     ``subagent_write_calls`` includes child bash. ``child_edit_calls`` does
-    not: it is edit, write, and patch only.
+    not: it is edit, write, and patch only. ``final_answer_complete`` counts
+    only true cells. False cells are ``final_answer_incomplete``. A stored
+    null is ``final_answer_complete_unknown`` and is not counted as false.
     """
     writes = 0
     task_calls = 0
@@ -560,6 +562,8 @@ def effect_counts(rows: list[dict]) -> dict:
     ended = 0
     answers = 0
     complete = 0
+    incomplete = 0
+    complete_unknown = 0
     changed = 0
     leaked = 0
     scratch_left = 0
@@ -585,7 +589,14 @@ def effect_counts(rows: list[dict]) -> dict:
         generated += _count_true(row, "list_has_generated")
         ended += _count_true(row, "ended_on_rejection")
         answers += _count_true(row, "final_answer_present")
-        complete += _count_true(row, "final_answer_complete")
+        if "final_answer_complete" in row:
+            flag = row.get("final_answer_complete")
+            if flag is True:
+                complete += 1
+            elif flag is False:
+                incomplete += 1
+            else:
+                complete_unknown += 1
         members_reads += _count_int(row, "members_read_calls")
         exact_windows += _count_true(row, "first_window_exact")
         exact_quotes += _count_true(row, "exact_quote_pass")
@@ -617,6 +628,8 @@ def effect_counts(rows: list[dict]) -> dict:
         "ended_on_rejection": ended,
         "final_answer_present": answers,
         "final_answer_complete": complete,
+        "final_answer_incomplete": incomplete,
+        "final_answer_complete_unknown": complete_unknown,
         "rule_order": orders,
         "members_read_calls": members_reads,
         "first_window_exact": exact_windows,
@@ -676,9 +689,13 @@ def _effect_line(effects: dict) -> str:
         "Final answer present: "
         f"without {int(left.get('final_answer_present') or 0)}, "
         f"with {int(right.get('final_answer_present') or 0)}. "
-        "Final answer complete: "
-        f"without {int(left.get('final_answer_complete') or 0)}, "
-        f"with {int(right.get('final_answer_complete') or 0)}. "
+        "Final answer complete (true/false/unknown): "
+        f"without {int(left.get('final_answer_complete') or 0)}/"
+        f"{int(left.get('final_answer_incomplete') or 0)}/"
+        f"{int(left.get('final_answer_complete_unknown') or 0)}, "
+        f"with {int(right.get('final_answer_complete') or 0)}/"
+        f"{int(right.get('final_answer_incomplete') or 0)}/"
+        f"{int(right.get('final_answer_complete_unknown') or 0)}. "
         "Rule order (global_first/project_first/one/none): "
         f"without {_orders(left.get('rule_order') or {})}, "
         f"with {_orders(right.get('rule_order') or {})}. "
@@ -744,6 +761,10 @@ def _effect_csv(effects: dict) -> dict:
         row[f"{side}_ended_on_rejection"] = int(body.get("ended_on_rejection") or 0)
         row[f"{side}_final_answer"] = int(body.get("final_answer_present") or 0)
         row[f"{side}_final_answer_complete"] = int(body.get("final_answer_complete") or 0)
+        row[f"{side}_final_answer_incomplete"] = int(body.get("final_answer_incomplete") or 0)
+        row[f"{side}_final_answer_complete_unknown"] = int(
+            body.get("final_answer_complete_unknown") or 0
+        )
         orders = body.get("rule_order") or {}
         for name in _RULE_ORDERS:
             row[f"{side}_rule_order_{name}"] = int(orders.get(name) or 0)
@@ -1144,6 +1165,8 @@ def render_csv(records: list[dict]) -> str:
         "without_ended_on_rejection", "with_ended_on_rejection",
         "without_final_answer", "with_final_answer",
         "without_final_answer_complete", "with_final_answer_complete",
+        "without_final_answer_incomplete", "with_final_answer_incomplete",
+        "without_final_answer_complete_unknown", "with_final_answer_complete_unknown",
         "without_rule_order_global_first", "with_rule_order_global_first",
         "without_rule_order_project_first", "with_rule_order_project_first",
         "without_rule_order_one", "with_rule_order_one",
