@@ -958,6 +958,121 @@ def _ranges_overlap(left: tuple[int, int | None], right: tuple[int, int | None])
     return left[0] < right_end and right[0] < left_end
 
 
+_PI_STREAM_EVENTS = frozenset({"message_end", "turn_end", "agent_end"})
+_PI_TOOL_NAMES = frozenset({"read", "edit", "write", "bash"})
+
+
+def _pi_stream_events(paths: list[Path]) -> list[dict] | None:
+    """Pi/omp ``--mode json`` events, or None when the evidence is not that stream."""
+    events: list[dict] = []
+    saw = False
+    for path in paths:
+        text = _read_text(path)
+        if not text:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped[0] != "{":
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("type") not in _PI_STREAM_EVENTS:
+                continue
+            saw = True
+            events.append(event)
+    if not saw:
+        return None
+    return events
+
+
+def _pi_messages(event: dict) -> list[dict]:
+    kind = event.get("type")
+    if kind in {"message_end", "turn_end"}:
+        message = event.get("message")
+        return [message] if isinstance(message, dict) else []
+    if kind == "agent_end" and isinstance(event.get("messages"), list):
+        return [item for item in event["messages"] if isinstance(item, dict)]
+    return []
+
+
+def _pi_tool_calls(paths: list[Path]) -> list[ToolCall] | None:
+    """Deduped Pi/omp tool calls, or None when this is not a Pi stream.
+
+    The same call is copied onto ``message_end`` and ``turn_end`` (and often
+    ``agent_end``). One ``toolCall`` id counts once. A call with no id collapses
+    when the tool name and arguments match, which is that same copy.
+    """
+    events = _pi_stream_events(paths)
+    if events is None:
+        return None
+    calls: list[ToolCall] = []
+    seen: set[str] = set()
+    for event in events:
+        for message in _pi_messages(event):
+            if message.get("role") != "assistant":
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "toolCall":
+                    continue
+                name = str(part.get("name") or "")
+                if name not in _PI_TOOL_NAMES:
+                    continue
+                ident = part.get("id")
+                arguments = part.get("arguments")
+                if isinstance(arguments, str):
+                    forward = arguments
+                else:
+                    forward = json.dumps(arguments if isinstance(arguments, dict) else {}, sort_keys=True)
+                key = ident if isinstance(ident, str) and ident else f"{name}:{forward}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                calls.append(ToolCall(
+                    tool=name,
+                    part_id=ident if isinstance(ident, str) else "",
+                    call_id=ident if isinstance(ident, str) else "",
+                    sessions=(),
+                    window=forward,
+                    forward=forward,
+                    source="json",
+                ))
+    return calls
+
+
+def _pi_stream_answer(paths: list[Path], root: Path | None) -> tuple[str, bool] | None:
+    from obench.final_answer import pi_stream_final
+    blobs: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        text = _read_text(path)
+        if text:
+            blobs.append(text)
+    if root is not None:
+        agent = Path(root) / "agent-output.txt"
+        if str(agent) not in seen and agent.is_file():
+            try:
+                blobs.append(agent.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+    found: tuple[str, bool] | None = None
+    for blob in blobs:
+        item = pi_stream_final(blob)
+        if item is None:
+            continue
+        if found is None or item[0]:
+            found = item
+    return found
+
+
 def read_call_stats(paths: list[Path]) -> tuple[int, bool]:
     """Read-tool calls from the authoritative source, and whether one rereads.
 
@@ -966,6 +1081,25 @@ def read_call_stats(paths: list[Path]) -> tuple[int, bool]:
     runs through EOF, so it overlaps a later read of that path. Copies that
     share a part id or call id count once.
     """
+    pi_calls = _pi_tool_calls(paths)
+    if pi_calls is not None:
+        calls = []
+        for call in pi_calls:
+            if call.tool != "read":
+                continue
+            path, offset, limit = _read_span(call.forward)
+            calls.append((path, offset, limit))
+        reread = False
+        for index, (path, offset, limit) in enumerate(calls):
+            for earlier, earlier_offset, earlier_limit in calls[:index]:
+                if _same_path(path, earlier) and _ranges_overlap(
+                    (earlier_offset, earlier_limit), (offset, limit),
+                ):
+                    reread = True
+                    break
+            if reread:
+                break
+        return len(calls), reread
     mode, _groups = _authoritative_calls(paths)
     calls = []
     for call in _metric_calls(paths, lambda item: item.tool == "read"):
@@ -1327,8 +1461,23 @@ def dotnet_build_call_count(paths: list[Path]) -> int:
 
 
 def edit_call_count(paths: list[Path]) -> int:
-    """Edit and multiedit calls from the deduped tool-call path."""
+    """Edit and multiedit calls from the deduped tool-call path.
+
+    A Pi/omp stream counts ``edit`` and ``write`` tool calls. OpenCode stays
+    on edit and multiedit.
+    """
+    pi_calls = _pi_tool_calls(paths)
+    if pi_calls is not None:
+        return sum(1 for call in pi_calls if call.tool in {"edit", "write"})
     return len(_metric_calls(paths, lambda call: call.tool in {"edit", "multiedit"}))
+
+
+def bash_call_count(paths: list[Path]) -> int | None:
+    """Pi/omp bash tool calls, or None when the evidence is not that stream."""
+    pi_calls = _pi_tool_calls(paths)
+    if pi_calls is None:
+        return None
+    return sum(1 for call in pi_calls if call.tool == "bash")
 
 
 def _text_ui_edit_count(paths: list[Path]) -> int:
@@ -1457,12 +1606,18 @@ def _final_answer_fields(paths: list[Path], root: Path | None) -> tuple[str, str
     """``(text, source, complete)`` for one cell.
 
     ``source`` is ``db`` when the OpenCode session database is in the evidence
-    directory, and ``stdout`` only when that database is missing. ``complete``
-    is true, false, or ``None`` when the build stored no finish reason.
-    A database answer keeps its own reason; a missing database reason is not
-    filled in from stdout.
+    directory, and ``stdout`` only when that database is missing. A Pi/omp
+    ``--mode json`` stream uses ``json``: the answer is the last text part of
+    the last assistant turn, and ``complete`` is true when ``stopReason`` is
+    ``stop``. ``complete`` is true, false, or ``None`` when the build stored
+    no finish reason. A database answer keeps its own reason; a missing
+    database reason is not filled in from stdout.
     """
     if root is None:
+        pi = _pi_stream_answer(paths, None)
+        if pi is not None:
+            text, complete = pi
+            return text, "json", complete
         return "", "stdout", final_answer_complete(paths, None)
     from obench.final_answer import final_answer_record
     try:
@@ -1478,6 +1633,10 @@ def _final_answer_fields(paths: list[Path], root: Path | None) -> tuple[str, str
         if _ended_on_rejection_or_error(paths, root):
             return text, "db", False
         return text, "db", None
+    pi = _pi_stream_answer(paths, root)
+    if pi is not None:
+        text, complete = pi
+        return text, "json", complete
     return text, "stdout", final_answer_complete(paths, root)
 
 
@@ -1766,6 +1925,9 @@ def attach_cell_metrics(row: dict, evidence_root: Path | str | None, files: list
     rejections, ended = rejection_stats(paths)
     row["read_calls"] = reads
     row["reread"] = reread
+    bash_calls = bash_call_count(paths)
+    if bash_calls is not None:
+        row["bash_calls"] = bash_calls
     row["subagent_write_calls"] = subagent_write_call_count(paths)
     row["child_edit_calls"] = child_edit_call_count(paths)
     row["task_calls"] = task_calls

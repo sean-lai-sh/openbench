@@ -27,6 +27,7 @@ model output was produced, the failure belongs to the harness or provider, not
 the model's ability to solve the task.
 """
 
+import json
 import re
 
 STALLED = "stalled"
@@ -472,6 +473,167 @@ def classify_failure_reason(row, adapter_output=""):
     return None
 
 
+_PI_EVENT_TYPES = frozenset({"turn_end", "message_end", "agent_end"})
+
+
+def _rate_error_text(text):
+    lowered = (text or "").lower()
+    return "429" in (text or "") or "rate limit" in lowered or "rate-limit" in lowered
+
+
+def _assistant_from_pi_event(event):
+    kind = event.get("type")
+    found = []
+    if kind in {"turn_end", "message_end"}:
+        message = event.get("message")
+        if isinstance(message, dict):
+            found.append(message)
+    elif kind == "agent_end" and isinstance(event.get("messages"), list):
+        found.extend(item for item in event["messages"] if isinstance(item, dict))
+    return [item for item in found if item.get("role") == "assistant"]
+
+
+def _scan_pi_provider_text(text):
+    """Return ``(rate, other, rate_message, other_message)`` from a Pi stream."""
+    rate = other = False
+    rate_message = other_message = ""
+    if not text:
+        return rate, other, rate_message, other_message
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] != "{":
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") not in _PI_EVENT_TYPES:
+            continue
+        for message in _assistant_from_pi_event(event):
+            err = message.get("errorMessage")
+            err_text = err.strip() if isinstance(err, str) else ""
+            if message.get("stopReason") != "error" and not err_text:
+                continue
+            body = err_text or "provider error"
+            if _rate_error_text(body):
+                rate = True
+                rate_message = body
+            else:
+                other = True
+                other_message = body
+    return rate, other, rate_message, other_message
+
+
+def _ledger_statuses(row):
+    raw = row.get("ledger_statuses")
+    if isinstance(raw, list):
+        found = []
+        for item in raw:
+            if isinstance(item, bool) or not isinstance(item, int):
+                continue
+            found.append(int(item))
+        if found:
+            return found
+    found = []
+    for key in ("ledger", "proxy_ledger"):
+        records = row.get(key)
+        if not isinstance(records, list):
+            continue
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            status = rec.get("status")
+            if isinstance(status, bool) or not isinstance(status, int):
+                continue
+            found.append(int(status))
+    return found
+
+
+def _ledger_error_messages(row):
+    rate_message = other_message = ""
+    for key in ("ledger", "proxy_ledger"):
+        records = row.get(key)
+        if not isinstance(records, list):
+            continue
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            err = rec.get("error")
+            if not isinstance(err, str) or not err.strip():
+                continue
+            status = rec.get("status")
+            if isinstance(status, int) and not isinstance(status, bool) and status == 429:
+                rate_message = err.strip()
+            else:
+                other_message = err.strip()
+    return rate_message, other_message
+
+
+def _provider_failure(row, adapter_output=""):
+    """``(kind, message)`` for a Pi stopReason error or a non-2xx ledger row.
+
+    ``kind`` is ``infra``, ``rate_limited``, or ``None``. A 429 is rate limited.
+    Any other provider error is infra, including when a 429 is also present.
+    ``replies_throttled`` is not a signal here: a solved cell can carry that
+    count without being reclassified.
+    """
+    row = row or {}
+    rate = other = False
+    rate_message = other_message = ""
+    seen = set()
+    for blob in (adapter_output, row.get("output_tail"), row.get("full_output"), row.get("error")):
+        text = str(blob or "")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        found_rate, found_other, found_rate_message, found_other_message = _scan_pi_provider_text(text)
+        rate = rate or found_rate
+        other = other or found_other
+        if found_rate_message:
+            rate_message = found_rate_message
+        if found_other_message:
+            other_message = found_other_message
+    for status in _ledger_statuses(row):
+        if 200 <= status < 300:
+            continue
+        if status == 429:
+            rate = True
+            if not rate_message:
+                rate_message = "429"
+        else:
+            other = True
+            if not other_message:
+                other_message = f"HTTP {status}"
+    record_rate, record_other = _ledger_error_messages(row)
+    if record_rate:
+        rate_message = record_rate
+    if record_other:
+        other_message = record_other
+    replies_error = row.get("replies_error")
+    if isinstance(replies_error, int) and not isinstance(replies_error, bool) and replies_error > 0:
+        other = True
+    if not rate and not other:
+        stored = row.get("provider_error")
+        if isinstance(stored, str) and stored.strip():
+            if _rate_error_text(stored):
+                rate = True
+                rate_message = stored.strip()
+            else:
+                other = True
+                other_message = stored.strip()
+    if other:
+        return "infra", other_message or rate_message
+    if rate:
+        return "rate_limited", rate_message
+    return None, ""
+
+
+def provider_failure_class(row, adapter_output=""):
+    """Infra or rate_limited when the provider itself failed, else None."""
+    kind, _message = _provider_failure(row, adapter_output)
+    return kind
+
+
 def classify_failure(row, adapter_output="", timeout_s=None):
     """Classify a benchmark row into the self-auditing failure taxonomy.
 
@@ -479,6 +641,11 @@ def classify_failure(row, adapter_output="", timeout_s=None):
     callers that only have an old row may pass ``output_tail`` instead.
     """
     row = row or {}
+    provider_kind, provider_message = _provider_failure(row, adapter_output)
+    if provider_kind:
+        if provider_message and not row.get("provider_error"):
+            row["provider_error"] = provider_message
+        return provider_kind
     combined = _text(
         adapter_output,
         row.get("output_tail"),
@@ -594,6 +761,14 @@ def class_for_report(row):
         # SDK, or on a cell that died in a few seconds, is not a model verdict.
         if stored == "infra" and has_pinned_infra_reason(row):
             return "infra"
+        # A Pi/omp provider error (stopReason error, or a non-2xx ledger row)
+        # is not a checker verdict. 429 stays rate_limited; anything else is
+        # infra. A stored stall is left alone. This also stops the promotion
+        # below from turning a ledger 400 on a completed cell into wrong_answer.
+        if stored != STALLED:
+            provider_kind = provider_failure_class(row, row.get("output_tail") or "")
+            if provider_kind:
+                return provider_kind
         # Correct the other direction too: a stored VERDICT on a cell whose
         # request budget was starved is not a capability result. sampling_observed
         # is persisted, so unlike the 429 case this is recoverable from history.
