@@ -41,7 +41,12 @@ _JSON_TYPES = frozenset({
     "part.delta",
     "message.part.updated",
     "session",
+    "turn_end",
+    "agent_end",
+    "message_end",
 })
+_PI_TURN_TYPES = frozenset({"turn_end", "agent_end"})
+_PI_STREAM_TYPES = frozenset({"turn_end", "agent_end", "message_end"})
 _DELTA_TYPES = frozenset({"message.part.delta", "part.delta"})
 
 
@@ -124,9 +129,77 @@ def _collect_children(obj, found: set[str]) -> None:
             _collect_children(item, found)
 
 
+def _pi_last_assistant(events: list[dict]) -> dict | None:
+    """Last assistant message on ``turn_end``, replaced by a later ``agent_end``."""
+    last = None
+    for event in events:
+        kind = str(event.get("type") or "")
+        if kind == "turn_end":
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                last = message
+        elif kind == "agent_end" and isinstance(event.get("messages"), list):
+            for message in event["messages"]:
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    last = message
+    return last
+
+
+def _last_text_part(message: dict) -> str:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ""
+    text = ""
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+            text = part["text"]
+    return text.strip()
+
+
+def _pi_answer_from_events(events: list[dict]) -> tuple[str, bool] | None:
+    """``(text, complete)`` for a Pi/omp stream, or None when it is not one.
+
+    The answer is the last text part of the last assistant ``turn_end`` or
+    ``agent_end`` message. ``complete`` is true only when ``stopReason`` is
+    ``stop``. ``message_end`` copies of the same turn are not a second answer.
+    """
+    if not any(str(event.get("type") or "") in _PI_TURN_TYPES for event in events):
+        return None
+    message = _pi_last_assistant(events)
+    if message is None:
+        return "", False
+    return _last_text_part(message), message.get("stopReason") == "stop"
+
+
+def pi_stream_final(raw: str) -> tuple[str, bool] | None:
+    """Final answer from one Pi/omp ``--mode json`` stream, or None."""
+    events: list[dict] = []
+    for line in (raw or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] not in "{[":
+            continue
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and str(obj.get("type") or "") in _PI_STREAM_TYPES:
+            events.append(obj)
+    if not any(str(event.get("type") or "") in _PI_TURN_TYPES for event in events):
+        return None
+    return _pi_answer_from_events(events)
+
+
 def _text_piece(event: dict) -> tuple[str, str, str, str, str] | None:
     """Return ``(kind, text, message, session, part_id)`` for one event."""
     kind = str(event.get("type") or "")
+    if kind in _PI_TURN_TYPES:
+        message = _pi_last_assistant([event])
+        if message is None:
+            return None
+        text = _last_text_part(message)
+        if not text:
+            return None
+        return ("text", text, "pi-final", "", "pi-text")
     props = event.get("properties") if isinstance(event.get("properties"), dict) else {}
     part = event.get("part") if isinstance(event.get("part"), dict) else {}
     nested = props.get("part") if isinstance(props.get("part"), dict) else {}
@@ -185,6 +258,9 @@ def _join_message(parts: list[_Fragment]) -> str:
 
 
 def _json_final_answer(events: list[dict]) -> str:
+    pi = _pi_answer_from_events(events)
+    if pi is not None:
+        return pi[0]
     children: set[str] = set()
     for event in events:
         _collect_children(event, children)

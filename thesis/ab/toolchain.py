@@ -107,9 +107,15 @@ def bun_requirement(root: Path) -> str:
     pkg_path = root / "package.json"
     if not pkg_path.is_file():
         raise BuildError("no package.json or .bun-version")
-    raw = json.loads(pkg_path.read_text(encoding="utf-8")).get("packageManager") or ""
+    package = json.loads(pkg_path.read_text(encoding="utf-8"))
+    raw = package.get("packageManager") or ""
     if isinstance(raw, str) and raw.startswith("bun@"):
         return raw.split("@", 1)[1]
+    engines = package.get("engines")
+    if isinstance(engines, dict):
+        bun = engines.get("bun")
+        if isinstance(bun, str) and bun.strip():
+            return bun.strip().lstrip("v")
     raise BuildError("package.json packageManager is not bun@...")
 
 

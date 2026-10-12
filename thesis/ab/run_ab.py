@@ -520,6 +520,7 @@ def execute_cell(spec: dict) -> None:
         "OBENCH_CELL_LEDGER",
         "OBENCH_PI_VERTEX",
         "OBENCH_PI_BIN",
+        "OBENCH_PI_SESSION_DIR",
     )
     saved = {key: os.environ.get(key) for key in keys}
     png_server = None
@@ -617,6 +618,7 @@ def execute_cell(spec: dict) -> None:
                 os.environ.pop("OBENCH_CELL_LEDGER", None)
             os.environ.pop("OBENCH_PI_VERTEX", None)
             os.environ.pop("OBENCH_PI_BIN", None)
+            os.environ.pop("OBENCH_PI_SESSION_DIR", None)
         else:
             os.environ.pop("OBENCH_OPENCODE_BIN", None)
             os.environ.pop("OBENCH_OPENCODE_CONFIG_JSON", None)
@@ -636,6 +638,12 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
             os.environ.pop("OBENCH_NO_PROGRESS_S", None)
             os.environ.pop("OBENCH_CELL_LEDGER", None)
+            evidence = str(spec.get("evidence_dir") or "").strip()
+            if evidence:
+                evidence = str(Path(evidence).resolve())
+                os.environ["OBENCH_PI_SESSION_DIR"] = str(Path(evidence) / "session")
+            else:
+                os.environ.pop("OBENCH_PI_SESSION_DIR", None)
             vertex = spec.get("vertex") or {}
             os.environ["OBENCH_PI_VERTEX"] = json.dumps(vertex)
             os.environ["OBENCH_PI_BIN"] = vertex.get("bin") or spec["binary"]
@@ -1009,6 +1017,9 @@ def expose_request_totals(row: dict) -> dict:
         row[name] = split[name]
         row[request_name] = split[name]
     row["requests_count"] = int(calls)
+    errors = row.get("requests_error")
+    if isinstance(errors, int) and not isinstance(errors, bool) and errors > 0:
+        row["requests_error"] = errors
     fresh = split["tokens_input_uncached"] + split["tokens_output"]
     row["tokens"] = int(fresh) if float(fresh).is_integer() else fresh
     row["token_basis"] = "proxy_measured"
@@ -1056,6 +1067,18 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     apply_proxy_ledger(row, records)
     expose_request_totals(row)
     promote_proxy_meter(row)
+    from obench.failure_class import provider_failure_class
+    kind = provider_failure_class(row, str(row.get("output_tail") or ""))
+    if kind:
+        row["failure_class"] = kind
+        message = row.get("provider_error")
+        if (
+            kind == "infra"
+            and isinstance(message, str)
+            and message
+            and not row.get("failure_reason")
+        ):
+            row["failure_reason"] = message
     if row.get("usage_raw") is None:
         usages = [
             record.get("usage")
@@ -1067,21 +1090,54 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     return row
 
 
+def _proxy_bases(proxy: dict | None, vertex: dict | None) -> list[str]:
+    """Bare proxy URLs this cell should rewrite, OpenCode first then Pi/omp."""
+    found: list[str] = []
+    if isinstance(proxy, dict):
+        base = str(proxy.get("base_url") or "").strip()
+        if base:
+            found.append(base)
+    if isinstance(vertex, dict):
+        base = str(vertex.get("proxy_url") or "").strip()
+        if base and base not in found:
+            found.append(base)
+    return found
+
+
 def bind_cell_proxy(filled: dict, ledger_dir: Path) -> dict:
-    proxy = filled.get("proxy")
-    if not isinstance(proxy, dict):
-        return filled
-    base = str(proxy.get("base_url") or "")
-    if not base:
+    proxy = filled.get("proxy") if isinstance(filled.get("proxy"), dict) else None
+    vertex = filled.get("vertex") if isinstance(filled.get("vertex"), dict) else None
+    bases = _proxy_bases(proxy, vertex)
+    if not bases:
         return filled
     cell_id = secrets.token_hex(8)
-    rewritten = cell_proxy_base(base, cell_id)
+    # One cell id for every base this cell posts to. OpenCode's config uses
+    # the /v1 form; Pi/omp models_body uses the bare proxy URL.
+    rewritten = {base: cell_proxy_base(base, cell_id) for base in bases}
     filled = dict(filled)
-    proxy = dict(proxy)
     config = filled.get("config")
     if isinstance(config, dict):
-        filled["config"] = json.loads(json.dumps(config).replace(base, rewritten))
-    proxy["base_url"] = rewritten
+        encoded = json.dumps(config)
+        for base, cell_base in rewritten.items():
+            encoded = encoded.replace(base, cell_base)
+        filled["config"] = json.loads(encoded)
+    if vertex is not None:
+        vertex = dict(vertex)
+        body = vertex.get("models_body")
+        if isinstance(body, str):
+            for base, cell_base in rewritten.items():
+                body = body.replace(base, cell_base)
+            vertex["models_body"] = body
+        own = str(vertex.get("proxy_url") or "").strip()
+        if own in rewritten:
+            vertex["proxy_url"] = rewritten[own]
+        filled["vertex"] = vertex
+    if proxy is None:
+        proxy = {}
+    else:
+        proxy = dict(proxy)
+    primary = str(proxy.get("base_url") or "").strip() or bases[0]
+    proxy["base_url"] = rewritten[primary]
     proxy["cell_id"] = cell_id
     proxy["ledger_dir"] = str(ledger_dir)
     filled["proxy"] = proxy

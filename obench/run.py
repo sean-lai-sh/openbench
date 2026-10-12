@@ -1732,6 +1732,23 @@ def apply_proxy_ledger(row, ledger_rows):
     calls = [r for r in records if isinstance(r.get("usage"), dict)]
     # Zero is meaningful evidence for admission checks; do not collapse it to None.
     row["tokens_proxy_calls"] = len(calls)
+    # Non-2xx rows are a provider signal. All-2xx ledgers omit these keys so an
+    # OpenCode result that never saw an error stays byte-identical.
+    error_statuses = []
+    error_body = ""
+    for rec in records:
+        status = rec.get("status")
+        if isinstance(status, bool) or not isinstance(status, int):
+            continue
+        if status < 200 or status >= 300:
+            error_statuses.append(int(status))
+            if not error_body and isinstance(rec.get("error"), str) and rec["error"]:
+                error_body = rec["error"]
+    if error_statuses:
+        row["requests_error"] = len(error_statuses)
+        row["ledger_statuses"] = error_statuses
+        if error_body and not row.get("provider_error"):
+            row["provider_error"] = error_body
     # Provider-pacing wait injected by the proxy (sums over every request, not
     # just usage-bearing ones): the wait lands inside wall_time_s, so latency is
     # only comparable across paced and unpaced runs when this is subtracted.
@@ -2238,6 +2255,12 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["usage_raw"] = result.get("usage_raw")
         row["replies_ok"] = result.get("replies_ok")
         row["replies_throttled"] = result.get("replies_throttled")
+        replies_error = result.get("replies_error")
+        if isinstance(replies_error, int) and not isinstance(replies_error, bool) and replies_error > 0:
+            row["replies_error"] = replies_error
+        provider_error_text = result.get("provider_error")
+        if isinstance(provider_error_text, str) and provider_error_text:
+            row["provider_error"] = provider_error_text
         row["model_context_window"] = result.get("model_context_window")
         row["model_max_tokens"] = result.get("model_max_tokens")
         row["token_basis"] = ("unmetered" if candidate is not None

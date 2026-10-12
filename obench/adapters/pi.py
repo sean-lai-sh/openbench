@@ -117,6 +117,7 @@ def _empty_token_usage():
         "token_basis": None,
         "replies_ok": None,
         "replies_throttled": None,
+        "replies_error": None,
     }
 
 
@@ -711,6 +712,14 @@ def _parse_json_with_usage(stdout):
     if messages is None:
         messages = [e.get("message") for e in events
                     if e.get("type") == "message_end"]
+    if not any(isinstance(msg, dict) and msg.get("role") == "assistant" for msg in messages):
+        # A turn_end-only stream (no message_end / agent_end) still carries the
+        # assistant reply. Prefer the earlier sources when they exist so a
+        # message that is copied onto turn_end is not counted twice.
+        messages = [
+            e.get("message") for e in events
+            if e.get("type") == "turn_end" and isinstance(e.get("message"), dict)
+        ]
 
     if token_usage.get("token_basis") is None:
         # Older/documented pi JSON shapes put usage on assistant messages in
@@ -742,7 +751,8 @@ def _parse_json_with_usage(stdout):
     # rate-limited") while deepseek ran 0/50 -- and the row for such a cell read
     # `wrong_answer, error=None, turns=16`. Rows must carry what the verdict
     # depends on, or every row-level tool inherits the blindness.
-    ok = throttled = 0
+    ok = throttled = errored = 0
+    provider_error = ""
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
@@ -750,11 +760,52 @@ def _parse_json_with_usage(stdout):
             err = str(msg.get("errorMessage") or "")
             if "429" in err or "rate limit" in err.lower() or "rate-limit" in err.lower():
                 throttled += 1
+            else:
+                errored += 1
+                if err.strip():
+                    provider_error = err.strip()
         else:
             ok += 1
     token_usage["replies_ok"] = ok
     token_usage["replies_throttled"] = throttled
+    token_usage["replies_error"] = errored
+    if provider_error:
+        token_usage["provider_error"] = provider_error
     return _legacy_tokens(token_usage), turns, tail, token_usage
+
+
+def _last_turn_error(stdout: str) -> str | None:
+    """Error text when the last assistant turn stopped on a provider error.
+
+    Pi and omp exit 0 for that turn. ``turn_end`` updates the last assistant
+    message; a later ``agent_end`` replaces it with that list's last assistant.
+    """
+    last = None
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "turn_end":
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                last = message
+        elif kind == "agent_end" and isinstance(event.get("messages"), list):
+            for message in event["messages"]:
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    last = message
+    if not isinstance(last, dict) or last.get("stopReason") != "error":
+        return None
+    text = last.get("errorMessage")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return "provider error"
 
 
 
@@ -843,23 +894,42 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
         filename = str(spec.get("models_filename") or "models.json")
         with open(os.path.join(agent_dir, filename), "w", encoding="utf-8") as fh:
             fh.write(spec.get("models_body") or "")
-        extra = spec.get("extra_args") or []
+        session_dir = str(os.environ.get("OBENCH_PI_SESSION_DIR") or "").strip()
+        extra = list(spec.get("extra_args") or [])
+        if session_dir:
+            os.makedirs(session_dir, exist_ok=True)
+            extra = [arg for arg in extra if arg != "--no-session"]
         cmd = [
             spec.get("bin") or _exe(),
             "-p", instruction,
             "--mode", "json",
             "--provider", spec.get("provider") or "vertex-anthropic",
             "--model", spec.get("model_id") or "claude-opus-5-5",
-            *list(extra),
+            *extra,
         ]
+        if session_dir:
+            cmd.extend(["--session-dir", session_dir])
         stdout_text, stderr_text, returncode, timed_out = _run_streaming(
             cmd, workdir, timeout_s, env, stop_box=stop_box)
         combined = stdout_text + stderr_text
+        if session_dir:
+            parent = os.path.dirname(session_dir)
+            if parent:
+                try:
+                    with open(os.path.join(parent, "agent-output.txt"), "w", encoding="utf-8") as fh:
+                        fh.write(stdout_text)
+                except OSError:
+                    pass
+        turn_error = None if stop_box or timed_out else _last_turn_error(stdout_text)
         if stop_box:
             error = stop_box[0]
             completed = False
         elif timed_out:
             error = f"timeout after {timeout_s}s"
+            completed = False
+        elif turn_error:
+            # Pi/omp exit 0 when the provider rejects the turn.
+            error = turn_error
             completed = False
         else:
             error = None if returncode == 0 else f"exit {returncode}"

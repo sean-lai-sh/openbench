@@ -336,11 +336,32 @@ def note_cell_bytes(directory: Path | None, cell_id: str | None, n: int) -> None
         os.replace(tmp, path)
 
 
-def _append_ledger(directory: Path, cell_id: str, usage: dict) -> None:
+def _error_body(payload: bytes | str) -> str:
+    if isinstance(payload, bytes):
+        text = payload.decode("utf-8", errors="replace")
+    else:
+        text = str(payload)
+    return text[:500]
+
+
+def _append_ledger(
+    directory: Path,
+    cell_id: str,
+    usage: dict | None,
+    *,
+    status: int | None = None,
+    error: str | None = None,
+) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
-    kept, timing = trim_ledger_usage(usage)
-    row = {"record_type": "request", "usage": kept}
-    row.update(timing)
+    row: dict = {"record_type": "request"}
+    if isinstance(usage, dict):
+        kept, timing = trim_ledger_usage(usage)
+        row["usage"] = kept
+        row.update(timing)
+    if isinstance(status, int) and not isinstance(status, bool):
+        row["status"] = int(status)
+    if isinstance(error, str) and error:
+        row["error"] = error[:500]
     line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -651,12 +672,17 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             self.wfile.write(b"\r\n")
             self.wfile.flush()
 
-        def _record(self, cell: str | None, usage: dict | None) -> None:
+        def _record(self, cell: str | None, usage: dict | None, status: int | None = None) -> None:
             # One row per messages POST on /c/<cell-id>/. A subagent or child
             # session that reused that base URL is included in the cell total.
             if ledger is None or not cell or not usage:
                 return
-            _append_ledger(ledger, cell, usage)
+            _append_ledger(ledger, cell, usage, status=status)
+
+        def _record_error(self, cell: str | None, status: int, payload: bytes | str) -> None:
+            if ledger is None or not cell:
+                return
+            _append_ledger(ledger, cell, None, status=status, error=_error_body(payload))
 
         def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str) -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -665,6 +691,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             parts: list[dict] = []
             pending = b""
             recorded = False
+            status: int | None = None
 
             def finish_usage() -> dict | None:
                 nonlocal pending
@@ -683,11 +710,13 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 except urllib.error.HTTPError as exc:
                     payload = exc.read()
                     note_cell_bytes(ledger, cell, len(payload))
+                    self._record_error(cell, int(exc.code), payload)
                     content_type = exc.headers.get("Content-Type") or "application/json"
                     self._send(exc.code, content_type, payload)
                     return
                 except urllib.error.URLError as exc:
                     payload = json.dumps({"error": str(exc)}).encode("utf-8")
+                    self._record_error(cell, 502, payload)
                     self._send(502, "application/json", payload)
                     return
                 status = response.status
@@ -715,14 +744,14 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._write_chunk(chunk)
                 usage = finish_usage()
                 if kind != "count":
-                    self._record(cell, usage)
+                    self._record(cell, usage, status)
                     recorded = True
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except _DISCONNECT:
                 self.close_connection = True
                 if not recorded and kind != "count":
-                    self._record(cell, finish_usage())
+                    self._record(cell, finish_usage(), status)
             finally:
                 if response is not None:
                     response.close()
