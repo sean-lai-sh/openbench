@@ -88,6 +88,20 @@ python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
 
 The default launch order runs every cell of side A, then every cell of side B. `--order interleave` alternates the two sides inside each trial, so a rate limit or a warm prompt cache hits both sides in the same window. `--order random --seed N` shuffles the cells inside each trial block and leaves the blocks themselves in trial order. `--seed N` with `--order interleave` does not shuffle: the order stays fixed, and the seed only drives per-cell randomness (for example the webfetch colour on PR 13331). Each cell records `run_seed` and a derived `cell_seed`. Both orders apply to a normal A/B and to `--aa`. `--jobs 1` runs that schedule one cell at a time. A higher `--jobs` still submits in that order.
 
+`--order abba` is a parent-then-merge schedule for an even `--trials N`. Each task runs on its own, in task-list order: block A (parent, `without`) for N/2 trials, then block B (merge, `with`) for N trials as two blocks of N/2, then block A for the remaining N/2. That is an A, B, B, A pattern, two blocks per side. The first cell of each block is stored with `warm_up` true and is not dropped. The other cells in the block are `warm_up` false. It is meant for `--jobs 1`, so those blocks actually run one cell at a time and the first cell can warm the rest. A higher `--jobs` still submits in that order, but the cells overlap. `--seed` does not shuffle this order. It does not apply to `--aa` or `--with-aa`.
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 22390 \
+  --task-map thesis/ab/fixtures/trigger-tasks.csv \
+  --trials 4 \
+  --order abba \
+  --jobs 1 \
+  --out results/ab
+```
+
+`python -m thesis.ab.summarize` counts warm-up cells with the rest. Pass `--exclude-warm-up` to leave them out of the summary. The cell files and side JSONL still keep them.
+
 ```bash
 python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
   --pr 22390 \

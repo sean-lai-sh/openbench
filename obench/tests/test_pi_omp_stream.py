@@ -392,9 +392,59 @@ class PiOmpStreamTests(unittest.TestCase):
         }
         apply_cell_meter(row, {"ledger_dir": str(ledger), "cell_id": "cellpi"})
         self.assertEqual(row["requests_error"], 1)
+        self.assertEqual(row["requests_count"], 1)
         self.assertEqual(row["failure_class"], "infra")
         self.assertEqual(row["provider_error"], "bad request")
         self.assertEqual(row["failure_reason"], "bad request")
+
+    def test_requests_count_includes_failed_rows_and_is_zero_for_an_empty_ledger(self):
+        ledger = Path(tempfile.mkdtemp())
+        cell_ledger_path(ledger, "allfail").write_text(
+            "\n".join([
+                json.dumps({"record_type": "request", "status": 500, "error": "nope"}),
+                json.dumps({"record_type": "request", "status": 400, "error": "bad request"}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        failed = {"success": False, "completed": True, "failure_class": "wrong_answer"}
+        apply_cell_meter(failed, {"ledger_dir": str(ledger), "cell_id": "allfail"})
+        self.assertEqual(failed["requests_count"], 2)
+        self.assertEqual(failed["requests_error"], 2)
+        self.assertIsNotNone(failed["requests_count"])
+
+        mixed_path = cell_ledger_path(ledger, "mixed")
+        mixed_path.write_text(
+            "\n".join([
+                json.dumps({
+                    "record_type": "request",
+                    "status": 200,
+                    "usage": {"input_tokens": 3, "output_tokens": 4},
+                }),
+                json.dumps({"record_type": "request", "status": 529, "error": "overloaded"}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        mixed = {
+            "tokens_input_uncached": 1,
+            "tokens_output": 1,
+            "tokens_cache_read": 0,
+            "tokens_cache_write": 0,
+            "token_basis": "vendor_split",
+        }
+        apply_cell_meter(mixed, {"ledger_dir": str(ledger), "cell_id": "mixed"})
+        self.assertEqual(mixed["requests_count"], 2)
+        self.assertEqual(mixed["requests_error"], 1)
+        self.assertEqual(mixed["tokens_proxy_calls"], 1)
+
+        empty = Path(tempfile.mkdtemp())
+        cell_ledger_path(empty, "empty").write_text("", encoding="utf-8")
+        blank = {}
+        apply_cell_meter(blank, {"ledger_dir": str(empty), "cell_id": "empty"})
+        self.assertEqual(blank["requests_count"], 0)
+        self.assertNotIn("requests_error", blank)
+        missing = {}
+        apply_cell_meter(missing, {"ledger_dir": str(empty), "cell_id": "absent"})
+        self.assertNotIn("requests_count", missing)
 
     def test_vertex_proxy_records_status_on_success_and_error(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), _StatusUpstream)
