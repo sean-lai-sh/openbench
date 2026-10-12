@@ -342,6 +342,65 @@ def cell_random_seed(run_seed: int, cell: dict) -> int:
     return int.from_bytes(digest[:8], "big")
 
 
+def _abba_order(cells: list[dict]) -> list[dict]:
+    """Parent, merge, merge, parent. Two equal blocks on each side.
+
+    Each ``(pr, task)`` keeps the order those pairs first appear and runs
+    on its own: block A (``without``, the parent) for N/2 trials, then
+    block B (``with``, the merge) for N trials as two blocks of N/2, then
+    block A for the remaining N/2. The first cell of each block is
+    ``warm_up``. Other cells in the block are ``warm_up`` false. The cells
+    stay in the result; a summary can drop the warm-up ones later.
+    """
+    groups: dict[tuple[str, str], dict[str, list[dict]]] = {}
+    seen: list[tuple[str, str]] = []
+    for cell in cells:
+        key = (str(cell.get("pr") or ""), str(cell.get("task") or ""))
+        if key not in groups:
+            groups[key] = {}
+            seen.append(key)
+        side = str(cell.get("side") or "")
+        if side not in {"without", "with"}:
+            raise RunError(
+                "--order abba schedules parent (without) then merge (with); "
+                f"it does not apply to side {side!r}"
+            )
+        groups[key].setdefault(side, []).append(cell)
+    ordered: list[dict] = []
+    for key in seen:
+        sides = groups[key]
+        if set(sides) != {"without", "with"}:
+            raise RunError(
+                "--order abba needs both parent and merge cells "
+                f"for {key[0]} {key[1]}"
+            )
+        parent = sorted(sides["without"], key=lambda cell: int(cell.get("trial") or 0))
+        merge = sorted(sides["with"], key=lambda cell: int(cell.get("trial") or 0))
+        if len(parent) != len(merge):
+            raise RunError("--order abba needs the same number of trials on each side")
+        count = len(parent)
+        if count == 0:
+            continue
+        if count % 2:
+            raise RunError(
+                "--order abba needs an even number of trials per side "
+                "so each side splits into two equal blocks"
+            )
+        half = count // 2
+        blocks = (
+            parent[:half],
+            merge[:half],
+            merge[half:],
+            parent[half:],
+        )
+        for block in blocks:
+            for index, cell in enumerate(block):
+                copied = dict(cell)
+                copied["warm_up"] = index == 0
+                ordered.append(copied)
+    return ordered
+
+
 def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = None) -> list[dict]:
     """Launch order. Each cell gets ``schedule_index`` from 0.
 
@@ -349,15 +408,20 @@ def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = N
     ``interleave`` keeps both sides of one trial together, A then B. A seed
     does not change that order. ``random`` shuffles inside each trial block
     with ``random.Random(seed)``. A trial block is one PR, one task, and one
-    trial number. When ``seed`` is set, each cell also records ``run_seed``
-    and a derived ``cell_seed`` for per-cell randomness such as the webfetch
-    colour.
+    trial number. ``abba`` is an A, B, B, A sequence of two blocks per side
+    (see ``_abba_order``). It is meant to run with ``--jobs 1`` so the first
+    cell of each block actually warms the next ones. When ``seed`` is set,
+    each cell also records ``run_seed`` and a derived ``cell_seed`` for
+    per-cell randomness such as the webfetch colour. A seed does not shuffle
+    ``abba``.
     """
-    if order not in {"sides", "interleave", "random"}:
+    if order not in {"sides", "interleave", "random", "abba"}:
         raise RunError(f"unknown order {order!r}")
     if order == "random" and seed is None:
         raise RunError("random order requires a seed")
-    if order == "sides":
+    if order == "abba":
+        ordered = _abba_order(cells)
+    elif order == "sides":
         ordered = [dict(cell) for cell in cells]
     else:
         rng = random.Random(seed) if order == "random" else None
@@ -971,6 +1035,8 @@ def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
         value = spec.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             row[key] = value
+    if "warm_up" in spec:
+        row["warm_up"] = spec.get("warm_up") is True
     if started_at:
         row["started_at"] = started_at
 
@@ -1016,6 +1082,8 @@ def expose_request_totals(row: dict) -> dict:
     for name, _proxy_name, request_name, _main_name in pairs:
         row[name] = split[name]
         row[request_name] = split[name]
+    # Usage-bearing calls only. ``apply_cell_meter`` replaces this with the
+    # full ledger length, including non-2xx rows that never carried usage.
     row["requests_count"] = int(calls)
     errors = row.get("requests_error")
     if isinstance(errors, int) and not isinstance(errors, bool) and errors > 0:
@@ -1062,11 +1130,18 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     from thesis.ab.vertex_anthropic_proxy import faults_served
     row["faults_served"] = faults_served(str(ledger), str(cell))
     records = read_proxy_ledger(str(ledger), str(cell))
+    ledger_path = cell_ledger_path(Path(str(ledger)), str(cell))
     if not records:
+        # An empty ledger file is a measured zero. A missing file is not.
+        if ledger_path.is_file():
+            row["requests_count"] = 0
         return row
     apply_proxy_ledger(row, records)
     expose_request_totals(row)
     promote_proxy_meter(row)
+    # Every ledger row, not only 2xx rows that carried a usage object.
+    # ``requests_error`` stays the non-2xx subset.
+    row["requests_count"] = sum(1 for record in records if isinstance(record, dict))
     from obench.failure_class import provider_failure_class
     kind = provider_failure_class(row, str(row.get("output_tail") or ""))
     if kind:
@@ -1447,7 +1522,9 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     ``aa`` runs the parent SHA on ``aa-1`` and ``aa-2``. Both sides share
     the prepared binary for that SHA. ``with_aa`` runs without, with, aa-1,
     and aa-2 into the same output directory. ``order`` is ``sides``,
-    ``interleave``, or ``random`` (with ``seed``).
+    ``interleave``, ``random`` (with ``seed``), or ``abba``. ``abba`` is
+    meant for ``jobs`` 1: it runs two blocks per side and marks the first
+    cell of each block ``warm_up``.
     """
     out_dir = Path(out_dir)
     cache = Path(cache).resolve()
@@ -1702,12 +1779,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--order",
-        choices=("sides", "interleave", "random"),
+        choices=("sides", "interleave", "random", "abba"),
         default="sides",
         help=(
             "Launch order. sides runs every A cell, then every B cell. "
             "interleave alternates sides inside each trial. "
-            "random shuffles each trial block; requires --seed."
+            "random shuffles each trial block; requires --seed. "
+            "abba runs parent (without) for N/2 trials, then merge (with) "
+            "for N trials as two blocks, then parent for the remaining N/2. "
+            "The first cell of each block is warm_up and is kept. "
+            "Meant for --jobs 1."
         ),
     )
     parser.add_argument(
@@ -1717,7 +1798,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Seed for per-cell randomness, such as the webfetch colour, recorded "
             "on each cell. Also shuffles --order random, which requires it. "
-            "--order interleave keeps its fixed order when a seed is set."
+            "--order interleave and --order abba keep their fixed order when a seed is set."
         ),
     )
     parser.add_argument("--trials", type=int, default=3)
@@ -1783,9 +1864,21 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("error: --order random requires --seed", file=sys.stderr)
         return 2
-    if args.seed is not None and order not in {"random", "interleave"}:
+    if order == "abba" and args.trials % 2:
         print(
-            "error: --seed applies to --order random and --order interleave",
+            "error: --order abba needs an even --trials so each side splits into two equal blocks",
+            file=sys.stderr,
+        )
+        return 2
+    if order == "abba" and (args.aa or args.with_aa):
+        print(
+            "error: --order abba schedules parent then merge and does not apply to --aa or --with-aa",
+            file=sys.stderr,
+        )
+        return 2
+    if args.seed is not None and order not in {"random", "interleave", "abba"}:
+        print(
+            "error: --seed applies to --order random, --order interleave, and --order abba",
             file=sys.stderr,
         )
         return 2

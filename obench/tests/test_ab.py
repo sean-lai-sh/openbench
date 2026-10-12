@@ -2372,6 +2372,183 @@ class TestTriggerArm(unittest.TestCase):
         self.assertEqual(code, 0, err.getvalue())
         self.assertIn("order: interleave seed=7", buf.getvalue())
 
+    def test_abba_order_keeps_warm_up_cells_and_summarize_can_drop_them(self):
+        import contextlib
+        from thesis.ab.run_ab import RunError, attach_schedule, main, order_cells, plan_cells
+        from thesis.ab.summarize import pr_record
+        prs = self._prs()
+        cells = plan_cells(prs, ("make-it-run", "fix-failing-test"), 4)
+        ordered = order_cells(cells, order="abba", seed=7)
+        view = [
+            (cell["task"], cell["trial"], cell["side"], cell["warm_up"])
+            for cell in ordered
+        ]
+        one = [
+            ("make-it-run", 1, "without", True),
+            ("make-it-run", 2, "without", False),
+            ("make-it-run", 1, "with", True),
+            ("make-it-run", 2, "with", False),
+            ("make-it-run", 3, "with", True),
+            ("make-it-run", 4, "with", False),
+            ("make-it-run", 3, "without", True),
+            ("make-it-run", 4, "without", False),
+        ]
+        two = [("fix-failing-test", *item[1:]) for item in one]
+        self.assertEqual(view, one + two)
+        self.assertEqual([cell["schedule_index"] for cell in ordered], list(range(16)))
+        self.assertTrue(all(cell["run_seed"] == 7 for cell in ordered))
+        self.assertEqual(
+            [cell["sha"] for cell in ordered if cell["side"] == "without"],
+            [SHA_A] * 8,
+        )
+        self.assertEqual(
+            [cell["sha"] for cell in ordered if cell["side"] == "with"],
+            [SHA_B] * 8,
+        )
+        again = order_cells(cells, order="abba", seed=7)
+        self.assertEqual(
+            [(cell["task"], cell["trial"], cell["side"]) for cell in ordered],
+            [(cell["task"], cell["trial"], cell["side"]) for cell in again],
+        )
+        plain = order_cells(cells, order="abba")
+        self.assertEqual(
+            [(cell["task"], cell["trial"], cell["side"], cell["warm_up"]) for cell in plain],
+            view,
+        )
+        self.assertTrue(all("run_seed" not in cell for cell in plain))
+        sided = order_cells(plan_cells(prs, ("make-it-run",), 4), order="sides")
+        self.assertTrue(all("warm_up" not in cell for cell in sided))
+        interleaved = order_cells(plan_cells(prs, ("make-it-run",), 2), order="interleave")
+        self.assertTrue(all("warm_up" not in cell for cell in interleaved))
+        with self.assertRaises(RunError):
+            order_cells(plan_cells(prs, ("make-it-run",), 3), order="abba")
+        with self.assertRaises(RunError):
+            order_cells(plan_cells(prs, ("make-it-run",), 2, aa=True), order="abba")
+
+        row = {}
+        attach_schedule(row, ordered[0], "2026-10-12T00:00:00Z")
+        self.assertTrue(row["warm_up"])
+        self.assertEqual(row["schedule_index"], 0)
+        cold = {}
+        attach_schedule(cold, ordered[1], "2026-10-12T00:00:01Z")
+        self.assertFalse(cold["warm_up"])
+        untouched = {}
+        attach_schedule(untouched, sided[0], "")
+        self.assertNotIn("warm_up", untouched)
+
+        out = Path(tempfile.mkdtemp())
+        seen = []
+
+        def worker(spec):
+            seen.append((spec["schedule_index"], spec["side"], spec["trial"], spec["warm_up"]))
+            publish_text(Path(spec["cell_path"]), json.dumps({
+                "task": spec["task"],
+                "trial": spec["trial"],
+                "score": 0 if spec["warm_up"] else 1,
+                "success": not spec["warm_up"],
+                "warm_up": spec["warm_up"],
+                "schedule_index": spec["schedule_index"],
+                "tokens_input_uncached": 1,
+                "tokens_output": 1,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+            }))
+
+        def build_fn(sha, cache, repo=""):
+            return Path("/tmp") / sha
+
+        def assess_fn(binary):
+            return Assessment("native", "listed", {}, False)
+
+        _plan, launched, stopped = drive(
+            prs, ("make-it-run",), 2, out,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+            max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+            order="abba",
+        )
+        self.assertIsNone(stopped)
+        self.assertEqual(launched, 4)
+        self.assertEqual(seen, [
+            (0, "without", 1, True),
+            (1, "with", 1, True),
+            (2, "with", 2, True),
+            (3, "without", 2, True),
+        ])
+        for side in ("without", "with"):
+            saved = [
+                json.loads(line)
+                for line in (out / "1" / f"{side}.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(all(item["warm_up"] is True for item in saved), side)
+
+        task_map = ROOT / "thesis" / "ab" / "fixtures" / "trigger-tasks.csv"
+        buf = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE), "--pr", "984", "--task-map", str(task_map),
+                "--trials", "4", "--order", "abba", "--jobs", "1", "--dry-run",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("order: abba", buf.getvalue())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE), "--pr", "984", "--task-map", str(task_map),
+                "--trials", "3", "--order", "abba", "--dry-run",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("even --trials", err.getvalue())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main([
+                str(FIXTURE), "--pr", "984", "--task-map", str(task_map),
+                "--trials", "2", "--order", "abba", "--aa", "--dry-run",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("does not apply to --aa", err.getvalue())
+
+        summary = Path(tempfile.mkdtemp())
+        root = summary / "9"
+        root.mkdir()
+
+        def scored(score, warm):
+            return {
+                "task": "make-it-run",
+                "score": score,
+                "success": score == 1,
+                "wall_time_s": 10,
+                "turns": 1,
+                "tokens_input_uncached": 10,
+                "tokens_output": 10,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+                "warm_up": warm,
+            }
+
+        (root / "without.jsonl").write_text(
+            json.dumps(scored(0, True)) + "\n" + json.dumps(scored(1, False)) + "\n",
+            encoding="utf-8",
+        )
+        (root / "with.jsonl").write_text(
+            json.dumps(scored(0, True)) + "\n" + json.dumps(scored(1, False)) + "\n",
+            encoding="utf-8",
+        )
+        pr = PullRequest(
+            pr="9", title="Limit", merged="yes", with_sha=SHA_B, without_sha=SHA_A,
+            nearest_release="", category="tool", files_changed="", key_paths="",
+            one_line="", harness_change="Adds a limit.", bugfix_check="",
+        )
+        kept = pr_record(pr, summary)
+        dropped = pr_record(pr, summary, exclude_warm_up=True)
+        self.assertEqual(kept["without"]["n"], 2)
+        self.assertEqual(kept["without"]["mean_score"], 0.5)
+        self.assertEqual(dropped["without"]["n"], 1)
+        self.assertEqual(dropped["without"]["mean_score"], 1.0)
+        self.assertEqual(dropped["with"]["mean_score"], 1.0)
+        self.assertEqual(kept["with"]["mean_score"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,6 +94,13 @@ def countable(row: dict) -> bool:
     return row.get("failure_class") not in EXCLUDED
 
 
+def drop_warm_up(rows: list[dict], *, exclude: bool) -> list[dict]:
+    """Drop cells marked ``warm_up`` when asked. The default keeps every cell."""
+    if not exclude:
+        return rows
+    return [row for row in rows if row.get("warm_up") is not True]
+
+
 def _mean(values: list[float]) -> float | None:
     if not values:
         return None
@@ -432,11 +439,13 @@ def _load_named_side(root: Path, side: str) -> tuple[list[dict], dict | None]:
     return rows, verdict
 
 
-def noise_block(root: Path) -> dict:
+def noise_block(root: Path, *, exclude_warm_up: bool = False) -> dict:
     """Stats for the two parent replicas. The span is noise, not a harness effect."""
     loaded = {side: _load_named_side(root, side) for side in AA_SIDES}
     left_rows, left_verdict = loaded[AA_SIDES[0]]
     right_rows, right_verdict = loaded[AA_SIDES[1]]
+    left_rows = drop_warm_up(left_rows, exclude=exclude_warm_up)
+    right_rows = drop_warm_up(right_rows, exclude=exclude_warm_up)
     incompatible = {}
     if left_verdict is not None:
         incompatible[AA_SIDES[0]] = left_verdict
@@ -497,7 +506,10 @@ def noise_block(root: Path) -> dict:
         "score_span": None if not score_deltas else _mean([abs(item) for item in score_deltas]),
         "paired_tasks": len(score_deltas),
         "no_progress": {
-            side: no_progress_kills(_rows_for_kills(root, side, loaded[side][0]))
+            side: no_progress_kills(drop_warm_up(
+                _rows_for_kills(root, side, loaded[side][0]),
+                exclude=exclude_warm_up,
+            ))
             for side in AA_SIDES
         },
     }
@@ -783,7 +795,7 @@ def _rows_for_kills(root: Path, side: str, jsonl_rows: list[dict]) -> list[dict]
     return jsonl_rows
 
 
-def pr_record(pr: PullRequest, out_dir: Path) -> dict:
+def pr_record(pr: PullRequest, out_dir: Path, *, exclude_warm_up: bool = False) -> dict:
     root = out_dir / pr.pr
     incompatible = {}
     for side in (Side.WITHOUT, Side.WITH):
@@ -794,6 +806,8 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
                 break
     without_rows = [] if "without" in incompatible else load_jsonl(root / "without.jsonl")
     with_rows = [] if "with" in incompatible else load_jsonl(root / "with.jsonl")
+    without_rows = drop_warm_up(without_rows, exclude=exclude_warm_up)
+    with_rows = drop_warm_up(with_rows, exclude=exclude_warm_up)
     left_tool = _load_toolchain(root, "without", without_rows)
     right_tool = _load_toolchain(root, "with", with_rows)
     left = side_stats(without_rows)
@@ -822,17 +836,29 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         "headroom": headroom_report(without_rows, with_rows),
         "comparison": "ab",
         "no_progress": {
-            "without": no_progress_kills(_rows_for_kills(root, "without", without_rows)),
-            "with": no_progress_kills(_rows_for_kills(root, "with", with_rows)),
+            "without": no_progress_kills(drop_warm_up(
+                _rows_for_kills(root, "without", without_rows),
+                exclude=exclude_warm_up,
+            )),
+            "with": no_progress_kills(drop_warm_up(
+                _rows_for_kills(root, "with", with_rows),
+                exclude=exclude_warm_up,
+            )),
         },
         "effects": {
-            "without": effect_counts(_rows_for_kills(root, "without", without_rows)),
-            "with": effect_counts(_rows_for_kills(root, "with", with_rows)),
+            "without": effect_counts(drop_warm_up(
+                _rows_for_kills(root, "without", without_rows),
+                exclude=exclude_warm_up,
+            )),
+            "with": effect_counts(drop_warm_up(
+                _rows_for_kills(root, "with", with_rows),
+                exclude=exclude_warm_up,
+            )),
         },
     }
     if has_aa and not has_ab:
         record["comparison"] = "parent-vs-parent"
-        record["noise"] = noise_block(root)
+        record["noise"] = noise_block(root, exclude_warm_up=exclude_warm_up)
         record["delta_score"] = None
         record["delta_ci"] = None
         record["paired_tasks"] = 0
@@ -841,7 +867,7 @@ def pr_record(pr: PullRequest, out_dir: Path) -> dict:
         record["headroom"] = {"tasks": [], "delta_pass_rate": None, "delta_ci": None, "n": 0}
         record["incompatible"] = {}
     elif has_aa:
-        record["noise"] = noise_block(root)
+        record["noise"] = noise_block(root, exclude_warm_up=exclude_warm_up)
     return record
 
 
@@ -1255,8 +1281,11 @@ def render_csv(records: list[dict]) -> str:
     return buf.getvalue()
 
 
-def write_report(out_dir: Path, prs: tuple[PullRequest, ...], md_path: Path, csv_path: Path) -> None:
-    records = [pr_record(pr, out_dir) for pr in prs]
+def write_report(out_dir: Path, prs: tuple[PullRequest, ...], md_path: Path, csv_path: Path,
+                 *, exclude_warm_up: bool = False) -> None:
+    records = [
+        pr_record(pr, out_dir, exclude_warm_up=exclude_warm_up) for pr in prs
+    ]
     md_path.write_text(render_markdown(records), encoding="utf-8")
     csv_path.write_text(render_csv(records), encoding="utf-8")
 
@@ -1266,6 +1295,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("prs", type=Path, help="PR list CSV or JSONL")
     parser.add_argument("--results", type=Path, default=Path("results/ab"))
     parser.add_argument("--out", type=Path, default=None, help="directory for summary.md and summary.csv")
+    parser.add_argument(
+        "--exclude-warm-up",
+        action="store_true",
+        help=(
+            "Leave cells marked warm_up out of the summary. "
+            "The default counts every cell, including warm-up cells."
+        ),
+    )
     args = parser.parse_args(argv)
     out = args.out or args.results
     out.mkdir(parents=True, exist_ok=True)
@@ -1274,7 +1311,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    write_report(args.results, prs, out / "summary.md", out / "summary.csv")
+    write_report(
+        args.results, prs, out / "summary.md", out / "summary.csv",
+        exclude_warm_up=args.exclude_warm_up,
+    )
     print(out / "summary.md")
     print(out / "summary.csv")
     return 0

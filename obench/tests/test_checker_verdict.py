@@ -171,5 +171,44 @@ class BareCheckerTests(unittest.TestCase):
         self.assertIn(VERDICT_FAIL, missed.stdout)
 
 
+OMP_TRIGGER_TASKS = (
+    "trig-omp-bugfix-regress",
+    "trig-omp-experiment",
+    "trig-omp-fanout",
+    "trig-omp-multiedit",
+    "trig-omp-multistep",
+    "trig-omp-unusedparam",
+)
+
+
+class OmpTriggerCheckerTests(unittest.TestCase):
+    def test_untouched_workspace_fails_with_an_agreeing_verdict(self):
+        env = checker_environ({
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", "/tmp"),
+        })
+        for name in OMP_TRIGGER_TASKS:
+            with self.subTest(task=name):
+                src = TASKS / name
+                self.assertTrue((src / "checker.sh").is_file(), name)
+                work = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+                shutil.copytree(src / "workspace", work, dirs_exist_ok=True)
+                result = subprocess.run(
+                    ["bash", str(src / "checker.sh")],
+                    cwd=work,
+                    env=checker_environ({**env, "TASK_DIR": str(src)}),
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("OBENCH_VERDICT:", result.stdout)
+                self.assertTrue(
+                    verdict_agrees(result.returncode, result.stdout),
+                    result.stdout + result.stderr,
+                )
+                self.assertIn(VERDICT_FAIL, result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
