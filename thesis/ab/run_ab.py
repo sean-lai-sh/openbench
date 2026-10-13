@@ -241,6 +241,32 @@ def cell_file(out_dir: Path, pr: str, side: str, task: str, trial: int) -> Path:
     return out_dir / pr / "cells" / side / task_component(task) / f"{trial}.json"
 
 
+def cell_workspace_dir(cell_path: Path | str) -> Path:
+    """Final workspace for one Pi/omp cell, under that cell's output directory."""
+    path = Path(cell_path)
+    return path.parent / path.stem / "workspace"
+
+
+def keep_cell_workspace(workdir: str, dest: Path) -> None:
+    """Copy the cell's final workspace so detectors can read the real files."""
+    src = Path(workdir)
+    if not src.is_dir():
+        return
+    dest = Path(dest)
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest, symlinks=True)
+
+
+def _export_no_progress(spec: dict) -> None:
+    limit = spec.get("no_progress_s")
+    if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit > 0:
+        os.environ["OBENCH_NO_PROGRESS_S"] = str(float(limit))
+    else:
+        os.environ.pop("OBENCH_NO_PROGRESS_S", None)
+
+
 def read_cell(path: Path) -> dict | None:
     if not path.is_file():
         return None
@@ -670,11 +696,7 @@ def execute_cell(spec: dict) -> None:
                 os.environ["OBENCH_OPENCODE_EVIDENCE_DIR"] = evidence
             else:
                 os.environ.pop("OBENCH_OPENCODE_EVIDENCE_DIR", None)
-            limit = spec.get("no_progress_s")
-            if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit > 0:
-                os.environ["OBENCH_NO_PROGRESS_S"] = str(limit)
-            else:
-                os.environ.pop("OBENCH_NO_PROGRESS_S", None)
+            _export_no_progress(spec)
             cell_ledger = str(spec.get("cell_ledger") or "").strip()
             if cell_ledger:
                 os.environ["OBENCH_CELL_LEDGER"] = cell_ledger
@@ -700,7 +722,7 @@ def execute_cell(spec: dict) -> None:
             os.environ.pop("OBENCH_WEBFETCH_COLOUR", None)
             os.environ.pop("OBENCH_WEBFETCH_SEED", None)
             os.environ.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
-            os.environ.pop("OBENCH_NO_PROGRESS_S", None)
+            _export_no_progress(spec)
             os.environ.pop("OBENCH_CELL_LEDGER", None)
             evidence = str(spec.get("evidence_dir") or "").strip()
             if evidence:
@@ -715,6 +737,14 @@ def execute_cell(spec: dict) -> None:
         adapter = load_adapter(spec["adapters_dir"], harness)
         harness_version = adapter.version() if hasattr(adapter, "version") else None
         transcripts_dir = str(spec.get("transcripts_dir") or "").strip() or None
+        workspace_observer = None
+        kept_workspace = None
+        if harness in {"pi", "omp"}:
+            kept_workspace = cell_workspace_dir(spec["cell_path"])
+
+            def workspace_observer(workdir, dest=kept_workspace):
+                keep_cell_workspace(workdir, dest)
+
         row = run_cell(
             harness,
             spec["task"],
@@ -729,7 +759,10 @@ def execute_cell(spec: dict) -> None:
             version_drift=True,
             transcripts_dir=transcripts_dir,
             results_stem=str(spec.get("side") or ""),
+            workspace_observer=workspace_observer,
         )
+        if isinstance(row, dict) and kept_workspace is not None and kept_workspace.is_dir():
+            row["final_workspace"] = str(kept_workspace)
         installed = row.pop("installed_anthropic", None) if isinstance(row, dict) else None
         installed_text = installed if isinstance(installed, str) else None
         if isinstance(row, dict):

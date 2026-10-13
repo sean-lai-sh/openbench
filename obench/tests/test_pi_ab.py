@@ -52,6 +52,7 @@ class _Stub(BaseHTTPRequestHandler):
             "body": raw,
             "beta": self.headers.get("anthropic-beta"),
             "auth": self.headers.get("Authorization"),
+            "user_agent": self.headers.get("User-Agent"),
         })
         if self.path.endswith(":streamRawPredict"):
             self.send_response(200)
@@ -371,6 +372,154 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(json_row["tokens_cache_read"], 1)
         self.assertEqual(json_row["tokens_cache_write"], 0)
 
+    def test_cc_identity_strip_is_a_safety_net(self):
+        httpd, thread, upstream = _listen()
+        ledger = Path(tempfile.mkdtemp())
+        proxy = start_proxy("proj", token="tok", upstream=upstream, ledger_dir=ledger)
+        self.addCleanup(proxy.close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        billing = (
+            "x-anthropic-billing-header: cc_version=2.1.88; "
+            "cc_entrypoint=cli; cch=abc123;\n"
+            "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+        )
+        kept_system = "You are working in a repository. Keep this."
+        messages = [{
+            "role": "user",
+            "content": [{"type": "text", "text": "You are Claude Code, do not strip this."}],
+        }]
+        tools = [{"name": "bash", "description": "run a command"}]
+        payload = {
+            "model": "claude-opus-5-5",
+            "max_tokens": 128,
+            "temperature": 0,
+            "system": [
+                {"type": "text", "text": billing},
+                {"type": "text", "text": kept_system},
+            ],
+            "messages": messages,
+            "metadata": {"user_id": "user_01", "extra": "stay"},
+            "tools": tools,
+            "betas": [
+                "claude-code-20250219",
+                "oauth-2025-04-20",
+                "files-api-2025-04-14",
+            ],
+        }
+        status, _body = _post(
+            proxy.base_url + "/c/cc/v1/messages?beta=true&other=1",
+            json.dumps(payload).encode(),
+            {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer proxy",
+                "User-Agent": "claude-cli/2.1.88",
+                "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,files-api-2025-04-14",
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        self.assertEqual(status, 200)
+        seen = httpd.seen[-1]
+        self.assertTrue(seen["path"].endswith(":rawPredict?other=1"))
+        self.assertNotIn("beta=true", seen["path"])
+        self.assertEqual(seen["auth"], "Bearer tok")
+        self.assertEqual(seen["user_agent"], "openbench")
+        self.assertEqual(seen["beta"], "files-api-2025-04-14")
+        forwarded = json.loads(seen["body"])
+        self.assertEqual(forwarded, {
+            "max_tokens": 128,
+            "temperature": 0,
+            "system": [{"type": "text", "text": kept_system}],
+            "messages": messages,
+            "metadata": {"extra": "stay"},
+            "tools": tools,
+            "betas": ["files-api-2025-04-14"],
+            "anthropic_version": "vertex-2023-10-16",
+        })
+        row = json.loads((ledger / "cc.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(row["cc_identity_stripped"], {
+            "stripped": True,
+            "removed": [
+                "query:beta",
+                "system-billing-header",
+                "identity-line",
+                "metadata.user_id",
+                "beta:claude-code-20250219",
+                "beta:oauth-2025-04-20",
+                "user-agent",
+                "authorization",
+            ],
+        })
+
+        legacy = {
+            "model": "claude-opus-5-5",
+            "max_tokens": 8,
+            "system": [{
+                "type": "text",
+                "text": (
+                    "x-anthropic-billing-header: cc_version=1.0.0; "
+                    "cc_entrypoint=cli; cch=old;\n"
+                    "You are Claude Code, Anthropic's official CLI for Claude."
+                ),
+            }],
+            "messages": [{"role": "user", "content": "keep"}],
+        }
+        status, _body = _post(
+            proxy.base_url + "/c/legacy/v1/messages",
+            json.dumps(legacy).encode(),
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        legacy_body = json.loads(httpd.seen[-1]["body"])
+        self.assertNotIn("system", legacy_body)
+        self.assertEqual(legacy_body["messages"], legacy["messages"])
+        self.assertEqual(legacy_body["max_tokens"], 8)
+        legacy_row = json.loads((ledger / "legacy.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(
+            legacy_row["cc_identity_stripped"]["removed"],
+            ["system-billing-header", "identity-line"],
+        )
+
+        clean = {
+            "model": "claude-opus-5-5",
+            "max_tokens": 8,
+            "temperature": 0.2,
+            "system": [{"type": "text", "text": "You are a careful coding agent."}],
+            "messages": [{"role": "user", "content": "hello"}],
+            "metadata": {"session": "keep"},
+            "tools": [{"name": "bash"}],
+        }
+        status, _body = _post(
+            proxy.base_url + "/c/clean/v1/messages",
+            json.dumps(clean).encode(),
+            {
+                "Content-Type": "application/json",
+                "User-Agent": "omp/14.5.8",
+                "Authorization": "Bearer sk-test",
+                "anthropic-beta": "files-api-2025-04-14",
+            },
+        )
+        self.assertEqual(status, 200)
+        clean_seen = httpd.seen[-1]
+        self.assertEqual(clean_seen["user_agent"], "openbench")
+        self.assertEqual(clean_seen["auth"], "Bearer tok")
+        self.assertEqual(clean_seen["beta"], "files-api-2025-04-14")
+        self.assertEqual(json.loads(clean_seen["body"]), {
+            "max_tokens": 8,
+            "temperature": 0.2,
+            "system": [{"type": "text", "text": "You are a careful coding agent."}],
+            "messages": [{"role": "user", "content": "hello"}],
+            "metadata": {"session": "keep"},
+            "tools": [{"name": "bash"}],
+            "anthropic_version": "vertex-2023-10-16",
+        })
+        clean_row = json.loads((ledger / "clean.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(clean_row["cc_identity_stripped"], {
+            "stripped": False,
+            "removed": [],
+        })
+
 
 class TestModelFile(unittest.TestCase):
     def test_json_and_yaml_follow_the_checkout(self):
@@ -384,6 +533,9 @@ class TestModelFile(unittest.TestCase):
         self.assertEqual(model["id"], "claude-opus-5-5")
         self.assertEqual(model["contextWindow"], 1000000)
         self.assertEqual(model["maxTokens"], 128000)
+        self.assertEqual(provider["auth"], "apiKey")
+        self.assertIs(model["reasoning"], True)
+        self.assertNotIn("thinking", model)
         self.assertNotIn("compat", model)
         self.assertTrue(supports_custom_models(early))
         empty = Path(tempfile.mkdtemp())
@@ -395,6 +547,30 @@ class TestModelFile(unittest.TestCase):
         self.assertIn("supportsStrictTools: true", yaml)
         plain = model_document(early, "http://127.0.0.1:9", "models.yml")
         self.assertNotIn("supportsStrictTools", plain)
+        self.assertIn('auth: "apiKey"', plain)
+        self.assertIn("reasoning: true", plain)
+
+    def test_auth_is_api_key_and_thinking_pins_are_optional(self):
+        root = _tree("models.json\n")
+        pinned = json.loads(model_document(
+            root, "http://127.0.0.1:9", "models.json", adaptive_thinking=True,
+        ))
+        model = pinned["providers"]["vertex-anthropic"]["models"][0]
+        self.assertEqual(pinned["providers"]["vertex-anthropic"]["auth"], "apiKey")
+        self.assertEqual(model["thinking"], {"type": "adaptive"})
+        self.assertIs(model["reasoning"], True)
+        quiet = json.loads(model_document(
+            root, "http://127.0.0.1:9", "models.json", reasoning=False,
+        ))
+        quiet_model = quiet["providers"]["vertex-anthropic"]["models"][0]
+        self.assertIs(quiet_model["reasoning"], False)
+        self.assertNotIn("thinking", quiet_model)
+        yaml = model_document(
+            root, "http://127.0.0.1:9", "models.yml", reasoning=False,
+        )
+        self.assertIn("reasoning: false", yaml)
+        self.assertIn('auth: "apiKey"', yaml)
+        self.assertNotIn("thinking:", yaml)
 
 
 class TestHeadless(unittest.TestCase):

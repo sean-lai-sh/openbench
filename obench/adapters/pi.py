@@ -30,8 +30,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -195,6 +197,76 @@ _INPUT_MARKERS = (
 )
 
 
+_TOOL_STARTS = (
+    '"type":"tool_execution_start"',
+    '"type": "tool_execution_start"',
+    '"type":"toolCall"',
+    '"type": "toolCall"',
+)
+_TOOL_ENDS = (
+    '"type":"tool_execution_end"',
+    '"type": "tool_execution_end"',
+    '"type":"toolResult"',
+    '"type": "toolResult"',
+)
+
+
+def _no_progress_limit():
+    raw = os.environ.get("OBENCH_NO_PROGRESS_S", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.0
+    if value <= 0:
+        return 0.0
+    return value
+
+
+def _format_seconds(value):
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.3f}".rstrip("0").rstrip(".")
+
+
+def _timeout_error(kind, timeout_s):
+    if kind == "tool":
+        limit = _no_progress_limit()
+        seconds = limit if limit > 0 else timeout_s
+        return f"timeout after {_format_seconds(seconds)}s"
+    return f"timeout after {timeout_s}s"
+
+
+def _stop_fields(stop):
+    """A hung tool call is a timeout. The cell cap stays a plain timeout error."""
+    if stop == "tool":
+        return {"failure_class": "timeout"}
+    return {}
+
+
+def _kill_process_group(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            return
+
+
+def _line_tool_state(line):
+    """``start`` while a tool call is open, ``end`` once its result arrives."""
+    ended = any(marker in line for marker in _TOOL_ENDS)
+    started = any(marker in line for marker in _TOOL_STARTS)
+    if started and not ended:
+        return "start"
+    if ended:
+        return "end"
+    return None
+
+
 def _run_streaming(cmd, cwd, timeout_s, env, stop_box=None):
     """Run pi consuming stdout line-by-line, dropping per-token delta events.
 
@@ -205,29 +277,47 @@ def _run_streaming(cmd, cwd, timeout_s, env, stop_box=None):
     events, which carry final content and usage — so delta lines are discarded
     at read time instead of buffered.
 
-    Returns (stdout_text, stderr_text, returncode, timed_out).
+    An open tool call that then goes silent for ``OBENCH_NO_PROGRESS_S`` kills
+    the whole process group. That stop reason is ``tool`` (a timeout). The cell
+    cap is ``cap``. A clean exit returns ``None``.
+
+    Returns (stdout_text, stderr_text, returncode, stop).
     """
     import threading
 
+    limit = _no_progress_limit()
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, stdin=subprocess.DEVNULL, env=env,
+        start_new_session=True,
     )
     out_lines, err_chunks = [], []
+    state = {"tool": False, "progress": time.monotonic()}
+    lock = threading.Lock()
 
     def _stop(line):
         if stop_box is None:
             return False
         if any(marker in line for marker in _INPUT_MARKERS):
             stop_box.append("waiting for input")
-            proc.kill()
+            _kill_process_group(proc)
             return True
         return False
+
+    def _note(line):
+        kind = _line_tool_state(line)
+        with lock:
+            state["progress"] = time.monotonic()
+            if kind == "start":
+                state["tool"] = True
+            elif kind == "end":
+                state["tool"] = False
 
     def _drain_stdout():
         for line in proc.stdout:
             if _stop(line):
                 break
+            _note(line)
             if _DELTA_MARKER not in line:
                 out_lines.append(line)
         proc.stdout.close()
@@ -243,16 +333,41 @@ def _run_streaming(cmd, cwd, timeout_s, env, stop_box=None):
     t_err = threading.Thread(target=_drain_stderr, daemon=True)
     t_out.start()
     t_err.start()
-    timed_out = False
+    stop = None
+    start = time.monotonic()
     try:
-        proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        proc.kill()
-        proc.wait()
+        while True:
+            if proc.poll() is not None:
+                break
+            now = time.monotonic()
+            with lock:
+                idle = now - state["progress"]
+                tool_open = state["tool"]
+            if limit > 0 and tool_open and idle >= limit:
+                stop = "tool"
+                _kill_process_group(proc)
+                break
+            if now - start >= timeout_s:
+                stop = "cap"
+                _kill_process_group(proc)
+                break
+            time.sleep(0.05)
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(proc)
+                proc.wait(timeout=5)
+    finally:
+        if proc.poll() is None:
+            _kill_process_group(proc)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
     t_out.join(timeout=10)
     t_err.join(timeout=10)
-    return "".join(out_lines), "".join(err_chunks), proc.returncode, timed_out
+    return "".join(out_lines), "".join(err_chunks), proc.returncode, stop
 
 
 def _err_tail(exc, limit=2000):
@@ -836,15 +951,16 @@ def run_routed(
             "--mode", "json",
             instruction,
         ]
-        stdout_text, stderr_text, returncode, timed_out = _run_streaming(
+        stdout_text, stderr_text, returncode, stop = _run_streaming(
             cmd, workdir, timeout_s, _routed_child_env(iso_home))
         combined = stdout_text + stderr_text
-        if timed_out:
+        if stop:
             return {
-                "completed": False, "error": f"timeout after {timeout_s}s",
+                "completed": False, "error": _timeout_error(stop, timeout_s),
                 "output_tail": combined[-2000:], "full_output": combined,
                 "tokens": None, "turns": None, "cmd": cmd,
                 **_empty_token_usage(),
+                **_stop_fields(stop),
             }
         try:
             tokens, turns, tail, token_usage = _parse_json_with_usage(stdout_text)
@@ -909,7 +1025,7 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
         ]
         if session_dir:
             cmd.extend(["--session-dir", session_dir])
-        stdout_text, stderr_text, returncode, timed_out = _run_streaming(
+        stdout_text, stderr_text, returncode, stop = _run_streaming(
             cmd, workdir, timeout_s, env, stop_box=stop_box)
         combined = stdout_text + stderr_text
         if session_dir:
@@ -920,12 +1036,12 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
                         fh.write(stdout_text)
                 except OSError:
                     pass
-        turn_error = None if stop_box or timed_out else _last_turn_error(stdout_text)
+        turn_error = None if stop_box or stop else _last_turn_error(stdout_text)
         if stop_box:
             error = stop_box[0]
             completed = False
-        elif timed_out:
-            error = f"timeout after {timeout_s}s"
+        elif stop:
+            error = _timeout_error(stop, timeout_s)
             completed = False
         elif turn_error:
             # Pi/omp exit 0 when the provider rejects the turn.
@@ -937,7 +1053,7 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
         tokens, turns, tail, token_usage = _parse_json_with_usage(stdout_text)
         if not tail:
             tail = combined[-2000:]
-        return {
+        result = {
             "completed": completed,
             "error": error,
             "output_tail": tail,
@@ -949,6 +1065,9 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
             "model_max_tokens": 128000,
             **token_usage,
         }
+        if stop == "tool":
+            result["failure_class"] = "timeout"
+        return result
     finally:
         shutil.rmtree(iso_home, ignore_errors=True)
 
@@ -1034,19 +1153,20 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 instruction,
             ]
 
-        stdout_text, stderr_text, returncode, timed_out = _run_streaming(
+        stdout_text, stderr_text, returncode, stop = _run_streaming(
             cmd, workdir, timeout_s, env)
-        if timed_out:
+        if stop:
             full_output = stdout_text + stderr_text
             return {
                 "completed": False,
-                "error": f"timeout after {timeout_s}s",
+                "error": _timeout_error(stop, timeout_s),
                 "output_tail": full_output[-2000:],
                 "full_output": full_output,
                 "tokens": None,
                 "turns": None,
                 "cmd": cmd,
                 **_empty_token_usage(),
+                **_stop_fields(stop),
             }
 
         combined = stdout_text + stderr_text

@@ -2332,6 +2332,18 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
             )
 
+        # A hung tool call is killed at the no-progress limit. Do not let the
+        # checker turn that into a solved cell or an infra row.
+        if not row["completed"] and result.get("failure_class") == "timeout":
+            row["failure_class"] = "timeout"
+            row["failure_reason"] = str(result.get("error") or "timeout")
+            row["success"] = False
+            row["score"] = 0.0
+            row["checker_exit"] = "timeout"
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
+            )
+
         # The checker is the sole authority on task success (and score). Capture
         # the workspace just before it runs so unauditable rows can be replayed.
         try:

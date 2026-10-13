@@ -63,24 +63,40 @@ def supports_strict_tools(root: Path) -> bool:
     return False
 
 
-def model_document(root: Path, proxy_base: str, filename: str) -> str:
-    """Return the models file body for ``proxy_base`` (no ``/v1`` suffix)."""
+def model_document(root: Path, proxy_base: str, filename: str, *,
+                   adaptive_thinking: bool = False,
+                   reasoning: bool = True) -> str:
+    """Return the models file body for ``proxy_base`` (no ``/v1`` suffix).
+
+    The vertex-anthropic provider sets ``auth`` to ``apiKey``. From Oh My Pi
+    14.5.8 on, a custom anthropic-messages provider with no ``auth`` is treated
+    as an OAuth Claude Code proxy and attaches the billing block and the
+    ``claude-cli`` user agent. ``apiKey`` opts out of that.
+
+    ``adaptive_thinking`` pins ``thinking.type`` to ``adaptive``. It is off
+    unless a caller opts in. ``reasoning`` defaults to true. 12–13.x builds
+    send the old thinking format, so those checkouts need ``reasoning=False``
+    or the adaptive pin.
+    """
     model = {
         "id": MODEL_ID,
         "name": "Claude Opus 5.5",
         "api": "anthropic-messages",
-        "reasoning": True,
+        "reasoning": bool(reasoning),
         "input": ["text", "image"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": CONTEXT,
         "maxTokens": MAX_TOKENS,
     }
+    if adaptive_thinking:
+        model["thinking"] = {"type": "adaptive"}
     if supports_strict_tools(root):
         model["compat"] = {"supportsStrictTools": True}
     provider = {
         "baseUrl": proxy_base,
         "apiKey": "proxy",
         "api": "anthropic-messages",
+        "auth": "apiKey",
         "models": [model],
     }
     document = {"providers": {PROVIDER: provider}}
