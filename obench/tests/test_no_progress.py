@@ -403,6 +403,20 @@ class ExecuteCellTests(unittest.TestCase):
         spec.update(extra)
         return spec
 
+    def _omp_spec(self, root: Path, binary: Path, **extra):
+        spec = self._spec(root, binary, harness="omp", vertex={
+            "bin": str(binary),
+            "models_body": "{}\n",
+            "models_filename": "models.json",
+            "provider": "vertex-anthropic",
+            "model_id": "claude-opus-5-5",
+            "extra_args": [],
+            "agent_env": "OMP_CODING_AGENT_DIR",
+            "home_dir": ".omp",
+        })
+        spec.update(extra)
+        return spec
+
     def test_execute_cell_records_no_progress(self):
         from thesis.ab.run_ab import execute_cell
         root = Path(tempfile.mkdtemp())
@@ -479,6 +493,120 @@ class ExecuteCellTests(unittest.TestCase):
         row = json.loads((root / "cell.json").read_text(encoding="utf-8"))
         self.assertNotEqual(row.get("infra_reason"), "no_progress")
         self.assertTrue(row["success"])
+
+    def test_pi_cell_keeps_the_final_workspace(self):
+        from thesis.ab.run_ab import cell_workspace_dir, execute_cell, keep_cell_workspace
+        root = Path(tempfile.mkdtemp())
+        _task(root)
+        source = root / "src"
+        source.mkdir()
+        (source / "kept.txt").write_text("real file\n", encoding="utf-8")
+        link = source / "link.txt"
+        link.symlink_to("kept.txt")
+        dest = root / "copied"
+        keep_cell_workspace(str(source), dest)
+        self.assertEqual((dest / "kept.txt").read_text(encoding="utf-8"), "real file\n")
+        self.assertTrue((dest / "link.txt").is_symlink())
+
+        binary = root / "omp"
+        _binary(binary, """\
+            #!/usr/bin/env python3
+            import json, sys
+            from pathlib import Path
+            if "--version" in sys.argv:
+                print("omp-test")
+                raise SystemExit(0)
+            Path("kept.txt").write_text("from the cell\\n", encoding="utf-8")
+            print(json.dumps({
+                "type": "turn_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "done"}],
+                    "usage": {
+                        "input": 1, "cacheRead": 0, "cacheWrite": 0,
+                        "output": 1, "reasoning": 0, "totalTokens": 2,
+                    },
+                },
+            }))
+        """)
+        cell = root / "cells" / "with" / "demo" / "1.json"
+        execute_cell(self._omp_spec(root, binary, cell_path=str(cell)))
+        workspace = cell_workspace_dir(cell)
+        self.assertEqual(
+            workspace,
+            root / "cells" / "with" / "demo" / "1" / "workspace",
+        )
+        self.assertEqual((workspace / "kept.txt").read_text(encoding="utf-8"), "from the cell\n")
+        row = json.loads(cell.read_text(encoding="utf-8"))
+        self.assertEqual(row["final_workspace"], str(workspace))
+        self.assertTrue(row["success"])
+
+    def test_hung_tool_call_is_a_timeout(self):
+        from thesis.ab.run_ab import execute_cell
+        root = Path(tempfile.mkdtemp())
+        _task(root)
+        marker = root / "hung.json"
+        binary = root / "omp"
+        _binary(binary, """\
+            #!/usr/bin/env python3
+            import json, os, sys, time
+            from pathlib import Path
+            if "--version" in sys.argv:
+                print("omp-test")
+                raise SystemExit(0)
+            marker = Path(os.environ["OBENCH_HUNG_MARKER"])
+            child = os.fork()
+            if child == 0:
+                time.sleep(60)
+                raise SystemExit(0)
+            marker.write_text(json.dumps({"parent": os.getpid(), "child": child}))
+            print('{"type":"tool_execution_start","tool":"bash"}', flush=True)
+            time.sleep(60)
+        """)
+        saved = os.environ.get("OBENCH_HUNG_MARKER")
+        os.environ["OBENCH_HUNG_MARKER"] = str(marker)
+        self.addCleanup(lambda: os.environ.pop("OBENCH_HUNG_MARKER", None) if saved is None else os.environ.__setitem__("OBENCH_HUNG_MARKER", saved))
+        cell = root / "cell.json"
+        started = time.monotonic()
+        execute_cell(self._omp_spec(
+            root, binary, cell_path=str(cell), no_progress_s=0.5, timeout_s=8,
+        ))
+        elapsed = time.monotonic() - started
+        row = json.loads(cell.read_text(encoding="utf-8"))
+        self.assertLess(elapsed, 4)
+        self.assertGreaterEqual(row["t_agent_s"], 0.4)
+        self.assertEqual(row["failure_class"], "timeout")
+        self.assertNotEqual(row.get("failure_class"), "infra")
+        self.assertIsNone(row.get("infra_reason"))
+        self.assertEqual(row["checker_exit"], "timeout")
+        self.assertEqual(row["score"], 0.0)
+        self.assertFalse(row["success"])
+        self.assertFalse(row["completed"])
+        self.assertEqual(row["error"], "timeout after 0.5s")
+        info = json.loads(marker.read_text(encoding="utf-8"))
+
+        def gone(pid):
+            for _ in range(40):
+                proc = Path(f"/proc/{pid}")
+                if not proc.exists():
+                    return True
+                state = ""
+                for line in (proc / "status").read_text(encoding="utf-8").splitlines():
+                    if line.startswith("State:"):
+                        state = line
+                        break
+                if "zombie" in state.lower() or " Z " in f" {state} ":
+                    return True
+                time.sleep(0.05)
+            return False
+
+        self.assertTrue(gone(info["parent"]))
+        self.assertTrue(gone(info["child"]))
+        for pid in (info["parent"], info["child"]):
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

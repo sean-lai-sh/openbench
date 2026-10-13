@@ -89,6 +89,20 @@ def crates_match_release(root: Path, version: str) -> bool:
     return bool(tagged) and tagged == head
 
 
+PINNED_BUN = "1.4.3"
+
+
+def bun_version_for_build(root: Path) -> str:
+    """Bun for this checkout. Commits with no pin use ``PINNED_BUN``.
+
+    d8782684 and e4fa6aff list neither ``packageManager`` nor ``engines.bun``.
+    """
+    try:
+        return bun_requirement(root)
+    except BuildError:
+        return PINNED_BUN
+
+
 def native_asset_name() -> str:
     system = platform.system().lower()
     machine = platform.machine().lower()
@@ -109,40 +123,173 @@ def native_asset_name() -> str:
     return f"pi_natives.{os_name}-{arch}.node"
 
 
-def install_published_natives(root: Path, version: str, opener=None) -> None:
-    """Drop the GitHub release ``.node`` where the natives loader looks."""
-    name = native_asset_name()
-    url = f"https://github.com/can1357/oh-my-pi/releases/download/v{version}/{name}"
-    if opener is None:
-        import urllib.request
+def native_asset_candidates() -> list[str]:
+    """Release asset names, legacy first, then the renamed modern/baseline pair."""
+    legacy = native_asset_name()
+    stem = legacy[: -len(".node")]
+    return [legacy, f"{stem}-modern.node", f"{stem}-baseline.node"]
 
-        def opener(target: str) -> bytes:  # noqa: A001 - local default
-            request = urllib.request.Request(target, headers={"User-Agent": "openbench"})
-            with urllib.request.urlopen(request, timeout=120) as response:
-                return response.read()
-    body = opener(url)
-    if not body:
-        raise BuildError(f"empty pi-natives asset {name}")
+
+def _platform_token() -> str:
+    legacy = native_asset_name()
+    return legacy[len("pi_natives."): -len(".node")]
+
+
+def npm_native_specs(version: str) -> tuple[str, str]:
+    """Generic package, then the platform package that ships the ``.node`` files."""
+    token = _platform_token()
+    return (
+        f"@oh-my-pi/pi-natives@{version}",
+        f"@oh-my-pi/pi-natives-{token}@{version}",
+    )
+
+
+def _default_opener(target: str) -> bytes:
+    import urllib.request
+
+    request = urllib.request.Request(target, headers={"User-Agent": "openbench"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read()
+
+
+def _github_native_files(version: str, opener) -> tuple[dict[str, bytes], bool]:
+    """Download release assets. The bool is true when a response body was empty."""
+    files: dict[str, bytes] = {}
+    saw_empty = False
+    base = f"https://github.com/can1357/oh-my-pi/releases/download/v{version}/"
+    for name in native_asset_candidates():
+        try:
+            body = opener(base + name)
+        except Exception:
+            continue
+        if not body:
+            saw_empty = True
+            continue
+        files[name] = body
+        if name == native_asset_name():
+            return files, saw_empty
+    return files, saw_empty
+
+
+def _npm_pack_natives(spec: str) -> dict[str, bytes]:
+    """``npm pack`` one natives package and return its platform ``.node`` files."""
+    import tarfile
+    import tempfile
+
+    token = _platform_token()
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.run(
+            ["npm", "pack", spec, "--silent"],
+            cwd=tmp,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            return {}
+        tarballs = list(Path(tmp).glob("*.tgz"))
+        if not tarballs:
+            return {}
+        found: dict[str, bytes] = {}
+        with tarfile.open(tarballs[0], "r:gz") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                base = Path(member.name).name
+                if not base.endswith(".node") or token not in base:
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                body = extracted.read()
+                if body:
+                    found[base] = body
+        return found
+
+
+def _npm_native_files(version: str, fetch) -> dict[str, bytes]:
+    if fetch is None:
+        fetch = _npm_pack_natives
+    found: dict[str, bytes] = {}
+    for spec in npm_native_specs(version):
+        try:
+            files = fetch(spec)
+        except Exception:
+            continue
+        if not isinstance(files, dict):
+            continue
+        for name, body in files.items():
+            base = Path(str(name)).name
+            if body and base.endswith(".node") and _platform_token() in base:
+                found[base] = body
+    return found
+
+
+def _alias_bytes(files: dict[str, bytes]) -> bytes:
+    token = _platform_token()
+    for name, body in files.items():
+        if name.endswith(f"{token}-modern.node"):
+            return body
+    legacy = native_asset_name()
+    if legacy in files:
+        return files[legacy]
+    for name, body in files.items():
+        if token in name and name.endswith(".node"):
+            return body
+    raise BuildError("no platform pi-natives binary")
+
+
+def install_native_files(root: Path, files: dict[str, bytes]) -> None:
+    """Copy ``.node`` files where the natives loader looks, and alias one."""
+    if not files:
+        raise BuildError("empty pi-natives asset")
     dest_dir = root / "packages" / "natives" / "native"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    (dest_dir / name).write_bytes(body)
-    (dest_dir / "pi_natives.node").write_bytes(body)
+    for name, body in files.items():
+        (dest_dir / Path(name).name).write_bytes(body)
+    (dest_dir / "pi_natives.node").write_bytes(_alias_bytes(files))
 
 
-def prepare_natives(root: Path, opener=None) -> str:
-    """``published`` when the release binary can be reused, else ``cargo`` or ``skip``.
+def install_published_natives(root: Path, version: str, opener=None) -> None:
+    """Drop the GitHub release ``.node`` where the natives loader looks."""
+    if opener is None:
+        opener = _default_opener
+    files, saw_empty = _github_native_files(version, opener)
+    if not files:
+        if saw_empty:
+            raise BuildError(f"empty pi-natives asset {native_asset_name()}")
+        raise BuildError(f"missing pi-natives asset for {version}")
+    install_native_files(root, files)
 
-    ``build:native`` always cargo-builds. When ``crates/`` matches the natives
-    package version's release, the published binary is the same artifact and
-    rustup can stay uninstalled (its shim would build every rust-toolchain
-    target, including Windows, on this host).
+
+def prepare_natives(root: Path, opener=None, npm_fetch=None) -> str:
+    """``published`` when a prebuilt binary can be reused, else ``cargo`` or ``skip``.
+
+    GitHub renamed the asset to ``pi_natives.<os>-<arch>-{modern,baseline}.node``
+    and later tags publish no asset. Those builds take
+    ``@oh-my-pi/pi-natives`` and then ``@oh-my-pi/pi-natives-<platform>``, which
+    ships the modern and baseline ``.node`` files. A prebuilt binary skips
+    rustup, including checkouts whose ``crates/`` tree has moved on
+    (27517f25, 1b5c7b53). ``cargo`` remains when no prebuilt file is available.
     """
     if "build:native" not in _scripts(root):
         return "skip"
     version = natives_version(root)
-    if version and crates_match_release(root, version):
-        install_published_natives(root, version, opener=opener)
+    if not version:
+        return "cargo"
+    if opener is None:
+        opener = _default_opener
+    files: dict[str, bytes] = {}
+    saw_empty = False
+    if crates_match_release(root, version):
+        files, saw_empty = _github_native_files(version, opener)
+    if not files:
+        files = _npm_native_files(version, npm_fetch)
+    if files:
+        install_native_files(root, files)
         return "published"
+    if saw_empty and crates_match_release(root, version):
+        raise BuildError(f"empty pi-natives asset {native_asset_name()}")
     return "cargo"
 
 
@@ -178,7 +325,7 @@ def binary(sha: str, cache: Path) -> Path:
         root = checkout(cache, "omp", sha)
         if not supports_custom_models(root):
             raise Incompatible("no custom-model support")
-        requirement = bun_requirement(root)
+        requirement = bun_version_for_build(root)
         version = requirement if requirement[:1].isdigit() and ">=" not in requirement else pick_bun(
             requirement, bun_releases()
         )

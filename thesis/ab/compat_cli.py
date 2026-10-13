@@ -42,14 +42,20 @@ def extra_args(text: str, name: str) -> list[str]:
     return args
 
 
-def assess_cli(binary: str, root: Path, name: str, proxy_base: str) -> Assessment:
+def assess_cli(binary: str, root: Path, name: str, proxy_base: str, *,
+                adaptive_thinking: bool = False,
+                reasoning: bool = True) -> Assessment:
     text = help_text(binary)
     if not text.strip():
         return Assessment(
             "incompatible", "could not read --help", {}, False, None, name,
         )
     layout = agent_layout(name)
-    body = model_document(root, proxy_base, layout["models_filename"])
+    body = model_document(
+        root, proxy_base, layout["models_filename"],
+        adaptive_thinking=adaptive_thinking,
+        reasoning=reasoning,
+    )
     vertex = {
         "bin": binary,
         "proxy_url": proxy_base,

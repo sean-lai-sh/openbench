@@ -16,7 +16,14 @@ from pathlib import Path
 from obench import failure_class
 from obench.final_answer import extract_final_answer
 from obench.run import apply_proxy_ledger
-from thesis.ab.build_omp import native_asset_name, prepare_natives
+from thesis.ab.build_omp import (
+    PINNED_BUN,
+    bun_version_for_build,
+    native_asset_candidates,
+    native_asset_name,
+    npm_native_specs,
+    prepare_natives,
+)
 from thesis.ab.errors import BuildError
 from thesis.ab.evidence import (
     attach_cell_metrics,
@@ -588,10 +595,16 @@ class OmpBuildTests(unittest.TestCase):
             called["url"] = url
             return b"nope"
 
-        self.assertEqual(prepare_natives(root, opener=opener), "cargo")
+        self.assertEqual(
+            prepare_natives(root, opener=opener, npm_fetch=lambda spec: {}),
+            "cargo",
+        )
         self.assertEqual(called, {})
         (root / "package.json").write_text(json.dumps({"scripts": {}}), encoding="utf-8")
-        self.assertEqual(prepare_natives(root, opener=opener), "skip")
+        self.assertEqual(
+            prepare_natives(root, opener=opener, npm_fetch=lambda spec: {}),
+            "skip",
+        )
 
     def test_empty_native_asset_is_a_build_error(self):
         root = self._repo()
@@ -600,7 +613,78 @@ class OmpBuildTests(unittest.TestCase):
             return b""
 
         with self.assertRaises(BuildError):
-            prepare_natives(root, opener=opener)
+            prepare_natives(root, opener=opener, npm_fetch=lambda spec: {})
+
+    def test_bun_defaults_when_the_commit_has_no_pin(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "package.json").write_text(json.dumps({"name": "omp"}), encoding="utf-8")
+        self.assertEqual(bun_version_for_build(root), PINNED_BUN)
+        self.assertEqual(PINNED_BUN, "1.4.3")
+
+    def test_renamed_release_asset_and_npm_fallback_are_mocked(self):
+        root = self._repo()
+        version = "1.2.3"
+        legacy, modern, baseline = native_asset_candidates()
+        self.assertTrue(modern.endswith("-modern.node"))
+        self.assertTrue(baseline.endswith("-baseline.node"))
+        generic, platform_pkg = npm_native_specs(version)
+        self.assertEqual(generic, f"@oh-my-pi/pi-natives@{version}")
+        self.assertIn("@oh-my-pi/pi-natives-", platform_pkg)
+        self.assertTrue(platform_pkg.endswith(f"@{version}"))
+
+        def opener(url):
+            if url.endswith("/" + modern):
+                return b"modern-bytes"
+            if url.endswith("/" + baseline):
+                return b"baseline-bytes"
+            raise OSError(url)
+
+        self.assertEqual(prepare_natives(root, opener=opener), "published")
+        native = root / "packages" / "natives" / "native"
+        self.assertEqual((native / modern).read_bytes(), b"modern-bytes")
+        self.assertEqual((native / baseline).read_bytes(), b"baseline-bytes")
+        self.assertEqual((native / "pi_natives.node").read_bytes(), b"modern-bytes")
+
+        moved = self._repo()
+        (moved / "crates" / "lib.rs").write_text("fn changed() {}\n", encoding="utf-8")
+        env = os.environ.copy()
+        env.update({
+            "GIT_AUTHOR_NAME": "OpenBench",
+            "GIT_AUTHOR_EMAIL": "openbench@example.com",
+            "GIT_COMMITTER_NAME": "OpenBench",
+            "GIT_COMMITTER_EMAIL": "openbench@example.com",
+        })
+        subprocess.run(["git", "add", "."], cwd=moved, check=True, env=env, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "crates"], cwd=moved, check=True, env=env,
+            capture_output=True, text=True,
+        )
+        asked = []
+
+        def npm_fetch(spec):
+            asked.append(spec)
+            if spec == platform_pkg:
+                # The platform package ships linux-x64-{modern,baseline}.node,
+                # not the older pi_natives.<name> release asset.
+                return {
+                    modern.split(".", 1)[1]: b"npm-modern",
+                    baseline.split(".", 1)[1]: b"npm-baseline",
+                }
+            return {}
+
+        def missing(url):
+            raise OSError(url)
+
+        self.assertEqual(
+            prepare_natives(moved, opener=missing, npm_fetch=npm_fetch),
+            "published",
+        )
+        self.assertEqual(asked, [generic, platform_pkg])
+        installed = moved / "packages" / "natives" / "native"
+        self.assertEqual(
+            (installed / modern.split(".", 1)[1]).read_bytes(), b"npm-modern",
+        )
+        self.assertEqual((installed / "pi_natives.node").read_bytes(), b"npm-modern")
 
 
 if __name__ == "__main__":

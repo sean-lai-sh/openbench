@@ -21,6 +21,17 @@ LOCATION = "global"
 _FORWARDED = ("anthropic-beta", "anthropic-version")
 _LEDGER_LOCK = threading.Lock()
 _DISCONNECT = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)
+_NEUTRAL_USER_AGENT = "openbench"
+_CC_BETAS = ("claude-code-20250219", "oauth-2025-04-20")
+_CC_BETA_SET = frozenset(_CC_BETAS)
+_SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+_BILLING_RE = re.compile(
+    r"^x-anthropic-billing-header:\s*"
+    r"cc_version=[^;\n]*;\s*"
+    r"cc_entrypoint=[^;\n]*;\s*"
+    r"cch=[^;\n]*;"
+)
+_DROP = object()
 
 
 class ProxyError(RuntimeError):
@@ -37,6 +48,240 @@ def vertex_path(project: str, model: str, kind: str, location: str = LOCATION) -
         f"/v1/projects/{project}/locations/{location}"
         f"/publishers/anthropic/models/{model}{suffix}"
     )
+
+
+def _is_identity_line(line: str) -> bool:
+    text = line.strip()
+    return text == _SDK_IDENTITY or text.startswith("You are Claude Code")
+
+
+def _starts_with_billing(text: str) -> bool:
+    return _BILLING_RE.match(text.lstrip()) is not None
+
+
+def _strip_identity_text(text: str) -> tuple[str, list[str]]:
+    """Drop a leading Claude Code billing header and the identity line with it."""
+    removed: list[str] = []
+    body = text.lstrip()
+    match = _BILLING_RE.match(body)
+    if match is None:
+        return text, removed
+    removed.append("system-billing-header")
+    rest = body[match.end():]
+    if rest.startswith("\r\n"):
+        rest = rest[2:]
+    elif rest.startswith("\n") or rest.startswith("\r"):
+        rest = rest[1:]
+    kept: list[str] = []
+    saw_identity = False
+    for line in rest.splitlines():
+        if _is_identity_line(line):
+            saw_identity = True
+            continue
+        kept.append(line)
+    if saw_identity:
+        removed.append("identity-line")
+    return "\n".join(kept).lstrip("\n"), removed
+
+
+def _identity_only(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    return bool(lines) and all(_is_identity_line(line) for line in lines)
+
+
+def _strip_leading_identity(text: str) -> tuple[str, bool]:
+    lines = text.splitlines()
+    index = 0
+    saw = False
+    while index < len(lines):
+        if not lines[index].strip():
+            if saw:
+                index += 1
+                break
+            index += 1
+            continue
+        if _is_identity_line(lines[index]):
+            saw = True
+            index += 1
+            continue
+        break
+    if not saw:
+        return text, False
+    return "\n".join(lines[index:]).lstrip("\n"), True
+
+
+def _block_text(block) -> str | None:
+    if isinstance(block, str):
+        return block
+    if isinstance(block, dict) and isinstance(block.get("text"), str):
+        return block["text"]
+    return None
+
+
+def _set_block_text(block, text: str):
+    if isinstance(block, str):
+        return text
+    block["text"] = text
+    return block
+
+
+def _strip_system(data: dict, removed: list[str]) -> None:
+    system = data.get("system")
+    if isinstance(system, str):
+        if not _starts_with_billing(system):
+            return
+        text, parts = _strip_identity_text(system)
+        removed.extend(parts)
+        if text.strip():
+            data["system"] = text
+        else:
+            data.pop("system", None)
+        return
+    if not isinstance(system, list) or not system:
+        return
+    text = _block_text(system[0])
+    if text is None or not _starts_with_billing(text):
+        return
+    updated, parts = _strip_identity_text(text)
+    removed.extend(parts)
+    if updated.strip():
+        system[0] = _set_block_text(system[0], updated)
+    else:
+        system.pop(0)
+    if system and "identity-line" not in parts:
+        follow = _block_text(system[0])
+        if follow is not None:
+            if _identity_only(follow):
+                system.pop(0)
+                removed.append("identity-line")
+            else:
+                trimmed, saw = _strip_leading_identity(follow)
+                if saw:
+                    removed.append("identity-line")
+                    if trimmed.strip():
+                        system[0] = _set_block_text(system[0], trimmed)
+                    else:
+                        system.pop(0)
+    if not system:
+        data.pop("system", None)
+
+
+def _beta_parts(text: str) -> list[str] | None:
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) < 2:
+        return None
+    if all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+        return parts
+    return None
+
+
+def _strip_beta_node(node, removed: list[str]):
+    if isinstance(node, dict):
+        for key in list(node):
+            updated = _strip_beta_node(node[key], removed)
+            if updated is _DROP:
+                node.pop(key, None)
+            else:
+                node[key] = updated
+        return node
+    if isinstance(node, list):
+        kept = []
+        for item in node:
+            if isinstance(item, str) and item in _CC_BETA_SET:
+                removed.append(f"beta:{item}")
+                continue
+            updated = _strip_beta_node(item, removed)
+            if updated is not _DROP:
+                kept.append(updated)
+        return kept
+    if isinstance(node, str):
+        if node in _CC_BETA_SET:
+            removed.append(f"beta:{node}")
+            return _DROP
+        parts = _beta_parts(node)
+        if parts is not None and any(part in _CC_BETA_SET for part in parts):
+            for part in parts:
+                if part in _CC_BETA_SET:
+                    removed.append(f"beta:{part}")
+            return ",".join(part for part in parts if part not in _CC_BETA_SET)
+    return node
+
+
+def strip_cc_body(data: dict) -> list[str]:
+    """Remove Claude Code identity that is actually present. Other fields stay.
+
+    This is a safety net for builds that still attach the billing block. A
+    request that already opted out (``auth: apiKey``) yields an empty list.
+    The object is mutated. The returned labels are only the parts removed.
+    """
+    removed: list[str] = []
+    _strip_system(data, removed)
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict) and "user_id" in metadata:
+        metadata.pop("user_id", None)
+        removed.append("metadata.user_id")
+        if not metadata:
+            data.pop("metadata", None)
+    _strip_beta_node(data, removed)
+    return removed
+
+
+def strip_beta_query(path: str) -> tuple[str, list[str]]:
+    """Drop ``beta=true`` from a request target. Other query pairs stay."""
+    if "?" not in path:
+        return path, []
+    route, query = path.split("?", 1)
+    pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
+    kept = []
+    removed = False
+    for key, value in pairs:
+        if key == "beta" and value == "true":
+            removed = True
+            continue
+        kept.append((key, value))
+    if not removed:
+        return path, []
+    if not kept:
+        return route, ["query:beta"]
+    return route + "?" + urllib.parse.urlencode(kept), ["query:beta"]
+
+
+def strip_cc_headers(headers) -> tuple[str | None, list[str]]:
+    """Return the forwarded ``anthropic-beta`` value and identity labels.
+
+    ``None`` means the client did not send the header. An empty string means
+    every beta on it was a Claude Code beta, so the header is not forwarded.
+    ``Authorization: Bearer proxy`` and ``User-Agent: claude-cli/<ver>`` are
+    labels only; the caller sends normal auth and a neutral user agent.
+    """
+    removed: list[str] = []
+    beta = headers.get("anthropic-beta")
+    forwarded = None
+    if beta:
+        parts = [part.strip() for part in beta.split(",") if part.strip()]
+        kept = []
+        for part in parts:
+            if part in _CC_BETA_SET:
+                removed.append(f"beta:{part}")
+            else:
+                kept.append(part)
+        forwarded = ",".join(kept)
+    user_agent = headers.get("User-Agent") or ""
+    if re.match(r"claude-cli/\S+", user_agent.strip()):
+        removed.append("user-agent")
+    authorization = headers.get("Authorization") or ""
+    if authorization.strip().lower() == "bearer proxy":
+        removed.append("authorization")
+    return forwarded, removed
+
+
+def cc_identity_record(removed: list[str]) -> dict:
+    """Ledger value: whether anything was removed, and the labels in order."""
+    labels: list[str] = []
+    for label in removed:
+        if label not in labels:
+            labels.append(label)
+    return {"stripped": bool(labels), "removed": labels}
 
 
 def translate_body(path: str, body: bytes) -> tuple[str, bytes]:
@@ -351,6 +596,7 @@ def _append_ledger(
     *,
     status: int | None = None,
     error: str | None = None,
+    identity: dict | None = None,
 ) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -362,6 +608,8 @@ def _append_ledger(
         row["status"] = int(status)
     if isinstance(error, str) and error:
         row["error"] = error[:500]
+    if isinstance(identity, dict):
+        row["cc_identity_stripped"] = identity
     line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -614,8 +862,20 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
             cell, route = split_cell_path(self.path)
-            if ledger is not None and cell and raw:
-                note_cell_bytes(ledger, cell, len(raw))
+            route, query_removed = strip_beta_query(route)
+            removed = list(query_removed)
+            try:
+                parsed = json.loads(raw.decode("utf-8")) if raw else None
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                removed.extend(strip_cc_body(parsed))
+                raw = json.dumps(parsed).encode("utf-8")
+            beta_header, header_removed = strip_cc_headers(self.headers)
+            removed.extend(header_removed)
+            identity = cc_identity_record(removed)
+            if ledger is not None and cell and length:
+                note_cell_bytes(ledger, cell, length)
             message_index = None
             if cell and _message_route(route):
                 message_index = holder["proxy"].note_message(cell)
@@ -633,6 +893,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             try:
                 kind, body = translate_body(route, raw)
                 path = vertex_path(project, model, kind, location)
+                if "?" in route:
+                    path += route[route.index("?"):]
                 bearer = token() if callable(token) else token
             except (ProxyError, OSError) as exc:
                 payload = json.dumps({"error": str(exc)}).encode("utf-8")
@@ -641,12 +903,20 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             headers = {
                 "Authorization": f"Bearer {bearer}",
                 "Content-Type": "application/json",
+                "User-Agent": _NEUTRAL_USER_AGENT,
             }
             for name in _FORWARDED:
+                if name == "anthropic-beta":
+                    if beta_header:
+                        headers[name] = beta_header
+                    continue
                 value = self.headers.get(name)
                 if value:
                     headers[name] = value
-            self._forward(upstream + path, headers, body, cell if ledger is not None else None, kind)
+            self._forward(
+                upstream + path, headers, body,
+                cell if ledger is not None else None, kind, identity,
+            )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
             self.send_response(status)
@@ -672,19 +942,24 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             self.wfile.write(b"\r\n")
             self.wfile.flush()
 
-        def _record(self, cell: str | None, usage: dict | None, status: int | None = None) -> None:
+        def _record(self, cell: str | None, usage: dict | None, status: int | None = None,
+                    identity: dict | None = None) -> None:
             # One row per messages POST on /c/<cell-id>/. A subagent or child
             # session that reused that base URL is included in the cell total.
             if ledger is None or not cell or not usage:
                 return
-            _append_ledger(ledger, cell, usage, status=status)
+            _append_ledger(ledger, cell, usage, status=status, identity=identity)
 
-        def _record_error(self, cell: str | None, status: int, payload: bytes | str) -> None:
+        def _record_error(self, cell: str | None, status: int, payload: bytes | str,
+                          identity: dict | None = None) -> None:
             if ledger is None or not cell:
                 return
-            _append_ledger(ledger, cell, None, status=status, error=_error_body(payload))
+            _append_ledger(
+                ledger, cell, None, status=status, error=_error_body(payload), identity=identity,
+            )
 
-        def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str) -> None:
+        def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str,
+                     identity: dict | None = None) -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -710,13 +985,13 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 except urllib.error.HTTPError as exc:
                     payload = exc.read()
                     note_cell_bytes(ledger, cell, len(payload))
-                    self._record_error(cell, int(exc.code), payload)
+                    self._record_error(cell, int(exc.code), payload, identity)
                     content_type = exc.headers.get("Content-Type") or "application/json"
                     self._send(exc.code, content_type, payload)
                     return
                 except urllib.error.URLError as exc:
                     payload = json.dumps({"error": str(exc)}).encode("utf-8")
-                    self._record_error(cell, 502, payload)
+                    self._record_error(cell, 502, payload, identity)
                     self._send(502, "application/json", payload)
                     return
                 status = response.status
@@ -744,14 +1019,14 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._write_chunk(chunk)
                 usage = finish_usage()
                 if kind != "count":
-                    self._record(cell, usage, status)
+                    self._record(cell, usage, status, identity)
                     recorded = True
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except _DISCONNECT:
                 self.close_connection = True
                 if not recorded and kind != "count":
-                    self._record(cell, finish_usage(), status)
+                    self._record(cell, finish_usage(), status, identity)
             finally:
                 if response is not None:
                     response.close()
