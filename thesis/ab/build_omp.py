@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -115,6 +116,10 @@ def crates_match_release(root: Path, version: str) -> bool:
 
 
 PINNED_BUN = "1.4.3"
+
+# Version selected by the latest ``prepare_natives`` call for each checkout.
+_chosen_natives_version: dict[str, str] = {}
+_published_natives_cache: list[str] | None = None
 
 
 def bun_version_for_build(root: Path) -> str:
@@ -287,6 +292,70 @@ def install_published_natives(root: Path, version: str, opener=None) -> None:
     install_native_files(root, files)
 
 
+def has_unreleased_native_changes(root: Path) -> bool:
+    """True when packages/natives/CHANGELOG.md has a non-empty ## [Unreleased] section."""
+    path = root / "packages" / "natives" / "CHANGELOG.md"
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    match = re.search(
+        r"^## \[Unreleased\]\s*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S,
+    )
+    return bool(match and re.search(r"^\s*-\s+\S", match.group(1), re.M))
+
+
+def next_published_natives(version: str, published: list[str]) -> str | None:
+    """Smallest published version strictly greater than ``version``."""
+    def key(item: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", item)[:3])
+
+    later = sorted((item for item in published if key(item) > key(version)), key=key)
+    return later[0] if later else None
+
+
+def _npm_published_versions() -> list[str]:
+    """``npm view @oh-my-pi/pi-natives versions --json``, cached for this process."""
+    global _published_natives_cache
+    if _published_natives_cache is not None:
+        return _published_natives_cache
+    versions: list[str] = []
+    try:
+        proc = subprocess.run(
+            ["npm", "view", "@oh-my-pi/pi-natives", "versions", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        try:
+            parsed = json.loads(proc.stdout or "[]")
+        except json.JSONDecodeError:
+            parsed = []
+        if isinstance(parsed, str):
+            parsed = [parsed]
+        if isinstance(parsed, list):
+            versions = [
+                item.strip() for item in parsed if isinstance(item, str) and item.strip()
+            ]
+    _published_natives_cache = versions
+    return versions
+
+
+def _record_natives_version(root: Path, version: str) -> None:
+    """Remember the natives version this build selected and print it."""
+    _chosen_natives_version[str(root.resolve())] = version
+    print(f"pi-natives {version}", file=sys.stderr)
+
+
+def _write_natives_version(dest_dir: Path, version: str) -> None:
+    path = dest_dir / "natives-version"
+    tmp = path.with_name("natives-version.tmp")
+    tmp.write_text(version + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def prepare_natives(root: Path, opener=None, npm_fetch=None) -> str:
     """``published`` when a prebuilt binary can be reused, else ``cargo`` or ``skip``.
 
@@ -295,13 +364,22 @@ def prepare_natives(root: Path, opener=None, npm_fetch=None) -> str:
     ``@oh-my-pi/pi-natives`` and then ``@oh-my-pi/pi-natives-<platform>``, which
     ships the modern and baseline ``.node`` files. A prebuilt binary skips
     rustup, including checkouts whose ``crates/`` tree has moved on
-    (27517f25, 1b5c7b53). ``cargo`` remains when no prebuilt file is available.
+    (27517f25, 1b5c7b53). When that tree does not match the tagged release and
+    ``packages/natives/CHANGELOG.md`` has a non-empty ``## [Unreleased]``
+    section, the next published version is installed instead. The chosen
+    version is printed as ``pi-natives <version>``. ``cargo`` remains when no
+    prebuilt file is available.
     """
     if "build:native" not in _scripts(root):
         return "skip"
     version = natives_version(root)
     if not version:
         return "cargo"
+    if not crates_match_release(root, version) and has_unreleased_native_changes(root):
+        nxt = next_published_natives(version, _npm_published_versions())
+        if nxt:
+            version = nxt
+    _record_natives_version(root, version)
     if opener is None:
         opener = _default_opener
     files: dict[str, bytes] = {}
@@ -448,13 +526,20 @@ def binary(sha: str, cache: Path) -> Path:
         with exclusive_lock(cache / "locks" / f"bun-{version}.lock"):
             bun = ensure_bun(version, cache)
         natives, cargo_bin = plan_natives(root)
+        chosen = _chosen_natives_version.get(str(root.resolve()), "")
         entry = compile_tree(root, bun, cargo_bin, natives=natives)
         path_prefix = shlex.quote(str(bun.parent))
-        script = "#!/bin/sh\n" f"export PATH={path_prefix}:\"$PATH\"\n"
+        script = "#!/bin/sh\n"
+        if chosen:
+            script += f"# pi-natives {chosen}\n"
+        script += f"export PATH={path_prefix}:\"$PATH\"\n"
         if cargo_bin is not None:
             script += f"export PATH={shlex.quote(str(cargo_bin))}:\"$PATH\"\n"
         script += f"exec {shlex.quote(str(bun))} {shlex.quote(str(entry))} \"$@\"\n"
-        return _publish(published, script)
+        dest = _publish(published, script)
+        if chosen:
+            _write_natives_version(dest.parent, chosen)
+        return dest
 
 
 def main(argv: list[str] | None = None) -> int:
