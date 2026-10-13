@@ -51,6 +51,31 @@ def _scripts(root: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8")).get("scripts") or {}
 
 
+def _rewrite_script(path: Path, key: str, command: str) -> None:
+    if not path.is_file():
+        return
+    try:
+        package = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    scripts = package.get("scripts")
+    if not isinstance(scripts, dict) or key not in scripts:
+        return
+    scripts[key] = command
+    path.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
+
+
+def disarm_native_cargo(root: Path) -> None:
+    """Stop a later bun/turbo build from compiling pi-natives with cargo.
+
+    The prebuilt ``.node`` is already in ``packages/natives/native``. The
+    package ``build`` script and the repo ``build:native`` script are the
+    paths that invoke cargo.
+    """
+    _rewrite_script(root / "packages" / "natives" / "package.json", "build", "true")
+    _rewrite_script(root / "package.json", "build:native", "true")
+
+
 def natives_version(root: Path) -> str:
     path = root / "packages" / "natives" / "package.json"
     if not path.is_file():
@@ -293,19 +318,110 @@ def prepare_natives(root: Path, opener=None, npm_fetch=None) -> str:
     return "cargo"
 
 
-def compile_tree(root: Path, bun: Path, cargo_bin: Path | None, *, natives: str = "cargo") -> Path:
+def read_host_rustc() -> str:
+    """Version token from ``rustc --version``, such as ``1.85.1``."""
+    try:
+        proc = subprocess.run(
+            ["rustc", "--version"], capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    parts = (proc.stdout or "").split()
+    if len(parts) >= 2 and parts[0] == "rustc":
+        return parts[1]
+    return (proc.stdout or "").strip()
+
+
+def active_rust_toolchain() -> str:
+    """Active rustup toolchain name, or ``""`` when rustup is not available."""
+    try:
+        proc = subprocess.run(
+            ["rustup", "show", "active-toolchain"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return lines[0].split()[0]
+
+
+def _toolchain_matches(channel: str, active: str) -> bool:
+    if not channel or not active:
+        return False
+    return active == channel or active.startswith(channel + "-")
+
+
+def resolve_source_toolchain(root: Path, *, host_rustc: str | None = None,
+                             active: str | None = None, installer=None) -> Path | None:
+    """Return a cargo bin directory, or None when the host toolchain already matches.
+
+    Source builds are the fallback when no prebuilt ``.node`` exists. A host
+    whose rustc is not the checkout's channel (rustc 1.85.1 against
+    ``nightly-2026-03-27``) does not get a cargo invocation: the error names
+    the toolchain the checkout needs.
+    """
+    channel = rust_channel(root) or ""
+    host = read_host_rustc() if host_rustc is None else host_rustc
+    if not channel:
+        raise BuildError(
+            "pi-natives source build needs a rust-toolchain channel; "
+            f"host rustc is {host or 'not found'}"
+        )
+    current = active_rust_toolchain() if active is None else active
+    if _toolchain_matches(channel, current):
+        return None
+    install = installer or ensure_rust
+    try:
+        return install(channel)
+    except BuildError as exc:
+        raise BuildError(
+            f"pi-natives source build needs rust toolchain {channel}; "
+            f"host rustc is {host or 'not found'}"
+        ) from exc
+
+
+def plan_natives(root: Path, opener=None, npm_fetch=None, *,
+                 host_rustc: str | None = None, active: str | None = None,
+                 installer=None) -> tuple[str, Path | None]:
+    """``(published|cargo|skip, cargo_bin)``.
+
+    A published npm binary disarms the cargo build scripts and returns no
+    cargo bin, so the compile never invokes cargo. ``cargo`` is only returned
+    when no prebuilt exists and the checkout's toolchain can be used.
+    """
+    mode = prepare_natives(root, opener=opener, npm_fetch=npm_fetch)
+    if mode == "published":
+        disarm_native_cargo(root)
+        return "published", None
+    if mode != "cargo":
+        return mode, None
+    cargo_bin = resolve_source_toolchain(
+        root, host_rustc=host_rustc, active=active, installer=installer,
+    )
+    return "cargo", cargo_bin
+
+
+def compile_tree(root: Path, bun: Path, cargo_bin: Path | None, *,
+                 natives: str = "cargo", runner=None) -> Path:
+    run = runner or _run
     env = dict(os.environ)
     prefixes = [str(bun.parent)]
     if cargo_bin is not None:
         prefixes.insert(0, str(cargo_bin))
     env["PATH"] = os.pathsep.join(prefixes + [env.get("PATH", "")])
     env["CI"] = "1"
-    _run(["bun", "install"], root, env)
+    run(["bun", "install"], root, env)
     scripts = _scripts(root)
     if "build:native" in scripts and natives != "published":
-        _run(["bun", "run", "build:native"], root, env)
+        run(["bun", "run", "build:native"], root, env)
     if "build" in scripts:
-        _run(["bun", "run", "build"], root, env)
+        run(["bun", "run", "build"], root, env)
     for relative in _ENTRIES:
         path = root / relative
         if path.is_file():
@@ -331,9 +447,7 @@ def binary(sha: str, cache: Path) -> Path:
         )
         with exclusive_lock(cache / "locks" / f"bun-{version}.lock"):
             bun = ensure_bun(version, cache)
-        channel = rust_channel(root)
-        natives = prepare_natives(root)
-        cargo_bin = ensure_rust(channel) if channel and natives != "published" else None
+        natives, cargo_bin = plan_natives(root)
         entry = compile_tree(root, bun, cargo_bin, natives=natives)
         path_prefix = shlex.quote(str(bun.parent))
         script = "#!/bin/sh\n" f"export PATH={path_prefix}:\"$PATH\"\n"

@@ -41,6 +41,7 @@ from thesis.ab.compat import assess
 from thesis.ab.durable import exclusive_lock, publish_text
 from thesis.ab.errors import BuildError, Incompatible
 from thesis.ab.harness import harness_name
+from thesis.ab.models_config import thinking_options
 from thesis.ab.prs import AA_SIDES, PrListError, Side, parse_prs, select_prs
 from thesis.ab.sdk_pin import ai_version_for_tree, anthropic_pin_for_tree, install_alias_for_tree
 from thesis.ab.summarize import billable_tokens, row_cost
@@ -767,6 +768,11 @@ def execute_cell(spec: dict) -> None:
         installed_text = installed if isinstance(installed, str) else None
         if isinstance(row, dict):
             apply_cell_meter(row, spec.get("proxy"))
+            attach_thinking(
+                row,
+                str(spec.get("thinking_mode") or "default"),
+                ledger_records(spec.get("proxy")),
+            )
             attach_schedule(row, spec, started_at)
             from thesis.ab.evidence import attach_cell_metrics
             attach_cell_metrics(row, evidence if evidence else None)
@@ -921,9 +927,42 @@ def cell_evidence_dir(transcripts_dir: Path, side: str, task: str, trial: int) -
     return Path(transcripts_dir) / side / task_component(task) / str(trial)
 
 
+def ledger_records(proxy: dict | None) -> list:
+    """Request rows for this cell, or an empty list when the cell has no ledger."""
+    if not isinstance(proxy, dict):
+        return []
+    ledger = proxy.get("ledger_dir")
+    cell = proxy.get("cell_id")
+    if not ledger or not cell:
+        return []
+    from obench.run import read_proxy_ledger
+    return read_proxy_ledger(str(ledger), str(cell))
+
+
+def attach_thinking(row: dict, mode: str, records: list | None = None) -> dict:
+    """Record the configured thinking mode and what each request sent.
+
+    A ledger row stores one ``thinking_sent`` string (``none``,
+    ``enabled+budget_tokens``, or ``adaptive``). A result row stores the
+    configured mode and those per-request values in ledger order.
+    """
+    if not isinstance(row, dict):
+        return row
+    row["thinking_mode"] = mode if mode in {"default", "adaptive", "off"} else "default"
+    sent = []
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        value = record.get("thinking_sent")
+        if value in {"none", "enabled+budget_tokens", "adaptive"}:
+            sent.append(value)
+    row["thinking_sent"] = sent
+    return row
+
+
 def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: str,
           model: str, timeout_s: int, transcripts_root: Path | None = None,
-          no_progress_s: float = 0) -> dict:
+          no_progress_s: float = 0, thinking_mode: str = "default") -> dict:
     transcripts = cell_transcripts_dir(out_dir, spec["pr"], transcripts_root)
     filled = dict(spec)
     filled.update({
@@ -944,6 +983,9 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "evidence_dir": _absolute(cell_evidence_dir(
             transcripts, spec["side"], spec["task"], spec["trial"],
         )),
+        "thinking_mode": (
+            thinking_mode if thinking_mode in {"default", "adaptive", "off"} else "default"
+        ),
     })
     if (
         isinstance(no_progress_s, (int, float))
@@ -1526,7 +1568,8 @@ def _default_build(sha, cache, repo=""):
     return build_opencode(sha, cache)
 
 
-def _default_assess(binary_path, repo, cache, sha, proxy_url, model_route):
+def _default_assess(binary_path, repo, cache, sha, proxy_url, model_route,
+                    omp_thinking="default"):
     name = harness_name(repo) if repo else "opencode"
     if name == "opencode":
         if model_route == "proxy":
@@ -1534,7 +1577,8 @@ def _default_assess(binary_path, repo, cache, sha, proxy_url, model_route):
         return assess(str(binary_path), route="vertex")
     from thesis.ab.compat_cli import assess_cli
     root = Path(cache) / "worktrees" / name / sha.strip().lower()
-    return assess_cli(str(binary_path), root, name, proxy_url)
+    options = thinking_options(omp_thinking) if name == "omp" else {}
+    return assess_cli(str(binary_path), root, name, proxy_url, **options)
 
 
 def _needs_proxy(prs, model_route: str) -> bool:
@@ -1548,7 +1592,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
           transcripts_dir=None, aa: bool = False, fixtures=None,
           order: str = "sides", seed: int | None = None, with_aa: bool = False,
-          no_progress_s: float = 300):
+          no_progress_s: float = 300, omp_thinking: str = "default"):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -1602,7 +1646,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     if own_assess and proxy_url is None and _needs_proxy(prs, model_route):
         from thesis.ab.vertex_anthropic_proxy import ProxyError, start_from_env
         try:
-            server = start_from_env(ledger_dir=ledger_dir)
+            server = start_from_env(ledger_dir=ledger_dir, thinking_mode=omp_thinking)
         except ProxyError as exc:
             raise RunError(str(exc)) from exc
         proxy_url = server.base_url
@@ -1625,6 +1669,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                 if own_assess:
                     assessment = _default_assess(
                         built, repo, cache, sha, proxy_url or "", model_route,
+                        omp_thinking=omp_thinking,
                     )
                 else:
                     assessment = assess_fn(str(built))
@@ -1694,6 +1739,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
             spec, state, out_dir, tasks_dir_s, adapters, model, timeout_s,
             transcripts_root=transcripts_dir,
             no_progress_s=no_progress_s,
+            thinking_mode=omp_thinking,
         )
         if server is not None:
             filled = bind_cell_proxy(filled, ledger_dir)
@@ -1838,6 +1884,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--model", default="claude-opus-5-5")
     parser.add_argument(
+        "--omp-thinking",
+        choices=("default", "adaptive", "off"),
+        default="default",
+        help=(
+            "Thinking pin for Oh My Pi vertex-anthropic models.yml. "
+            "default leaves reasoning on. adaptive sets thinking.type to adaptive. "
+            "off sets reasoning to false. Recorded on every ledger row and result row."
+        ),
+    )
+    parser.add_argument(
         "--model-route",
         choices=("proxy", "vertex"),
         default="proxy",
@@ -1944,7 +2000,7 @@ def main(argv: list[str] | None = None) -> int:
             tasks_dir=tasks_dir, model_route=args.model_route,
             transcripts_dir=args.transcripts_dir, aa=args.aa,
             fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
-            no_progress_s=args.no_progress_s,
+            no_progress_s=args.no_progress_s, omp_thinking=args.omp_thinking,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

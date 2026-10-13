@@ -1,9 +1,11 @@
 """Recorded omp --mode json streams and the Vertex cell ledger."""
 
+import io
 import json
 import os
 import stat
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 import threading
@@ -12,6 +14,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from obench import failure_class
 from obench.final_answer import extract_final_answer
@@ -19,9 +22,11 @@ from obench.run import apply_proxy_ledger
 from thesis.ab.build_omp import (
     PINNED_BUN,
     bun_version_for_build,
+    compile_tree,
     native_asset_candidates,
     native_asset_name,
     npm_native_specs,
+    plan_natives,
     prepare_natives,
 )
 from thesis.ab.errors import BuildError
@@ -685,6 +690,196 @@ class OmpBuildTests(unittest.TestCase):
             (installed / modern.split(".", 1)[1]).read_bytes(), b"npm-modern",
         )
         self.assertEqual((installed / "pi_natives.node").read_bytes(), b"npm-modern")
+
+    def _cargo_scripts(self, root: Path) -> None:
+        (root / "package.json").write_text(json.dumps({
+            "scripts": {
+                "build:native": "cargo build -p pi-natives",
+                "build": "bun run build:ws",
+            },
+        }), encoding="utf-8")
+        pkg_path = root / "packages" / "natives" / "package.json"
+        package = json.loads(pkg_path.read_text(encoding="utf-8"))
+        package["scripts"] = {"build": "cargo build -p pi-natives"}
+        pkg_path.write_text(json.dumps(package), encoding="utf-8")
+        entry = root / "packages" / "coding-agent" / "dist" / "cli.js"
+        entry.parent.mkdir(parents=True)
+        entry.write_text("cli\n", encoding="utf-8")
+
+    def _tarball(self, cwd, members: dict[str, bytes]) -> None:
+        path = Path(cwd) / "pkg.tgz"
+        with tarfile.open(path, "w:gz") as archive:
+            for name, body in members.items():
+                info = tarfile.TarInfo(f"package/{name}")
+                info.size = len(body)
+                archive.addfile(info, io.BytesIO(body))
+
+    def _plan_from_mocked_npm(self, root: Path, members_for):
+        asked = []
+        writes = []
+        real_write = Path.write_bytes
+        real_run = subprocess.run
+
+        def spy_write(path, data):
+            writes.append((path.name, bytes(data)))
+            return real_write(path, data)
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["npm", "pack"]:
+                spec = cmd[2]
+                asked.append(spec)
+                self._tarball(cwd, members_for(spec))
+                return subprocess.CompletedProcess(cmd, 0, stdout="pkg.tgz\n", stderr="")
+            return real_run(cmd, cwd=cwd, **kwargs)
+
+        def opener(url):
+            raise OSError(url)
+
+        with patch("thesis.ab.build_omp.subprocess.run", side_effect=fake_run), \
+                patch.object(Path, "write_bytes", spy_write):
+            mode, cargo_bin = plan_natives(root, opener=opener)
+        return mode, cargo_bin, asked, writes
+
+    def _assert_compile_skips_cargo(self, root: Path, mode: str, cargo_bin) -> None:
+        calls = []
+
+        def runner(cmd, cwd, env):
+            calls.append(list(cmd))
+            joined = " ".join(cmd)
+            if "cargo" in joined or "build:native" in joined:
+                raise AssertionError(joined)
+
+        compile_tree(root, Path("/tmp/bun-bin/bun"), cargo_bin, natives=mode, runner=runner)
+        self.assertEqual(calls, [["bun", "install"], ["bun", "run", "build"]])
+        root_scripts = json.loads((root / "package.json").read_text(encoding="utf-8"))["scripts"]
+        native_scripts = json.loads(
+            (root / "packages" / "natives" / "package.json").read_text(encoding="utf-8"),
+        )["scripts"]
+        self.assertEqual(root_scripts["build:native"], "true")
+        self.assertEqual(native_scripts["build"], "true")
+
+    def test_generic_npm_package_installs_prebuilt_and_skips_cargo(self):
+        root = self._repo()
+        self._cargo_scripts(root)
+        version = "1.2.3"
+        generic, platform_pkg = npm_native_specs(version)
+        token = platform_pkg.rsplit("@", 1)[0].split("pi-natives-", 1)[1]
+        modern = f"pi_natives.{token}-modern.node"
+        baseline = f"pi_natives.{token}-baseline.node"
+
+        def members_for(spec):
+            if spec == generic:
+                return {modern: b"generic-modern", baseline: b"generic-baseline"}
+            return {}
+
+        mode, cargo_bin, asked, writes = self._plan_from_mocked_npm(root, members_for)
+        self.assertEqual(mode, "published")
+        self.assertIsNone(cargo_bin)
+        self.assertEqual(asked, [generic, platform_pkg])
+        self.assertIn((modern, b"generic-modern"), writes)
+        self.assertIn(("pi_natives.node", b"generic-modern"), writes)
+        native = root / "packages" / "natives" / "native"
+        self.assertEqual((native / modern).read_bytes(), b"generic-modern")
+        self.assertEqual((native / "pi_natives.node").read_bytes(), b"generic-modern")
+        self._assert_compile_skips_cargo(root, mode, cargo_bin)
+
+    def test_platform_npm_package_installs_linux_variants_and_skips_cargo(self):
+        root = self._repo()
+        self._cargo_scripts(root)
+        version = "1.2.3"
+        generic, platform_pkg = npm_native_specs(version)
+        token = platform_pkg.rsplit("@", 1)[0].split("pi-natives-", 1)[1]
+        modern = f"{token}-modern.node"
+        baseline = f"{token}-baseline.node"
+
+        def members_for(spec):
+            if spec == platform_pkg:
+                return {modern: b"plat-modern", baseline: b"plat-baseline"}
+            return {}
+
+        mode, cargo_bin, asked, writes = self._plan_from_mocked_npm(root, members_for)
+        self.assertEqual(mode, "published")
+        self.assertIsNone(cargo_bin)
+        self.assertEqual(asked, [generic, platform_pkg])
+        self.assertIn((modern, b"plat-modern"), writes)
+        self.assertIn((baseline, b"plat-baseline"), writes)
+        self.assertIn(("pi_natives.node", b"plat-modern"), writes)
+        native = root / "packages" / "natives" / "native"
+        self.assertEqual((native / modern).read_bytes(), b"plat-modern")
+        self.assertEqual((native / baseline).read_bytes(), b"plat-baseline")
+        self.assertEqual((native / "pi_natives.node").read_bytes(), b"plat-modern")
+        self._assert_compile_skips_cargo(root, mode, cargo_bin)
+
+    def test_source_build_names_the_toolchain_and_does_not_run_cargo(self):
+        root = self._repo()
+        (root / "rust-toolchain.toml").write_text(
+            '[toolchain]\nchannel = "nightly-2026-03-27"\n',
+            encoding="utf-8",
+        )
+
+        def installer(channel):
+            raise BuildError(f"rustup toolchain install {channel} failed")
+
+        def opener(url):
+            raise OSError(url)
+
+        with patch("thesis.ab.build_omp._run", side_effect=AssertionError("cargo invoked")):
+            with self.assertRaises(BuildError) as caught:
+                plan_natives(
+                    root, opener=opener, npm_fetch=lambda spec: {},
+                    host_rustc="1.85.1", active="1.85.1", installer=installer,
+                )
+        message = str(caught.exception)
+        self.assertIn("pi-natives source build needs rust toolchain nightly-2026-03-27", message)
+        self.assertIn("host rustc is 1.85.1", message)
+
+    def test_source_build_runs_only_when_the_toolchain_is_available(self):
+        root = self._repo()
+        self._cargo_scripts(root)
+        (root / "rust-toolchain.toml").write_text(
+            '[toolchain]\nchannel = "nightly-2026-03-27"\n',
+            encoding="utf-8",
+        )
+        cargo = Path("/opt/rust-nightly/bin")
+
+        def installer(channel):
+            self.assertEqual(channel, "nightly-2026-03-27")
+            return cargo
+
+        def opener(url):
+            raise OSError(url)
+
+        mode, cargo_bin = plan_natives(
+            root, opener=opener, npm_fetch=lambda spec: {},
+            host_rustc="1.85.1", active="1.85.1", installer=installer,
+        )
+        self.assertEqual(mode, "cargo")
+        self.assertEqual(cargo_bin, cargo)
+        calls = []
+
+        def runner(cmd, cwd, env):
+            calls.append((list(cmd), env["PATH"]))
+
+        compile_tree(root, Path("/tmp/bun-bin/bun"), cargo_bin, natives=mode, runner=runner)
+        commands = [cmd for cmd, _path in calls]
+        self.assertIn(["bun", "run", "build:native"], commands)
+        self.assertTrue(calls[0][1].startswith(str(cargo) + os.pathsep))
+
+        skipped = []
+
+        def refuse(channel):
+            skipped.append(channel)
+            raise AssertionError(channel)
+
+        matched, matched_bin = plan_natives(
+            root, opener=opener, npm_fetch=lambda spec: {},
+            host_rustc="1.91.0-nightly",
+            active="nightly-2026-03-27-x86_64-unknown-linux-gnu",
+            installer=refuse,
+        )
+        self.assertEqual(matched, "cargo")
+        self.assertIsNone(matched_bin)
+        self.assertEqual(skipped, [])
 
 
 if __name__ == "__main__":

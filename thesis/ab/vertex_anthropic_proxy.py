@@ -212,7 +212,8 @@ def strip_cc_body(data: dict) -> list[str]:
 
     This is a safety net for builds that still attach the billing block. A
     request that already opted out (``auth: apiKey``) yields an empty list.
-    The object is mutated. The returned labels are only the parts removed.
+    The object is mutated. The returned labels are the parts dropped from the
+    body. ``cc_identity_record`` files ``metadata.user_id`` under ``normalized``.
     """
     removed: list[str] = []
     _strip_system(data, removed)
@@ -251,8 +252,9 @@ def strip_cc_headers(headers) -> tuple[str | None, list[str]]:
 
     ``None`` means the client did not send the header. An empty string means
     every beta on it was a Claude Code beta, so the header is not forwarded.
-    ``Authorization: Bearer proxy`` and ``User-Agent: claude-cli/<ver>`` are
-    labels only; the caller sends normal auth and a neutral user agent.
+    ``Authorization: Bearer proxy`` is recorded as normalized, not removed.
+    ``User-Agent: claude-cli/<ver>`` is a Claude Code identity label. The
+    caller sends normal auth and a neutral user agent either way.
     """
     removed: list[str] = []
     beta = headers.get("anthropic-beta")
@@ -275,13 +277,46 @@ def strip_cc_headers(headers) -> tuple[str | None, list[str]]:
     return forwarded, removed
 
 
+_NORMALIZED_LABELS = frozenset({"metadata.user_id", "authorization"})
+_THINKING_MODES = frozenset({"default", "adaptive", "off"})
+_THINKING_SENT = frozenset({"none", "enabled+budget_tokens", "adaptive"})
+
+
+def classify_thinking(data) -> str:
+    """What the request's ``thinking`` field actually sent.
+
+    ``none`` when the field is absent. ``enabled+budget_tokens`` when
+    ``type`` is ``enabled`` and ``budget_tokens`` is set. ``adaptive`` when
+    ``type`` is ``adaptive``.
+    """
+    if not isinstance(data, dict):
+        return "none"
+    thinking = data.get("thinking")
+    if not isinstance(thinking, dict):
+        return "none"
+    kind = thinking.get("type")
+    if kind == "adaptive":
+        return "adaptive"
+    if kind == "enabled" and "budget_tokens" in thinking:
+        return "enabled+budget_tokens"
+    return "none"
+
+
 def cc_identity_record(removed: list[str]) -> dict:
-    """Ledger value: whether anything was removed, and the labels in order."""
-    labels: list[str] = []
+    """Ledger value for Claude Code identity handling.
+
+    ``removed`` lists identity parts that were stripped. ``normalized`` lists
+    ``metadata.user_id`` and ``Authorization: Bearer proxy``, which are not
+    Claude Code identity. ``stripped`` is true only when ``removed`` is
+    non-empty.
+    """
+    identity: list[str] = []
+    normalized: list[str] = []
     for label in removed:
-        if label not in labels:
-            labels.append(label)
-    return {"stripped": bool(labels), "removed": labels}
+        bucket = normalized if label in _NORMALIZED_LABELS else identity
+        if label not in bucket:
+            bucket.append(label)
+    return {"stripped": bool(identity), "removed": identity, "normalized": normalized}
 
 
 def translate_body(path: str, body: bytes) -> tuple[str, bytes]:
@@ -597,6 +632,8 @@ def _append_ledger(
     status: int | None = None,
     error: str | None = None,
     identity: dict | None = None,
+    thinking_mode: str = "default",
+    thinking_sent: str = "none",
 ) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -610,6 +647,8 @@ def _append_ledger(
         row["error"] = error[:500]
     if isinstance(identity, dict):
         row["cc_identity_stripped"] = identity
+    row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
+    row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
     line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -837,9 +876,11 @@ class Proxy:
 
 def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION,
                 token, upstream: str = "https://aiplatform.googleapis.com",
-                ledger_dir: Path | None = None) -> Proxy:
+                ledger_dir: Path | None = None, thinking_mode: str = "default") -> Proxy:
     upstream = upstream.rstrip("/")
     ledger = Path(ledger_dir) if ledger_dir is not None else None
+    if thinking_mode not in _THINKING_MODES:
+        thinking_mode = "default"
     holder: dict = {}
 
     class Server(ThreadingHTTPServer):
@@ -874,6 +915,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             beta_header, header_removed = strip_cc_headers(self.headers)
             removed.extend(header_removed)
             identity = cc_identity_record(removed)
+            sent = classify_thinking(parsed)
             if ledger is not None and cell and length:
                 note_cell_bytes(ledger, cell, length)
             message_index = None
@@ -915,7 +957,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     headers[name] = value
             self._forward(
                 upstream + path, headers, body,
-                cell if ledger is not None else None, kind, identity,
+                cell if ledger is not None else None, kind, identity, sent,
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -943,23 +985,27 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             self.wfile.flush()
 
         def _record(self, cell: str | None, usage: dict | None, status: int | None = None,
-                    identity: dict | None = None) -> None:
+                    identity: dict | None = None, thinking_sent: str = "none") -> None:
             # One row per messages POST on /c/<cell-id>/. A subagent or child
             # session that reused that base URL is included in the cell total.
             if ledger is None or not cell or not usage:
                 return
-            _append_ledger(ledger, cell, usage, status=status, identity=identity)
+            _append_ledger(
+                ledger, cell, usage, status=status, identity=identity,
+                thinking_mode=thinking_mode, thinking_sent=thinking_sent,
+            )
 
         def _record_error(self, cell: str | None, status: int, payload: bytes | str,
-                          identity: dict | None = None) -> None:
+                          identity: dict | None = None, thinking_sent: str = "none") -> None:
             if ledger is None or not cell:
                 return
             _append_ledger(
                 ledger, cell, None, status=status, error=_error_body(payload), identity=identity,
+                thinking_mode=thinking_mode, thinking_sent=thinking_sent,
             )
 
         def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str,
-                     identity: dict | None = None) -> None:
+                     identity: dict | None = None, thinking_sent: str = "none") -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -985,13 +1031,13 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 except urllib.error.HTTPError as exc:
                     payload = exc.read()
                     note_cell_bytes(ledger, cell, len(payload))
-                    self._record_error(cell, int(exc.code), payload, identity)
+                    self._record_error(cell, int(exc.code), payload, identity, thinking_sent)
                     content_type = exc.headers.get("Content-Type") or "application/json"
                     self._send(exc.code, content_type, payload)
                     return
                 except urllib.error.URLError as exc:
                     payload = json.dumps({"error": str(exc)}).encode("utf-8")
-                    self._record_error(cell, 502, payload, identity)
+                    self._record_error(cell, 502, payload, identity, thinking_sent)
                     self._send(502, "application/json", payload)
                     return
                 status = response.status
@@ -1019,14 +1065,14 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._write_chunk(chunk)
                 usage = finish_usage()
                 if kind != "count":
-                    self._record(cell, usage, status, identity)
+                    self._record(cell, usage, status, identity, thinking_sent)
                     recorded = True
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except _DISCONNECT:
                 self.close_connection = True
                 if not recorded and kind != "count":
-                    self._record(cell, finish_usage(), status, identity)
+                    self._record(cell, finish_usage(), status, identity, thinking_sent)
             finally:
                 if response is not None:
                     response.close()
@@ -1043,8 +1089,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
     return proxy
 
 
-def start_from_env(ledger_dir: Path | None = None) -> Proxy:
+def start_from_env(ledger_dir: Path | None = None, thinking_mode: str = "default") -> Proxy:
     project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
     if not project:
         raise ProxyError("GOOGLE_CLOUD_PROJECT is not set")
-    return start_proxy(project, token=AdcToken(), ledger_dir=ledger_dir)
+    return start_proxy(
+        project, token=AdcToken(), ledger_dir=ledger_dir, thinking_mode=thinking_mode,
+    )
