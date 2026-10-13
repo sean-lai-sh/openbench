@@ -63,6 +63,22 @@ def supports_strict_tools(root: Path) -> bool:
     return False
 
 
+def thinking_options(mode: str) -> dict:
+    """Model-file kwargs for ``--omp-thinking``.
+
+    ``adaptive`` pins ``thinking.type`` to ``adaptive``. ``off`` sets
+    ``reasoning`` false so the checkout does not send a thinking block.
+    ``default`` leaves reasoning on and does not pin a thinking type.
+    """
+    if mode == "adaptive":
+        return {"adaptive_thinking": True, "reasoning": True}
+    if mode == "off":
+        return {"adaptive_thinking": False, "reasoning": False}
+    if mode == "default":
+        return {"adaptive_thinking": False, "reasoning": True}
+    raise ValueError(f"unknown omp thinking mode {mode!r}")
+
+
 def model_document(root: Path, proxy_base: str, filename: str, *,
                    adaptive_thinking: bool = False,
                    reasoning: bool = True) -> str:

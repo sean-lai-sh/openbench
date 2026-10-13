@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import io
 import json
 import os
 import stat
@@ -8,9 +9,12 @@ import textwrap
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
+from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from thesis.ab.compat import Assessment
 from thesis.ab.compat_cli import assess_cli, extra_args
@@ -444,12 +448,11 @@ class TestProxy(unittest.TestCase):
                 "query:beta",
                 "system-billing-header",
                 "identity-line",
-                "metadata.user_id",
                 "beta:claude-code-20250219",
                 "beta:oauth-2025-04-20",
                 "user-agent",
-                "authorization",
             ],
+            "normalized": ["metadata.user_id", "authorization"],
         })
 
         legacy = {
@@ -518,7 +521,122 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(clean_row["cc_identity_stripped"], {
             "stripped": False,
             "removed": [],
+            "normalized": [],
         })
+
+    def test_user_id_and_proxy_bearer_are_normalized(self):
+        httpd, thread, upstream = _listen()
+        ledger = Path(tempfile.mkdtemp())
+        proxy = start_proxy("proj", token="tok", upstream=upstream, ledger_dir=ledger)
+        self.addCleanup(proxy.close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        status, _body = _post(
+            proxy.base_url + "/c/norm/v1/messages",
+            json.dumps({
+                "model": "claude-opus-5-5",
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "hello"}],
+                "metadata": {"user_id": "user_01"},
+            }).encode(),
+            {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer proxy",
+                "User-Agent": "omp/14.5.8",
+            },
+        )
+        self.assertEqual(status, 200)
+        forwarded = json.loads(httpd.seen[-1]["body"])
+        self.assertNotIn("metadata", forwarded)
+        self.assertNotIn("user_id", json.dumps(forwarded))
+        self.assertEqual(httpd.seen[-1]["auth"], "Bearer tok")
+        self.assertEqual(httpd.seen[-1]["user_agent"], "openbench")
+        row = json.loads((ledger / "norm.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(row["cc_identity_stripped"], {
+            "stripped": False,
+            "removed": [],
+            "normalized": ["metadata.user_id", "authorization"],
+        })
+
+    def test_ledger_rows_record_configured_and_sent_thinking(self):
+        from thesis.ab.run_ab import attach_thinking
+        httpd, thread, upstream = _listen()
+        ledger = Path(tempfile.mkdtemp())
+        proxy = start_proxy(
+            "proj", token="tok", upstream=upstream, ledger_dir=ledger,
+            thinking_mode="adaptive",
+        )
+        self.addCleanup(proxy.close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        bodies = [
+            {
+                "model": "claude-opus-5-5",
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "plain"}],
+            },
+            {
+                "model": "claude-opus-5-5",
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "budget"}],
+                "thinking": {"type": "enabled", "budget_tokens": 1024},
+            },
+            {
+                "model": "claude-opus-5-5",
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "adapt"}],
+                "thinking": {"type": "adaptive"},
+            },
+        ]
+        for body in bodies:
+            status, _payload = _post(
+                proxy.base_url + "/c/think/v1/messages",
+                json.dumps(body).encode(),
+                {"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 200)
+        rows = [
+            json.loads(line)
+            for line in (ledger / "think.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual([row["thinking_mode"] for row in rows], ["adaptive"] * 3)
+        self.assertEqual(
+            [row["thinking_sent"] for row in rows],
+            ["none", "enabled+budget_tokens", "adaptive"],
+        )
+        result = attach_thinking({"task": "demo"}, "adaptive", rows)
+        self.assertEqual(result["thinking_mode"], "adaptive")
+        self.assertEqual(result["thinking_sent"], ["none", "enabled+budget_tokens", "adaptive"])
+        empty = attach_thinking({}, "off", [])
+        self.assertEqual(empty["thinking_mode"], "off")
+        self.assertEqual(empty["thinking_sent"], [])
+
+        dead = start_proxy(
+            "proj", token="tok", upstream="http://127.0.0.1:1", ledger_dir=ledger,
+            thinking_mode="off",
+        )
+        self.addCleanup(dead.close)
+        try:
+            _post(
+                dead.base_url + "/c/err/v1/messages",
+                json.dumps({
+                    "model": "claude-opus-5-5",
+                    "max_tokens": 4,
+                    "messages": [{"role": "user", "content": "down"}],
+                    "thinking": {"type": "enabled", "budget_tokens": 8},
+                }).encode(),
+                {"Content-Type": "application/json"},
+            )
+            status = 200
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        self.assertEqual(status, 502)
+        err = json.loads((ledger / "err.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(err["status"], 502)
+        self.assertEqual(err["thinking_mode"], "off")
+        self.assertEqual(err["thinking_sent"], "enabled+budget_tokens")
 
 
 class TestModelFile(unittest.TestCase):
@@ -737,6 +855,154 @@ class TestHeadless(unittest.TestCase):
         missing = assess_cli(str(Path(tempfile.mkdtemp()) / "absent"), root, "pi", "http://127.0.0.1:9")
         self.assertEqual(missing.status, "incompatible")
         self.assertEqual(missing.reason, "could not read --help")
+
+    def test_omp_thinking_reaches_models_yml_and_the_cli(self):
+        from thesis.ab.run_ab import _default_assess, _fill, main
+        binary = self._binary("#!/bin/sh\nprintf '%s\\n' 'usage'\n")
+        sha = "c" * 40
+        cache = Path(tempfile.mkdtemp())
+
+        def tree(name):
+            src = cache / "worktrees" / name / sha / "packages" / "coding-agent" / "src"
+            src.mkdir(parents=True)
+            (src / "config.ts").write_text("models.yml\n", encoding="utf-8")
+
+        tree("omp")
+        tree("pi")
+        adaptive = _default_assess(
+            binary, "can1357/oh-my-pi", cache, sha, "http://127.0.0.1:9", "proxy",
+            omp_thinking="adaptive",
+        )
+        self.assertIn('type: "adaptive"', adaptive.vertex["models_body"])
+        self.assertIn("reasoning: true", adaptive.vertex["models_body"])
+        off = _default_assess(
+            binary, "can1357/oh-my-pi", cache, sha, "http://127.0.0.1:9", "proxy",
+            omp_thinking="off",
+        )
+        self.assertIn("reasoning: false", off.vertex["models_body"])
+        self.assertNotIn("thinking:", off.vertex["models_body"])
+        default = _default_assess(
+            binary, "can1357/oh-my-pi", cache, sha, "http://127.0.0.1:9", "proxy",
+        )
+        self.assertIn("reasoning: true", default.vertex["models_body"])
+        self.assertNotIn("thinking:", default.vertex["models_body"])
+        pi = _default_assess(
+            binary, "badlogic/pi-mono", cache, sha, "http://127.0.0.1:9", "proxy",
+            omp_thinking="off",
+        )
+        model = json.loads(pi.vertex["models_body"])["providers"]["vertex-anthropic"]["models"][0]
+        self.assertIs(model["reasoning"], True)
+        self.assertNotIn("thinking", model)
+
+        out = Path(tempfile.mkdtemp())
+        filled = _fill(
+            {"pr": "omp-1", "side": "with", "task": "demo", "trial": 1, "sha": sha},
+            {"binary": str(binary), "config": {}, "permission_config": False, "harness": "omp"},
+            out, "/tmp/tasks", str(ROOT / "obench" / "adapters"), "claude-opus-5-5", 10,
+            thinking_mode="off",
+        )
+        self.assertEqual(filled["thinking_mode"], "off")
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            main(["nope.csv", "--omp-thinking", "high"])
+        self.assertEqual(caught.exception.code, 2)
+
+        captured = {}
+
+        def fake_drive(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            return "plan\n", 0, None
+
+        csv_path = Path(tempfile.mkdtemp()) / "prs.csv"
+        csv_path.write_text(
+            "Repo,#,PR,Title,Category,Harness change,Merge commit SHA,Parent/base SHA\n"
+            "can1357/oh-my-pi,3,direct,Identity,prompt,Removes the identity line,"
+            + ("b" * 40) + "," + ("a" * 40) + "\n",
+            encoding="utf-8",
+        )
+        with patch("thesis.ab.run_ab.drive", fake_drive), redirect_stdout(io.StringIO()):
+            code = main([
+                str(csv_path), "--pr", "omp-3", "--dry-run", "--omp-thinking", "adaptive",
+                "--tasks", "make-it-run", "--out", str(out / "run"),
+            ])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["kwargs"]["omp_thinking"], "adaptive")
+
+    def test_result_row_records_thinking_from_the_ledger(self):
+        from thesis.ab.run_ab import execute_cell
+        root = Path(tempfile.mkdtemp())
+        task = root / "tasks" / "demo"
+        (task / "workspace").mkdir(parents=True)
+        (task / "instruction.md").write_text("say hi\n", encoding="utf-8")
+        checker = task / "checker.sh"
+        checker.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        checker.chmod(checker.stat().st_mode | stat.S_IEXEC)
+        binary = self._binary(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import json, sys
+            if "--version" in sys.argv:
+                print("omp-test")
+                raise SystemExit(0)
+            print(json.dumps({
+                "type": "turn_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "usage": {
+                        "input": 1, "cacheRead": 0, "cacheWrite": 0,
+                        "output": 1, "reasoning": 0, "totalTokens": 2,
+                    },
+                },
+            }))
+        """))
+        ledger = root / "ledger"
+        ledger.mkdir()
+        cell_id = "cellthink"
+        (ledger / f"{cell_id}.jsonl").write_text("\n".join([
+            json.dumps({
+                "record_type": "request", "status": 200,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "thinking_mode": "adaptive", "thinking_sent": "none",
+            }),
+            json.dumps({
+                "record_type": "request", "status": 200,
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+                "thinking_mode": "adaptive", "thinking_sent": "enabled+budget_tokens",
+            }),
+        ]) + "\n", encoding="utf-8")
+        cell = root / "cell.json"
+        execute_cell({
+            "binary": str(binary),
+            "config": {},
+            "permission_config": False,
+            "harness": "omp",
+            "vertex": {
+                "bin": str(binary),
+                "models_body": "providers: {}\n",
+                "models_filename": "models.yml",
+                "provider": "vertex-anthropic",
+                "model_id": "claude-opus-5-5",
+                "extra_args": [],
+                "agent_env": "OMP_CODING_AGENT_DIR",
+                "home_dir": ".omp",
+            },
+            "proxy": {"ledger_dir": str(ledger), "cell_id": cell_id},
+            "thinking_mode": "adaptive",
+            "cell_path": str(cell),
+            "tasks_dir": str(root / "tasks"),
+            "adapters_dir": str(ROOT / "obench" / "adapters"),
+            "model": "claude-opus-5-5",
+            "task": "demo",
+            "trial": 1,
+            "side": "with",
+            "timeout_s": 20,
+            "transcripts_dir": str(root / "transcripts"),
+            "evidence_dir": str(root / "transcripts" / "with" / "demo" / "1"),
+            "no_progress_s": 15,
+        })
+        row = json.loads(cell.read_text(encoding="utf-8"))
+        self.assertEqual(row["thinking_mode"], "adaptive")
+        self.assertEqual(row["thinking_sent"], ["none", "enabled+budget_tokens"])
 
 
 class TestPiDrive(unittest.TestCase):

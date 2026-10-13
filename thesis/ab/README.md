@@ -275,6 +275,10 @@ python -m thesis.ab.build_pi <40-character-sha> --cache results/harness-src
 python -m thesis.ab.build_omp <40-character-sha> --cache results/harness-src
 ```
 
+From Oh My Pi 14.x on, the build uses the prebuilt `@oh-my-pi/pi-natives@<version>` package when it contains this platform's `.node` file, and otherwise `@oh-my-pi/pi-natives-<platform>` (`linux-x64-modern.node` and `linux-x64-baseline.node` on x64). That path does not run cargo. A checkout with no published binary is built from source. If the host rustc is not the checkout's toolchain, the build stops and names the channel it needs (rustc 1.85.1 against `nightly-2026-03-27`, for example).
+
+`--omp-thinking` is `default`, `adaptive`, or `off`. It applies only to Oh My Pi's vertex-anthropic `models.yml`. `adaptive` pins `thinking.type` to `adaptive`. `off` sets `reasoning: false`. `default` leaves reasoning on and does not pin a type. Every proxy ledger row records that configured mode and the thinking field that request sent (`none`, `enabled+budget_tokens`, or `adaptive`). Every result row records the same configured mode and the per-request values in ledger order.
+
 ## Oldest OpenCode commit in the fixture
 
 The oldest parent SHA is `b99565959bb7a094e339802076d6ad6fd7d7f83c`, the parent of PR 623 (nearest tag v0.1.180). `python -m thesis.ab.build_opencode` compiles that commit with the `package.json` Bun (1.2.14) and Go 1.24.6. The binary runs, and `opencode --version` prints `openbench`. `opencode run --help` lists `-m` / `--model` and does not list `--auto` or `--dangerously-skip-permissions`. The config schema rejects a `permission` key, so the runner does not write one.
