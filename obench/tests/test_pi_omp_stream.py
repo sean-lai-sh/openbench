@@ -1,5 +1,6 @@
 """Recorded omp --mode json streams and the Vertex cell ledger."""
 
+import contextlib
 import io
 import json
 import os
@@ -23,8 +24,10 @@ from thesis.ab.build_omp import (
     PINNED_BUN,
     bun_version_for_build,
     compile_tree,
+    has_unreleased_native_changes,
     native_asset_candidates,
     native_asset_name,
+    next_published_natives,
     npm_native_specs,
     plan_natives,
     prepare_natives,
@@ -880,6 +883,77 @@ class OmpBuildTests(unittest.TestCase):
         self.assertEqual(matched, "cargo")
         self.assertIsNone(matched_bin)
         self.assertEqual(skipped, [])
+
+    def test_unreleased_natives_changelog_uses_the_next_published_version(self):
+        published = ["17.3.7", "17.3.8", "17.4.0", "17.5.0"]
+        self.assertEqual(next_published_natives("17.3.8", published), "17.4.0")
+        self.assertIsNone(next_published_natives("17.5.0", published))
+        unreleased = textwrap.dedent("""\
+            # @oh-my-pi/pi-natives
+
+            ## [Unreleased]
+
+            - ClaudeV5 encoding
+
+            ## [17.3.8]
+
+            - previous
+            """)
+        empty = textwrap.dedent("""\
+            # @oh-my-pi/pi-natives
+
+            ## [Unreleased]
+
+            ## [17.3.8]
+
+            - previous
+            """)
+
+        def select(changelog: str) -> tuple[Path, list[str], str, int]:
+            root = Path(tempfile.mkdtemp())
+            subprocess.run(
+                ["git", "init"], cwd=root, check=True, capture_output=True,
+            )
+            natives = root / "packages" / "natives"
+            natives.mkdir(parents=True)
+            (natives / "package.json").write_text(
+                json.dumps({"version": "17.3.8"}), encoding="utf-8",
+            )
+            (natives / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+            (root / "package.json").write_text(
+                json.dumps({"scripts": {"build:native": "echo native"}}),
+                encoding="utf-8",
+            )
+            asked: list[str] = []
+
+            def npm_fetch(spec: str) -> dict:
+                asked.append(spec)
+                return {}
+
+            def opener(url: str) -> bytes:
+                raise AssertionError(url)
+
+            log = io.StringIO()
+            with patch(
+                "thesis.ab.build_omp._npm_published_versions", return_value=published,
+            ) as view, contextlib.redirect_stderr(log):
+                prepare_natives(root, opener=opener, npm_fetch=npm_fetch)
+            return root, asked, log.getvalue(), view.call_count
+
+        root, asked, log, calls = select(unreleased)
+        self.assertTrue(has_unreleased_native_changes(root))
+        self.assertEqual(calls, 1)
+        self.assertTrue(asked)
+        self.assertTrue(all(spec.endswith("@17.4.0") for spec in asked))
+        self.assertIn("pi-natives 17.4.0", log)
+
+        root, asked, log, calls = select(empty)
+        self.assertFalse(has_unreleased_native_changes(root))
+        self.assertEqual(calls, 0)
+        self.assertTrue(asked)
+        self.assertTrue(all(spec.endswith("@17.3.8") for spec in asked))
+        self.assertNotIn("17.4.0", log)
+        self.assertIn("pi-natives 17.3.8", log)
 
 
 if __name__ == "__main__":
