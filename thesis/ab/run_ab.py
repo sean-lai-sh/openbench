@@ -1194,6 +1194,24 @@ def promote_proxy_meter(row: dict) -> dict:
     return row
 
 
+def attach_upstream_model(row: dict, records: list | None) -> dict:
+    """Copy the proxy's upstream Vertex model onto the cell's own record.
+
+    The harness ``model`` field is the alias the harness was configured
+    with. ``upstream_model`` is what the proxy actually called; cost is
+    priced from it. A cell whose ledger names more than one model gets a
+    sorted ``+``-joined value, which prices at the default (Opus) rates.
+    """
+    models = sorted({
+        str(record.get("upstream_model"))
+        for record in records or []
+        if isinstance(record, dict) and record.get("upstream_model")
+    })
+    if models:
+        row["upstream_model"] = models[0] if len(models) == 1 else "+".join(models)
+    return row
+
+
 def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     if not isinstance(row, dict) or not isinstance(proxy, dict):
         return row
@@ -1212,6 +1230,7 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
             row["requests_count"] = 0
         return row
     apply_proxy_ledger(row, records)
+    attach_upstream_model(row, records)
     expose_request_totals(row)
     promote_proxy_meter(row)
     # Every ledger row, not only 2xx rows that carried a usage object.

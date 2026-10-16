@@ -2552,3 +2552,33 @@ class TestTriggerArm(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_row_cost_prices_per_upstream_model():
+    import pytest
+    from thesis.ab.summarize import row_cost
+    base = {
+        "requests_input_uncached": 1_000_000,
+        "requests_output": 1_000_000,
+        "requests_cache_read": 1_000_000,
+        "requests_cache_write": 1_000_000,
+    }
+    assert row_cost(dict(base, upstream_model="claude-opus-5-5")) == pytest.approx(29.2)
+    assert row_cost(dict(base, upstream_model="claude-sonnet-5-5")) == pytest.approx(14.6)
+    # Unknown or missing upstream model keeps the Opus default (upper bound).
+    assert row_cost(base) == pytest.approx(29.2)
+    assert row_cost(dict(base, upstream_model="claude-opus-5-5+claude-sonnet-5-5")) == pytest.approx(29.2)
+
+
+def test_attach_upstream_model_from_ledger():
+    from thesis.ab.run_ab import attach_upstream_model
+    row = {"model": "claude-opus-5-5"}
+    attach_upstream_model(row, [{"upstream_model": "claude-sonnet-5-5"}, {"upstream_model": "claude-sonnet-5-5"}])
+    assert row["upstream_model"] == "claude-sonnet-5-5"
+    assert row["model"] == "claude-opus-5-5"
+    row = {}
+    attach_upstream_model(row, [{"upstream_model": "b"}, {"upstream_model": "a"}, {}])
+    assert row["upstream_model"] == "a+b"
+    row = {}
+    attach_upstream_model(row, [{}])
+    assert "upstream_model" not in row
