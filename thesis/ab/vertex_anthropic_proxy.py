@@ -634,6 +634,7 @@ def _append_ledger(
     identity: dict | None = None,
     thinking_mode: str = "default",
     thinking_sent: str = "none",
+    upstream_model: str | None = None,
 ) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -649,6 +650,8 @@ def _append_ledger(
         row["cc_identity_stripped"] = identity
     row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
+    if isinstance(upstream_model, str) and upstream_model:
+        row["upstream_model"] = upstream_model
     line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -993,6 +996,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             _append_ledger(
                 ledger, cell, usage, status=status, identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
+                upstream_model=model,
             )
 
         def _record_error(self, cell: str | None, status: int, payload: bytes | str,
@@ -1002,6 +1006,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             _append_ledger(
                 ledger, cell, None, status=status, error=_error_body(payload), identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
+                upstream_model=model,
             )
 
         def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str,
@@ -1089,10 +1094,12 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
     return proxy
 
 
-def start_from_env(ledger_dir: Path | None = None, thinking_mode: str = "default") -> Proxy:
+def start_from_env(ledger_dir: Path | None = None, thinking_mode: str = "default",
+                   model: str = MODEL_ID) -> Proxy:
     project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
     if not project:
         raise ProxyError("GOOGLE_CLOUD_PROJECT is not set")
     return start_proxy(
-        project, token=AdcToken(), ledger_dir=ledger_dir, thinking_mode=thinking_mode,
+        project, model=model, token=AdcToken(), ledger_dir=ledger_dir,
+        thinking_mode=thinking_mode,
     )
