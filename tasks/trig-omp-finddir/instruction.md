@@ -1,0 +1,1 @@
+The repo has a `golden` fixtures directory. Add a new golden fixture `empty_cart.json` with the contents `{"items": [], "total": 0}` and register it in that directory's `MANIFEST.txt` the same way as the others.
