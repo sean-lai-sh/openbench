@@ -23,6 +23,30 @@ RATES = {
     "tokens_cache_read": 0.20,
     "tokens_cache_write": 5.0,
 }
+# Google Vertex AI list prices, Standard tier, global endpoint, USD per MTok
+# (Anthropic List Prices 2026-10-07, "Google Vertex AI" section:
+# https://assets.claude.com/1ef7a4a8e373004bc89d710b0a6f3f219323344f.pdf).
+# Cache writes use the 5-minute write rate. ``RATES`` (Opus 5.5) stays the
+# default for rows with no or unknown ``upstream_model``, an upper bound.
+RATES_BY_MODEL = {
+    "claude-opus-5-5": RATES,
+    "claude-sonnet-5-5": {
+        "tokens_input_uncached": 2.0,
+        "tokens_output": 10.0,
+        "tokens_cache_read": 0.10,
+        "tokens_cache_write": 2.50,
+    },
+}
+
+
+def rates_for(row: dict) -> dict:
+    """Price table for the upstream Vertex model that actually served the cell."""
+    model = row.get("upstream_model") if isinstance(row, dict) else None
+    if isinstance(model, str):
+        model = model.split("@", 1)[0]
+        if model in RATES_BY_MODEL:
+            return RATES_BY_MODEL[model]
+    return RATES
 
 
 _PROXY_FIELDS = (
@@ -74,7 +98,7 @@ def row_cost(row: dict) -> float | None:
     if split is None:
         return None
     total = 0.0
-    for field, rate in RATES.items():
+    for field, rate in rates_for(row).items():
         total += (split[field] / 1_000_000.0) * rate
     return total
 
