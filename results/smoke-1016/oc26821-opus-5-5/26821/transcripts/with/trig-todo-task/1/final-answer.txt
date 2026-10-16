@@ -1,0 +1,14 @@
+The whole suite passes now: `python3 -m unittest` ran 16 tests and all were OK. The first run reported 15 because `test_search.py` couldn't be imported, so its 2 tests were counted as a single error.
+
+I tracked the work in the todo list. I gave the `test_search.py` investigation to a subagent, which found the bad import and checked the fix without editing anything. Only code in `catalog/` changed; the tests are untouched.
+
+| File | Bug | Fix |
+|---|---|---|
+| `catalog/search.py:3` | Imported `normalize` from `catalog.nonexistent`, a module that doesn't exist | Import it from `catalog.text` |
+| `catalog/books.py:22` | `parse_book` kept the year as a string, so `age()` crashed | Convert it with `int(year)` |
+| `catalog/factory.py` | `Emma` was missing from the sample books, though the docstring lists it | Added `Book("Emma", "Austen", 1815, 1)` |
+| `catalog/fees.py:14` | The fee added the daily rate to the days late instead of multiplying | `days_late * DAILY_FEE` |
+| `catalog/inventory.py:24` | `recent(n)` returned one event too many | Slice `[-n:]` |
+| `catalog/members.py:4` | `MAX_BORROWED = 3`, but the policy comment says five | Set to `5` |
+
+One change goes beyond what the tests check: `recent(n)` now returns an empty list when `n` is 0 or less. Without that, the new slice `[-0:]` would have returned the whole history.
