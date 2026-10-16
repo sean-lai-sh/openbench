@@ -1592,7 +1592,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
           transcripts_dir=None, aa: bool = False, fixtures=None,
           order: str = "sides", seed: int | None = None, with_aa: bool = False,
-          no_progress_s: float = 300, omp_thinking: str = "default"):
+          no_progress_s: float = 300, omp_thinking: str = "default",
+          vertex_model: str = "claude-opus-5-5"):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -1646,7 +1647,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     if own_assess and proxy_url is None and _needs_proxy(prs, model_route):
         from thesis.ab.vertex_anthropic_proxy import ProxyError, start_from_env
         try:
-            server = start_from_env(ledger_dir=ledger_dir, thinking_mode=omp_thinking)
+            server = start_from_env(ledger_dir=ledger_dir, thinking_mode=omp_thinking,
+                                    model=vertex_model)
         except ProxyError as exc:
             raise RunError(str(exc)) from exc
         proxy_url = server.base_url
@@ -1884,6 +1886,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--model", default="claude-opus-5-5")
     parser.add_argument(
+        "--vertex-model",
+        default="claude-opus-5-5",
+        help=(
+            "Vertex model the shared proxy calls (e.g. claude-sonnet-5-5). Harness configs keep "
+            "--model as their alias; each ledger row records upstream_model."
+        ),
+    )
+    parser.add_argument(
         "--omp-thinking",
         choices=("default", "adaptive", "off"),
         default="default",
@@ -2001,6 +2011,7 @@ def main(argv: list[str] | None = None) -> int:
             transcripts_dir=args.transcripts_dir, aa=args.aa,
             fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
             no_progress_s=args.no_progress_s, omp_thinking=args.omp_thinking,
+            vertex_model=args.vertex_model,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
