@@ -362,6 +362,24 @@ def apply_watchdog_class(row: dict) -> dict:
         reason_text = "wasm_abort"
     else:
         return row
+    requests = row.get("requests_count")
+    made_requests = (
+        isinstance(requests, (int, float)) and not isinstance(requests, bool) and requests > 0
+    )
+    if reason == "no_progress" and made_requests:
+        # Silent after real model calls: the agent hung mid-session. That is a
+        # scored failure (in the solve denominator, tokens kept), not infra.
+        row["failure_class"] = "hang"
+        row["failure_reason"] = reason_text
+        row.pop("infra_reason", None)
+        row["hang_reason"] = reason
+        row["success"] = False
+        row["score"] = 0.0
+        row["completed"] = False
+        if idle is not None:
+            row["no_progress_idle_s"] = idle
+        return row
+    row.pop("hang_reason", None)
     row["failure_class"] = "infra"
     row["failure_reason"] = reason_text
     row["infra_reason"] = reason
@@ -373,3 +391,52 @@ def apply_watchdog_class(row: dict) -> dict:
     else:
         row.pop("no_progress_idle_s", None)
     return row
+
+
+def rescore(out_dir) -> dict:
+    """Re-apply ``apply_watchdog_class`` to every stored cell under ``out_dir``.
+
+    Rewrites only cells whose class changes, then re-projects each side's
+    JSONL. Returns ``{pr/side: {old->new: count}}``.
+    """
+    import json
+    from pathlib import Path
+    from thesis.ab.run_ab import project_side, read_cell, publish_text
+
+    out_dir = Path(out_dir)
+    changes: dict = {}
+    for side_dir in sorted(out_dir.glob("*/cells/*")):
+        if not side_dir.is_dir():
+            continue
+        pr, side = side_dir.parent.parent.name, side_dir.name
+        touched = False
+        for path in sorted(side_dir.glob("*/*.json")):
+            row = read_cell(path)
+            if not isinstance(row, dict):
+                continue
+            before = row.get("failure_class")
+            apply_watchdog_class(row)
+            after = row.get("failure_class")
+            if before != after:
+                key = f"{before}->{after}"
+                bucket = changes.setdefault(f"{pr}/{side}", {})
+                bucket[key] = bucket.get(key, 0) + 1
+                publish_text(path, json.dumps(row, sort_keys=True))
+                touched = True
+        if touched:
+            project_side(out_dir, pr, side)
+    return changes
+
+
+def main(argv=None) -> int:
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description="Rescore watchdog kills in stored A/B cells")
+    parser.add_argument("out", help="A/B output directory")
+    args = parser.parse_args(argv)
+    print(json.dumps(rescore(args.out), indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
