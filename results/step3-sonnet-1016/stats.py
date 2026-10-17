@@ -18,6 +18,11 @@ for d in sorted(glob.glob(f"{R}/*/cells"), key=lambda p:int(p.split('/')[-2])):
     tot+=cost
     a,b=S["without"],S["with"]
     m=lambda x: f"{sum(x)/len(x):.0f}" if x else "-"
-    ci=("%+.1f%% [%+.1f%%, %+.1f%%]"%tuple(100*v for v in boot(a["t"],b["t"]))) if len(a["t"])>1 and len(b["t"])>1 else "-"
+    if len(a["t"])>1 and len(b["t"])>1:
+        pt,lo,hi=(100*v for v in boot(a["t"],b["t"]))
+        if lo<=0<=hi: ci="no effect detected (±%.1f%%) %+.1f%% [%+.1f%%, %+.1f%%]"%(max(abs(lo),abs(hi)),pt,lo,hi)
+        elif -6.5<=pt<=6.8: ci="no effect detected (inside A/A band -6.5%%..+6.8%%; CI excludes 0) %+.1f%% [%+.1f%%, %+.1f%%]"%(pt,lo,hi)
+        else: ci="effect %+.1f%% [%+.1f%%, %+.1f%%]"%(pt,lo,hi)
+    else: ci="not measurable (no judged cells on a side)"
     print(f"{pr} | {','.join(sorted(map(str,task)))} | {a['ok']}/{a['j']} {a.get('side','')} | {b['ok']}/{b['j']} {b.get('side','')} | {a['inf']},{b['inf']} | {a['hang']},{b['hang']} | {m(a['t'])} | {m(b['t'])} | {ci} | ${cost:.2f} | {params_strip_status(S['_rows']['without'],S['_rows']['with'])}{' EARLY-STOP' if os.path.exists(f'{R}/{pr}/early-stop.json') else ''}")
 print(f"total ${tot:.2f}")
