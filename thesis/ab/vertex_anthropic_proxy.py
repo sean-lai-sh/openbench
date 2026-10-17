@@ -336,8 +336,12 @@ def apply_block_binding(data) -> str | None:
 # Upstream models that reject sampling params OpenCode still sends. Sonnet 5.5
 # on Vertex answers 400 "`temperature` is deprecated for this model"; newer
 # OpenCode trees (step 3: PR 11731 onward) send it on every request.
+# Opus 5.5 on Vertex gives the same 400 since 2026-10-17 (step-6 13331 smoke,
+# both sides infra on the title/summary request), so it is stripped and
+# recorded the same way.
 DEPRECATED_SAMPLING_PARAMS = {
     "claude-sonnet-5-5": ("temperature", "top_p", "top_k"),
+    "claude-opus-5-5": ("temperature", "top_p", "top_k"),
 }
 
 

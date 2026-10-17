@@ -304,6 +304,17 @@ def has_unreleased_native_changes(root: Path) -> bool:
     return bool(match and re.search(r"^\s*-\s+\S", match.group(1), re.M))
 
 
+def enforces_version_sentinel(root: Path) -> bool:
+    """True when the tree checks the addon for its own ``__piNativesV<x_y_z>`` sentinel.
+
+    ``packages/natives/native/version-sentinel.js`` (18.3.0 onward) is used by
+    embed-native.ts and the runtime loader. Both reject an addon whose sentinel
+    is not ``packages/natives/package.json``'s version, so a later published
+    ``.node`` cannot stand in (row 44, d3e08e91/7dd20b95: 18.3.1 vs 18.3.0).
+    """
+    return (root / "packages" / "natives" / "native" / "version-sentinel.js").is_file()
+
+
 def next_published_natives(version: str, published: list[str]) -> str | None:
     """Smallest published version strictly greater than ``version``."""
     def key(item: str) -> tuple[int, ...]:
@@ -366,7 +377,8 @@ def prepare_natives(root: Path, opener=None, npm_fetch=None) -> str:
     rustup, including checkouts whose ``crates/`` tree has moved on
     (27517f25, 1b5c7b53). When that tree does not match the tagged release and
     ``packages/natives/CHANGELOG.md`` has a non-empty ``## [Unreleased]``
-    section, the next published version is installed instead. The chosen
+    section, the next published version is installed instead, unless the tree
+    enforces a version sentinel (then only its own version can load). The chosen
     version is printed as ``pi-natives <version>``. ``cargo`` remains when no
     prebuilt file is available.
     """
@@ -375,7 +387,8 @@ def prepare_natives(root: Path, opener=None, npm_fetch=None) -> str:
     version = natives_version(root)
     if not version:
         return "cargo"
-    if not crates_match_release(root, version) and has_unreleased_native_changes(root):
+    if (not crates_match_release(root, version) and has_unreleased_native_changes(root)
+            and not enforces_version_sentinel(root)):
         nxt = next_published_natives(version, _npm_published_versions())
         if nxt:
             version = nxt
