@@ -24,6 +24,7 @@ from thesis.ab.build_omp import (
     PINNED_BUN,
     bun_version_for_build,
     compile_tree,
+    enforces_version_sentinel,
     has_unreleased_native_changes,
     native_asset_candidates,
     native_asset_name,
@@ -909,7 +910,7 @@ class OmpBuildTests(unittest.TestCase):
             - previous
             """)
 
-        def select(changelog: str) -> tuple[Path, list[str], str, int]:
+        def select(changelog: str, sentinel: bool = False) -> tuple[Path, list[str], str, int]:
             root = Path(tempfile.mkdtemp())
             subprocess.run(
                 ["git", "init"], cwd=root, check=True, capture_output=True,
@@ -920,6 +921,9 @@ class OmpBuildTests(unittest.TestCase):
                 json.dumps({"version": "17.3.8"}), encoding="utf-8",
             )
             (natives / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+            if sentinel:
+                (natives / "native").mkdir()
+                (natives / "native" / "version-sentinel.js").write_text("", encoding="utf-8")
             (root / "package.json").write_text(
                 json.dumps({"scripts": {"build:native": "echo native"}}),
                 encoding="utf-8",
@@ -953,6 +957,15 @@ class OmpBuildTests(unittest.TestCase):
         self.assertTrue(asked)
         self.assertTrue(all(spec.endswith("@17.3.8") for spec in asked))
         self.assertNotIn("17.4.0", log)
+        self.assertIn("pi-natives 17.3.8", log)
+
+        # A tree with native/version-sentinel.js (omp 18.3.0+) only loads its own
+        # version, so the unreleased-changelog bump is skipped.
+        root, asked, log, calls = select(unreleased, sentinel=True)
+        self.assertTrue(enforces_version_sentinel(root))
+        self.assertEqual(calls, 0)
+        self.assertTrue(asked)
+        self.assertTrue(all(spec.endswith("@17.3.8") for spec in asked))
         self.assertIn("pi-natives 17.3.8", log)
 
 
