@@ -1,0 +1,11 @@
+{
+  "id": "prt_14848d083001zJsp6TBi7s8j44",
+  "sessionID": "ses_eb7b7595affeZ78REd3wSyJwh9",
+  "messageID": "msg_14848c02f001GvvlmPVSl4EU0J",
+  "type": "text",
+  "text": "`rate` becomes `None` at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n**Cause:** `settings.json` has no `\"rate\"` key. Line 2 has the typo `\"rat\": 0.5`. `SETTINGS` is loaded in `app/config.py:17-18` with `json.load`, and it contains only `rat`, `currency` and `label`. `dict.get(\"rate\")` therefore returns `None` instead of raising a `KeyError`.\n\n**Call chain:**\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py` calls `rate = pricing.get_rate()`, which gets `None`.\n3. `app/report.py` then evaluates `rate * count`, which raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`.\n\nI ran `python3 main.py` and it fails with that `TypeError`. The traceback's line numbers for `app/report.py` don't match the file. It reports line 9 for `rate * count`, but `cat -n` showed the file with that line at 9 only after the previous file's numbering carried over. I didn't modify any files.\n\n**Fix, if you want one:** rename `\"rat\"` to `\"rate\"` in `settings.json:2`. Using `SETTINGS[\"rate\"]` in `get_rate()` would also make the failure show up at the source as a `KeyError`.",
+  "time": {
+    "start": 1792214093988,
+    "end": 1792214093988
+  }
+}
