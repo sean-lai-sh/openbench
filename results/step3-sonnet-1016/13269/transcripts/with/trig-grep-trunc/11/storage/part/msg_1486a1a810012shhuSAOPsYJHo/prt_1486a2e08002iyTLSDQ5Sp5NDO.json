@@ -1,0 +1,11 @@
+{
+  "id": "prt_1486a2e08002iyTLSDQ5Sp5NDO",
+  "sessionID": "ses_eb7967091ffefISSt33SIm0JFM",
+  "messageID": "msg_1486a1a810012shhuSAOPsYJHo",
+  "type": "text",
+  "text": "`python3 -m unittest` now reports all 25 tests passing. I didn't touch the tests. There were seven bugs, all in `taskflow/`:\n\n| File | Bug | Fix |\n|---|---|---|\n| `retry.py` | `should_retry` stopped one attempt early (`attempts_made < max_attempts - 1`) | `attempts_made < max_attempts` |\n| `queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority | `(-priority, seq)` |\n| `config.py` | `deep_merge` recursed with its arguments swapped, so defaults overwrote task overrides | `deep_merge(result[key], value)` |\n| `scheduler.py` | `_cascade_skip` skipped only direct dependents | uses `dag.transitive_dependents` |\n| `statemachine.py` | `batch_order_ok` required priority to be non-decreasing | `current_priority <= prev_priority` |\n| `resources.py` | `ResourcePool.release` subtracted 1 instead of `cost` | `self.used -= cost` |\n| `events.py` | `_prefix_matches` had its arguments reversed, so `job.term` subscribers never got `job.term.failed` and similar topics | `topic.startswith(prefix + \".\")` |\n\nThe priority-order bug in `queue.py` was masking the one in `statemachine.py`. The batch guard rejected valid dispatches and failed those jobs, so the pipeline tests kept failing after the queue fix. Fixing the guard cleared those.\n\nYour first instruction was to grep for `self`. I ran it, but it matched 1,325 lines and showed only 100, so it didn't help. I ran the suite and read the modules directly instead.",
+  "time": {
+    "start": 1792216280620,
+    "end": 1792216280620
+  }
+}

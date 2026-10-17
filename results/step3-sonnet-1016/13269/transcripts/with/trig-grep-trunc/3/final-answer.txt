@@ -1,0 +1,11 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. I fixed seven bugs, listed here by file.
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of subtracting the cost. Pools never freed fully, which stalled the resource tests. It now does `used -= cost`.
+- **`statemachine.py`**: `batch_order_ok` was inverted and demanded non-decreasing priority. It now checks `current <= prev`, so a batch is dispatched in non-increasing priority order.
+- **`scheduler.py`**: `_cascade_skip` used the direct `dependents()`, so only a failed task's children were skipped. It now uses `transitive_dependents()`, so everything downstream is skipped.
+- **`events.py`**: `_prefix_matches` had its arguments reversed: `prefix.startswith(topic + ".")`. Prefix subscriptions like `job.term` never fired, so the history's failed, skipped and succeeded sets stayed empty. It now checks `topic.startswith(prefix + ".")`.
+
+Several of these hid others, as you warned. For example, the queue fix exposed the inverted batch guard, and the history failures only showed once the scheduler tests passed.

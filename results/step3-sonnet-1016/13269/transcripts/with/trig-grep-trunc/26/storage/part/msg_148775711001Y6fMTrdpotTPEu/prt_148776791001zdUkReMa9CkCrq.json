@@ -1,0 +1,11 @@
+{
+  "id": "prt_148776791001zdUkReMa9CkCrq",
+  "sessionID": "ses_eb788eeeeffeCD0zBUslz1EK55",
+  "messageID": "msg_148775711001Y6fMTrdpotTPEu",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.\n\nMy first `self` grep matched 1,325 lines and showed only 100, so I ran the test suite directly instead. Each fix below was a logic error, and some of them hid others:\n\n1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority runs first and ties go in insertion order.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. It now uses `attempts_made < max_attempts`.\n3. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the pipeline defaults overrode a task's own `retry` settings. It now calls `deep_merge(result[key], value)`.\n4. **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing within a batch. Its docstring says non-increasing, so it now checks `current <= prev`.\n5. **`scheduler.py`**: `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so every downstream task is skipped.\n6. **`resources.py`**: `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost. Multi-unit resources leaked capacity, so later tasks never ran.\n7. **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + \".\")`, which is backwards. It now checks `topic.startswith(prefix + \".\")`, so `job.term.*` events reach `History`.",
+  "time": {
+    "start": 1792217147316,
+    "end": 1792217147316
+  }
+}

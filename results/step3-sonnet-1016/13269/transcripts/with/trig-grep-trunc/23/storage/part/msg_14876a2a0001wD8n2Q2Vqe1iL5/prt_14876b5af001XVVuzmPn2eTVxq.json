@@ -1,0 +1,11 @@
+{
+  "id": "prt_14876b5af001XVVuzmPn2eTVxq",
+  "sessionID": "ses_eb789a9f5ffee9DF2GJj17qJRs",
+  "messageID": "msg_14876a2a0001wD8n2Q2Vqe1iL5",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven separate bugs, listed below.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ordered by arrival and ignored priority. | Changed to `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. | Changed to `attempts_made < max_attempts`. |\n| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. Pools leaked capacity and later tasks were blocked. | Changed to `used -= cost`. |\n| `taskflow/scheduler.py` | `_cascade_skip` used the direct `dependents()`, so only a failed task's children were skipped. | Switched to `transitive_dependents()`. |\n| `taskflow/statemachine.py` | `batch_order_ok` required priority to be non-decreasing within a batch. The docstring says non-increasing, so a normal batch could fail. | Changed the comparison to `<=`. |\n| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested values (for example `retry.max_attempts`). | Now recurses with `(result[key], value)`. |\n| `taskflow/events.py` | `_prefix_matches` had the prefix test backwards, so the history's `job.term` subscription never received `job.term.failed` and similar events. | Changed to `topic.startswith(prefix + \".\")`. |\n\nThe statemachine fix was only needed once the queue fix was in. With the queue ordering by arrival, the old guard happened to pass, so the wrong comparison stayed hidden.",
+  "time": {
+    "start": 1792217101793,
+    "end": 1792217101793
+  }
+}

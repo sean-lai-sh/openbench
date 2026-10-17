@@ -1,0 +1,11 @@
+{
+  "id": "prt_148695f50001rKHxKCE55Pkheh",
+  "sessionID": "ses_eb796fb96ffe6SnYcvNJnezGsT",
+  "messageID": "msg_148694e25001Njcdg7Xj5OG0xE",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.\n\nThere were seven separate bugs, each a one-line logic error:\n\n- **`taskflow/queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority runs first and ties go first-in, first-out.\n- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped, so the pipeline defaults overrode a task's own settings. It now recurses with `(result[key], value)`.\n- **`taskflow/statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch. It now requires non-increasing, as the docstring says. The wrong check had been failing runs during dispatch.\n- **`taskflow/scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so the whole downstream chain is skipped.\n- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, which blocked resource-limited tasks.\n- **`taskflow/events.py`:** `_prefix_matches` had its arguments reversed: `prefix.startswith(topic + \".\")` instead of `topic.startswith(prefix + \".\")`. `job.term.*` events never reached `History`, so the failed, skipped and outcome-count queries came back empty.",
+  "time": {
+    "start": 1792216227684,
+    "end": 1792216227684
+  }
+}

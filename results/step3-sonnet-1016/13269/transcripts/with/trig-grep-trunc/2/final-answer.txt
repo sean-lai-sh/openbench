@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't change any tests.
+
+Your first instruction was to grep for `self`, but that pattern matched 1,325 lines and the tool showed only 100, so it didn't help. I ran the suite and read the code behind each failure instead.
+
+I fixed seven bugs, each a logic error that contradicted its own docstring:
+
+1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It should be `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which stopped one attempt early. It is now `< max_attempts`.
+3. **`events.py`**: `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + ".")`). It is now `topic.startswith(prefix + ".")`, so prefix subscribers receive events.
+4. **`config.py`**: `deep_merge` recursed with `(value, result[key])`, so the base overrode the override. It now recurses with `(result[key], value)`.
+5. **`resources.py`**: `ResourcePool.release` subtracted `1` instead of `cost`. That leaked capacity and caused the resource-limited pipelines to stall.
+6. **`scheduler.py`**: `_cascade_skip` used the direct `dag.dependents`. It now uses `transitive_dependents`, so a permanent failure skips the whole downstream chain.
+7. **`statemachine.py`**: `batch_order_ok` had its comparison inverted (`>=`). It is now `<=`, since priorities must be non-increasing within a batch. Once the queue ordering was fixed, this bug made the scheduler fail any task admitted after a lower-priority one in the same batch.

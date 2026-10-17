@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+I started with the grep for `self` as you asked. It returned 1,325 matches and cut the output off at 100, so it didn't help narrow anything down. I found the bugs by reading the failing modules instead. There were eight defects:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and ties go FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which lost one retry. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of subtracting `cost`. Pools never fully freed, which stalled the resource-limited runs.
+- **`statemachine.py`:** `batch_order_ok` had the comparison reversed. It now requires `current_priority <= prev_priority`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`. This was why the history tests saw no failed, skipped or succeeded jobs, even though the scheduler was publishing the events.
+
+Some of these hid others. The queue and state-machine ordering bugs were behind the priority failures. The retry and resource bugs were behind the retry and "all finish" failures. The event prefix bug only showed up once the others were fixed.

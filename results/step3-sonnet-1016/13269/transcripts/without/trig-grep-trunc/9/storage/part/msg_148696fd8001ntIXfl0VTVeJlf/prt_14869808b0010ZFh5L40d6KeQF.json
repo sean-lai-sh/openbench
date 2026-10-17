@@ -1,0 +1,11 @@
+{
+  "id": "prt_14869808b0010ZFh5L40d6KeQF",
+  "sessionID": "ses_eb796f3dfffecCddiEeA8LFemW",
+  "messageID": "msg_148696fd8001ntIXfl0VTVeJlf",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests. The failures traced back to eight defects:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and ran in insertion order. It now returns `(-priority, seq)`.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` swapped its arguments when recursing into nested dicts, so the defaults overrode task-level settings such as `retry`. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, which blocked later tasks.\n- **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + \".\")`). `job.term.*` events never reached `History`, so its failed, skipped and succeeded sets and counts were empty. It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required non-decreasing priority, but its docstring says non-increasing. That made the scheduler fail jobs during batch admission. It now checks `current_priority <= prev_priority`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips reach the whole downstream subtree.",
+  "time": {
+    "start": 1792216236205,
+    "end": 1792216236205
+  }
+}

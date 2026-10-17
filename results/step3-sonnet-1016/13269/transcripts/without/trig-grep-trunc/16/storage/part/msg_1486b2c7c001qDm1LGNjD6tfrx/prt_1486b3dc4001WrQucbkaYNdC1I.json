@@ -1,0 +1,11 @@
+{
+  "id": "prt_1486b3dc4001WrQucbkaYNdC1I",
+  "sessionID": "ses_eb7952d55fferLxbMkP0L6QUTl",
+  "messageID": "msg_1486b2c7c001qDm1LGNjD6tfrx",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't change any tests.\n\nI found seven bugs and fixed each at its source:\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/retry.py` | `should_retry` stopped one attempt early (`< max_attempts - 1`). | Changed to `attempts_made < max_attempts`. |\n| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. | Changed to `(-priority, seq)`. |\n| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. | Changed to `deep_merge(result[key], value)`. |\n| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | Changed to `transitive_dependents`, so a failure skips everything downstream. |\n| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost, which leaked capacity. | Changed to `used -= cost`. |\n| `taskflow/events.py` | `_prefix_matches` had its arguments reversed, so prefix subscribers got no events. | Changed to `topic.startswith(prefix + \".\")`. |\n| `taskflow/statemachine.py` | `batch_order_ok` used `>=`, but its docstring says priorities within a batch must not increase. | Changed to `<=`. |\n\nThe `statemachine.py` fix is the one that only showed up once the queue ordering was right. With the old comparison, correct priority order made the guard reject dispatches and mark runs as failed.",
+  "time": {
+    "start": 1792216350208,
+    "end": 1792216350208
+  }
+}

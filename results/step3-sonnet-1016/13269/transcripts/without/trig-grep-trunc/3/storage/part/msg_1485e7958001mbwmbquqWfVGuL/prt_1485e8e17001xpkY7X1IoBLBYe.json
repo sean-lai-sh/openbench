@@ -1,0 +1,11 @@
+{
+  "id": "prt_1485e8e17001xpkY7X1IoBLBYe",
+  "sessionID": "ses_eb7a1f690ffeUixzUJjSnqRE7S",
+  "messageID": "msg_1485e7958001mbwmbquqWfVGuL",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, up from 18 failing. I changed only code under `taskflow/` and left the tests alone.\n\nI found eight defects. In each case the code did something other than what its docstring said:\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority comes first and ties go in FIFO order.\n2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n3. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.\n4. **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch. The documented rule is non-increasing, so it now checks `current_priority <= prev_priority`. This guard was making the scheduler fail jobs outright.\n5. **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.\n6. **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, which blocked later tasks.\n7. **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). Prefix subscribers such as `job.term` therefore never received `job.term.failed` or `job.term.skipped`. It now checks `topic.startswith(prefix + \".\")`.\n\nI only ran the full suite, so I haven't separately checked modules the tests don't touch.",
+  "time": {
+    "start": 1792215518784,
+    "end": 1792215518784
+  }
+}

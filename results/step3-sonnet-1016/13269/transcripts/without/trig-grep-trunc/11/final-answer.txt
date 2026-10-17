@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests, and I fixed the root causes rather than the symptoms.
+
+I fixed seven bugs, each in the module where the behavior was wrong:
+
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue was plain FIFO and ignored priority. It now returns `(-priority, seq)`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now recurses as `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` always did `used -= 1` instead of `used -= cost`. Multi-unit resources leaked capacity, which stalled the resource-limited pipelines.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards (`>=`). It rejected the non-increasing priority order the queue produces. It now uses `<=`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a failure skips everything downstream.
+- **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). `job.term` subscribers never received `job.term.failed` or `job.term.skipped`, so history's failed and skipped sets stayed empty. It now uses `topic.startswith(prefix + ".")`.

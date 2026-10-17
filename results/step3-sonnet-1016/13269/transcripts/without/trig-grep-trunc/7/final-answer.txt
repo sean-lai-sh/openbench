@@ -1,0 +1,15 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+I fixed seven defects. Most were one-line logic errors:
+
+| File | Bug | Fix |
+|---|---|---|
+| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so the last permitted attempt never ran. | Changed to `attempts_made < max_attempts`. |
+| `queue.py` | `sort_key` was `(seq, -priority)`, which ordered by insertion first and ignored priority. | Changed to `(-priority, seq)`. |
+| `config.py` | `deep_merge` recursed with its arguments swapped (`deep_merge(value, result[key])`). That let the defaults override a task's own retry settings. | Swapped back to `deep_merge(result[key], value)`. |
+| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. | Changed to `used -= cost`. |
+| `statemachine.py` | `batch_order_ok` compared `current >= prev`, which is the wrong direction for a non-increasing priority order. | Changed to `current <= prev`. |
+| `scheduler.py` | `_cascade_skip` only skipped direct dependents. | Now uses `dag.transitive_dependents`. |
+| `events.py` | `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). `History` therefore never saw `job.term.*` events. | Changed to `topic.startswith(prefix + ".")`. |
+
+Several pipeline failures came from these root causes in other modules, as the task warned. For example, the history tests failed because of the event bus, not `history.py`.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_1487738ec001N4d9KQ6KW6l0Tl",
+  "sessionID": "ses_eb7891682ffe4bfcL21Aad6pMA",
+  "messageID": "msg_148772521001QtYGaH7vasj0nG",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files changed.\n\nI started with the grep for `self` you asked for. It hit the 100-match cap, so it didn't help much. I then worked from the test failures.\n\nThere were seven separate defects. Some of them were hiding others, so the failure count dropped in steps as I fixed them:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties are FIFO.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the pipeline defaults overrode a task's own `retry` settings. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Pools never fully freed, which stalled the resource-limited pipelines.\n- **`events.py`:** `_prefix_matches` had the prefix check backwards (`prefix.startswith(topic + \".\")`). It is now `topic.startswith(prefix + \".\")`. Before this, `History` never received `job.term.*` events.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says. Once the queue ordering was fixed, the old check made the scheduler wrongly fail runs.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`. It now uses `dag.transitive_dependents`, so a failure skips the whole downstream chain, not just the direct children.",
+  "time": {
+    "start": 1792217135368,
+    "end": 1792217135368
+  }
+}

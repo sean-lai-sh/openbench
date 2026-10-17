@@ -1,0 +1,11 @@
+{
+  "id": "prt_14869a559001TQ0WliGRkZeDhi",
+  "sessionID": "ses_eb796b9a0ffeYeBFKQPwutqldG",
+  "messageID": "msg_148699351001ofqss6zrbTHpih",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. The first grep for `self` was truncated at 100 matches, so I went straight to the failing tests and the code.\n\nEight defects, each fixed at its root:\n\n- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and ties go FIFO.\n- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`taskflow/config.py`:** `deep_merge` recursed with the arguments swapped, so the defaults overrode a task's own `retry` settings. It now recurses with the base first and the override second.\n- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Capacity leaked, and later tasks never got admitted.\n- **`taskflow/statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch. Its docstring says non-increasing, so I flipped the comparison to `<=`.\n- **`taskflow/scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so the whole downstream chain is skipped.\n- **`taskflow/events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, the reverse of what it should. A subscription to `job.term` never saw `job.term.failed`. It now tests `topic.startswith(prefix + \".\")`. This is why the history tests failed even though the scheduler was behaving correctly.",
+  "time": {
+    "start": 1792216245625,
+    "end": 1792216245625
+  }
+}
