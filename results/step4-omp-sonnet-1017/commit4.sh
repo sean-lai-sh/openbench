@@ -4,6 +4,7 @@ set -e
 L=$1; T=$2; shift 2; RES=/workspace/openbench-ab/results; PY=/workspace/openbench-ab/.venv/bin/python
 cd /tmp/ob-s4commit && git fetch -q origin && git checkout -q -B data/s4-$L origin/main
 for d in step4-omp-sonnet-1017 "$@"; do rm -rf results/$d; cp -a $RES/$d results/; find results/$d -name locks -type d -prune -exec rm -rf {} +; done
+for x in ${EXCL:-}; do rm -rf results/step4-omp-sonnet-1017/$x; done
 for f in $(find results/step4-omp-sonnet-1017* -type f -size +50M); do echo "$(stat -c %s $f) $(sha256sum $f | cut -d' ' -f1) ${f#results/}" >> results/step4-omp-sonnet-1017/MANIFEST-excluded.txt; rm -f $f; done
 G="git -c user.name=sean-lai-sh -c user.email=sean-lai-sh@users.noreply.github.com"
 git add -f results/step4-omp-sonnet-1017*; $G commit -qm "data: step-4 OMP Sonnet $T"
