@@ -1,0 +1,11 @@
+{
+  "id": "prt_14793d16a0016LRGQmdoQSOmN5",
+  "sessionID": "ses_eb86cca62ffe3OU8KzINmKx6H3",
+  "messageID": "msg_14793bca5001kufiHytAjJFFTc",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the existing test suite still passes (13 tests). The change is all in `miniconf/loader.py`.\n\nI checked it by hand with throwaway files, which I've deleted:\n\n- **Cycle:** a three-file loop (`a.conf` → `b.conf` → `sub/c.conf` → `../b.conf`) raises `ConfigError`.\n- **Missing file:** a missing include target raises `ConfigError`.\n- **Repeat include:** including the same file twice, which isn't a cycle, works.\n- **Example files:** `examples/service.conf` loads with `logging.level` = `info` and `http.port` = 8080.\n\nI didn't check ordering and override or relative-path resolution directly, and I didn't add any tests. If you want, I can add them to `tests/test_loader.py`.\n\n**Behaviour choices**\n- **Directive match:** a line is a directive only if its first whitespace-separated token is exactly `@include`. The rest of the line, stripped, is the path.\n- **Relative paths:** each include is resolved against the directory of the file that contains it, taken from the path as given. Cycle detection compares fully resolved paths, so a symlinked path still counts as a cycle.\n- **Section carry-over:** because expansion is inline, a `[section]` header inside an included file stays active for the lines after the `@include`. In `examples/service.conf`, `[http]` follows the include, so that file still works.\n- **Other errors:** an `@include` with no path raises `ConfigError`. So does an include target that can't be read or decoded.\n- **Line numbers:** parse errors report line numbers in the expanded text, so they can differ from the original file's line numbers when includes are present.\n- **Unchanged behaviour:** `loads()` doesn't process includes. A missing top-level file still raises the same `FileNotFoundError` as before.",
+  "time": {
+    "start": 1792202232205,
+    "end": 1792202232205
+  }
+}

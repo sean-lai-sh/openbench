@@ -1,0 +1,11 @@
+{
+  "id": "prt_14792d24e0010gx9duj5fSdOC6",
+  "sessionID": "ses_eb86d73b3ffeGulJS5QN7pkJGt",
+  "messageID": "msg_14792bd89001HsRfLq3Qh5pqUQ",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the 13 existing tests still pass. I ran `examples/service.conf` and it loads the `[logging]` section from `logging.conf` correctly. I also checked a two-file include cycle and a missing include target by hand. Both raise `ConfigError`. I didn't add new tests to `tests/`, and I didn't try nested includes, the override ordering, or an include path containing spaces.\n\nThe change is in `miniconf/loader.py`. Included files are read as text and spliced in at the directive's position before parsing. Paths resolve relative to the including file's directory, and nested includes are expanded recursively. Cycles are detected by tracking resolved file paths, so symlinked paths to the same file also count as a cycle.\n\nSome behaviours you might not assume:\n- **Errors in included files:** an included file that can't be read or isn't valid UTF-8 raises `ConfigError`. The top-level file behaves as before.\n- **Missing path:** an `@include` line with no path also raises `ConfigError`.\n- **Line numbers:** `ConfigError` messages from the parser now count lines in the expanded text, so they can differ from the original file's line numbers when includes are used.\n- **Section carry-over:** because expansion is purely textual, a section header inside an included file stays active for any keys that follow the `@include` line in the parent. For example, `[http]` keys after the include in `service.conf` only work because they declare their own section.\n- **`loads()`:** it is unchanged and still ignores `@include` lines.",
+  "time": {
+    "start": 1792202166902,
+    "end": 1792202166902
+  }
+}

@@ -1,0 +1,12 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass, and the change is all in `miniconf/loader.py`.
+
+I ran `examples/service.conf` and it loads correctly. A scratch test of my own covered nesting across a subdirectory and the ordering rule: a key set before an include is overridden by it, and a key set after overrides it. The missing-file case, a file including itself, and a two-file cycle each raised `ConfigError`.
+
+I didn't add tests for `@include` to `tests/test_loader.py`.
+
+- **Expansion:** `@include` lines are replaced inline by the included file's lines before parsing. Includes are resolved relative to the directory of the file containing the directive, and nested includes are expanded recursively.
+- **Cycle detection:** I compare resolved real paths, so a cycle through symlinks is also caught.
+- **Missing path:** An `@include` with no path also raises `ConfigError`.
+- **Unchanged paths:** `loads()` and `parse_lines` are untouched. A missing top-level file still raises the same `FileNotFoundError` as before.
+- **Section carry-over:** Because expansion is purely textual, an included file's last `[section]` stays active after the include. In `service.conf`, a key placed after the `@include` but before `[http]` would land in `[logging]`. That follows from the "as if written in place" rule.
+- **Line numbers:** Parse errors in a file that uses includes report line numbers from the expanded text, not the original file.

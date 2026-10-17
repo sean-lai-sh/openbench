@@ -1,0 +1,17 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The existing 13 tests pass.
+
+I also checked it by hand with scratch files, since deleted:
+- **Example:** `examples/service.conf` loads with the `[logging]` section from `logging.conf` pulled in.
+- **Relative paths and nesting:** an include inside `sub/` resolves relative to `sub/`, and a nested include inside it works.
+- **Ordering:** a key assigned after an include overrides the included value.
+- **Errors:** a missing include target and an `a → b → a` cycle each raise `ConfigError`.
+
+The change is in `miniconf/loader.py`:
+- **Directive match:** a line is an include only if its first whitespace-separated token is exactly `@include`. The rest of the line is the path, so paths containing spaces work.
+- **Cycles:** cycles are caught by tracking the resolved real path of each file in the current include chain, so symlinked paths to the same file also count as a cycle.
+- **No path given:** an `@include` with no path raises `ConfigError`.
+- **Unreadable includes:** an included file that can't be read or decoded also raises `ConfigError`.
+- **Top-level file:** a missing top-level file still raises `FileNotFoundError`, as it did before.
+- **`loads()`:** `loads()` is untouched. It still ignores `@` lines.
+
+Parse errors report line numbers in the expanded text, so for a file that uses includes they won't match the line numbers in the original file.

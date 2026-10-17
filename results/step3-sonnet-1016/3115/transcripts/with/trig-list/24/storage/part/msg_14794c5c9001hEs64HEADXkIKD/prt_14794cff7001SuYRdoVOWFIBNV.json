@@ -1,0 +1,31 @@
+{
+  "id": "prt_14794cff7001SuYRdoVOWFIBNV",
+  "sessionID": "ses_eb86b55b8ffeZdIUoqptJuAR9o",
+  "messageID": "msg_14794c5c9001hEs64HEADXkIKD",
+  "type": "tool",
+  "callID": "toolu_vrtx_012MHbpzWFTSjzWhF5ddLh5p",
+  "tool": "edit",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/loader.py",
+      "oldString": "from miniconf.parser import parse_lines\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        lines = fh.read().splitlines()\n    return parse_lines(lines)",
+      "newString": "import os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\n\ndef _expand(path, stack, from_include):\n    real = os.path.realpath(path)\n    if real in stack:\n        raise ConfigError(\"include cycle detected: {}\".format(path))\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as fh:\n            lines = fh.read().splitlines()\n    except OSError as exc:\n        if not from_include:\n            raise\n        raise ConfigError(\"cannot read include {!r}: {}\".format(path, exc))\n    except UnicodeDecodeError as exc:\n        if not from_include:\n            raise\n        raise ConfigError(\"cannot read include {!r}: {}\".format(path, exc))\n\n    base = os.path.dirname(os.path.abspath(path))\n    stack = stack + (real,)\n    out = []\n    for lineno, raw in enumerate(lines, start=1):\n        parts = raw.split(None, 1)\n        if parts and parts[0] == \"@include\":\n            if len(parts) < 2 or not parts[1].strip():\n                raise ConfigError(\n                    \"{}: line {}: @include requires a path\".format(path, lineno)\n                )\n            target = os.path.join(base, parts[1].strip())\n            out.extend(_expand(target, stack, True))\n        else:\n            out.append(raw)\n    return out\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced inline by the contents of the\n    referenced file, resolved relative to the including file's directory.\n    \"\"\"\n    return parse_lines(_expand(path, (), False))"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/loader.py": [],
+        "/tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/tests/test_loader.py": [],
+        "/tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/errors.py": [],
+        "/tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/parser.py": []
+      },
+      "diff": "Index: /tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/loader.py\n===================================================================\n--- /tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/loader.py\n+++ /tmp/obench-cell-zyj11ft3/bench_opencode_trig-list_j18iey5w/miniconf/loader.py\n@@ -1,15 +1,53 @@\n \"\"\"Load configuration from files and strings.\"\"\"\n \n+import os\n+\n+from miniconf.errors import ConfigError\n from miniconf.parser import parse_lines\n \n \n+def _expand(path, stack, from_include):\n+    real = os.path.realpath(path)\n+    if real in stack:\n+        raise ConfigError(\"include cycle detected: {}\".format(path))\n+    try:\n+        with open(path, \"r\", encoding=\"utf-8\") as fh:\n+            lines = fh.read().splitlines()\n+    except OSError as exc:\n+        if not from_include:\n+            raise\n+        raise ConfigError(\"cannot read include {!r}: {}\".format(path, exc))\n+    except UnicodeDecodeError as exc:\n+        if not from_include:\n+            raise\n+        raise ConfigError(\"cannot read include {!r}: {}\".format(path, exc))\n+\n+    base = os.path.dirname(os.path.abspath(path))\n+    stack = stack + (real,)\n+    out = []\n+    for lineno, raw in enumerate(lines, start=1):\n+        parts = raw.split(None, 1)\n+        if parts and parts[0] == \"@include\":\n+            if len(parts) < 2 or not parts[1].strip():\n+                raise ConfigError(\n+                    \"{}: line {}: @include requires a path\".format(path, lineno)\n+                )\n+            target = os.path.join(base, parts[1].strip())\n+            out.extend(_expand(target, stack, True))\n+        else:\n+            out.append(raw)\n+    return out\n+\n+\n def load(path):\n-    \"\"\"Read and parse the configuration file at ``path``.\"\"\"\n-    with open(path, \"r\", encoding=\"utf-8\") as fh:\n-        lines = fh.read().splitlines()\n-    return parse_lines(lines)\n+    \"\"\"Read and parse the configuration file at ``path``.\n \n+    ``@include <path>`` lines are replaced inline by the contents of the\n+    referenced file, resolved relative to the including file's directory.\n+    \"\"\"\n+    return parse_lines(_expand(path, (), False))\n \n+\n def loads(text):\n     \"\"\"Parse configuration from a string.\"\"\"\n     return parse_lines(text.splitlines())\n"
+    },
+    "time": {
+      "start": 1792202300867,
+      "end": 1792202301280
+    }
+  }
+}

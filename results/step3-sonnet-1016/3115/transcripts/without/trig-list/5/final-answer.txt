@@ -1,0 +1,13 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The existing suite passes (13 tests).
+
+I ran `examples/service.conf` and it pulled in `logging.conf` correctly. I also tried a two-file cycle and a missing file, and both raised `ConfigError`. I didn't add tests for the new behaviour, and I didn't check nesting or override order separately.
+
+The change is in `miniconf/loader.py`:
+- **Expansion:** an `@include` line is replaced by the included file's lines before parsing, so later assignments win as usual.
+- **Paths:** the include path is resolved relative to the directory of the file containing the directive.
+- **Nesting and cycles:** includes expand recursively, and a file that includes itself, directly or through other files, raises `ConfigError`. Including the same file twice without a cycle is allowed.
+- **Missing or unreadable files:** these raise `ConfigError`. So does an `@include` with no path.
+
+Line numbers in parse errors now count lines of the expanded text, not the original file, so they can be off when a file uses includes.
+
+`loads()` and `parse_lines` are unchanged.

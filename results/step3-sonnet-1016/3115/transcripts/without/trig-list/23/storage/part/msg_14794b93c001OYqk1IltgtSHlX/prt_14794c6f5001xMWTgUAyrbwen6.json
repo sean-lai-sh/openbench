@@ -1,0 +1,20 @@
+{
+  "id": "prt_14794c6f5001xMWTgUAyrbwen6",
+  "sessionID": "ses_eb86b61c7ffe2nu70F2V4zr1ib",
+  "messageID": "msg_14794b93c001OYqk1IltgtSHlX",
+  "type": "tool",
+  "callID": "toolu_vrtx_01VezfZDKvhiXZvEUntUQH7r",
+  "tool": "bash",
+  "state": {
+    "status": "error",
+    "input": {
+      "command": "cd /tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51 && cat > miniconf/loader.py <<'EOF'\n\"\"\"Load configuration from files and strings.\"\"\"\n\nimport os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\n_INCLUDE = \"@include\"\n\n\ndef _expand(path, stack):\n    real = os.path.realpath(path)\n    if real in stack:\n        raise ConfigError(\"include cycle detected at {}\".format(path))\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        lines = fh.read().splitlines()\n    base = os.path.dirname(os.path.abspath(path))\n    stack = stack + (real,)\n    out = []\n    for lineno, raw in enumerate(lines, start=1):\n        parts = raw.split(None, 1)\n        if not parts or parts[0] != _INCLUDE:\n            out.append(raw)\n            continue\n        if len(parts) < 2 or not parts[1].strip():\n            raise ConfigError(\n                \"{}: line {}: @include requires a path\".format(path, lineno)\n            )\n        target = os.path.join(base, parts[1].strip())\n        if not os.path.isfile(target):\n            raise ConfigError(\n                \"{}: line {}: include file not found: {}\".format(path, lineno, target)\n            )\n        try:\n            out.extend(_expand(target, stack))\n        except OSError as exc:\n            raise ConfigError(\n                \"{}: line {}: cannot read include {}: {}\".format(\n                    path, lineno, target, exc\n                )\n            )\n    return out\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced inline by the contents of the\n    referenced file, resolved relative to the including file's directory.\n    \"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        text = fh.read()\n    if _INCLUDE not in text:\n        return parse_lines(text.splitlines())\n    return parse_lines(_expand(path, ()))\n\n\ndef loads(text):\n    \"\"\"Parse configuration from a string.\"\"\"\n    return parse_lines(text.splitlines())\nEOF\npython -m unittest discover -s tests -t . 2>&1 | tail -3\npython -c \"\nfrom miniconf.loader import load\nc=load('examples/service.conf'); print(c.get('level',section='logging'), c.get('port',section='http'), c.get('name'))\"\ncd /tmp && mkdir -p t && cd t && printf 'a=1\\n@include b.conf\\n' > a.conf && printf '@include a.conf\\n' > b.conf && python -c \"\nimport sys; sys.path.insert(0,'/tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51')\nfrom miniconf.loader import load\ntry: load('a.conf')\nexcept Exception as e: print(type(e).__name__, e)\nopen('c.conf','w').write('@include nope.conf\\n')\ntry: load('c.conf')\nexcept Exception as e: print(type(e).__name__, e)\"; rm -rf /tmp/t",
+      "description": "Write loader, run tests and checks"
+    },
+    "error": "Error: This command references paths outside of /tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51 so it is not allowed to be executed.",
+    "time": {
+      "start": 1792202300399,
+      "end": 1792202300404
+    }
+  }
+}

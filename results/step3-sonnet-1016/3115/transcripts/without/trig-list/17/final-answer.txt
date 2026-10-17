@@ -1,0 +1,13 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. I also ran it by hand against `examples/service.conf` and a few temporary files. I didn't add new tests to `tests/`.
+
+- **What I checked:**
+  - **Example pair:** `service.conf` gives `level=info`, `port=8080` and `name=billing`.
+  - **Nested includes:** a file in `sub/` that includes a sibling resolves relative to its own directory.
+  - **Override order:** a key set before the include is overridden by it, and a key set after the include overrides it.
+  - **Cycles and missing files:** both raise `ConfigError`.
+- **Where the change is:** the work is in `miniconf/loader.py`. `loads()` and the parser are unchanged.
+- **Error cases:**
+  - An `@include` with no path raises `ConfigError`.
+  - So does an include target that can't be read.
+- **Top-level file:** a missing top-level file passed to `load()` still raises the same error it did before.
+- **Line numbers:** `ConfigError` messages from the parser now report line numbers in the expanded text. In a file that uses `@include`, they can differ from the line numbers in the original file.

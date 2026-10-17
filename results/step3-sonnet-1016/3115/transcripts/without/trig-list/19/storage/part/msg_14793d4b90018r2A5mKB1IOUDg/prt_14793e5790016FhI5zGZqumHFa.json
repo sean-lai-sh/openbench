@@ -1,0 +1,11 @@
+{
+  "id": "prt_14793e5790016FhI5zGZqumHFa",
+  "sessionID": "ses_eb86c7b9effeuYlCGGuJPXtzdF",
+  "messageID": "msg_14793d4b90018r2A5mKB1IOUDg",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the change is in `miniconf/loader.py`.\n\nI ran the existing 13 tests and they pass. I also ran `examples/service.conf`, which loads with `logging.level` = `info` and `http.port` = `8080`. In a throwaway test, a cycle (`a.conf` → `b.conf` → `a.conf`) and a missing include target each raised `ConfigError`. I didn't add new tests to `tests/`.\n\n- **Expansion:** an `@include` line is replaced in place by the included file's lines. This works recursively, and paths resolve relative to the including file's directory.\n- **Ordering:** because expansion is positional, a key set after an include overrides the included value. A key set before it is overridden by the include.\n- **Section carry-over:** an included file's last `[section]` stays active for the lines after the include, as if they had been written inline. For example, in `examples/service.conf` the `[logging]` section from `logging.conf` is still active until `[http]` appears.\n- **Errors:** a missing include target, a cycle, or an `@include` with no path raises `ConfigError`. A missing top-level file still raises the original `FileNotFoundError`, so existing behavior is unchanged.\n- **Repeated includes:** including the same file twice without a cycle is allowed.\n- **Line numbers:** parse errors report line numbers in the expanded text, not in the original file.",
+  "time": {
+    "start": 1792202237329,
+    "end": 1792202237329
+  }
+}

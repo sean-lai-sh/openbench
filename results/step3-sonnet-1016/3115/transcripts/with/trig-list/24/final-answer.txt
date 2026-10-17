@@ -1,0 +1,13 @@
+`load(path)` in `miniconf/loader.py` now expands `@include` directives. The existing suite passes (13 tests), and `examples/service.conf` loads with the logging settings pulled in.
+
+I also ran my own throwaway checks (not added to `tests/`):
+- **Cycles and missing files:** a two-file cycle, a file that includes itself, and a missing include target each raise `ConfigError`.
+- **Nesting and relative paths:** an include in a subdirectory that itself includes a sibling file resolves relative to the including file.
+- **Override order:** a key set after an include overrides the included value, and a key set before it is overridden.
+
+Beyond the spec:
+- **Bad includes:** an `@include` line with no path, or an include file that can't be read or decoded, also raises `ConfigError`.
+- **Top-level errors unchanged:** a missing top-level file still raises the usual `FileNotFoundError`, as before.
+- **Section carry-over:** because expansion is inline, a section header inside an included file stays active for the lines after the `@include`. That follows from the "as if written there" rule. In the example, `[http]` follows the include, so nothing leaks.
+
+`loads` and `parse_lines` are unchanged, so `@include` lines passed to `loads` are still ignored.
