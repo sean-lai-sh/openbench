@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 16 tests, all OK. I didn't change any tests.
+
+I used a subagent to investigate `tests/test_search.py` and `tests/test_members.py`. It found the `search.py` import and `MAX_BORROWED` problems. It also spotted the `parse_book` year bug.
+
+Fixes, all in `catalog/`:
+- **`search.py`:** it imported `normalize` from `catalog.nonexistent`. It now imports it from `catalog.text`.
+- **`members.py`:** `MAX_BORROWED` was 3 and is now 5, matching the lending policy in the code comment and the tests.
+- **`books.py`:** `parse_book` left the year as a string. It now converts it with `int()`.
+- **`fees.py`:** `late_fee` added `DAILY_FEE` to the days late instead of multiplying. It now multiplies.
+- **`inventory.py`:** `recent(n)` returned `n+1` events because of the `[-n - 1:]` slice. It now returns exactly `n`. I also made `n=0` return an empty list, since `[-0:]` would have returned the whole history.
+- **`factory.py`:** `sample_books()` was missing the third book. I added `Book("Emma", "Austen", 1815, 1)`. The tests only check the title "Emma", so the author, year and copies are my guess.
