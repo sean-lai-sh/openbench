@@ -1,0 +1,11 @@
+{
+  "id": "prt_148b08b7d001cCkmK8JjGzRili",
+  "messageID": "msg_148b065d0001NOJ9lUPugKKFdj",
+  "sessionID": "ses_eb74f9a37ffeYRKHlKeBO69dkD",
+  "type": "text",
+  "text": "**Root cause:** the typo is in the settings file, not in the reader. `settings.json` defines the key as `\"rat\"`, but the code reads `\"rate\"`.\n\n- **Key `rate` should come from:** `\"rate\"`. Only the `settings.json` key name is wrong. `\"rat\"` should be renamed to `\"rate\"`, with value `0.5`.\n- **Where the key is defined:** `settings.json:2` has `\"rat\": 0.5,`.\n- **Where the key is read:** `app/pricing.py:8` has `return SETTINGS.get(\"rate\")`. This returns `None` because no `\"rate\"` key exists.\n- **Not the cause:** `app/report.py` doesn't read settings directly. `compute_total` (lines 6-9) calls `pricing.get_rate()` at line 8 and then returns `rate * count` at line 9. The `None` comes from `app/pricing.py`.\n- **Settings loading:** `app/config.py:9-10` loads `settings.json` into `SETTINGS` at import time. It does no key mapping or defaults.\n- **`COUNT`:** `main.py:3` sets `COUNT = 10`. `main()` prints `\"Total: {}\".format(compute_total(COUNT))`.\n- **Expected output:** `rate * count` is `0.5 * 10 = 5.0`, so the program should print `Total: 5.0`.\n- **Current behavior:** `None * 10` raises a `TypeError`.\n- **Other settings:** the file also has `\"currency\": \"USD\"` and `\"label\": \"Total\"`. Neither is used by the current code.\n\n**Recommended fix:** rename `\"rat\"` to `\"rate\"` in `settings.json:2`. Changing the `.get(\"rate\")` call in `app/pricing.py:8` to `\"rat\"` would also work, but it would keep the typo.",
+  "time": {
+    "start": 1792220892069,
+    "end": 1792220892069
+  }
+}
