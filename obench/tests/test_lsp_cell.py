@@ -48,6 +48,13 @@ if args == ["--version"]:
     print(os.environ.get("FAKE_DOTNET_VERSION", "10.0.401"))
     raise SystemExit(0)
 if args[:4] == ["tool", "install", "roslyn-language-server", "--tool-path"]:
+    log = os.environ.get("FAKE_DOTNET_LOG")
+    if log:
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(" ".join(args) + "\\n")
+    if os.environ.get("NUGET_CERT_REVOCATION_MODE") != "offline":
+        sys.stderr.write("online revocation check would hang")
+        raise SystemExit(3)
     dest = Path(args[4])
     dest.mkdir(parents=True, exist_ok=True)
     binary = dest / "roslyn-language-server"
@@ -82,7 +89,13 @@ class LspProvisionTests(unittest.TestCase):
             "XDG_DATA_HOME": str(self.data),
             "XDG_CONFIG_HOME": str(root / "config"),
             "FAKE_DOTNET_VERSION": "10.0.401",
+            "OBENCH_ROSLYN_TOOL_PATH": str(root / "shared" / "roslyn"),
+            "FAKE_DOTNET_LOG": str(root / "dotnet.log"),
         }
+        self.shared = root / "shared" / "roslyn"
+        saved = lsp_cell._HOST_DOTNET_ROOT
+        lsp_cell._HOST_DOTNET_ROOT = str(root / "no-host-dotnet")
+        self.addCleanup(setattr, lsp_cell, "_HOST_DOTNET_ROOT", saved)
 
     def test_pyright_and_typescript_land_where_opencode_looks(self):
         notes = provision_language_servers(
@@ -106,14 +119,42 @@ class LspProvisionTests(unittest.TestCase):
         self.assertIn("already", notes[0])
         self.assertFalse((self.data / "opencode" / "bin" / "node_modules").exists())
 
-    def test_dotnet_sdk_10_installs_roslyn_onto_the_data_bin(self):
+    def test_dotnet_sdk_10_installs_roslyn_into_the_shared_tool_path(self):
         notes = provision_language_servers(
             self.env, str(self.work), ["dotnet"], dotnet=str(self.dotnet),
         )
-        bindir = self.data / "opencode" / "bin"
-        self.assertTrue((bindir / "roslyn-language-server").is_file())
-        self.assertTrue(self.env["PATH"].startswith(str(bindir)))
+        self.assertTrue((self.shared / "roslyn-language-server").is_file())
+        self.assertFalse((self.data / "opencode" / "bin" / "roslyn-language-server").exists())
+        self.assertTrue(self.env["PATH"].startswith(str(self.shared)))
         self.assertIn("roslyn", notes[0])
+
+    def test_shared_roslyn_installs_once_across_cells(self):
+        first = dict(self.env)
+        provision_language_servers(first, str(self.work), ["dotnet"], dotnet=str(self.dotnet))
+        second = dict(self.env)
+        notes = provision_language_servers(second, str(self.work), ["dotnet"], dotnet=str(self.dotnet))
+        self.assertIn("shared", notes[0])
+        self.assertTrue(second["PATH"].startswith(str(self.shared)))
+        calls = Path(self.env["FAKE_DOTNET_LOG"]).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 1)
+
+    def test_ensure_shared_roslyn_skips_online_revocation_and_pins_version(self):
+        env = dict(self.env, OBENCH_ROSLYN_VERSION="5.13.0-1.26514.10")
+        where = lsp_cell.ensure_shared_roslyn(env, dotnet=str(self.dotnet))
+        self.assertEqual(where, str(self.shared))
+        call = Path(self.env["FAKE_DOTNET_LOG"]).read_text(encoding="utf-8")
+        self.assertIn("--version 5.13.0-1.26514.10", call)
+        self.assertEqual(lsp_cell.nuget_env({})["NUGET_CERT_REVOCATION_MODE"], "offline")
+        self.assertEqual(
+            lsp_cell.nuget_env({"NUGET_CERT_REVOCATION_MODE": "online"})["NUGET_CERT_REVOCATION_MODE"],
+            "online",
+        )
+
+    def test_ensure_shared_roslyn_reports_a_hung_install(self):
+        slow = _write(Path(self.tmp.name), "slow-dotnet", "#!/bin/sh\n[ \"$1\" = --version ] && { echo 10.0.401; exit 0; }\nsleep 30\n")
+        with self.assertRaises(LspProvisionError) as caught:
+            lsp_cell.ensure_shared_roslyn(self.env, dotnet=str(slow), timeout=1)
+        self.assertIn("timed out", str(caught.exception))
 
     def test_dotnet_sdk_8_is_refused(self):
         self.env["FAKE_DOTNET_VERSION"] = "8.0.425"
@@ -136,7 +177,7 @@ class LspProvisionTests(unittest.TestCase):
         self.env["DOTNET_ROOT"] = str(self.dotnet.parent)
         notes = provision_language_servers(self.env, str(self.work), ["dotnet"])
         self.assertIn("roslyn", notes[0])
-        self.assertTrue((self.data / "opencode" / "bin" / "roslyn-language-server").is_file())
+        self.assertTrue((self.shared / "roslyn-language-server").is_file())
 
     def test_missing_dotnet_says_the_cell_cannot_run(self):
         with self.assertRaises(LspProvisionError) as caught:

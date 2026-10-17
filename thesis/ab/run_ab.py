@@ -1692,6 +1692,36 @@ def _needs_proxy(prs, model_route: str) -> bool:
     return any(harness_name(pr.repo) in {"pi", "omp"} for pr in prs if pr.repo)
 
 
+def _spec_lsp(spec: dict) -> list[str]:
+    fixtures = spec.get("fixtures") if isinstance(spec.get("fixtures"), dict) else {}
+    lsp = fixtures.get("lsp") or []
+    if isinstance(lsp, str):
+        lsp = lsp.split(",")
+    return [str(name).strip() for name in lsp if str(name).strip()]
+
+
+def _preinstall_shared_lsp(pending: list[dict], ensure_fn=None) -> str | None:
+    """Install roslyn-language-server once, before any C# cell launches.
+
+    Cells then find it in the shared tool path (``obench.lsp_cell``) instead
+    of each running ``dotnet tool install`` inside its own 180 s budget.
+    A failure is printed and returned; the cells still try the same locked
+    shared install and fail as infra if it cannot complete.
+    """
+    if not any("dotnet" in _spec_lsp(spec) for spec in pending):
+        return None
+    if ensure_fn is None:
+        from obench.lsp_cell import ensure_shared_roslyn as ensure_fn
+    from obench.lsp_cell import LspProvisionError
+    try:
+        where = ensure_fn()
+    except LspProvisionError as exc:
+        print(f"roslyn-language-server pre-install failed: {exc}", file=sys.stderr)
+        return str(exc)
+    print(f"roslyn-language-server ready in {where}", file=sys.stderr)
+    return None
+
+
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
@@ -1746,6 +1776,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
             _absorb_finished(spec, out_dir, prepared)
             continue
         pending.append(spec)
+    _preinstall_shared_lsp(pending)
     announced: set[tuple[str, str, str]] = set()
     server = None
     ledger_dir = (out_dir / "proxy-ledger").resolve()
