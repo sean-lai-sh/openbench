@@ -1,0 +1,11 @@
+{
+  "id": "prt_14767cf4d001jgmGejmza1mZw6",
+  "messageID": "msg_14767ac40001vghKJoUupsxXBN",
+  "sessionID": "ses_eb89853c8ffeYkRXak9vpfOERL",
+  "type": "text",
+  "text": "**Settings key:** `\"rate\"` is the correct key. `settings.json` defines it with a typo, as `\"rat\"`.\n\n**Where the key is defined and read:**\n- Defined in `settings.json:2` as `\"rat\": 0.5`. This is the typo.\n- Read in `app/pricing.py:8` as `SETTINGS.get(\"rate\")`. The key isn't in the JSON, so `.get` returns `None`.\n- `report.py:8` calls `rate = pricing.get_rate()`. It doesn't read the settings key itself, so the real lookup happens in `pricing.py`.\n- `app/config.py:9-10` loads `settings.json` into `SETTINGS` with `json.load`, once at import time.\n\nThe reader in `pricing.py` is correct, so the fix is to rename `\"rat\"` to `\"rate\"` in `settings.json`. Today `compute_total` computes `None * 10`, which raises a `TypeError`.\n\n**main.py:**\n```python\nfrom app.report import compute_total\n\nCOUNT = 10\n\n\ndef main():\n    total = compute_total(COUNT)\n    print(\"Total: {}\".format(total))\n\n\nif __name__ == \"__main__\":\n    main()\n```\n\n**app/report.py:**\n```python\n\"\"\"Report computations.\"\"\"\n\nfrom app import pricing\n\n\ndef compute_total(count):\n    \"\"\"Total charge for ``count`` items at the configured rate.\"\"\"\n    rate = pricing.get_rate()\n    return rate * count\n```\n\n**What `Total: 5.0` implies:** The total is `rate * count`, so the output needs `rate * COUNT = 5.0`.\n- With `COUNT = 10`, the rate must be `0.5`. That matches the value already in `settings.json`, which is a float, so the product prints as `5.0`.\n- Renaming the key to `\"rate\"` alone gives `Total: 5.0`. `COUNT` doesn't need to change.\n\n`app/__init__.py` is empty. I didn't modify any files.",
+  "time": {
+    "start": 1792199348093,
+    "end": 1792199348093
+  }
+}
