@@ -1,0 +1,11 @@
+The whole suite now passes: `python3 -m unittest` runs 16 tests with no failures. Before, it was 15 with 6 failures and 4 errors; the count went up because `test_search.py` couldn't be imported at all, and now its 2 real tests run. I only changed files in `catalog/`; the tests are untouched.
+
+A subagent investigated `test_search.py` and found the bad import was the only problem there.
+
+The fixes:
+- **`catalog/search.py:3`** – the import pointed at a module that doesn't exist (`catalog.nonexistent`). It now imports `normalize` from `catalog.text`.
+- **`catalog/books.py:22`** – `parse_book` now turns the year into an integer instead of leaving it as text. That was breaking both the year check and `age()`.
+- **`catalog/factory.py`** – added the missing `Emma` book, so the sample catalog has the three titles the tests and the docstring call for.
+- **`catalog/fees.py:14`** – the late fee was adding the daily fee to the number of days instead of multiplying, so it's now `days_late * DAILY_FEE`.
+- **`catalog/inventory.py`** – `recent(n)` returned one event too many (`[-n-1:]`); it now returns the last `n` (`[-n:]`). I also made it return an empty list when `n <= 0`, because `[-0:]` would otherwise return the whole history. No test covers that case.
+- **`catalog/members.py:4`** – `MAX_BORROWED` changed from 3 to 5, matching the comment above it and the tests.

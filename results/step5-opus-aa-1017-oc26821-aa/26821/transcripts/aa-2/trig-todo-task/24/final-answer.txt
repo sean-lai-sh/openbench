@@ -1,0 +1,16 @@
+All 16 tests now pass when I run `python3 -m unittest`. I fixed six bugs in `catalog/` and didn't change any tests. Before the fixes it ran 15 tests: `test_search.py` couldn't be imported and counted as one error. Once it loaded, its two real tests ran too, which is why there are 16 now.
+
+I gave the investigation of `test_search.py` to a subagent. It found that the bad import was the only problem in that file, and its notes on the other modules agreed with what I found.
+
+| File | Bug | Fix |
+|---|---|---|
+| `catalog/search.py:3` | Imported `normalize` from a module that doesn't exist, `catalog.nonexistent` | Import it from `catalog.text` |
+| `catalog/books.py:22` | `parse_book` kept the year as a string, which also broke `age()` | Convert it with `int(year)` |
+| `catalog/factory.py` | Sample data had only 2 books; the docstring says it should include `Emma` | Added `Book("Emma", "Austen", 1815, 1)` |
+| `catalog/fees.py:14` | Added the daily fee instead of multiplying by it (`days_late + DAILY_FEE`) | `days_late * DAILY_FEE` |
+| `catalog/inventory.py:24` | `recent(n)` returned one event too many (`[-n - 1:]`) | `[-n:]` |
+| `catalog/members.py:4` | Borrow limit was 3; the comment and tests say 5 | `MAX_BORROWED = 5` |
+
+Two details I chose myself:
+- **Emma's details:** the tests only check the title, so the author, year (1815) and copy count (1) are my picks.
+- **`recent(0)`:** it now returns an empty list. Plain `[-n:]` would return the whole history when `n` is 0. No test covers this case.

@@ -1,0 +1,10 @@
+The full suite now passes: `python3 -m unittest` ran 16 tests, all OK. The first run reported 15 because `test_search` couldn't even be imported, so it counted as one error instead of its two tests. I didn't change any tests.
+
+I gave `test_members` to a subagent to investigate; the other fixes I found by reading the code. Each fix is a small change in `catalog/`:
+
+- **`catalog/search.py:3`**: it imported `normalize` from `catalog.nonexistent`, which doesn't exist. It now imports from `catalog.text`, where `normalize` is defined.
+- **`catalog/books.py:22`**: `parse_book` kept the year as a string, which broke `test_year_is_int` and `test_age`. It now converts the year with `int(year)`.
+- **`catalog/factory.py`**: the sample data only had Dune and 1984. I added `Book("Emma", "Austen", 1815, 1)`, as the docstring says it should include. The author, year and copy count are my choice; the tests only check the title.
+- **`catalog/fees.py:14`**: the fee added the daily rate to the number of days late instead of multiplying (`days_late + DAILY_FEE`). It's now `days_late * DAILY_FEE`.
+- **`catalog/inventory.py`**: `recent(n)` sliced one item too many (`[-n - 1:]`). It now returns `[-n:]`. I also made it return `[]` when `n <= 0`, because `[-0:]` would otherwise return the whole history.
+- **`catalog/members.py:4`** (found by the subagent): `MAX_BORROWED` was 3, but the policy comment and the tests both say five. It's now 5.

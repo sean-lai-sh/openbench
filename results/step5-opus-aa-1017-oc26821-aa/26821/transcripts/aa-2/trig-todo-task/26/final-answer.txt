@@ -1,0 +1,11 @@
+The full suite now passes: `python3 -m unittest` runs 16 tests with no failures. The first run reported 15 because `test_search.py` couldn't load and showed up as one error; once it loaded, its 2 tests counted. I didn't change any tests.
+
+I used the todo list throughout. A subagent investigated `tests/test_members.py` and found the cause of its failures; I fixed the rest myself.
+
+What was wrong in `catalog/`:
+- **`search.py`**: it imported `normalize` from a module that doesn't exist, `catalog.nonexistent`. It now imports from `catalog.text`, which is where that function lives.
+- **`books.py`**: `parse_book` stored the year as text instead of a number. It now converts it with `int(year)`.
+- **`factory.py`**: `sample_books()` was missing the third demo title, so I added `Book("Emma", "Austen", 1815, 1)`. The tests only check the title, so I chose the author, year and copy count myself.
+- **`fees.py`**: the late fee added the daily rate to the number of days instead of multiplying (`days_late + DAILY_FEE` is now `days_late * DAILY_FEE`).
+- **`inventory.py`**: `recent(n)` returned one event too many. It now returns the last `n`. I also made it return an empty list when `n` is 0 or less, because the slice alone would return the whole history for `n = 0`.
+- **`members.py`** (the subagent's finding): the borrowing limit was set to 3, but the comment in the code and the tests both say members can hold 5 books. It's now 5.

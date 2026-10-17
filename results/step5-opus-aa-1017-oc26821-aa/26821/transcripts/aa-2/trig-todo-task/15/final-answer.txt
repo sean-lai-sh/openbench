@@ -1,0 +1,14 @@
+The whole suite now passes: `python3 -m unittest` runs 16 tests with no failures. Before, it ran 15 tests with 6 failures and 4 errors, because `test_search` couldn't be imported at all. I only changed code in `catalog/` and left the tests alone.
+
+I gave the `test_members` failures to a subagent to investigate. It found the cause and the fix, and I applied it.
+
+| File | Problem | Fix |
+|---|---|---|
+| `catalog/search.py` | It imported `normalize` from a module that doesn't exist, `catalog.nonexistent` | Import it from `catalog.text` instead |
+| `catalog/members.py` | The borrow limit was 3, but the comment above it and the tests both say 5 | `MAX_BORROWED = 5` |
+| `catalog/books.py` | `parse_book` kept the year as text instead of a number | Convert it with `int(year)` |
+| `catalog/factory.py` | The sample data had only two books; the docstring and tests expect three | Added the missing `Emma` book |
+| `catalog/fees.py` | The fee was days late *plus* the daily rate | Changed it to days late *times* the daily rate (`days_late * DAILY_FEE`) |
+| `catalog/inventory.py` | `recent(n)` returned one event too many | It now returns the last `n` events (`[-n:]`) |
+
+In `recent()` I also made `n <= 0` return an empty list, which the tests don't check. Without that, `recent(0)` would have returned the whole history.
