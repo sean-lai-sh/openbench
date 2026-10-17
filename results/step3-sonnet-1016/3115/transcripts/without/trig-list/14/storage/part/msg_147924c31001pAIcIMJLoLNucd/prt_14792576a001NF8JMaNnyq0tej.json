@@ -1,0 +1,30 @@
+{
+  "id": "prt_14792576a001NF8JMaNnyq0tej",
+  "sessionID": "ses_eb86dccaeffevuxK03jmlUwILd",
+  "messageID": "msg_147924c31001pAIcIMJLoLNucd",
+  "type": "tool",
+  "callID": "toolu_vrtx_01TdXGPatE1KBHNgoog5WiVS",
+  "tool": "edit",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/loader.py",
+      "oldString": "from miniconf.parser import parse_lines\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        lines = fh.read().splitlines()\n    return parse_lines(lines)",
+      "newString": "import os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\n\ndef _read_expanded(path, stack):\n    real = os.path.realpath(path)\n    if real in stack:\n        raise ConfigError(\"include cycle detected at {}\".format(path))\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as fh:\n            raw_lines = fh.read().splitlines()\n    except OSError as exc:\n        raise ConfigError(\"cannot read {}: {}\".format(path, exc))\n    base = os.path.dirname(real)\n    stack = stack + (real,)\n    out = []\n    for raw in raw_lines:\n        parts = raw.split(None, 1)\n        if parts and parts[0] == \"@include\":\n            if len(parts) < 2 or not parts[1].strip():\n                raise ConfigError(\"{}: @include requires a path\".format(path))\n            target = os.path.join(base, parts[1].strip())\n            out.extend(_read_expanded(target, stack))\n        else:\n            out.append(raw)\n    return out\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are expanded inline, relative to the directory of\n    the including file.\n    \"\"\"\n    return parse_lines(_read_expanded(path, ()))"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/loader.py": [],
+        "/tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/errors.py": [],
+        "/tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/parser.py": []
+      },
+      "diff": "Index: /tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/loader.py\n===================================================================\n--- /tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/loader.py\n+++ /tmp/obench-cell-3d9_e6n3/bench_opencode_trig-list_zytaatct/miniconf/loader.py\n@@ -1,15 +1,44 @@\n \"\"\"Load configuration from files and strings.\"\"\"\n \n+import os\n+\n+from miniconf.errors import ConfigError\n from miniconf.parser import parse_lines\n \n \n+def _read_expanded(path, stack):\n+    real = os.path.realpath(path)\n+    if real in stack:\n+        raise ConfigError(\"include cycle detected at {}\".format(path))\n+    try:\n+        with open(path, \"r\", encoding=\"utf-8\") as fh:\n+            raw_lines = fh.read().splitlines()\n+    except OSError as exc:\n+        raise ConfigError(\"cannot read {}: {}\".format(path, exc))\n+    base = os.path.dirname(real)\n+    stack = stack + (real,)\n+    out = []\n+    for raw in raw_lines:\n+        parts = raw.split(None, 1)\n+        if parts and parts[0] == \"@include\":\n+            if len(parts) < 2 or not parts[1].strip():\n+                raise ConfigError(\"{}: @include requires a path\".format(path))\n+            target = os.path.join(base, parts[1].strip())\n+            out.extend(_read_expanded(target, stack))\n+        else:\n+            out.append(raw)\n+    return out\n+\n+\n def load(path):\n-    \"\"\"Read and parse the configuration file at ``path``.\"\"\"\n-    with open(path, \"r\", encoding=\"utf-8\") as fh:\n-        lines = fh.read().splitlines()\n-    return parse_lines(lines)\n+    \"\"\"Read and parse the configuration file at ``path``.\n \n+    ``@include <path>`` lines are expanded inline, relative to the directory of\n+    the including file.\n+    \"\"\"\n+    return parse_lines(_read_expanded(path, ()))\n \n+\n def loads(text):\n     \"\"\"Parse configuration from a string.\"\"\"\n     return parse_lines(text.splitlines())\n"
+    },
+    "time": {
+      "start": 1792202138357,
+      "end": 1792202138804
+    }
+  }
+}

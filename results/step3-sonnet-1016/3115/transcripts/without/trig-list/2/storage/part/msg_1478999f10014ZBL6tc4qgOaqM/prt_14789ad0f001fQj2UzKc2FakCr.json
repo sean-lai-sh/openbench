@@ -1,0 +1,11 @@
+{
+  "id": "prt_14789ad0f001fQj2UzKc2FakCr",
+  "sessionID": "ses_eb876ad82ffe0xdHYpavGin2RI",
+  "messageID": "msg_1478999f10014ZBL6tc4qgOaqM",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests pass. I tried `examples/service.conf` and a few temporary files, which I deleted afterwards. They covered:\n- **Nesting and override:** an included `x=5` overrode an earlier `x=1`.\n- **Cycles:** a two-file cycle raised `ConfigError`.\n- **Missing target:** a missing include target raised `ConfigError`.\n\nI didn't add tests for any of this to `tests/`.\n\nThe change is in `miniconf/loader.py`.\n\n- **Relative paths:** each include path is resolved against the directory of the file that contains the directive.\n- **Cycle detection:** it works on resolved real paths, so it also catches cycles that go through symlinks or `..`.\n- **Section carry-over:** expansion is purely textual, so a section header inside an included file stays active for the lines after the `@include`. In `service.conf`, `[logging]` from `logging.conf` is still active at the next `[http]` header. A key placed between the include and the next header would land in `[logging]`.\n- **Error line numbers:** `ConfigError` messages from parsing now count lines in the expanded text, so they can differ from the original file's line numbers when includes are present.\n- **Bare `@include`:** an `@include` with no path raises `ConfigError`.\n- **Unreadable files:** an include target that exists but can't be read (for example a directory) also raises `ConfigError`.\n- **Missing top-level file:** `load()` on a nonexistent top-level path still raises `FileNotFoundError`, as before.\n- **`loads()`:** it is unchanged and still ignores `@include` lines.",
+  "time": {
+    "start": 1792201567525,
+    "end": 1792201567525
+  }
+}

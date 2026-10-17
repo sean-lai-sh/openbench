@@ -1,0 +1,11 @@
+{
+  "id": "prt_14795a53f001FgSTdOR491Z2tf",
+  "sessionID": "ses_eb86ad724ffeyvNGuiK8NUXcFp",
+  "messageID": "msg_1479596a8001yQ5kfoFsoA0w9t",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. I made the change in `miniconf/loader.py`.\n\n- **Expansion:** an `@include` line is replaced in place by the lines of the referenced file. Nested includes are expanded recursively, and the combined text then goes through `parse_lines` as before.\n- **Paths:** each include path is resolved relative to the directory of the file that contains it.\n- **Errors:** a missing or unreadable include target raises `ConfigError`. A cycle, direct or transitive, also raises `ConfigError`. An `@include` with no path raises `ConfigError` too.\n- **Unchanged:** `loads()` and the parser are untouched. A missing top-level file still raises `FileNotFoundError`, as it did before.\n\nI ran `examples/service.conf` and got the `logging` section from the included file. In a throwaway test, `x=1` before an include is overridden by the included `x=2`, and `x=3` after the include overrides it. A two-file cycle and a missing target both raised `ConfigError`.\n\nExpansion is purely textual, so a section header inside an included file stays active for the lines after the `@include`. In `service.conf`, any key placed after the include but before `[http]` would land in `[logging]`. This follows from the \"as if written in place\" rule you specified.",
+  "time": {
+    "start": 1792202351967,
+    "end": 1792202351967
+  }
+}

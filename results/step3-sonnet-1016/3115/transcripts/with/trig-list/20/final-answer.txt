@@ -1,0 +1,16 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests pass. I didn't add tests for includes. I checked the behaviour by hand instead:
+
+- **Example files:** `examples/service.conf` loads with the `[logging]` section pulled in from `logging.conf`.
+- **Cycles:** a two-file cycle raises `ConfigError`.
+- **Missing target:** an include of a file that doesn't exist raises `ConfigError`.
+
+I didn't hand-test nesting and relative-path resolution beyond the example.
+
+The change is in `miniconf/loader.py`:
+
+- **Expansion:** each `@include <path>` line is replaced by the included file's lines before parsing, so later assignments override earlier ones as before.
+- **Paths:** the include path is resolved against the directory of the file that contains the directive. Nested includes are expanded recursively.
+- **Cycles:** an include of a file already being expanded raises `ConfigError`.
+- **Missing or unreadable targets:** these raise `ConfigError`, as does an `@include` with no path.
+
+A missing top-level file passed to `load()` still raises `FileNotFoundError`, as it did before. Only missing include targets raise `ConfigError`.

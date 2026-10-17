@@ -1,0 +1,10 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. I ran the example: `service.conf` plus `logging.conf` produces the expected sections, with the `logging` keys included. I also checked a transitive cycle, a self-include and a missing target by hand. Each raised `ConfigError`. I didn't add tests for any of this.
+
+How it behaves:
+- **Expansion:** `@include` lines are replaced inline by the referenced file's lines, recursively, before parsing.
+- **Paths:** include paths resolve against the including file's directory.
+- **Errors:** a missing target, a cycle (direct or transitive), or an `@include` with no path raises `ConfigError`.
+- **Line numbers:** error messages from the parser now report line numbers in the expanded text, not in the original file.
+- **Section carry-over:** an included file's last `[section]` stays active after the include, as with inline text. In the example, a key placed right after `@include logging.conf` and before `[http]` would land in `[logging]`.
+
+The change is all in `miniconf/loader.py`. `loads()` and the parser are unchanged.

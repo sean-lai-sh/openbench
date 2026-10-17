@@ -1,0 +1,31 @@
+{
+  "id": "prt_14794e244001GLmTW4orIeT70r",
+  "sessionID": "ses_eb86b61c7ffe2nu70F2V4zr1ib",
+  "messageID": "msg_14794dbfb001RnigDUlCbgWtA4",
+  "type": "tool",
+  "callID": "toolu_vrtx_01BJSHq8wp3qmuhRNRLkYvcg",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51/miniconf/loader.py",
+      "content": "\"\"\"Load configuration from files and strings.\"\"\"\n\nimport os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\n_INCLUDE = \"@include\"\n\n\ndef _expand(path, stack):\n    real = os.path.realpath(path)\n    if real in stack:\n        raise ConfigError(\"include cycle detected at {}\".format(path))\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        lines = fh.read().splitlines()\n    base = os.path.dirname(os.path.abspath(path))\n    stack = stack + (real,)\n    out = []\n    for lineno, raw in enumerate(lines, start=1):\n        parts = raw.split(None, 1)\n        if not parts or parts[0] != _INCLUDE:\n            out.append(raw)\n            continue\n        if len(parts) < 2 or not parts[1].strip():\n            raise ConfigError(\n                \"{}: line {}: @include requires a path\".format(path, lineno)\n            )\n        target = os.path.join(base, parts[1].strip())\n        if not os.path.isfile(target):\n            raise ConfigError(\n                \"{}: line {}: include file not found: {}\".format(path, lineno, target)\n            )\n        try:\n            out.extend(_expand(target, stack))\n        except OSError as exc:\n            raise ConfigError(\n                \"{}: line {}: cannot read include {}: {}\".format(\n                    path, lineno, target, exc\n                )\n            )\n    return out\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced inline by the contents of the\n    referenced file, resolved relative to the including file's directory.\n    \"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        text = fh.read()\n    if _INCLUDE not in text:\n        return parse_lines(text.splitlines())\n    return parse_lines(_expand(path, ()))\n\n\ndef loads(text):\n    \"\"\"Parse configuration from a string.\"\"\"\n    return parse_lines(text.splitlines())\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51/miniconf/loader.py": [],
+        "/tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51/tests/test_loader.py": [],
+        "/tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51/miniconf/errors.py": [],
+        "/tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51/miniconf/parser.py": []
+      },
+      "filepath": "/tmp/obench-cell-b3kus_tp/bench_opencode_trig-list_a07v9x51/miniconf/loader.py",
+      "exists": true
+    },
+    "time": {
+      "start": 1792202305272,
+      "end": 1792202305775
+    }
+  }
+}

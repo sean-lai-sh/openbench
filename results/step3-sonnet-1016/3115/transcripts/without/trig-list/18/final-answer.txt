@@ -1,0 +1,18 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the existing test suite still passes (13 tests). The change is all in `miniconf/loader.py`.
+
+I checked it by hand with throwaway files, which I've deleted:
+
+- **Cycle:** a three-file loop (`a.conf` → `b.conf` → `sub/c.conf` → `../b.conf`) raises `ConfigError`.
+- **Missing file:** a missing include target raises `ConfigError`.
+- **Repeat include:** including the same file twice, which isn't a cycle, works.
+- **Example files:** `examples/service.conf` loads with `logging.level` = `info` and `http.port` = 8080.
+
+I didn't check ordering and override or relative-path resolution directly, and I didn't add any tests. If you want, I can add them to `tests/test_loader.py`.
+
+**Behaviour choices**
+- **Directive match:** a line is a directive only if its first whitespace-separated token is exactly `@include`. The rest of the line, stripped, is the path.
+- **Relative paths:** each include is resolved against the directory of the file that contains it, taken from the path as given. Cycle detection compares fully resolved paths, so a symlinked path still counts as a cycle.
+- **Section carry-over:** because expansion is inline, a `[section]` header inside an included file stays active for the lines after the `@include`. In `examples/service.conf`, `[http]` follows the include, so that file still works.
+- **Other errors:** an `@include` with no path raises `ConfigError`. So does an include target that can't be read or decoded.
+- **Line numbers:** parse errors report line numbers in the expanded text, so they can differ from the original file's line numbers when includes are present.
+- **Unchanged behaviour:** `loads()` doesn't process includes. A missing top-level file still raises the same `FileNotFoundError` as before.

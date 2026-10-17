@@ -1,0 +1,11 @@
+`miniconf.loader.load(path)` now expands `@include` lines, and the change is all in `miniconf/loader.py`. The 13 existing tests pass. The example pair works: loading `examples/service.conf` gives `logging.level` = `info`, `http.port` = 8080 and `name` = `billing`. I didn't add new test cases to `tests/`.
+
+- **Expansion and nesting:** an `@include` line is replaced inline by the included file's lines, and nested includes are expanded the same way. The directive is recognised only when `@include` is the first whitespace-separated token. A line like `# @include x` is still just a comment.
+- **Paths:** an include path is resolved relative to the directory of the file that contains the directive.
+- **Errors:** a missing include target raises `ConfigError`. So does an `@include` with no path, and so does an include that can't be read. A direct or indirect cycle also raises `ConfigError`. I checked a missing target, a file that includes itself, and an a→b→a cycle by hand.
+- **Same file twice:** including the same file twice without a cycle is allowed.
+- **Unchanged behaviour:** `loads()` and `parse_lines` are unchanged. A missing top-level file still raises the same error as before.
+
+Two side effects of expanding the text before parsing:
+- **Section leaks:** a section header in an included file stays active for the lines after the `@include`. In `service.conf` the `[http]` header that follows resets it, but a key placed right after an include would land in the included file's last section.
+- **Line numbers:** parse-error line numbers refer to the expanded text, not the original file.

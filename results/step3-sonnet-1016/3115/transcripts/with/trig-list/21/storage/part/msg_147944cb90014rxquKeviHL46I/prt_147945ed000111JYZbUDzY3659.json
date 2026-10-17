@@ -1,0 +1,11 @@
+{
+  "id": "prt_147945ed000111JYZbUDzY3659",
+  "sessionID": "ses_eb86c1163ffeNgKg1InsJOIuS0",
+  "messageID": "msg_147944cb90014rxquKeviHL46I",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. I also ran it by hand on throwaway files and on `examples/service.conf`, which loaded as expected. I haven't added tests for `@include` to `tests/`.\n\n- **Inline expansion:** an `@include` line is replaced by the included file's lines, then parsed as usual. I added no new test files and removed my scratch files.\n- **Relative paths:** each include resolves against the directory of the file containing the directive.\n- **Ordering:** a key set after the directive overrides the included value. In my check, `a=3` after the include beat `a=2` from the included file.\n- **Nesting:** includes expand recursively. In my check, `m.conf` included `sub/b.conf`, which included `../c.conf`.\n- **Missing file:** raises `ConfigError`.\n- **Cycles:** a file that includes itself, directly or through other files, raises `ConfigError`.\n\nTwo behaviours go beyond the spec:\n- **Path argument:** `@include` with no path, or with an unreadable or non-UTF-8 target, also raises `ConfigError`. Paths containing spaces work.\n- **Section carry-over:** because expansion is purely positional, a key placed after `@include logging.conf` lands in `[logging]`, which is the last section the included file opened. This follows from the spec, but you may not expect it.\n\nA missing top-level file still raises the raw `FileNotFoundError`, as before. `loads()` and the parser are unchanged. The change is in `miniconf/loader.py`.",
+  "time": {
+    "start": 1792202268438,
+    "end": 1792202268438
+  }
+}

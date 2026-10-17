@@ -1,0 +1,14 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The change is in `miniconf/loader.py`.
+
+I ran the existing suite (13 tests) and it passes. I did not add new tests to `tests/`. I checked the behaviour by hand:
+- **Example files:** `examples/service.conf` loads and gives `logging.level = info` and `http.port = 8080`.
+- **Cycles:** a two-file cycle and a file that includes itself both raise `ConfigError`.
+- **Missing target:** an include of a file that doesn't exist raises `ConfigError`.
+- **Not run:** I did not exercise override order or the empty-path error. Override order follows from the expansion being positional.
+
+Details of how it behaves:
+- **Paths:** each include is resolved relative to the directory of the file that contains it.
+- **Cycle detection:** it follows symlinks. A file included twice from different places is allowed, because that isn't a cycle.
+- **Other include errors:** an `@include` with no path, or a target that can't be read (for example a directory), also raises `ConfigError`.
+- **Top-level file:** if the file passed to `load()` itself doesn't exist, it still raises the original `FileNotFoundError`, as before.
+- **`loads()`:** it is unchanged, so `@include` lines in a string are still ignored.

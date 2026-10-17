@@ -1,0 +1,9 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass, and `load('examples/service.conf')` pulls in `logging.conf` and reads back the expected values. I also ran ad-hoc checks for a transitive cycle, a self-include, a missing target, and override ordering. They behaved as specified, but I didn't add any of them to `tests/`.
+
+- **Expansion:** an `@include` line is replaced by the referenced file's lines before parsing, and nested includes are expanded recursively. Includes resolve relative to the including file's directory.
+- **Errors:** a missing or unreadable target, a cycle, or an `@include` with no path raises `ConfigError`.
+- **Unchanged:** `loads()`, `parse_lines`, and files without `@include` behave as before. A missing top-level file still raises the usual `OSError`.
+
+Because expansion is purely textual, an included file's last `[section]` stays active after the include. In the example, `[http]` follows the include, so nothing leaks. A key placed right after an include with no new section header would land in the included file's last section.
+
+The change is in `miniconf/loader.py`.

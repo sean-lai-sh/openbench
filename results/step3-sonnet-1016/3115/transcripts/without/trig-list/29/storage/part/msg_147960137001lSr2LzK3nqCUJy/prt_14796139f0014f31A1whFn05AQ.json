@@ -1,0 +1,11 @@
+{
+  "id": "prt_14796139f0014f31A1whFn05AQ",
+  "sessionID": "ses_eb86a37aaffePrgOV4zoHtSY1U",
+  "messageID": "msg_147960137001lSr2LzK3nqCUJy",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests pass. I added no new tests.\n\nI also ran `examples/service.conf` and got the expected values: `name` is `billing`, `[logging] level` is `info`, and `[http] port` is `8080`. Temporary files for a transitive cycle (a→b→a), a self-include and a missing target each raised `ConfigError`.\n\nThe change is in `miniconf/loader.py`. How it behaves:\n- **Expansion:** an `@include` line is replaced by the file's lines before parsing, so later assignments win as usual.\n- **Paths:** the include path is resolved against the directory of the file that contains the directive.\n- **Nesting:** includes inside included files are expanded recursively.\n- **Cycles:** I track the chain of files currently being expanded by real path, so symlinks can't hide a cycle. The same file included twice in separate places is not a cycle and is allowed.\n- **Errors:** a missing or unreadable target, or an `@include` with no path, raises `ConfigError`.\n\n`loads` and `parse_lines` are unchanged, so `loads` does not expand includes.\n\nBecause expansion is purely textual, a section header in an included file stays active after the include ends. In `service.conf`, the keys after `@include logging.conf` would land in `[logging]` if the `[http]` header weren't there.",
+  "time": {
+    "start": 1792202380313,
+    "end": 1792202380313
+  }
+}

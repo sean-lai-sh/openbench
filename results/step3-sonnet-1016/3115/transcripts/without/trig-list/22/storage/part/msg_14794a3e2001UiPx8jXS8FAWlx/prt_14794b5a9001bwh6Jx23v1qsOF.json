@@ -1,0 +1,11 @@
+{
+  "id": "prt_14794b5a9001bwh6Jx23v1qsOF",
+  "sessionID": "ses_eb86b986effe5po69wBSerzz12",
+  "messageID": "msg_14794a3e2001UiPx8jXS8FAWlx",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. The change is in `miniconf/loader.py`.\n\nI ran the example: `service.conf` loads with the `logging` section from `logging.conf` and the `http` section. I also checked a two-file include cycle and a missing include target. Each raised `ConfigError`. I didn't add new tests for includes, and I didn't try nested includes or the override ordering.\n\n- **Directive:** A line counts as an include only if its first whitespace-separated token is exactly `@include`. The rest of the line, stripped, is the path.\n- **Expansion:** The directive line is replaced in place by the included file's lines, recursively. Paths resolve relative to the directory of the file containing the directive.\n- **Cycles:** I track the real path of each file in the current include chain, so symlinks and `..` can't hide a loop. The same file included twice by siblings is allowed.\n- **Errors:** A missing or unreadable include target raises `ConfigError`. So does an `@include` with no path.\n- **Unchanged behavior:** A missing top-level file still raises the same error as before. `loads()` is untouched, so it doesn't expand includes.\n\nAn included file that opens a `[section]` changes the current section for any keys that follow the `@include` line in the parent file. That is what \"as if written inline\" implies. In the example, keys placed after the include would land in `[logging]`.",
+  "time": {
+    "start": 1792202290654,
+    "end": 1792202290654
+  }
+}

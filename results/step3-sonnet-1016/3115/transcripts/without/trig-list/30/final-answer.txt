@@ -1,0 +1,13 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the 13 existing tests still pass. I made the change in `miniconf/loader.py`.
+
+- **Example:** loading `examples/service.conf` pulls in the `[logging]` section from `logging.conf`, as expected.
+- **Missing file and cycles:** I tried a two-file cycle (`a.conf` and `b.conf` including each other) and a missing include target. Both raised `ConfigError`.
+- **Not run:** I didn't try nested includes, relative paths from a subdirectory, or override ordering by hand. Nesting and relative paths are handled in the code, and override ordering follows from the existing later-wins parsing.
+- **Added tests:** I didn't add any tests for `@include` to `tests/`.
+
+Two behaviours you might not assume:
+
+- **Line numbers in errors:** a parse error in an expanded file reports a line number in the expanded text, not in the original file.
+- **Diamond includes:** the same file can be included twice (for example from two siblings) without raising an error. Only a file that includes itself, directly or through other files, counts as a cycle.
+
+An `@include` line with no path also raises `ConfigError`. `loads()` is unchanged and still ignores `@` lines.

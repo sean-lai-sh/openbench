@@ -1,0 +1,13 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass. I ran `examples/service.conf` and got the expected values: `level` is `info` and `port` is `8080` as before. I also hand-checked a two-file include cycle and a missing include target, and both raise `ConfigError`. I didn't add tests for includes.
+
+- **Paths:** include paths resolve relative to the directory of the file containing the directive. Nested includes expand recursively.
+- **Cycles:** a cycle, including a file that includes itself, raises `ConfigError`. A file included twice without a cycle is fine.
+- **Directive matching:** a directive is a line whose first whitespace-separated token is exactly `@include`. `#`-commented lines are left alone.
+- **Include errors:** a missing, unreadable or non-UTF-8 include raises `ConfigError`. So does an `@include` with no path.
+- **Unchanged behavior:** `loads` and the parser are untouched. A missing top-level file still raises the usual `FileNotFoundError`, as before.
+
+Expansion is purely textual, so a section header inside an included file stays active for the lines after the `@include`. For example, keys that follow `@include logging.conf` land in `[logging]` until the next section header.
+
+Line numbers in parse errors refer to the expanded text, not the original file. If you want errors mapped back to the original file and line, that would take a small change.
+
+The change is all in `miniconf/loader.py`.
