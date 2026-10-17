@@ -1,0 +1,14 @@
+All 25 tests now pass.
+
+The last bug was in `taskflow/resources.py`. `ResourcePool.release` did `self.used -= 1`, so a task with a cost above 1 gave back only one unit when it finished. Capacity leaked, and later tasks were never admitted. Those tasks ended up not succeeded, which made `report.ok()` false in the three pipeline tests. It now does `self.used -= cost`.
+
+The full set of fixes was seven bugs:
+- `queue.py`: the sort key now puts higher priority first and breaks ties by arrival order.
+- `retry.py`: the retry boundary is off by one no longer.
+- `events.py`: the topic and prefix arguments in the prefix match are no longer swapped.
+- `statemachine.py`: the batch priority-order check now accepts non-increasing priority.
+- `config.py`: `deep_merge` now lets the override win.
+- `scheduler.py`: skipping now cascades to all transitive dependents.
+- `resources.py`: `release` now returns the full cost.
+
+I didn't edit any tests.

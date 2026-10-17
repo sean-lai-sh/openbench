@@ -1,0 +1,14 @@
+All 25 tests now pass with `python3 -m unittest`.
+
+The last three failures came from one bug in `taskflow/resources.py`. `ResourcePool.release` ran `self.used -= 1` instead of `self.used -= cost`. A task with a cost above 1 gave back only one unit when it finished. The pool then looked permanently full, tasks waiting on it never ran, and `report.ok()` came back False.
+
+I made seven fixes in total:
+1. `queue.py`: the sort key is now `(-priority, seq)`.
+2. `retry.py`: fixed an off-by-one in `should_retry`.
+3. `events.py`: the topic and prefix operands in `_prefix_matches` were reversed.
+4. `statemachine.py`: the batch priority check in `batch_order_ok` now requires non-increasing order.
+5. `config.py`: in `deep_merge`, the override value now wins over the base.
+6. `scheduler.py`: `_cascade_skip` now uses `transitive_dependents`, so skips reach all descendants.
+7. `resources.py`: `release` now subtracts the full cost.
+
+I didn't edit any tests.

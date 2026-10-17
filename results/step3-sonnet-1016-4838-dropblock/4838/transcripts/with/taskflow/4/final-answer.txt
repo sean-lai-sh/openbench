@@ -1,0 +1,12 @@
+All 25 tests pass now.
+
+The last bug was in `Scheduler._cascade_skip` in `taskflow/scheduler.py`. It looped over `self.dag.dependents(...)`, which returns only direct children. The docstring says every transitive dependent should be skipped, so I switched it to `self.dag.transitive_dependents(...)`. That also fixed the two history tests, which were failing only because downstream tasks never reached `SKIPPED`.
+
+In total I fixed 7 bugs, all under `taskflow/`, and didn't touch the tests:
+1. `queue.py`: the sort key had its fields in the wrong order. It's now `(-priority, seq)`.
+2. `retry.py`: the `should_retry` boundary was off by one.
+3. `events.py`: the topic/prefix match was reversed.
+4. `statemachine.py`: `batch_order_ok` compared priorities in the wrong direction.
+5. `config.py`: `deep_merge` had its arguments swapped, so the override lost at the leaves.
+6. `resources.py`: `release` subtracted 1 instead of `cost`.
+7. `scheduler.py`: `_cascade_skip` skipped only direct dependents.

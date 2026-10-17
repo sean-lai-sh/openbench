@@ -1,0 +1,17 @@
+{
+  "id": "msg_148de268d001NRyuAI1wMncVBN",
+  "sessionID": "ses_eb7220c09ffe57bUesl6hQpx7p",
+  "role": "user",
+  "time": {
+    "created": 1792223880845
+  },
+  "summary": {
+    "body": "## Summary\n\n### User request\nFix the failing tests in the `taskflow` package (in-memory job-orchestration engine) at `/tmp/obench-cell-a5142bpb/bench_opencode_taskflow_48rpti75`. Run with `python3 -m unittest`. The tests are the spec and **must not be modified**. Fixes go only in `taskflow/`. The task is done when every test passes. The user warned that failures can be misleading, since a defect in one module can surface in another, and that fixing one bug can unmask another. The defects are logic errors, and the docstrings and comments describe the intended behavior.\n\n### What was done\nThe initial run had 18 failures out of 25 tests. I read the small modules (`queue.py`, `retry.py`, `statemachine.py`, `events.py`), then `scheduler.py`, `resources.py`, `config.py` and part of `dag.py`. I compared each function's docstring with its behavior and fixed seven root-cause bugs:\n\n1. **`taskflow/queue.py`**: `_Entry.sort_key` returned `(self.seq, -self.priority)`. It now returns `(-self.priority, self.seq)`, so higher priority goes first and FIFO breaks ties.\n2. **`taskflow/retry.py`**: `should_retry` used `attempts_made < self.max_attempts - 1`, an off-by-one. It now uses `attempts_made < self.max_attempts`, matching the docstring's `max_attempts=3` example.\n3. **`taskflow/events.py`**: `_prefix_matches` had `prefix.startswith(topic + \".\")` with the operands reversed. It now uses `topic.startswith(prefix + \".\")`.\n4. **`taskflow/statemachine.py`**: `batch_order_ok` returned `current_priority >= prev_priority`. It now returns `current_priority <= prev_priority`, so batches dispatch in non-increasing priority order. This was masked by the queue ordering bug.\n5. **`taskflow/config.py`**: in `deep_merge`, the recursive call was `deep_merge(value, result[key])`, which gave the base precedence. It is now `deep_merge(result[key], value)`, so the override wins.\n6. **`taskflow/resources.py`**: `ResourcePool.release` did `self.used -= 1`. It now does `self.used -= cost`.\n7. **`taskflow/scheduler.py`**: `_cascade_skip` iterated `self.dag.dependents(...)`, which returns direct children only. It now iterates `self.dag.transitive_dependents(...)`, so the skip is transitive.\n\n### Current state\nThe final run reported `Ran 25 tests ... OK`, so all tests pass and the task is complete. No tests were modified. Nothing further is required beyond optionally reporting the seven fixes to the user.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

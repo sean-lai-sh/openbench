@@ -1,0 +1,17 @@
+{
+  "id": "msg_148d33be80017Hlof6NAK1xK7Y",
+  "sessionID": "ses_eb72d0505ffegix573At20dMMG",
+  "role": "user",
+  "time": {
+    "created": 1792223165416
+  },
+  "summary": {
+    "body": "## Summary\n\n### Task\nUser asked me to fix the failing tests in the `taskflow` package (in-memory job-orchestration engine, working dir `/tmp/obench-cell-vkieav2u/bench_opencode_taskflow_c3juwlqn`). Run with `python3 -m unittest`. Constraints: **do not modify tests**; fix genuine logic bugs under `taskflow/` (comments/docstrings describe intended behavior). Done when the whole suite passes.\n\n### Outcome\nAll 25 tests now pass (`Ran 25 tests ... OK`). Started with 18 failures. Done in several fix → rerun → re-diagnose rounds, since some bugs masked others.\n\n### Fixes applied (7 root-cause bugs, all via `sed` one-line edits)\n1. `taskflow/queue.py` — `_Entry.sort_key` returned `(self.seq, -self.priority)`; changed to `(-self.priority, self.seq)` (higher priority first, FIFO tiebreak).\n2. `taskflow/retry.py` — `RetryPolicy.should_retry` used `attempts_made < self.max_attempts - 1`; changed to `attempts_made < self.max_attempts`. Note: the docstring says `max_attempts=3` gives `should_retry(1)=True, (2)=True, (3)=False`, which is the opposite of the earlier boundary; the tests (`test_should_retry_boundary`, and pipeline retry tests expecting 3 attempts) confirmed this semantics.\n3. `taskflow/events.py` — `_prefix_matches` used `prefix.startswith(topic + \".\")` (reversed); changed to `topic.startswith(prefix + \".\")` so `job.term` prefix subscription gets `job.term.failed` etc.\n4. `taskflow/statemachine.py` — `batch_order_ok` used `current_priority >= prev_priority`; changed to `<=` (non-increasing priority within an admission batch). This was causing the scheduler's admission guard to wrongly fail runs.\n5. `taskflow/resources.py` — `ResourcePool.release` did `self.used -= 1`; changed to `self.used -= cost`.\n6. `taskflow/config.py` — `deep_merge` recursed as `deep_merge(value, result[key])` (override/base swapped); changed to `deep_merge(result[key], value)` so overrides win at the leaves.\n7. `taskflow/scheduler.py` — `_cascade_skip` iterated `self.dag.dependents(...)` (direct children only); changed to `self.dag.transitive_dependents(...)` so the whole downstream subtree is skipped.\n\n### State / next steps\n- No work in progress; the task's completion criterion is met. Optional: do a final `python3 -m unittest` re-run to confirm, and give the user a brief report of the 7 fixes above. I did not modify any test files. I did not audit untested modules (e.g. `history.py`'s tail, `stats.py`, `planner.py`, etc.) since the suite is green.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

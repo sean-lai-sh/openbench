@@ -1,0 +1,12 @@
+All 25 tests now pass with `python3 -m unittest`.
+
+The last bug was in `taskflow/resources.py`. `ResourcePool.release` ended with `self.used -= 1`, so a task that held more than one unit gave back only one when it finished. The pool then looked full, and later tasks that needed that resource were never admitted. The line is now `self.used -= cost`, which matches the docstring's rule that you release exactly what you acquired. That fixed the three pipeline failures.
+
+In total I made seven fixes, all in `taskflow/` and none in `tests/`:
+1. `queue.py`: the sort key now puts higher priority first and breaks ties by arrival order.
+2. `retry.py`: `should_retry` had an off-by-one against `max_attempts`.
+3. `statemachine.py`: `batch_order_ok` now checks that priority is non-increasing within a batch.
+4. `config.py`: in `deep_merge`, the override now wins on nested keys.
+5. `events.py`: the topic-prefix match had its operands reversed.
+6. `scheduler.py`: skipping a failed task's dependents now cascades through all transitive dependents, not just direct children.
+7. `resources.py`: `release` now returns the full cost, as described above.

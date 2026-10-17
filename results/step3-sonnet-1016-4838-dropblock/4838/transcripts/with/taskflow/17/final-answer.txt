@@ -1,0 +1,14 @@
+All 25 tests now pass.
+
+## What we did
+The task was to fix the failing tests in the `taskflow/` package without touching the tests. I made seven logic fixes in total.
+
+1. **`queue.py`**: `_Entry.sort_key` now sorts by `(-priority, seq)`. Before, it sorted by `seq` first, so priority never mattered.
+2. **`retry.py`**: `should_retry` now uses `attempts_made < max_attempts`. The old `max_attempts - 1` was off by one.
+3. **`statemachine.py`**: `batch_order_ok` now requires priority to be non-increasing within a batch.
+4. **`resources.py`**: `release` now subtracts `cost` instead of 1.
+5. **`events.py`**: `_prefix_matches` now checks `topic.startswith(prefix + ".")`. The two operands were swapped.
+6. **`config.py`**: `deep_merge` now recurses as `deep_merge(result[key], value)`. The arguments were swapped, so the override was merged into the wrong side.
+7. **`scheduler.py`**: `_cascade_skip` now calls `dag.transitive_dependents(...)` instead of `dag.dependents(...)`. It was skipping only direct children, which left deeper downstream tasks `PENDING`. This fixed the last 4 failures.
+
+`python3 -m unittest` ran 25 tests and reported OK.

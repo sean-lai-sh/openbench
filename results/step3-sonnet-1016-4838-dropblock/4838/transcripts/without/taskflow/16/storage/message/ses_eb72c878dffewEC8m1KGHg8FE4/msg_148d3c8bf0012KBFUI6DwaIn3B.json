@@ -1,0 +1,17 @@
+{
+  "id": "msg_148d3c8bf0012KBFUI6DwaIn3B",
+  "sessionID": "ses_eb72c878dffewEC8m1KGHg8FE4",
+  "role": "user",
+  "time": {
+    "created": 1792223201471
+  },
+  "summary": {
+    "body": "## Summary of work so far\n\n**Task:** Fix the failing `python3 -m unittest` suite in `taskflow/` (an in-memory job-orchestration engine) by correcting genuine logic bugs under `taskflow/`. The tests must not be modified. Working dir: `/tmp/obench-cell-v_2jwuyy/bench_opencode_taskflow_nb88fwn1`. Bash tool calls need a `description` parameter.\n\nThe initial run had 18 failures out of 25 tests.\n\n### Fixes applied so far\n1. **`taskflow/queue.py`**: `_Entry.sort_key` returned `(self.seq, -self.priority)`. It now returns `(-self.priority, self.seq)`, so higher priority goes first and FIFO breaks ties.\n2. **`taskflow/retry.py`**: `should_retry` used `attempts_made < self.max_attempts - 1`. It now uses `attempts_made < self.max_attempts`.\n3. **`taskflow/resources.py`**: `ResourcePool.release` did `self.used -= 1`. It now does `self.used -= cost`.\n4. **`taskflow/statemachine.py`**: `batch_order_ok` returned `current_priority >= prev_priority`. It now returns `current_priority <= prev_priority`, so priorities must be non-increasing within a batch.\n5. **`taskflow/scheduler.py`**: `_cascade_skip` iterated `self.dag.dependents(...)`, which gives direct children only. It now uses `self.dag.transitive_dependents(...)`.\n6. **`taskflow/config.py`**: `deep_merge` recursed as `deep_merge(value, result[key])`, which swapped the arguments. It now calls `deep_merge(result[key], value)`. **I have not re-run the tests since this fix.**\n\nThe last test run, before fix 6, showed 9 failures: the 2 config tests, 3 retry pipeline tests, `test_full_pipeline_retry_priority_resources`, and 3 history tests (`failed_jobs`, `outcome_counts`, `terminal_events_delivered`).\n\n### Bug identified but NOT yet fixed\n- **`taskflow/events.py`, `_prefix_matches`**: it returns `topic == prefix or prefix.startswith(topic + \".\")`, which has the operands reversed. It should be `topic == prefix or topic.startswith(prefix + \".\")`. This breaks the `job.term` prefix subscription in `History`, so the terminal outcome sets (`succeeded`, `failed`, `skipped`) stay empty.\n\n### Next steps\n1. Fix `_prefix_matches` in `events.py`.\n2. Re-run `python3 -m unittest 2>&1 | grep -E \"^(FAIL|ERROR|Ran)\"`.\n3. For any remaining failures, read the full tracebacks. Likely suspects are the `report.ok()` failures (`test_resource_*`, `test_full_pipeline_*`), which may involve `taskflow/runner.py`, `reporting.py` or `history.py`. Fixed bugs may also be masking others, for example in `runner.py`, which wires up `History` and the report. `SchedulerResult` passes `history=None` and says the runner attaches it.\n4. Confirm the whole suite passes (25 tests) without modifying anything under `tests/`.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}
