@@ -1,0 +1,10 @@
+The whole suite now passes: `python3 -m unittest` runs 16 tests with no failures. Before the fixes it reported 15, because `tests/test_search.py` couldn't be imported and was counted as one error; now its two tests run. I didn't change any tests.
+
+I gave the `tests/test_members.py` investigation to a subagent and fixed the rest myself. Fixes, all in `catalog/`:
+
+- **`search.py`**: it imported `normalize` from `catalog.nonexistent`, which doesn't exist. It now imports from `catalog.text`, where `normalize` is defined.
+- **`books.py`**: `parse_book` left the year as a string. It now converts it with `int(year)`, which fixes both `test_year_is_int` and `test_age`.
+- **`factory.py`**: added the missing `Book("Emma", "Austen", 1815, 1)` to the sample data. The test only checks the title "Emma", so the author, year and copy count are my choice.
+- **`fees.py`**: the fee was `days_late + DAILY_FEE`; it should be `days_late * DAILY_FEE`.
+- **`inventory.py`**: `recent(n)` sliced `[-n - 1:]` and returned one event too many. It now returns `[-n:]`. I also made `recent(0)` return an empty list, since `[-0:]` would return the whole history.
+- **`members.py`** (from the subagent): `MAX_BORROWED` was 3, but the comment above it says members can hold five books. I changed it to 5.

@@ -1,0 +1,9 @@
+The whole suite passes now: `python3 -m unittest` runs 16 tests with no failures. Before the fixes it ran only 15, because `test_search.py` couldn't be imported at all. I changed only files in `catalog/` and didn't modify any tests. I tracked the work with the todo list and gave the `tests/test_search.py` failure to a subagent, as you asked.
+
+The fixes:
+- **`catalog/search.py`**: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`). It now imports it from `catalog.text`, where the function actually lives. This is the fix the subagent found.
+- **`catalog/books.py`**: `parse_book` left the year as a string; it now converts it to a number.
+- **`catalog/factory.py`**: `sample_books()` was missing the third title its docstring promises. I added `Book("Emma", "Austen", 1815, 1)`. The tests only check the title, so the author, year and copy count are values I chose.
+- **`catalog/fees.py`**: the late fee added the daily rate to the days late instead of multiplying (`days_late + DAILY_FEE` → `days_late * DAILY_FEE`).
+- **`catalog/inventory.py`**: `recent(n)` returned one event too many (`[-n - 1:]` → `[-n:]`). I also made it return an empty list when `n <= 0`. No test asks for that, but without it `[-0:]` would return the whole history.
+- **`catalog/members.py`**: `MAX_BORROWED` was 3, but the comment above it and the tests both say members can hold 5 books, so I set it to 5.

@@ -1,0 +1,10 @@
+The whole suite now passes: `python3 -m unittest` ran 16 tests, all OK. I only changed code in `catalog/` and left the tests alone. The first run showed 15 tests because `tests/test_search.py` couldn't be imported, so its tests weren't counted.
+
+I handed the `tests/test_search.py` failure to a subagent. It found a bad import and checked the fix on a copy of the code without touching the workspace. I fixed the rest myself:
+
+- **`catalog/search.py`**: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`); it now imports it from `catalog.text`, where the function actually lives.
+- **`catalog/books.py`**: `parse_book` left the year as text, so it's now converted to a number. This also made `age()` work.
+- **`catalog/factory.py`**: `sample_books()` was missing the third book, so I added `Book("Emma", "Austen", 1815, 1)`. The tests only check the title; the author, year and copy count are values I picked.
+- **`catalog/fees.py`**: the late fee added the daily rate to the number of days instead of multiplying (`days_late + DAILY_FEE` is now `days_late * DAILY_FEE`).
+- **`catalog/inventory.py`**: `recent(n)` returned one event too many (`[-n - 1:]` is now `[-n:]`). I also made `recent(0)` or a negative `n` return an empty list. No test covers that, but without it the new slice would return the whole history for `n = 0`.
+- **`catalog/members.py`**: the borrowing limit was 3, but the tests and the code comment both say five, so I changed `MAX_BORROWED` to 5.

@@ -1,0 +1,10 @@
+The whole suite now passes: `python3 -m unittest` runs 16 tests with no failures. The count went up from 15 because `test_search` couldn't even load before, so its tests weren't running. I didn't change any tests.
+
+I gave the search and members failures to a subagent to investigate and fixed the rest myself. Six fixes in `catalog/`:
+
+- **`books.py`**: `parse_book` kept the year as text (`"1965"`) instead of a number, which also broke `age()`. It now converts the year to an integer.
+- **`factory.py`**: `sample_books()` was missing the third book its own description promises. I added `Book("Emma", "Austen", 1815, 1)`. The test only checks the title, so the author, year and copy count are my choice.
+- **`fees.py`**: the late fee added the daily rate to the number of days instead of multiplying, so 1 day late cost 1.25 instead of 0.25. It now uses `days_late * DAILY_FEE`.
+- **`inventory.py`**: `recent(n)` returned one event too many. It now returns exactly the last `n` events, and an empty list when `n` is 0 or less.
+- **`search.py`** (subagent finding): it imported `normalize` from a module that doesn't exist, so it couldn't load. It now imports it from `catalog.text`.
+- **`members.py`** (subagent finding): the borrow limit was set to 3, but the comment and the tests both say five. Changed it to 5.

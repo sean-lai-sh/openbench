@@ -1,0 +1,13 @@
+The whole suite now passes: `python3 -m unittest` ran 16 tests, all OK. I only changed code in `catalog/`; the tests are untouched.
+
+I gave `tests/test_search.py` to a subagent to investigate. It found that only the broken import needed fixing, and that the search functions already do what the tests expect.
+
+Fixes:
+- **`catalog/search.py`**: the import pointed at a module that doesn't exist (`catalog.nonexistent`). It now uses `catalog.text`. This one error stopped the whole search test file from loading.
+- **`catalog/books.py`**: `parse_book` kept the year as text. It now converts it to a number, which also makes `age()` work.
+- **`catalog/factory.py`**: added the missing `Book("Emma", "Austen", 1815, 1)` to the sample books. The tests only check the title, so I made up the author, year and copy count.
+- **`catalog/fees.py`**: the late fee added the daily rate to the days late instead of multiplying. It's now `days_late * DAILY_FEE`.
+- **`catalog/inventory.py`**: `recent(n)` returned one event too many. It now returns exactly the last `n`. I also made `n <= 0` return an empty list, because otherwise `recent(0)` would return the entire history. No test covers that case.
+- **`catalog/members.py`**: raised `MAX_BORROWED` from 3 to 5, which matches both the tests and the comment above it.
+
+The test count went from 15 to 16 because the search file couldn't load before, so it showed up as one error. Now its two tests actually run.

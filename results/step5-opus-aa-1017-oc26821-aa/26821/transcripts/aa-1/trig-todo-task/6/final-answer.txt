@@ -1,0 +1,10 @@
+All 16 tests now pass when I run `python3 -m unittest`. Before the fixes it ran 15 tests and reported 6 failures and 4 errors. The count went up because `test_search` couldn't be imported before, so its two tests never ran. I only changed code in `catalog/`; the tests are untouched.
+
+I tracked the work with the todo list and gave the `test_search` / `test_members` investigation to a subagent. It found the causes of the search and members failures, then I made all the fixes:
+
+- **`catalog/books.py`**: `parse_book` now turns the year into an `int` instead of keeping it as text.
+- **`catalog/factory.py`**: added the missing third sample book, `Emma` (Austen, 1815). I picked the copy count of 1 myself, since no test checks it.
+- **`catalog/fees.py`**: the fee was adding days and the daily rate (`days_late + DAILY_FEE`); it now multiplies them (`days_late * DAILY_FEE`).
+- **`catalog/inventory.py`**: `recent(n)` was returning one event too many (`[-n - 1:]`); it now returns the last `n` (`[-n:]`). I also made `n <= 0` return an empty list, because `[-0:]` would otherwise return the whole history.
+- **`catalog/search.py`**: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`); it now imports it from `catalog.text`.
+- **`catalog/members.py`**: the borrow limit was 3; it's now 5, which matches the comment above it and the tests.

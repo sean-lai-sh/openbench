@@ -1,0 +1,13 @@
+All 16 tests now pass when I run `python3 -m unittest`. I only changed code in `catalog/` and left the tests alone.
+
+As you asked, I tracked the work in the todo list and handed `tests/test_members.py` to a subagent to investigate.
+
+The fixes:
+- **`catalog/search.py`**: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`), so the search tests couldn't even load. It now imports from `catalog.text`, where `normalize` actually lives.
+- **`catalog/members.py`** (the subagent found this): the borrow limit was 3, but the code comment and the tests say members can hold five books. I set `MAX_BORROWED = 5`.
+- **`catalog/books.py`**: `parse_book` kept the year as text (`"1965"`). It now converts it to a number, which the tests expect.
+- **`catalog/factory.py`**: the sample catalog was missing the third book. I added `Book("Emma", "Austen", 1815, 1)`.
+- **`catalog/fees.py`**: the late fee added the daily rate to the number of days instead of multiplying, so one day late cost 1.25 instead of 0.25. It now multiplies.
+- **`catalog/inventory.py`**: `recent(n)` returned one event too many. It now returns exactly the last `n` events.
+
+One change goes slightly beyond what the tests check: `recent(0)` or a negative number now returns an empty list. Without that, the fixed slice would return the whole history when `n` is 0.

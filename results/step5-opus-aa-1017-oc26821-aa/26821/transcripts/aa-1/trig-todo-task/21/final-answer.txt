@@ -1,0 +1,14 @@
+All 16 tests now pass when I run `python3 -m unittest`. The first run reported 15 tests because `test_search.py` couldn't load at all; once it loaded, its two tests were counted.
+
+I changed only code in `catalog/` and left the tests alone. A subagent looked into `tests/test_members.py` and found the cause of its failures. I fixed the rest myself.
+
+| File | Bug | Fix |
+|---|---|---|
+| `catalog/search.py:3` | Imported `normalize` from a module that doesn't exist, `catalog.nonexistent` | Import it from `catalog.text`, where it's defined |
+| `catalog/books.py:22` | `parse_book` left the year as a string, so `age()` couldn't do arithmetic with it | Convert the year to a number with `int(year)` |
+| `catalog/factory.py` | The sample data had 2 books; the docstring and tests expect 3 | Added `Book("Emma", "Austen", 1815, 1)` |
+| `catalog/fees.py:14` | The fee added the daily rate to the days late instead of multiplying | Changed to `days_late * DAILY_FEE` |
+| `catalog/inventory.py:24` | `recent(n)` returned `n+1` events | Changed to `self._history[-n:]` |
+| `catalog/members.py:4` | The borrow limit was 3, but the policy comment and tests say 5 (subagent's finding) | Set `MAX_BORROWED = 5` |
+
+I also added one thing no test asked for: `recent(0)` now returns an empty list. Without that check, `_history[-0:]` would return the whole history.
