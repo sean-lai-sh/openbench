@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests. I fixed seven defects, and I ran the suite after each batch of fixes to find the next one.
+
+1. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It is now `attempts_made < max_attempts`.
+2. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+3. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the base value overrode the task's. Task-level retry settings were being lost. It now calls `deep_merge(result[key], value)`.
+4. **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. That leaked capacity, which is why the resource-limited pipelines stalled.
+5. **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so skips reach the whole downstream graph.
+6. **`statemachine.py`**: `batch_order_ok` had its comparison reversed (`>=` instead of `<=`). It rejected valid non-increasing priority batches.
+7. **`events.py`**: `_prefix_matches` had the prefix and topic swapped. Prefix subscribers such as `History`'s `job.term` never received `job.term.failed` or `job.term.skipped`, so the history's terminal-outcome queries came back empty.
+
+The `queue.py` and `statemachine.py` bugs masked each other in the priority-dispatch tests. The retry and resource fixes had to land before the scheduler-level failures could be diagnosed.

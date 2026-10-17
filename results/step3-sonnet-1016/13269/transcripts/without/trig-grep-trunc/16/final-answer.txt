@@ -1,0 +1,15 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't change any tests.
+
+I found seven bugs and fixed each at its source:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/retry.py` | `should_retry` stopped one attempt early (`< max_attempts - 1`). | Changed to `attempts_made < max_attempts`. |
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. | Changed to `(-priority, seq)`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. | Changed to `deep_merge(result[key], value)`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | Changed to `transitive_dependents`, so a failure skips everything downstream. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost, which leaked capacity. | Changed to `used -= cost`. |
+| `taskflow/events.py` | `_prefix_matches` had its arguments reversed, so prefix subscribers got no events. | Changed to `topic.startswith(prefix + ".")`. |
+| `taskflow/statemachine.py` | `batch_order_ok` used `>=`, but its docstring says priorities within a batch must not increase. | Changed to `<=`. |
+
+The `statemachine.py` fix is the one that only showed up once the queue ordering was right. With the old comparison, correct priority order made the guard reject dispatches and mark runs as failed.

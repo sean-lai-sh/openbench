@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, with the tests left untouched. I found and fixed seven defects, each in the module where it originated:
+
+- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and equal priorities go first-in-first-out.
+- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.
+- **`taskflow/events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`. The history's `job.term` prefix subscription had never fired, so failed, skipped and succeeded sets and outcome counts were empty.
+- **`taskflow/statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch, which is the opposite of its docstring. It now requires `current <= prev`.
+- **`taskflow/scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so downstream tasks such as the `d` in the diamond test are also skipped.
+- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. That leaked capacity and stalled resource-limited pipelines.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_148771e58001UG6FRzTiQbH1U7",
+  "sessionID": "ses_eb7893bafffeO6ENXFplPryS9x",
+  "messageID": "msg_148770f22001mlg4zHf6F6pOgq",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.\n\nMy first grep for `self` matched 1,325 lines and was cut off at 100, so it didn't help. I ran the suite and read the failures instead.\n\nThere were seven defects across six files:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says `(-priority, seq)`, so the queue ignored priority.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. It is now `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped. A task's own `retry` settings were overwritten by the defaults instead of the reverse.\n- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + \".\")` instead of `topic.startswith(prefix + \".\")`. The `job.term` subscription never received `job.term.failed` or the other terminal events, so history was empty.\n- **`statemachine.py`:** `batch_order_ok` used `>=` where its docstring requires non-increasing priority. This was hidden until the queue ordering was fixed.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dependents` instead of `transitive_dependents`, so only direct children were skipped.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never drained, so later tasks were never admitted.",
+  "time": {
+    "start": 1792217128560,
+    "end": 1792217128560
+  }
+}

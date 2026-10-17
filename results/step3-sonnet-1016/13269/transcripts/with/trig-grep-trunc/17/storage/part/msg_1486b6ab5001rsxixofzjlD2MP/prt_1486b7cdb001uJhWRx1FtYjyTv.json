@@ -1,0 +1,11 @@
+{
+  "id": "prt_1486b7cdb001uJhWRx1FtYjyTv",
+  "sessionID": "ses_eb794d639ffetrQ1R1I4oXJ9Ji",
+  "messageID": "msg_1486b6ab5001rsxixofzjlD2MP",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with the test files untouched. I found eight bugs in total.\n\n1. **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It is now `attempts_made < max_attempts`.\n3. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the base values overwrote the task's overrides. The call is now `deep_merge(result[key], value)`.\n4. **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never freed capacity, which stalled resource-limited runs.\n5. **`statemachine.py`**: `batch_order_ok` had its comparison backwards (`>=`). It is now `current_priority <= prev_priority`, matching the \"non-increasing priority within a batch\" invariant.\n6. **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so skips reach the whole downstream chain.\n7. **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It is now `topic.startswith(prefix + \".\")`. As a result, `History` never received the `job.term.*` events.\n\nSeveral bugs were masking each other, as the task warned. For example, the resource-pool tests only surfaced the batch-order guard once the queue ordering was right.\n\nThe earlier grep for `self` matched 1,325 lines and the output was cut off at 100. I didn't page through the rest, and used the failing tests to find the bugs instead.",
+  "time": {
+    "start": 1792216366336,
+    "end": 1792216366336
+  }
+}

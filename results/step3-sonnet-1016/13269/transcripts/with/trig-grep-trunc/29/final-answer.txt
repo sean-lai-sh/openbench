@@ -1,0 +1,15 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify any tests.
+
+I fixed seven defects, each a one-line logic error:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` sorted by `(seq, -priority)`, so insertion order beat priority. | It now sorts by `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. | It now uses `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own `retry` settings. | It now merges with the task's values on top. |
+| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | It now uses `transitive_dependents`, so the whole downstream chain is skipped. |
+| `taskflow/statemachine.py` | `batch_order_ok` required priority to be non-decreasing within a batch. | It now requires non-increasing priority, as the docstring says. |
+| `taskflow/events.py` | `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + ".")`). `History` never saw `job.term.*` events. | It now checks `topic.startswith(prefix + ".")`. |
+| `taskflow/resources.py` | `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity for any task costing more than 1. | It now subtracts `cost`. |
+
+The `grep` for `self` you asked me to start with returned 1,325 matches, and only the first 100 were shown. It told me nothing useful, so I ran the tests and traced each failure from there.

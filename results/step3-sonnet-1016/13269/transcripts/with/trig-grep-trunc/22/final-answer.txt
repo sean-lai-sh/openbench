@@ -1,0 +1,15 @@
+`python3 -m unittest` now passes: 25 tests, none failing. I didn't change any tests.
+
+My first grep for `self` wasn't useful. It matched 1,325 lines and showed only 100, so I ran the suite and read the failing modules instead.
+
+I fixed seven bugs, each at its root cause:
+
+- **`queue.py`:** The sort key was `(seq, -priority)`, which made the queue FIFO and ignored priority. It is now `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It is now `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` swapped its arguments in the recursive call, so defaults overrode per-task `retry` settings. It now merges `(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost. Pools never freed up, which stalled resource-limited pipelines.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so skips reach every downstream task.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. Its docstring requires non-increasing, so it now checks `current <= prev`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). `History` never saw `job.term.*` events, which broke the failed, skipped and outcome-count queries. It now checks `topic.startswith(prefix + ".")`.
+
+The pipeline tests were mostly failing because of the queue, resource and event bugs, not anything in the test files or the scheduler's main loop.

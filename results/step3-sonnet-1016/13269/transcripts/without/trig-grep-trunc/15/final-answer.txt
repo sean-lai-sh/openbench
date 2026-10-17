@@ -1,0 +1,11 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify any tests. There were eight separate bugs, all in `taskflow/`:
+
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, so it gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, which ignored priority. It is now `(-priority, seq)`.
+- **`config.py`:** `deep_merge` recursed with the arguments swapped, so the defaults overrode a task's own settings. It now merges `result[key]` with `value`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity for any cost above 1.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch. Its docstring says non-increasing, so it is now `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). `History` never received the `job.term.*` events, so its failed, skipped and succeeded lists and counts stayed empty. It is now `topic.startswith(prefix + ".")`.
+
+I fixed them by reading the code against its docstrings and re-running the suite after each round. I didn't audit modules the tests don't exercise, so bugs in those would not have shown up.

@@ -1,0 +1,13 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't touch the tests.
+
+I started with the `self` grep you asked for. It was capped at 100 matches and mostly hit test files, so I ran the suite and read the failing modules directly. There were eight defects:
+
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It is now `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. It now returns `(-priority, seq)`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own values. It now merges `result[key]` with `value`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, which is the non-increasing order its docstring describes.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so a failure skips everything downstream.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity on multi-unit costs.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")` backwards. It now tests `topic.startswith(prefix + ".")`, so prefix subscribers receive events under their prefix.
+
+The earlier fixes exposed the later ones, as you warned. The retry, queue and statemachine fixes came first. The resources and events fixes then cleared the last six pipeline and history tests.

@@ -1,0 +1,15 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+I started with the `self` grep you asked for. It hit the 100-match limit and was truncated, so I ran the suite to find the failures instead. There were seven root causes in six files:
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` | `sort_key` returned `(seq, -priority)`, so the queue ignored priority. | Now `(-priority, seq)`. |
+| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, one retry short. | Now `attempts_made < max_attempts`. |
+| `config.py` | `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own settings. | Now `deep_merge(result[key], value)`. |
+| `scheduler.py` | `_cascade_skip` used the direct `dependents`, so skips didn't reach grandchildren. | Now uses `transitive_dependents`. |
+| `statemachine.py` | `batch_order_ok` used `>=`, which rejected valid non-increasing priority order. | Now `<=`. |
+| `events.py` | `_prefix_matches` had topic and prefix reversed, so `job.term` subscribers never received `job.term.failed` or similar. This left `History` empty. | Now `topic.startswith(prefix + ".")`. |
+| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost, so pools leaked capacity. | Now `used -= cost`. |
+
+The bugs masked each other. The `batch_order_ok` and `release` bugs only showed up once the queue-priority and retry bugs were fixed.

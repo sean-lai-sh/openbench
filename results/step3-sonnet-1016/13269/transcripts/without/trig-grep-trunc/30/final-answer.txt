@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes: 25 tests, all green. I didn't touch the tests. There were seven bugs, all in the code under `taskflow/`:
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and ran in insertion order. | It now returns `(-priority, seq)`. |
+| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. | It now uses `attempts_made < max_attempts`. |
+| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the task's cost. Multi-unit costs leaked, and later tasks never got admitted. | It now does `used -= cost`. |
+| `config.py` | `deep_merge` recursed as `deep_merge(value, result[key])`, so the defaults overrode the task's own nested values. | It now recurses as `deep_merge(result[key], value)`. |
+| `scheduler.py` | `_cascade_skip` only skipped direct dependents, so grandchildren stayed `PENDING`. | It now uses `dag.transitive_dependents`. |
+| `statemachine.py` | `batch_order_ok` had its comparison reversed (`>=`). It rejected normal non-increasing priority order. | It now uses `<=`. |
+| `events.py` | `_prefix_matches` had its operands swapped (`prefix.startswith(topic + ".")`). The `job.term` prefix subscription never received `job.term.failed` and similar events. | It now uses `topic.startswith(prefix + ".")`. |
+
+Several of these hid each other, as you warned. For example, the priority-order tests only moved on to their next failure after the queue key was fixed. The remaining three failures were all the `events.py` prefix bug.

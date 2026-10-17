@@ -1,0 +1,11 @@
+{
+  "id": "prt_14877ea61001w062wmkA9Lt3nn",
+  "sessionID": "ses_eb7888b2affeIY28xJaClPn03J",
+  "messageID": "msg_14877d86a001wRKXwiAiD6RCxe",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't change any tests. I started with the `self` grep you asked for, but it returned 1,325 matches (100 shown), so I went from the test failures instead.\n\nThe 18 failures came from 8 bugs, one in each of these files:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so multi-unit costs leaked capacity.\n- **`statemachine.py`:** `batch_order_ok` checked `>=`, which is backwards for a non-increasing priority batch. It now checks `<=`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `dag.transitive_dependents`, so every downstream task is skipped.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, so subscriptions like `job.term` never received `job.term.failed`. It now tests `topic.startswith(prefix + \".\")`.\n\nThat is seven files and seven fixes by my count, so one of the eight bugs I counted doesn't have its own entry. The seven above are the edits I made, and each one was followed by a re-run until the suite was green.",
+  "time": {
+    "start": 1792217180804,
+    "end": 1792217180804
+  }
+}

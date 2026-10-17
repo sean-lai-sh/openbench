@@ -1,0 +1,11 @@
+{
+  "id": "prt_148763b5c001J5gqHHpgBMBLsX",
+  "sessionID": "ses_eb78a17b2ffe0sUb3BQzDfnCI1",
+  "messageID": "msg_14876292500199qOpMwLBxDsFQ",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven separate bugs:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base values overrode the overrides. It now calls `deep_merge(result[key], value)`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. It now requires non-increasing, as its docstring says.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`, so multi-unit tasks left units held and later tasks couldn't be admitted. It now subtracts `cost`.\n- **`scheduler.py`:** `_cascade_skip` iterated over `dag.dependents`, which returns only direct children, so it skipped only direct dependents and left deeper ones `PENDING`. It now uses `transitive_dependents`.\n- **`events.py`:** `_prefix_matches` had the `startswith` check backwards. A subscription to `job.term` never received `job.term.failed` or similar events, so the history's succeeded, failed and skipped lists stayed empty. It now checks `topic.startswith(prefix + \".\")`.\n\nSeveral of these were masked by others. For example, the priority-order tests only showed the batch-guard bug after the queue ordering was fixed.",
+  "time": {
+    "start": 1792217070461,
+    "end": 1792217070461
+  }
+}

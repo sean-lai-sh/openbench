@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't change any tests. I fixed seven bugs, and none of them was in the module its failing test was named for:
+
+| File | Bug | Fix |
+|---|---|---|
+| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so it stopped one retry early. | Changed to `attempts_made < max_attempts`. |
+| `queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in FIFO order and ignored priority. | Changed to `(-priority, seq)`. |
+| `config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. | Changed to `deep_merge(result[key], value)`. |
+| `statemachine.py` | `batch_order_ok` required priorities to rise within a batch, the opposite of the documented non-increasing order. | Changed the comparison to `current <= prev`. |
+| `scheduler.py` | `_cascade_skip` used the direct `dependents`, so only immediate children were skipped. | Switched to `transitive_dependents`. |
+| `events.py` | `_prefix_matches` had topic and prefix swapped, so `job.term` subscribers never got `job.term.failed` and similar events. History's failed, skipped and outcome-count queries were empty because of this. | Changed to `topic.startswith(prefix + ".")`. |
+| `resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity and stalled the resource-limited pipelines. | Changed to `used -= cost`. |
+
+My first `grep` for `self` was a poor choice. It matched 1,325 lines, most of them test boilerplate, and the tool showed only 100. I got nothing useful from it and went straight to the failing tests instead.
