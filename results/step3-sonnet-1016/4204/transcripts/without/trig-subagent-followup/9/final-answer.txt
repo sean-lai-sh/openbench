@@ -1,0 +1,25 @@
+Three files read the `fee_rate` setting. I fixed the bug, and all three now work.
+
+**Where `fee_rate` is read:**
+
+| File | Line | How it reads the setting |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`. A `KeyError` falls back to 0 on lines 12-13. |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`. It exits with "fee_rate is missing" if the value is `None`. |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`. The key is built by concatenation, so a plain search for `fee_rate` misses it. It exits if the value is `None`. |
+
+Other files mention the name but don't read the setting:
+- `billing/invoice.py:4-5` has `fee_rate` in a docstring and a local `column` string.
+- `billing/discount.py:5,8` has a local variable called `archived_fee_rate`.
+- `csv_writer.py:10` and `report.py:9` only use the name in their error messages.
+
+All three paths load `settings.json` through `app/config.py`, so they share one cause.
+
+**Fix:** In `settings.json:2` I renamed `"rat"` to `"fee_rate"`.
+
+**Verification:**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py`. It's the reason the typo went unnoticed, so you may want to remove it. Without it, a missing key would raise an error. Say if you'd like me to remove it.

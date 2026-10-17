@@ -1,0 +1,11 @@
+{
+  "id": "prt_147cf8cc3001P47acolzyn1puF",
+  "sessionID": "ses_eb830e1f6ffes9tAqsYDRVOUXH",
+  "messageID": "msg_147cf7d3f001Uc46uEasdPC7OD",
+  "type": "text",
+  "text": "Three files read the `fee_rate` setting. I fixed the bug, and all three now work.\n\n**Files that read the setting**\n- `main.py:11` reads `cfg[\"fee_rate\"]`. When the key was missing, it silently fell back to `0`.\n- `billing/report.py:7` reads `get_setting(\"fee_rate\")`. When the key was missing, it exited with \"fee_rate is missing\".\n- `billing/export/csv_writer.py:8` reads `settings.get(\"fee_\" + \"rate\")`. The key is built by string concatenation, so a plain search for `fee_rate` doesn't find it. When the key was missing, it exited with \"fee_rate is missing\" (line 10).\n\n**Mentions that don't read the setting**\n- `billing/invoice.py:5` only uses `\"fee_rate\"` as a label string. Its docstring (line 4) mentions the name.\n- `billing/discount.py:5` and `:8` use a local variable, `archived_fee_rate = 0.15`, which has nothing to do with the config.\n\n**Fix**\n- I renamed the key `\"rat\"` to `\"fee_rate\"` in `settings.json:2`. All three readers use the same config, so this one change fixes all of them.\n\n**Verification**\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nI left the silent `rate = 0` fallback in `main.py:10-13`. It is what hid this typo, so you may want it to fail loudly instead.",
+  "time": {
+    "start": 1792206146781,
+    "end": 1792206146781
+  }
+}

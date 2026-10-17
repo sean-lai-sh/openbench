@@ -1,0 +1,8 @@
+Three places read the setting, and all three now work. I fixed it with a one-word change to `settings.json:2`, from `"rat"` to `"fee_rate"`.
+
+**Files that read the setting:**
+- `main.py:11` reads `cfg["fee_rate"]` directly. It falls back to 0 on a `KeyError`, which caused the wrong total.
+- `billing/report.py:7` reads it with `get_setting("fee_rate")`. It exits with "fee_rate is missing" if the value is `None`.
+- `billing/export/csv_writer.py:8` reads it with `settings.get("fee_" + "rate")`. The string is built in two pieces, so a plain search for `fee_rate` doesn't find the read. It exits with an error if the value is missing. The earlier subagent report pointed to line 10, but that line only raises the error. The read is on line 8.
+
+**Other matches that don't read the setting:**

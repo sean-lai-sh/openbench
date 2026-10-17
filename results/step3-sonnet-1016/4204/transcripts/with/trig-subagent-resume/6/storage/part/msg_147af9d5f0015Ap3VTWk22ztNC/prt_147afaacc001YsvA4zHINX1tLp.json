@@ -1,0 +1,11 @@
+{
+  "id": "prt_147afaacc001YsvA4zHINX1tLp",
+  "sessionID": "ses_eb85070ccffejAnIFHCLZwkKAi",
+  "messageID": "msg_147af9d5f0015Ap3VTWk22ztNC",
+  "type": "text",
+  "text": "`rate` becomes `None` at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n**Root cause:** `settings.json:2` has the key `\"rat\"` (a typo) instead of `\"rate\"`. `SETTINGS.get(\"rate\")` therefore finds no such key and returns `None`.\n\n**Call chain**\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py:8` runs `rate = pricing.get_rate()`, which receives `None`.\n3. `app/pricing.py:8` returns `SETTINGS.get(\"rate\")`, which is `None`. This is where the value first becomes `None`.\n4. `app/config.py:9-10` loads `settings.json` into `SETTINGS` unchanged. It contains `\"rat\"` and no `\"rate\"`.\n5. `app/report.py:9` evaluates `rate * count`, which is `None * 10`. This raises a `TypeError`.\n\n**Fix (not applied, since this was research only):** rename `\"rat\"` to `\"rate\"` in `settings.json`. You could also make `get_rate()` fail loudly with `SETTINGS[\"rate\"]` so a missing key raises a `KeyError`.",
+  "time": {
+    "start": 1792204057318,
+    "end": 1792204057318
+  }
+}

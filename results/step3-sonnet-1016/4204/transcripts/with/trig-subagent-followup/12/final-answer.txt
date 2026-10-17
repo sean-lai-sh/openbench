@@ -1,0 +1,26 @@
+I renamed the `"rat"` key to `"fee_rate"` in `settings.json` line 2. All three paths that read the setting now work.
+
+**Files that read `fee_rate`:**
+
+| File | Line | How it reads it |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`, with a `KeyError` fallback to 0 |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`, which exits if the value is `None` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, which exits if the value is `None` |
+
+`csv_writer.py` builds the key by concatenating two strings, so a plain search for `fee_rate` doesn't find it.
+
+Other places mention the name but don't read the setting:
+- `billing/invoice.py:5` uses `"fee_rate"` as a label string only.
+- `billing/discount.py:5` has a local variable called `archived_fee_rate` with a hardcoded 0.15.
+- `billing/audit.py` and `billing/tax.py` mention settings only in docstrings that say they are unrelated.
+
+**Results:**
+
+| Command | Before | After |
+|---|---|---|
+| `python3 main.py` | `Total: 0` | `Total: 5.0` |
+| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |
+| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. It is what hid the typo, so say if you want it removed so a missing key fails loudly.

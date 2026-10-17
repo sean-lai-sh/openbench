@@ -1,0 +1,29 @@
+Three places read `fee_rate`, and all three work now. I fixed it by renaming the misspelled key in `settings.json`.
+
+| File:line | How it reads the key | Behavior when the key is missing |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | The `except KeyError` at line 12 sets `rate = 0`, so it prints a wrong total. |
+| `billing/report.py:7` | `get_setting("fee_rate")` | Exits with "fee_rate is missing". |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | Exits with "fee_rate is missing". |
+
+The key is built by string concatenation at `csv_writer.py:8`, so a plain search for `fee_rate` would have missed it. I searched for other indirect reads and found none.
+
+These mentions are not reads of the setting:
+- `billing/discount.py:5` and `:8`: a local variable, `archived_fee_rate`.
+- `billing/invoice.py:4-5`: a docstring and an unused string.
+- `billing/tax.py:5`: a local variable, `fee_schedule`.
+- `billing/audit.py:4`: builds `fee_code`, a different string.
+
+**The fix:** in `settings.json:2` I changed `"rat": 0.5` to `"fee_rate": 0.5`.
+
+**Check:** I ran each path before and after the change.
+- **Before:**
+  - `main.py` printed `Total: 0`.
+  - `billing.report` exited with "fee_rate is missing".
+  - I didn't see the `csv_writer` result before the fix, because the chained command stopped at the `report` failure.
+- **After:**
+  - `main.py` prints `Total: 5.0`.
+  - `billing.report` prints `Report fee: 0.5`.
+  - `billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone, since you only asked for the bug fix. It's the reason a bad key printed a wrong number instead of failing. I can remove it if you want.

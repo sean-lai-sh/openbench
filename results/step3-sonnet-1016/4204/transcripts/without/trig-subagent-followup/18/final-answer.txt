@@ -1,0 +1,28 @@
+Yes, the setting is read in three places. I fixed the bug, and all three paths now work.
+
+**Where `fee_rate` is read:**
+
+| File:line | How it reads the key |
+|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, falling back to `0` on `KeyError` |
+| `billing/report.py:7` | `get_setting("fee_rate")`, which exits with "fee_rate is missing" if the value is `None` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`, which exits with "fee_rate is missing" if the value is `None` |
+
+`app/config.py:10` loads `settings.json` into `SETTINGS`, and `app/config.py:15` provides `get_setting`. Both are plumbing rather than readers of this key.
+
+Other files only mention similar names, and none of them read the setting:
+- `billing/discount.py:5` has a local `archived_fee_rate`.
+- `billing/invoice.py:5` has a column-name string.
+- `billing/tax.py` has a local `fee_schedule`.
+- `billing/audit.py:4` builds `"fee_code" + n`.
+
+**Fix:** In `settings.json:2` I changed `"rat"` to `"fee_rate"`. One change fixes all three readers, because they share the same key.
+
+**Results after the fix:**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+Before the fix, `report` and `csv_writer` both exited with "fee_rate is missing", and `main.py` printed `Total: 0`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. It is what hid this bug, so you may want to remove it so a missing key fails loudly.

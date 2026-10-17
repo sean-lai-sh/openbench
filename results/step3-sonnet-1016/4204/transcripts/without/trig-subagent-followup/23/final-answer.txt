@@ -1,0 +1,19 @@
+Yes, three places read `fee_rate`. I fixed the typo in `settings.json`, and all three now work.
+
+**Files and lines that read `fee_rate`:**
+- `main.py:11` reads `cfg["fee_rate"]`.
+- `billing/report.py:7` reads `get_setting("fee_rate")`.
+- `billing/export/csv_writer.py:8` reads `settings.get("fee_" + "rate")`. The key is built by concatenation, so a plain search for `fee_rate` misses it. The error message at line 10 is what shows up in the search.
+
+**Matches that don't read it:**
+- `billing/invoice.py:5` only uses `"fee_rate"` as a heading string.
+- `billing/discount.py:5` defines an unrelated local variable, `archived_fee_rate`.
+
+**Fix:** In `settings.json:2` I renamed `"rat"` to `"fee_rate"`.
+
+**Results after the fix:**
+- `python3 main.py` prints `Total: 5.0`. It printed `Total: 0` before.
+- `python3 -m billing.report` prints `Report fee: 0.5`. It exited with "fee_rate is missing" before.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`. It exited with "fee_rate is missing" before.
+
+I left the silent `except KeyError: rate = 0` fallback in `main.py:12-13`. It's what hid this bug, so you may want to remove it. I can do that if you like.

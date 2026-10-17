@@ -1,0 +1,22 @@
+Yes, the setting is read in three places. I fixed the typo and all three now work.
+
+**Files and lines that read `fee_rate`:**
+| File | Line | How it reads it |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]` |
+| `billing/report.py` | 7 | `get_setting("fee_rate")` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, where the key is built by string concatenation |
+
+Other matches are not reads of the setting:
+- `billing/discount.py:5` is a local variable.
+- `billing/invoice.py:4-5` is a column-name string.
+- `billing/tax.py` and `billing/audit.py` only mention the name in docstrings.
+
+**Fix:** in `settings.json:2` I changed `"rat": 0.5` to `"fee_rate": 0.5`. All three readers use the same key, so no code changes were needed.
+
+**Verification:**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the silent `except KeyError: rate = 0` fallback in `main.py` alone. It is what hid this typo, so tell me if you want it changed to fail loudly.

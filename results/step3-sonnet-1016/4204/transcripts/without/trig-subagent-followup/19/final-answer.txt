@@ -1,0 +1,16 @@
+Fixed. I renamed the key `"rat"` to `"fee_rate"` in `settings.json:2`, and all three paths now work.
+
+**Every place that reads `fee_rate`:**
+
+| File:line | How it reads the setting | Output now |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | `CSV fee: 0.5` |
+
+- **Subagent correction:** it cited `csv_writer.py:10`, which is the error message. The read is on line 8, and it was easy to miss because the key is built from two strings.
+- **Not reads of the setting:**
+  - `billing/discount.py:5` is a local variable named `archived_fee_rate`.
+  - `billing/invoice.py:4-5` is a docstring and a column-name string.
+  - `app/config.py` only loads `settings.json`.
+- **Left unchanged:** the silent `except KeyError: rate = 0` fallback in `main.py:12-13` is still there. It's what hid this bug, and I can make it fail loudly if you want.

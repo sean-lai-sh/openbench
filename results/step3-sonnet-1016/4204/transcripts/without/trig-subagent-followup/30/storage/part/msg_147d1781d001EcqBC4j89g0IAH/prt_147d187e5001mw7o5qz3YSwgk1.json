@@ -1,0 +1,11 @@
+{
+  "id": "prt_147d187e5001mw7o5qz3YSwgk1",
+  "sessionID": "ses_eb82efdfeffe5jFZv23l548RDQ",
+  "messageID": "msg_147d1781d001EcqBC4j89g0IAH",
+  "type": "text",
+  "text": "Three places read the `fee_rate` setting. I renamed the misspelled key in `settings.json`, and all three now work.\n\n**Where it's read**\n- `main.py:11` reads `cfg[\"fee_rate\"]`.\n- `billing/report.py:7` reads `get_setting(\"fee_rate\")`.\n- `billing/export/csv_writer.py:8` reads `settings.get(\"fee_\" + \"rate\")`. The key is built from two strings, so a plain search for `fee_rate` misses it.\n\n**Not readers**\n- `billing/invoice.py:5` only uses `\"fee_rate\"` as a label string.\n- `billing/discount.py:5` has a local variable called `archived_fee_rate`.\n- `billing/tax.py` and `billing/audit.py` only have similar-looking names.\n- `app/config.py` loads the whole file and doesn't read this key directly.\n\n**Fix:** in `settings.json:2` I changed `\"rat\": 0.5` to `\"fee_rate\": 0.5`.\n\n**Before and after**\n\n| Command | Before | After |\n|---|---|---|\n| `python3 main.py` | `Total: 0` | `Total: 5.0` |\n| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |\n| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |\n\nI left the `try/except KeyError` fallback to `0` in `main.py` alone. It's what hid this bug, so you may want to remove it. Say so if you want me to.",
+  "time": {
+    "start": 1792206276619,
+    "end": 1792206276619
+  }
+}

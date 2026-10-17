@@ -1,0 +1,18 @@
+{
+  "id": "msg_147daa4a4001reMrsrev7jmVZr",
+  "sessionID": "ses_eb8255b6bffeD8EN541s55inLg",
+  "role": "user",
+  "time": {
+    "created": 1792206873764
+  },
+  "summary": {
+    "title": "Fixing failing taskflow unit tests",
+    "body": "`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. There were seven root-cause bugs, and I fixed each one in place:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`, which is what its docstring describes.\n- **`statemachine.py`:** `batch_order_ok` returned `current >= prev`, which is the opposite of the \"non-increasing priority\" rule it documents. It now returns `current <= prev`. Fixing the queue ordering exposed this one.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Resource pools never emptied correctly, so the resource-limited pipeline tests failed.\n- **`events.py`:** `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + \".\")`, so `subscribe_prefix(\"job.term\")` receives `job.term.failed` and the like.\n- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`. That let the defaults override the task's own settings, for example `retry.max_attempts`. It now recurses as `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` iterated `dag.dependents(...)`, which returns only direct children. It now iterates `dag.transitive_dependents(...)`, so every downstream task is skipped.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

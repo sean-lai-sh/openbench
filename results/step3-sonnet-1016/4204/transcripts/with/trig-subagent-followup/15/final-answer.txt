@@ -1,0 +1,28 @@
+Yes, the setting is read in two other places besides `main.py`. All three read paths work now.
+
+**Files that read `fee_rate`:**
+
+| File and line | How it reads the setting | If the key is missing |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | Silently falls back to `rate = 0` (`main.py:12-13`) |
+| `billing/report.py:7` | `get_setting("fee_rate")`, which calls `SETTINGS.get(key)` in `app/config.py:13-15` | Exits with "fee_rate is missing" (`billing/report.py:8-9`) |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | Exits with "fee_rate is missing" (`billing/export/csv_writer.py:9-10`) |
+
+`app/config.py:9-10` loads `settings.json` and is the only place the file is read.
+
+Other files mention the name but don't read the setting:
+- `billing/invoice.py:5` is a column-name string.
+- `billing/discount.py:5` is a hardcoded constant named `archived_fee_rate`.
+- `billing/tax.py` and `billing/audit.py` only mention it in unrelated code or docstrings.
+
+**Fix:** in `settings.json:2` I renamed the key from `"rat"` to `"fee_rate"`. I changed no code, because all three readers already used the right name.
+
+**Verification:** I ran all three paths before and after the change.
+
+| Command | Before | After |
+|---|---|---|
+| `python3 main.py` | `Total: 0` | `Total: 5.0` |
+| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |
+| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |
+
+I left the silent `except KeyError: rate = 0` fallback in `main.py` as it was. It is what turned the typo into a wrong number instead of an error. If you want, I can make it fail loudly like the other two paths.

@@ -1,0 +1,25 @@
+Three places read the `fee_rate` setting. All three failed because of the misspelled key, and one rename in `settings.json` fixes them.
+
+**Where `fee_rate` is read:**
+- `main.py:11` reads `cfg["fee_rate"]` and falls back to 0 on `KeyError`. This is the path that printed the wrong total.
+- `billing/report.py:7` calls `get_setting("fee_rate")` and exits with "fee_rate is missing" if it gets `None`.
+- `billing/export/csv_writer.py:8` calls `settings.get("fee_" + "rate")`, which builds the same key, and exits the same way if it is missing.
+
+**Matches that don't read it:**
+- `billing/invoice.py:5` only has a column-name string.
+- `billing/discount.py:5` has a hardcoded `archived_fee_rate`.
+- `billing/audit.py` builds `"fee_code"`, a different key.
+- `billing/tax.py` has a local `fee_schedule` dict.
+- `app/config.py` only loads the file and defines `get_setting`.
+
+**Fix:** I renamed `"rat"` to `"fee_rate"` in `settings.json:2`. I left the code alone.
+
+**Before and after:**
+
+| Command | Before | After |
+|---|---|---|
+| `python3 main.py` | `Total: 0` | `Total: 5.0` |
+| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |
+| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |
+
+The `except KeyError` fallback to 0 in `main.py:12-13` is still there. It's what hid this bug, so you may want to make it raise or log instead.

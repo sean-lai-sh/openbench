@@ -1,0 +1,24 @@
+Three files read the `fee_rate` setting, and all three now work after the fix.
+
+| File | Line | How it reads the setting |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`, with `except KeyError: rate = 0` as a fallback |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`, which exits with "fee_rate is missing" if absent |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, which exits with "fee_rate is missing" if absent |
+
+The `"fee_" + "rate"` split in `csv_writer.py` is why a plain search for `fee_rate` missed it.
+
+Other files mention the name but don't read the setting:
+- **`billing/invoice.py:5`:** a local string, `column = "fee_rate"`.
+- **`billing/discount.py:5`:** a hardcoded local, `archived_fee_rate = 0.15`.
+- **`billing/tax.py:5`:** a local called `fee_schedule`.
+- **`billing/audit.py:4`:** builds `"fee_" + "code"`, which is a different key.
+
+**Fix:** in `settings.json:2` I renamed `"rat"` to `"fee_rate"`. That was the only change.
+
+I ran all three entry points, and each now gets 0.5:
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. It's what hid this typo, so you may want to remove it so a missing setting fails loudly.

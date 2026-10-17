@@ -1,0 +1,11 @@
+{
+  "id": "prt_147baa2bb001guGj79U26b0KWQ",
+  "sessionID": "ses_eb845d6c3ffeX45wTAfouXLQDc",
+  "messageID": "msg_147ba9267001C6KNwS4XR02XTE",
+  "type": "text",
+  "text": "The `fee_rate` setting is read in three places. I fixed the misspelled key in `settings.json`, and all three now work.\n\n**Where it's read**\n- `main.py:11` reads `cfg[\"fee_rate\"]` and falls back to 0 on `KeyError`.\n- `billing/report.py:7` calls `get_setting(\"fee_rate\")` and exits with \"fee_rate is missing\" if the result is `None`.\n- `billing/export/csv_writer.py:8` reads `settings.get(\"fee_\" + \"rate\")`, which builds the same key by concatenation. It also exits with \"fee_rate is missing\" if the value is `None`.\n\nOther files mention the name but don't read the setting:\n- `billing/invoice.py:5` has a column-name string.\n- `billing/discount.py:5` has a hardcoded local `archived_fee_rate = 0.15`.\n- `billing/tax.py` and `billing/audit.py` only mention it in docstrings.\n\n**Fix:** In `settings.json` line 2, I changed `\"rat\"` to `\"fee_rate\"`. I made no code changes.\n\n**Before and after**\n- `python3 main.py` printed `Total: 0` and now prints `Total: 5.0`.\n- `python3 -m billing.report` printed \"fee_rate is missing\" and now prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` printed \"fee_rate is missing\" and now prints `CSV fee: 0.5`.\n\n`main.py` still swallows a missing key and charges 0. That silent fallback is why the original typo showed up as a wrong total instead of an error. I left it alone, but I can make it fail loudly if you want.",
+  "time": {
+    "start": 1792204776175,
+    "end": 1792204776175
+  }
+}

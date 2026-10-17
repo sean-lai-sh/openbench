@@ -1,0 +1,11 @@
+{
+  "id": "prt_147aefef6001wOSd5dZ7WdsSPQ",
+  "sessionID": "ses_eb8512f4bffekNu5vkkERXoEWd",
+  "messageID": "msg_147aee9b9001lmGog2MppDuMAN",
+  "type": "text",
+  "text": "**Output:** `Total: 0`. The expected output is `Total: 5.0` (0.5 × 10).\n\n**Root cause:** `settings.json:2` has a typo in the key name. It says `\"rat\": 0.5` and should say `\"fee_rate\": 0.5`.\n\n**How the bug plays out:**\n- `app/config.py:9-10` loads `settings.json` as-is, so `SETTINGS` has the keys `rat`, `currency` and `label`.\n- `main.py:11` reads `cfg[\"fee_rate\"]`, which raises `KeyError`.\n- `main.py:12-13` catches that `KeyError` and sets `rate = 0`.\n- `main.py:14` then computes `0 * 10 = 0`, so the program prints `Total: 0` and never reports the missing key.\n\nOther code also reads `fee_rate` and expects it to exist: `billing/report.py:7` and `billing/export/csv_writer.py:8`. Both would exit with \"fee_rate is missing\" with this config. The other `fee_rate` mentions (`billing/invoice.py`, `billing/discount.py`) are unrelated to the settings value.\n\n**Suggested fix:**\n1. **Primary fix:** in `settings.json:2`, change `\"rat\"` to `\"fee_rate\"`.\n2. **Optional hardening:** in `main.py:10-13`, remove the `except KeyError: rate = 0` fallback, or make it raise an error. That way a missing key fails loudly, as `report.py` and `csv_writer.py` already do.\n\nI didn't modify, create or delete any files.",
+  "time": {
+    "start": 1792204013332,
+    "end": 1792204013332
+  }
+}

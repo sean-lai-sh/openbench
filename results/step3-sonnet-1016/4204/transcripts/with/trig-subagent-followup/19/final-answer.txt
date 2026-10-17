@@ -1,0 +1,20 @@
+I fixed the bug by renaming the key in `settings.json:2` from `"rat"` to `"fee_rate"`.
+
+**Code that reads `fee_rate`:**
+- `main.py:11` reads it with `cfg["fee_rate"]`.
+- `billing/report.py:7` reads it with `get_setting("fee_rate")`. The loader is `app/config.py:13-15`.
+- `billing/export/csv_writer.py:8` reads it with `settings.get("fee_" + "rate")`. The string is built in two pieces, so a plain search for `fee_rate` misses it.
+
+**Other mentions that don't read the setting:**
+- `billing/discount.py:5` has a local variable, `archived_fee_rate = 0.15`.
+- `billing/invoice.py:4-5` has a column name string, `"fee_rate"`, which its own docstring says is unused by the total.
+- `billing/audit.py` and `billing/tax.py` only mention settings in docstrings or unrelated local variables.
+
+**Results after the fix:**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+Before the fix, `main.py` printed `Total: 0` and `billing.report` exited with "fee_rate is missing". I didn't run `csv_writer` before the fix, because the `&&` chain stopped at the `billing.report` failure.
+
+I left the silent `except KeyError: rate = 0` fallback in `main.py:10-13`. It is the reason the typo showed up as a wrong total instead of an error. I can make it fail loudly like the other two readers if you want.

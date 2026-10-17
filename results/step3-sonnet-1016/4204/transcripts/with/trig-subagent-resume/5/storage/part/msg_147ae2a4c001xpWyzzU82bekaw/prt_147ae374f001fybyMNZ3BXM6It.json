@@ -1,0 +1,11 @@
+{
+  "id": "prt_147ae374f001fybyMNZ3BXM6It",
+  "sessionID": "ses_eb851e1c4ffeGsMibVZ4tHQQAs",
+  "messageID": "msg_147ae2a4c001xpWyzzU82bekaw",
+  "type": "text",
+  "text": "`rate` becomes None at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\nThe cause is a typo in the config file. `settings.json:2` has the key `\"rat\": 0.5` instead of `\"rate\"`. `app/config.py:9-10` loads that JSON as-is into `SETTINGS`. `SETTINGS.get(\"rate\")` therefore finds no such key and returns `None` instead of raising a `KeyError`.\n\nCall chain:\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`, which is `None`.\n3. `app/report.py:9` evaluates `rate * count` and raises the `TypeError`.\n\n**Root cause:** `settings.json:2`, where the key `\"rat\"` should be `\"rate\"`.\n\n**Contributing factor:** `.get(\"rate\")` at `app/pricing.py:8` has no default and no validation, so the missing key goes unnoticed until the multiplication. Using `SETTINGS[\"rate\"]` there would fail early with a clear `KeyError`.\n\nI didn't edit any files.",
+  "time": {
+    "start": 1792203962212,
+    "end": 1792203962212
+  }
+}

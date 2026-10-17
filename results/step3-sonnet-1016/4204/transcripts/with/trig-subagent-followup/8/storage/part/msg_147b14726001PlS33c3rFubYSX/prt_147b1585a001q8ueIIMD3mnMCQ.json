@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b1585a001q8ueIIMD3mnMCQ",
+  "sessionID": "ses_eb84f3011ffexF39vG02Z48Vl8",
+  "messageID": "msg_147b14726001PlS33c3rFubYSX",
+  "type": "text",
+  "text": "Three files read the `fee_rate` setting, and all three now work after the fix.\n\n| File | Line | How it reads the setting |\n|---|---|---|\n| `main.py` | 11 | `cfg[\"fee_rate\"]`, with `except KeyError: rate = 0` as a fallback |\n| `billing/report.py` | 7 | `get_setting(\"fee_rate\")`, which exits with \"fee_rate is missing\" if absent |\n| `billing/export/csv_writer.py` | 8 | `settings.get(\"fee_\" + \"rate\")`, which exits with \"fee_rate is missing\" if absent |\n\nThe `\"fee_\" + \"rate\"` split in `csv_writer.py` is why a plain search for `fee_rate` missed it.\n\nOther files mention the name but don't read the setting:\n- **`billing/invoice.py:5`:** a local string, `column = \"fee_rate\"`.\n- **`billing/discount.py:5`:** a hardcoded local, `archived_fee_rate = 0.15`.\n- **`billing/tax.py:5`:** a local called `fee_schedule`.\n- **`billing/audit.py:4`:** builds `\"fee_\" + \"code\"`, which is a different key.\n\n**Fix:** in `settings.json:2` I renamed `\"rat\"` to `\"fee_rate\"`. That was the only change.\n\nI ran all three entry points, and each now gets 0.5:\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nI left the `except KeyError: rate = 0` fallback in `main.py` alone. It's what hid this typo, so you may want to remove it so a missing setting fails loudly.",
+  "time": {
+    "start": 1792204167286,
+    "end": 1792204167286
+  }
+}

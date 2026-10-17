@@ -1,0 +1,26 @@
+I renamed the misspelled key in `settings.json:2` from `"rat"` to `"fee_rate"`. All three scripts that read the setting now work.
+
+**Files and lines that read `fee_rate`:**
+| File | Line | How it reads it |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`, with `except KeyError: rate = 0` at lines 12-13 |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`, which calls `SETTINGS.get(key)` in `app/config.py:15` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, a key built by string concatenation |
+
+`app/config.py:9-10` loads `settings.json` for all three.
+
+I found these other matches, and none of them read the setting:
+- `billing/invoice.py:5` is a hard-coded column label.
+- `billing/discount.py:5` is a local variable named `archived_fee_rate`.
+- `billing/audit.py:4` builds `"fee_code"`, which is a different key.
+- `billing/tax.py:5` is a local `fee_schedule`.
+
+**Results:** I ran each script before and after the edit.
+
+| Script | Before | After |
+|---|---|---|
+| `python3 main.py` | `Total: 0` | `Total: 5.0` |
+| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |
+| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |
+
+I left the silent `except KeyError: rate = 0` fallback in `main.py` as it was. It hid this bug, so you may want it to fail loudly like the other two scripts. Say so if you want me to change it.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_147cd523e001bVJu5UfMIdT4gF",
+  "sessionID": "ses_eb83339b6ffe13Azvhub0gFDTO",
+  "messageID": "msg_147cd434c00141OOlpP9lDOih0",
+  "type": "text",
+  "text": "Yes, the setting is read in three places. I fixed it, and all three now work.\n\n**Files and lines that read `fee_rate`:**\n- `main.py:11` reads `cfg[\"fee_rate\"]`.\n- `billing/report.py:7` reads `get_setting(\"fee_rate\")`.\n- `billing/export/csv_writer.py:8` reads `settings.get(\"fee_\" + \"rate\")`. The key is built by concatenation, so a plain search for `fee_rate` misses it.\n\n**Lines that only look related:**\n- `billing/invoice.py:5` is a column-name string that is never read from settings.\n- `billing/discount.py:5` is a hardcoded `archived_fee_rate` constant.\n- `billing/audit.py:4` and `billing/tax.py:5` are unrelated names.\n\n**Fix:** In `settings.json:2` I renamed `\"rat\"` to `\"fee_rate\"`. All three readers use the same key, so that one change covers them.\n\n**Verification:**\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nI left the `except KeyError: rate = 0` fallback in `main.py` alone. It is what hid this bug, so you may want to remove it. The other two readers already fail loudly when the key is missing.",
+  "time": {
+    "start": 1792206000722,
+    "end": 1792206000722
+  }
+}

@@ -1,0 +1,23 @@
+Three places read the `fee_rate` setting, and all three work now.
+
+| File:line | How it reads it |
+|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, inside a `try/except KeyError` that falls back to 0 |
+| `billing/report.py:7` | `get_setting("fee_rate")`, which exits with "fee_rate is missing" if it's absent |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`, which builds the key from two strings, so a plain search for `fee_rate` misses it. It exits with "fee_rate is missing" if it's absent. |
+
+Other files mention the name but don't read the setting:
+- `billing/invoice.py:4-5` uses it only as a label string.
+- `billing/discount.py:5` has a local variable `archived_fee_rate`.
+- `billing/tax.py` and `billing/audit.py` only mention it in docstrings.
+
+**Fix:** I renamed `"rat"` to `"fee_rate"` in `settings.json:2`. All three readers go through `app/config.py`, which loads that file, so one change covers them.
+
+Before the fix, `main.py` printed `Total: 0`, and `billing.report` and `billing.export.csv_writer` both exited with "fee_rate is missing". After it:
+```
+python3 main.py                       -> Total: 5.0
+python3 -m billing.report             -> Report fee: 0.5
+python3 -m billing.export.csv_writer  -> CSV fee: 0.5
+```
+
+I left the silent `rate = 0` fallback in `main.py:12-13` alone, because the key fix was enough to make every path work. It will still hide a future config typo. I can change it to fail loudly like the other two modules if you want.
