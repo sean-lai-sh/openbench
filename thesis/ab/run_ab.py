@@ -428,6 +428,15 @@ def _abba_order(cells: list[dict]) -> list[dict]:
     return ordered
 
 
+ORDER_MODES = ("sides", "interleave", "random", "abba", "interleave-seeded")
+
+
+def first_side_for(seed: int, pr: str, sides: list[str]) -> str:
+    """Seeded, per-PR choice of the side launched first in every trial block."""
+    digest = hashlib.sha256(f"{int(seed)}|first-side|{pr}".encode("utf-8")).digest()
+    return sorted(sides)[digest[0] % len(sides)]
+
+
 def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = None) -> list[dict]:
     """Launch order. Each cell gets ``schedule_index`` from 0.
 
@@ -442,10 +451,10 @@ def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = N
     per-cell randomness such as the webfetch colour. A seed does not shuffle
     ``abba``.
     """
-    if order not in {"sides", "interleave", "random", "abba"}:
+    if order not in ORDER_MODES:
         raise RunError(f"unknown order {order!r}")
-    if order == "random" and seed is None:
-        raise RunError("random order requires a seed")
+    if order in ("random", "interleave-seeded") and seed is None:
+        raise RunError(f"{order} order requires a seed")
     if order == "abba":
         ordered = _abba_order(cells)
     elif order == "sides":
@@ -453,13 +462,26 @@ def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = N
     else:
         rng = random.Random(seed) if order == "random" else None
         ordered = []
+        first_side: dict[str, str] = {}
         for block in _trial_blocks(cells):
             group = [dict(cell) for cell in block]
             if rng is not None:
                 rng.shuffle(group)
+            elif order == "interleave-seeded":
+                pr = str(group[0].get("pr"))
+                if pr not in first_side:
+                    sides = sorted({str(c.get("side")) for c in cells if str(c.get("pr")) == pr})
+                    first_side[pr] = first_side_for(seed, pr, sides)
+                group.sort(key=lambda c: str(c.get("side")) != first_side[pr])
+                for c in group:
+                    c["first_side"] = first_side[pr]
             ordered.extend(group)
+    seen_binaries: set[tuple[str, str]] = set()
     for index, cell in enumerate(ordered):
         cell["schedule_index"] = index
+        binary_key = (str(cell.get("pr")), str(cell.get("side")))
+        cell["first_after_build"] = binary_key not in seen_binaries
+        seen_binaries.add(binary_key)
         if seed is not None:
             cell["run_seed"] = int(seed)
             cell["cell_seed"] = cell_random_seed(seed, cell)
@@ -1112,6 +1134,10 @@ def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
             row[key] = value
     if "warm_up" in spec:
         row["warm_up"] = spec.get("warm_up") is True
+    if "first_after_build" in spec:
+        row["first_after_build"] = spec.get("first_after_build") is True
+    if isinstance(spec.get("first_side"), str):
+        row["first_side"] = spec["first_side"]
     if started_at:
         row["started_at"] = started_at
 
@@ -1879,12 +1905,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--order",
-        choices=("sides", "interleave", "random", "abba"),
+        choices=ORDER_MODES,
         default="sides",
         help=(
             "Launch order. sides runs every A cell, then every B cell. "
             "interleave alternates sides inside each trial. "
-            "random shuffles each trial block; requires --seed. "
+            "random shuffles each trial block; requires --seed. interleave-seeded alternates sides inside each trial, with a per-PR side launched first chosen from --seed (recorded as first_side). "
             "abba runs parent (without) for N/2 trials, then merge (with) "
             "for N trials as two blocks, then parent for the remaining N/2. "
             "The first cell of each block is warm_up and is kept. "

@@ -2582,3 +2582,36 @@ def test_attach_upstream_model_from_ledger():
     row = {}
     attach_upstream_model(row, [{}])
     assert "upstream_model" not in row
+
+
+class InterleaveSeededOrderTests(unittest.TestCase):
+    def test_per_pr_seeded_first_side_alternates_and_is_recorded(self):
+        from thesis.ab.run_ab import order_cells, first_side_for
+        cells = [
+            {"pr": pr, "side": side, "task": "t", "trial": trial}
+            for pr in ("1", "2", "3", "4", "5", "6")
+            for side in ("without", "with")
+            for trial in (1, 2, 3)
+        ]
+        ordered = order_cells(cells, order="interleave-seeded", seed=7)
+        again = order_cells(cells, order="interleave-seeded", seed=7)
+        self.assertEqual([(c["pr"], c["side"]) for c in ordered],
+                         [(c["pr"], c["side"]) for c in again])
+        firsts = set()
+        for i in range(0, len(ordered), 2):
+            a, b = ordered[i], ordered[i + 1]
+            self.assertEqual((a["pr"], a["trial"]), (b["pr"], b["trial"]))
+            self.assertNotEqual(a["side"], b["side"])
+            self.assertEqual(a["side"], a["first_side"])
+            self.assertEqual(a["first_side"], first_side_for(7, a["pr"], ["with", "without"]))
+            firsts.add(a["first_side"])
+        self.assertEqual(firsts, {"with", "without"})
+        flagged = [(c["pr"], c["side"]) for c in ordered if c["first_after_build"]]
+        self.assertEqual(len(flagged), 12)
+        self.assertEqual(len(set(flagged)), 12)
+
+    def test_interleave_seeded_requires_seed(self):
+        from thesis.ab.run_ab import order_cells, RunError
+        with self.assertRaises(RunError):
+            order_cells([{"pr": "1", "side": "with", "task": "t", "trial": 1}],
+                        order="interleave-seeded")
