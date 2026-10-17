@@ -1,0 +1,11 @@
+{
+  "id": "prt_148421db7001YhAPK0dPbS2Kb0",
+  "sessionID": "ses_eb7be0b3affewjnoebY3nZ1d9i",
+  "messageID": "msg_148420fca001Nm31R3neg7Pw53",
+  "type": "text",
+  "text": "`rate` becomes None because `settings.json` has a misspelled key, and the lookup silently falls back to None.\n\n**Trace**\n1. `settings.json:2` has `\"rat\": 0.5`. The key is misspelled and should be `\"rate\"`.\n2. `app/config.py:26-27` loads that file into `SETTINGS` at import time. The dict has the keys `rat`, `currency` and `label`, and no `rate`.\n3. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. The key is missing, so `.get` returns None instead of raising a `KeyError`. This is where `rate` becomes None.\n4. `app/report.py:8` assigns that None to `rate` in `compute_total`.\n5. `app/report.py:9` runs `rate * count` and raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`.\n\n**Root cause:** `settings.json:2`. The key should be `\"rate\"`.\n\n**Why it's hard to see:** `pricing.py:8` uses `.get()` with no default. Using `SETTINGS[\"rate\"]` there would fail at the lookup with a `KeyError: 'rate'`, which points straight at the problem.\n\nI didn't modify any files.",
+  "time": {
+    "start": 1792213654992,
+    "end": 1792213654992
+  }
+}
