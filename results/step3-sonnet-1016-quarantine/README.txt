@@ -1,2 +1,3 @@
 17098 with trial 22: completed (checker_exit 1, transcript shows a skill tool call) but no proxy-ledger file, so no token/cost data; it tripped the runner's 'unmetered tokens' guard, which stopped C2 at 194 launched and made C3/C4 launch 0 cells. Quarantined so the trial re-runs. Not used.
 reorder 1248 without trial 28: OpenCode printed its 'opencode run' usage text and exited (21.9s, 0 model requests), no proxy ledger file -> unmetered guard stopped rerun1 at 203 launched and rerun2 (5066) at 0. Quarantined so the trial re-runs. Not used.
+reorder 5066 (all 7 cells, 2026-10-17 04:49 ET): Vertex 401 / ADC refresh failure, zero useful data (committed in #61). Moved here 2026-10-17 14:17 ET so the PR early-stop does not count them in the post-re-login rerun. Not used.

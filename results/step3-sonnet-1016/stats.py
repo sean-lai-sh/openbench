@@ -18,7 +18,8 @@ for d in sorted(glob.glob(f"{R}/*/cells"), key=lambda p:int(p.split('/')[-2])):
     tot+=cost
     a,b=S["without"],S["with"]
     m=lambda x: f"{sum(x)/len(x):.0f}" if x else "-"
-    if len(a["t"])>1 and len(b["t"])>1:
+    if len(a["t"])>1 and len(b["t"])>1 and (sum(a["t"])==0 or sum(b["t"])==0): ci="not measurable (no metered tokens on a side)"
+    elif len(a["t"])>1 and len(b["t"])>1:
         pt,lo,hi=(100*v for v in boot(a["t"],b["t"]))
         if lo<=0<=hi: ci="no effect detected (±%.1f%%) %+.1f%% [%+.1f%%, %+.1f%%]"%(max(abs(lo),abs(hi)),pt,lo,hi)
         elif -6.5<=pt<=6.8: ci="no effect detected (inside A/A band -6.5%%..+6.8%%; CI excludes 0) %+.1f%% [%+.1f%%, %+.1f%%]"%(pt,lo,hi)
