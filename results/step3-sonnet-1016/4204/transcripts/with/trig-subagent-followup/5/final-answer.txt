@@ -1,0 +1,22 @@
+The bug is fixed: `settings.json:2` now uses `"fee_rate"` instead of the typo `"rat"`. All three code paths that read the setting now work.
+
+**Places that read the setting:**
+| File | Line | How it reads it |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`, with `except KeyError: rate = 0` at lines 12–13 |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`, which exits if the value is `None` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, which exits if the value is `None` |
+
+The subagent missed the `csv_writer.py` read at line 8 because the key is built by string concatenation. It only reported the error message at line 10.
+
+**Mentions that don't read the setting:**
+- `billing/invoice.py:4-5` is a docstring and a local string.
+- `billing/discount.py:5,8` is the local variable `archived_fee_rate = 0.15`.
+- `billing/tax.py` and `billing/audit.py` only mention it in docstrings or have unrelated names.
+
+**Results after the fix:**
+- `python3 main.py` prints `Total: 5.0`. It printed `Total: 0` before.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. It hid this bug, so you may want it to fail loudly like the other two readers do.

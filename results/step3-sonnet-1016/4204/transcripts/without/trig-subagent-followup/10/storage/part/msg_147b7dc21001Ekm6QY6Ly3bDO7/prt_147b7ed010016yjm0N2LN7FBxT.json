@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b7ed010016yjm0N2LN7FBxT",
+  "sessionID": "ses_eb84894a1ffe2YyB5ufWCVARwS",
+  "messageID": "msg_147b7dc21001Ekm6QY6Ly3bDO7",
+  "type": "text",
+  "text": "Three places read the `fee_rate` setting. All three failed because of the misspelled key, and one rename in `settings.json` fixes them.\n\n**Where `fee_rate` is read:**\n- `main.py:11` reads `cfg[\"fee_rate\"]` and falls back to 0 on `KeyError`. This is the path that printed the wrong total.\n- `billing/report.py:7` calls `get_setting(\"fee_rate\")` and exits with \"fee_rate is missing\" if it gets `None`.\n- `billing/export/csv_writer.py:8` calls `settings.get(\"fee_\" + \"rate\")`, which builds the same key, and exits the same way if it is missing.\n\n**Matches that don't read it:**\n- `billing/invoice.py:5` only has a column-name string.\n- `billing/discount.py:5` has a hardcoded `archived_fee_rate`.\n- `billing/audit.py` builds `\"fee_code\"`, a different key.\n- `billing/tax.py` has a local `fee_schedule` dict.\n- `app/config.py` only loads the file and defines `get_setting`.\n\n**Fix:** I renamed `\"rat\"` to `\"fee_rate\"` in `settings.json:2`. I left the code alone.\n\n**Before and after:**\n\n| Command | Before | After |\n|---|---|---|\n| `python3 main.py` | `Total: 0` | `Total: 5.0` |\n| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |\n| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |\n\nThe `except KeyError` fallback to 0 in `main.py:12-13` is still there. It's what hid this bug, so you may want to make it raise or log instead.",
+  "time": {
+    "start": 1792204598560,
+    "end": 1792204598560
+  }
+}

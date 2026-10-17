@@ -1,0 +1,26 @@
+Yes, the setting is read in three places. I fixed the typo, and all three now work.
+
+**Where `fee_rate` is read**
+
+| File and line | How it reads it | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, with `except KeyError` falling back to `0` | Silently printed `Total: 0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | Exited with "fee_rate is missing" |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | Exited with "fee_rate is missing" |
+
+The subagent's report had two errors:
+- It listed the CSV writer as `billing/csv_writer.py`. The real path is `billing/export/csv_writer.py`.
+- It missed that the CSV writer builds the key by string concatenation, so a plain search for `fee_rate` doesn't find that read.
+
+The other `fee_rate` mentions don't read the setting:
+- `billing/discount.py:5` is a local variable.
+- `billing/invoice.py:5` is a column-name string.
+
+**Fix:** in `settings.json:2` I changed `"rat"` to `"fee_rate"`. All three readers use that one file, so one edit fixed them all.
+
+**Verification**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py:12-13`. It is what hid this bug, since a missing key gave a plausible-looking `0` instead of an error. Making it fail loudly, as the other two readers do, would be a small change if you want it.

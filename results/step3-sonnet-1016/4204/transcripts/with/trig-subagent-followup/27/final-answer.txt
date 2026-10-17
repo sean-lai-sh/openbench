@@ -1,0 +1,25 @@
+The setting is read in three places. I fixed the bug and all three now work.
+
+**Where `fee_rate` is read**
+- `main.py:11` reads `cfg["fee_rate"]` directly. If the key is missing it falls back to 0.
+- `billing/report.py:7` reads it with `get_setting("fee_rate")`, which is defined in `app/config.py:13-15`. It exits with an error if the value is `None`.
+- `billing/export/csv_writer.py:8` reads `settings.get("fee_" + "rate")`. The key is built by concatenation, so a plain search for `fee_rate` misses it. It also exits with an error if the value is `None`.
+
+**Mentions that don't read it**
+- `billing/invoice.py:4-5` only uses the string as a label.
+- `billing/discount.py:5` has a local variable named `archived_fee_rate`.
+- `billing/audit.py` and `billing/tax.py` only have similar-looking names.
+
+The earlier subagent report said `billing/` plays no part. That was wrong, because `report.py` and `csv_writer.py` both read the setting. Only `main.py` imports `app.config`, so they are separate entry points that run on their own.
+
+**Fix:** I renamed `"rat"` to `"fee_rate"` in `settings.json:2`. All three readers use the same key, so one change covers them.
+
+**Verification** (before the fix, `main.py` printed `Total: 0` and the other two printed "fee_rate is missing")
+
+| Command | Output |
+|---|---|
+| `python3 main.py` | `Total: 5.0` |
+| `python3 -m billing.report` | `Report fee: 0.5` |
+| `python3 -m billing.export.csv_writer` | `CSV fee: 0.5` |
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. Removing it would make a future typo fail loudly instead of printing 0, but you didn't ask for that.

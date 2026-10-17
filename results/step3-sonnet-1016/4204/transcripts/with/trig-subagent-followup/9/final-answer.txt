@@ -1,0 +1,21 @@
+The bug is fixed. I renamed the key in `settings.json` line 2 from `"rat"` to `"fee_rate"`.
+
+**Places that read the setting:**
+
+| File | Line | How it reads it |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]` |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`, which calls `SETTINGS.get(key)` in `app/config.py:15` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, where the key is built by string concatenation |
+
+**Mentions that don't read it:**
+- `billing/discount.py:5` has a hardcoded local variable named `archived_fee_rate`.
+- `billing/invoice.py:4-5` mentions it in a docstring and a local string.
+- `billing/audit.py` and `billing/tax.py` only share the `fee_` prefix or a similar name.
+
+**Results after the fix:**
+- `python3 main.py` prints `Total: 5.0`. Before the fix it printed `Total: 0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`. Before the fix it exited with "fee_rate is missing".
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`. Before the fix it never ran, because the report command above had already failed.
+
+I didn't remove the `except KeyError: rate = 0` fallback in `main.py`. It's what hid this bug, so you may want to remove it so a missing key fails loudly. Say so if you want that change.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_147a2cd2f0019dXLJ0dF45I62l",
+  "sessionID": "ses_eb85dc3d3ffevFT5z45CKu1c1p",
+  "messageID": "msg_147a2bbad001rrzSKSGrz4E8pk",
+  "type": "text",
+  "text": "Three places read the setting, and all three work now.\n\n| File | Line | How it reads the setting |\n|---|---|---|\n| `main.py` | 11 | `cfg[\"fee_rate\"]` |\n| `billing/report.py` | 7 | `get_setting(\"fee_rate\")` |\n| `billing/export/csv_writer.py` | 8 | `settings.get(\"fee_\" + \"rate\")`, where the key is built by concatenation, so a plain search for `fee_rate` misses it |\n\nThe other matches don't read the setting:\n- `billing/invoice.py:5` uses `fee_rate` as a column-name string.\n- `billing/discount.py:5` has a local variable `archived_fee_rate`.\n- `billing/audit.py` builds `\"fee_code…\"` strings.\n- `billing/tax.py` has a local `fee_schedule`.\n- `app/config.py` only loads the file and provides `get_setting`.\n\n**Fix:** in `settings.json:2` I renamed the key `\"rat\"` to `\"fee_rate\"`. All three readers use the same key, so one edit fixes them all.\n\n**Results:**\n- `python3 main.py` prints `Total: 5.0`. It printed `Total: 0` before.\n- `python3 -m billing.report` prints `Report fee: 0.5`. It previously exited with \"fee_rate is missing\".\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`. I didn't see its output before the fix, because the chained command stopped at the `report` failure. It reads the same missing key, so it would have failed the same way.\n\nI left the `except KeyError: rate = 0` fallback in `main.py:12-13`. It hid this bug, so you may want to remove it. Say so if you'd like me to.",
+  "time": {
+    "start": 1792203214150,
+    "end": 1792203214150
+  }
+}

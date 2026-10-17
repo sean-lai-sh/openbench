@@ -1,0 +1,24 @@
+Three places read the `fee_rate` setting. I renamed the misspelled key in `settings.json`, and all three now work.
+
+**Where it's read**
+- `main.py:11` reads `cfg["fee_rate"]`.
+- `billing/report.py:7` reads `get_setting("fee_rate")`.
+- `billing/export/csv_writer.py:8` reads `settings.get("fee_" + "rate")`. The key is built from two strings, so a plain search for `fee_rate` misses it.
+
+**Not readers**
+- `billing/invoice.py:5` only uses `"fee_rate"` as a label string.
+- `billing/discount.py:5` has a local variable called `archived_fee_rate`.
+- `billing/tax.py` and `billing/audit.py` only have similar-looking names.
+- `app/config.py` loads the whole file and doesn't read this key directly.
+
+**Fix:** in `settings.json:2` I changed `"rat": 0.5` to `"fee_rate": 0.5`.
+
+**Before and after**
+
+| Command | Before | After |
+|---|---|---|
+| `python3 main.py` | `Total: 0` | `Total: 5.0` |
+| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |
+| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |
+
+I left the `try/except KeyError` fallback to `0` in `main.py` alone. It's what hid this bug, so you may want to remove it. Say so if you want me to.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_147cff389001sch3C5uBkTA717",
+  "sessionID": "ses_eb8302132ffe0jGXHs1jsra4KS",
+  "messageID": "msg_147cfe5f00018FlbaUyANsO7yP",
+  "type": "text",
+  "text": "`rate` becomes `None` at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\nThe cause is a typo in the config file, **settings.json:2**. The key there is `\"rat\"`, not `\"rate\"`:\n\n```json\n\"rat\": 0.5,\n```\n\nHow the `None` arises:\n1. `app/config.py:9-10` loads `settings.json` into `SETTINGS` at import time. The dict contains `rat`, `currency` and `label`, and has no `rate` key.\n2. `app/pricing.py:8` calls `SETTINGS.get(\"rate\")`. The key is missing, so `dict.get` quietly returns `None` instead of raising `KeyError`.\n3. `app/report.py:8` assigns that `None` to `rate`.\n4. `app/report.py:9` runs `rate * count`, which raises the `TypeError`.\n\nThe traceback points at `report.py:9`, where the error surfaces. The `None` itself comes from the key mismatch between `settings.json:2` and `pricing.py:8`.\n\nRenaming the key in `settings.json` to `\"rate\"` would fix it. Switching `pricing.py` to `SETTINGS[\"rate\"]` would make a missing key fail loudly at the source next time. I haven't changed any files.",
+  "time": {
+    "start": 1792206173095,
+    "end": 1792206173095
+  }
+}

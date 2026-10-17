@@ -1,0 +1,21 @@
+Yes, three files read the `fee_rate` setting. All three read it from `settings.json` through `app/config.py`.
+
+| File | Line | How it reads the setting |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`, using `SETTINGS` directly |
+| `billing/report.py` | 7 | `get_setting("fee_rate")` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, a key built by string concatenation that a plain search for `fee_rate` misses |
+
+Some other files mention the name but don't read the setting:
+- `billing/invoice.py:5` only sets a column-name string.
+- `billing/discount.py:5` has a hardcoded `archived_fee_rate`.
+- `billing/tax.py` and `billing/audit.py` only mention the name in comments or local variables.
+
+**Fix:** I changed `"rat"` to `"fee_rate"` on line 2 of `settings.json`. I left the code alone, including the silent `except KeyError: rate = 0` fallback in `main.py`.
+
+I ran all three paths after the edit:
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I can also remove that fallback so a missing key fails loudly. I didn't, because you only asked for the bug fix.

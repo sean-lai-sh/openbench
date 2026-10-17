@@ -1,0 +1,23 @@
+I renamed the misspelled `"rat"` key to `"fee_rate"` in `settings.json:2`. All three paths that read the setting now work.
+
+**Where the setting is read**
+| File | Line | How it reads it |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`. A missing key is caught at lines 12-13 and becomes 0. |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`, which calls `SETTINGS.get(key)` in `app/config.py:15`. |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, which builds the key by concatenation. |
+
+`app/config.py:9-10` loads the JSON file into `SETTINGS`, and all three paths go through it.
+
+Other files mention the name but don't read the setting:
+- `billing/invoice.py:5` uses `"fee_rate"` as a historical column name that the total doesn't use.
+- `billing/discount.py:5` has a local variable called `archived_fee_rate`.
+- `billing/tax.py` has a local `fee_schedule`.
+- `billing/audit.py:4` builds a `"fee_code…"` string.
+
+**Results after the fix**
+- `python3 main.py` prints `Total: 5.0`.
+- `billing.report.main()` prints `Report fee: 0.5`.
+- `billing.export.csv_writer.main()` prints `CSV fee: 0.5`.
+
+I left the silent `except KeyError: rate = 0` fallback in `main.py:12-13` alone. It is what hid this bug, so you may want it to fail loudly.

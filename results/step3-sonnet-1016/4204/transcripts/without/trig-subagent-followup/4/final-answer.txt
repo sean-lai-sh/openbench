@@ -1,0 +1,25 @@
+The `rat` typo in `settings.json` was the only bug, and I've fixed it. `python3 main.py` now prints `Total: 5.0`.
+
+**Everything that reads `fee_rate`:**
+
+| File:line | How it reads it |
+|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, where `cfg` is `SETTINGS`. A missing key falls back silently to 0. |
+| `billing/report.py:7` | `get_setting("fee_rate")`. It exits with "fee_rate is missing" at line 9 if the value is `None`. |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`. The key is built by concatenation, so a plain search for `fee_rate` misses it. It exits with "fee_rate is missing" at line 10. |
+
+All three go through `app/config.py`, which loads `settings.json` once (`SETTINGS` at line 10, `get_setting` at line 13).
+
+**Matches that don't read the setting:**
+- `billing/discount.py:5,8` is a local variable named `archived_fee_rate`.
+- `billing/invoice.py:4,5` is a docstring and a column-name string.
+- `billing/audit.py` and `billing/tax.py` only mention the key in a docstring or comment.
+
+**The fix:** `settings.json:2` changed from `"rat"` to `"fee_rate"`.
+
+**Verification:**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5` and exits 0.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5` and exits 0.
+
+I left the `except KeyError: rate = 0` fallback in `main.py`. It's why the typo went unnoticed, so you may want to make it fail loudly like the other two readers do.

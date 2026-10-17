@@ -1,0 +1,20 @@
+The `fee_rate` setting is read in three places. I fixed the misspelled key in `settings.json`, and all three now work.
+
+**Where it's read**
+- `main.py:11` reads `cfg["fee_rate"]` and falls back to 0 on `KeyError`.
+- `billing/report.py:7` calls `get_setting("fee_rate")` and exits with "fee_rate is missing" if the result is `None`.
+- `billing/export/csv_writer.py:8` reads `settings.get("fee_" + "rate")`, which builds the same key by concatenation. It also exits with "fee_rate is missing" if the value is `None`.
+
+Other files mention the name but don't read the setting:
+- `billing/invoice.py:5` has a column-name string.
+- `billing/discount.py:5` has a hardcoded local `archived_fee_rate = 0.15`.
+- `billing/tax.py` and `billing/audit.py` only mention it in docstrings.
+
+**Fix:** In `settings.json` line 2, I changed `"rat"` to `"fee_rate"`. I made no code changes.
+
+**Before and after**
+- `python3 main.py` printed `Total: 0` and now prints `Total: 5.0`.
+- `python3 -m billing.report` printed "fee_rate is missing" and now prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` printed "fee_rate is missing" and now prints `CSV fee: 0.5`.
+
+`main.py` still swallows a missing key and charges 0. That silent fallback is why the original typo showed up as a wrong total instead of an error. I left it alone, but I can make it fail loudly if you want.

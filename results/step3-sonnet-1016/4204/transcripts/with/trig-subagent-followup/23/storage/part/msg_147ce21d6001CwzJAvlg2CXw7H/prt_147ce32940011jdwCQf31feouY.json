@@ -1,0 +1,11 @@
+{
+  "id": "prt_147ce32940011jdwCQf31feouY",
+  "sessionID": "ses_eb8324c15ffeEyBnVqGaHS4PK9",
+  "messageID": "msg_147ce21d6001CwzJAvlg2CXw7H",
+  "type": "text",
+  "text": "The `fee_rate` setting is read in three places, and all three work now.\n\n| File | Line | How it reads the setting |\n|---|---|---|\n| `main.py` | 11 | `cfg[\"fee_rate\"]` |\n| `billing/report.py` | 7 | `get_setting(\"fee_rate\")` |\n| `billing/export/csv_writer.py` | 8 | `settings.get(\"fee_\" + \"rate\")`, with the key built by string concatenation |\n\n`app/config.py:10` loads the file and `app/config.py:15` is the `get_setting` helper. Neither one reads the key itself.\n\nSome other places mention `fee_rate` or similar names but don't read the setting:\n- `billing/invoice.py:4-5` has `column = \"fee_rate\"`, a historical column name.\n- `billing/discount.py` has a local `archived_fee_rate = 0.15`.\n- `billing/tax.py` has a local `fee_schedule`.\n- `billing/audit.py` builds `\"fee_\" + \"code\"`, a different key.\n\n**Fix:** I changed `settings.json:2` from `\"rat\"` to `\"fee_rate\"`. I left the code alone.\n\n**Results:**\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nI didn't touch the `except KeyError: rate = 0` fallback in `main.py:10-13`. It still hides a missing key by silently setting the rate to 0, which is how this bug went unnoticed. I can make it fail loudly if you want.",
+  "time": {
+    "start": 1792206058163,
+    "end": 1792206058163
+  }
+}

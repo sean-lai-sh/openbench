@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b84264001MGbu30jf9SHD71",
+  "sessionID": "ses_eb847dae9ffeRFB61uyHB7l01L",
+  "messageID": "msg_147b830c3001nNPcPl0dvpE9Cm",
+  "type": "text",
+  "text": "`rate` becomes `None` at **`app/pricing.py:8`**, in `get_rate()`: `return SETTINGS.get(\"rate\")`. The key it looks up isn't in the settings file, so `.get` returns `None`.\n\n**Cause:** `settings.json:2` has a typo. The key is `\"rat\"`, not `\"rate\"`:\n```json\n\"rat\": 0.5,\n```\n`dict.get(\"rate\")` has no default, so it returns `None` and doesn't raise `KeyError`.\n\n**Call chain:**\n1. `main.py:7` calls `compute_total(COUNT)`, and `COUNT` is 10.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` returns `SETTINGS.get(\"rate\")`, which is `None`.\n4. `app/report.py:9` runs `rate * count`, which raises the `TypeError`.\n\n**Config involved:**\n- `settings.json` is at the project root. It has the keys `rat` (the typo, value 0.5), `currency` and `label`.\n- `app/config.py:6-10` loads that file once at import time into the module-level `SETTINGS` dict. It does no validation or defaults.\n- `app/pricing.py:3` imports `SETTINGS` from `app.config`.\n\nThe likely fix is to rename `\"rat\"` to `\"rate\"` in `settings.json`. You could also make `get_rate()` use `SETTINGS[\"rate\"]` so a missing key fails with a clear `KeyError`. I haven't changed any files.",
+  "time": {
+    "start": 1792204620418,
+    "end": 1792204620418
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b88394001tZx1DKQOBtXyrS",
+  "sessionID": "ses_eb848066fffefw3wDU4RHrp2dl",
+  "messageID": "msg_147b8732b001o0MVPD0QlE2jpR",
+  "type": "text",
+  "text": "Three places read the `fee_rate` setting. I fixed the typo in `settings.json`, and all three now work.\n\n**Where it's read**\n- `main.py:11` reads `cfg[\"fee_rate\"]`. If the key is missing it falls back to 0.\n- `billing/report.py:7` reads `get_setting(\"fee_rate\")` and exits with an error if the value is `None`.\n- `billing/export/csv_writer.py:8` reads `settings.get(\"fee_\" + \"rate\")`, which builds the same key, and exits with an error if the value is `None`.\n\nOther files mention `fee_rate` or `fee_` but don't read the setting:\n- `billing/discount.py:5` uses a local variable called `archived_fee_rate`.\n- `billing/invoice.py:4-5` uses a column-name string.\n- `billing/audit.py:4` builds `\"fee_code…\"` strings.\n- `billing/tax.py:5` uses a local variable called `fee_schedule`.\n\n**Fix:** In `settings.json:2` I renamed `\"rat\"` to `\"fee_rate\"`.\n\n**Check:**\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nBefore the fix, `main.py` printed `Total: 0` and `report.py` exited with \"fee_rate is missing\". The CSV writer never ran, because the `&&` chain stopped at `report.py`.\n\nI left the `except KeyError: rate = 0` fallback in `main.py:12-13`. It hid this bug, so you may want to remove it so a missing key fails loudly.",
+  "time": {
+    "start": 1792204637108,
+    "end": 1792204637108
+  }
+}

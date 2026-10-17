@@ -1,0 +1,23 @@
+Three places read the `fee_rate` setting. I fixed the typo in `settings.json`, and all three now work.
+
+**Where it's read**
+- `main.py:11` reads `cfg["fee_rate"]`. If the key is missing it falls back to 0.
+- `billing/report.py:7` reads `get_setting("fee_rate")` and exits with an error if the value is `None`.
+- `billing/export/csv_writer.py:8` reads `settings.get("fee_" + "rate")`, which builds the same key, and exits with an error if the value is `None`.
+
+Other files mention `fee_rate` or `fee_` but don't read the setting:
+- `billing/discount.py:5` uses a local variable called `archived_fee_rate`.
+- `billing/invoice.py:4-5` uses a column-name string.
+- `billing/audit.py:4` builds `"fee_code…"` strings.
+- `billing/tax.py:5` uses a local variable called `fee_schedule`.
+
+**Fix:** In `settings.json:2` I renamed `"rat"` to `"fee_rate"`.
+
+**Check:**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+Before the fix, `main.py` printed `Total: 0` and `report.py` exited with "fee_rate is missing". The CSV writer never ran, because the `&&` chain stopped at `report.py`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py:12-13`. It hid this bug, so you may want to remove it so a missing key fails loudly.

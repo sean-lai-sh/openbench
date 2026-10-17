@@ -1,0 +1,11 @@
+{
+  "id": "prt_147d012d6001O8oUOyO7GE5SP2",
+  "sessionID": "ses_eb83066a2ffeJ2yr5S4Fb4nWPT",
+  "messageID": "msg_147d0049a001VGrr4RJV51X1Sb",
+  "type": "text",
+  "text": "Three places read the `fee_rate` setting, and all three now work.\n\n**Readers of the setting:**\n- `main.py:11` reads `cfg[\"fee_rate\"]` directly.\n- `billing/report.py:7` calls `get_setting(\"fee_rate\")`.\n- `billing/export/csv_writer.py:8` calls `settings.get(\"fee_\" + \"rate\")`. The key is built by string concatenation, so a plain search for `fee_rate` misses it. The `SystemExit` message on line 10 is what the search turned up.\n\n**Files that mention it but don't read it:**\n- `billing/invoice.py:4-5` only uses it in a docstring and a local `column` string.\n- `billing/discount.py:5-8` has an unrelated local variable called `archived_fee_rate`.\n\n**Fix:** I renamed the key from `\"rat\"` to `\"fee_rate\"` in `settings.json:2`. That one change fixes all three readers.\n\n**Verification:**\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nI left the `except KeyError: rate = 0` fallback in `main.py:12-13` alone. It still turns a missing setting into a total of 0 without any error. I can make it fail loudly if you want.",
+  "time": {
+    "start": 1792206181129,
+    "end": 1792206181129
+  }
+}

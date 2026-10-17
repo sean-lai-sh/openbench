@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b0890c001VzcNuqYttMeiSv",
+  "sessionID": "ses_eb84f93f5ffecvumT77JybL0qk",
+  "messageID": "msg_147b0791c001EVuNf1D5ZT6Rdz",
+  "type": "text",
+  "text": "`rate` becomes None because of a key typo in `settings.json`. The file defines `\"rat\"` instead of `\"rate\"`.\n\n**Root cause: `settings.json:2`**\n```json\n\"rat\": 0.5,\n```\nThe key should be `\"rate\"`.\n\n**How the None gets to `compute_total`:**\n1. `app/config.py:9-10` loads `settings.json` into `SETTINGS` at import time. `SETTINGS` has the keys `rat`, `currency` and `label`, and no `rate`.\n2. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. `.get` returns `None` for the missing key instead of raising `KeyError`, so the problem is hidden here.\n3. `app/report.py:8` runs `rate = pricing.get_rate()`, which gives `None`.\n4. `app/report.py:9` runs `return rate * count`, which raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`.\n\nThe line that crashes is `app/report.py:9`. The `None` comes from `app/pricing.py:8` reading a key that `settings.json:2` never defines.\n\nThe smallest fix is to rename `\"rat\"` to `\"rate\"` in `settings.json`. Using `SETTINGS[\"rate\"]` in `pricing.py:8` would also make a future typo fail with a clear `KeyError`. I haven't changed any files.",
+  "time": {
+    "start": 1792204114237,
+    "end": 1792204114237
+  }
+}

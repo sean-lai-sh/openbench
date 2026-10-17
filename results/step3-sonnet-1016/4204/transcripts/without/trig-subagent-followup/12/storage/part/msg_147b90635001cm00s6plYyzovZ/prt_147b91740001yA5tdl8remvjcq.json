@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b91740001yA5tdl8remvjcq",
+  "sessionID": "ses_eb8476ed6ffeL1i7gztKd51O4w",
+  "messageID": "msg_147b90635001cm00s6plYyzovZ",
+  "type": "text",
+  "text": "Three places read the `fee_rate` setting, and all three work now.\n\n| File | Line | How it reads the key |\n|---|---|---|\n| `main.py` | 11 | `cfg[\"fee_rate\"]`, with `except KeyError` falling back to 0 |\n| `billing/report.py` | 7 | `get_setting(\"fee_rate\")`, which exits if the value is `None` |\n| `billing/export/csv_writer.py` | 8 | `settings.get(\"fee_\" + \"rate\")`, which exits if the value is `None` |\n\n`csv_writer.py` builds the key by concatenating two strings, so a plain search for `fee_rate` doesn't find it.\n\nOther matches for the name aren't reads of the setting:\n- `billing/discount.py:5` sets a local `archived_fee_rate = 0.15`.\n- `billing/invoice.py:4-5` has a docstring and a `column = \"fee_rate\"` string that the total doesn't use.\n- `billing/audit.py:4` builds `\"fee_\" + \"code\" + str(n)`, which is a different key.\n- `billing/tax.py:5` uses a local `fee_schedule`.\n\n**Fix:** in `settings.json` line 2, I changed `\"rat\": 0.5` to `\"fee_rate\": 0.5`. I didn't touch the code.\n\n**Check:** I ran all three paths:\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nBefore the fix, `main.py` silently printed 0 and the other two exited with \"fee_rate is missing\". The `except KeyError: rate = 0` fallback in `main.py` would hide any future typo like this one. I left it alone because you asked only for the bug fix, but I'd suggest removing it.",
+  "time": {
+    "start": 1792204674920,
+    "end": 1792204674920
+  }
+}

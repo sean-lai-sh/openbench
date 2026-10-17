@@ -1,0 +1,24 @@
+The setting is read in three places. The only bug was the misspelled key in `settings.json`, so I fixed that.
+
+**Files and lines that read `fee_rate`:**
+1. `main.py:11` reads `cfg["fee_rate"]` directly from `SETTINGS`. A `KeyError` was silently turned into `rate = 0` at line 13.
+2. `billing/report.py:7` calls `get_setting("fee_rate")`. A missing key made it exit with "fee_rate is missing" at line 9.
+3. `billing/export/csv_writer.py:8` reads `settings.get("fee_" + "rate")`. The key is built by string concatenation, so a plain search for `fee_rate` misses it. A missing key made it exit with "fee_rate is missing" at line 10.
+
+The subagent gave this file's path as `billing/csv_writer.py`. The real path is `billing/export/csv_writer.py`.
+
+**Files that mention the name but don't read the setting:**
+- `billing/invoice.py:4-5` has a docstring and a column-name string.
+- `billing/discount.py:5,8` uses a local `archived_fee_rate = 0.15`.
+- `billing/tax.py:5` uses a local `fee_schedule`.
+- `billing/audit.py:4` builds `"fee_" + "code" + n`, which is a different string.
+- `app/config.py` only loads the file and defines `get_setting`.
+
+**Fix:** In `settings.json:2` I changed `"rat": 0.5` to `"fee_rate": 0.5`. All three readers use the same `SETTINGS` dict, so this one change fixes every path.
+
+**Verification:**
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. It hid this bug, so I'd suggest removing it, but I haven't changed it unless you want that.

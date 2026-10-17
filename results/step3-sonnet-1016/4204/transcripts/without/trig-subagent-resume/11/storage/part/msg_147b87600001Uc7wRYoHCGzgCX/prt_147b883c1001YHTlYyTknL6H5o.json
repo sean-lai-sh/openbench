@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b883c1001YHTlYyTknL6H5o",
+  "sessionID": "ses_eb8479c41ffew3sCIIGN45QOzV",
+  "messageID": "msg_147b87600001Uc7wRYoHCGzgCX",
+  "type": "text",
+  "text": "`rate` becomes `None` at **`app/pricing.py:8`**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\nThe root cause is in the data, not the code. `settings.json:2` has the key misspelled as `\"rat\": 0.5` instead of `\"rate\"`. `app/config.py:9-10` loads that file into `SETTINGS` without error. `SETTINGS.get(\"rate\")` then finds no such key and returns `None` instead of raising `KeyError`.\n\nThe `None` travels like this:\n1. `settings.json:2` has the misspelled key `\"rat\"`.\n2. `app/config.py:10` loads it with `SETTINGS = json.load(...)`.\n3. `app/pricing.py:8` calls `SETTINGS.get(\"rate\")` and gets `None`. This is where `rate` becomes `None`.\n4. `app/report.py:8` assigns `rate = pricing.get_rate()`, so `rate` is `None`.\n5. `app/report.py:9` runs `rate * count` and raises the `TypeError`. This is where the crash shows up, not where the value goes wrong.\n\nChanging the key to `\"rate\"` in `settings.json` would fix the crash. Using `SETTINGS[\"rate\"]` in `get_rate()` would make a future typo fail at the lookup, with a `KeyError`. I haven't modified any files.",
+  "time": {
+    "start": 1792204637137,
+    "end": 1792204637137
+  }
+}

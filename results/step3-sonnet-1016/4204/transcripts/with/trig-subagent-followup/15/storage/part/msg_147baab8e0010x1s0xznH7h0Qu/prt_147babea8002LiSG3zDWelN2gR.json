@@ -1,0 +1,11 @@
+{
+  "id": "prt_147babea8002LiSG3zDWelN2gR",
+  "sessionID": "ses_eb845d9ffffe2hUL10fdIyOyjm",
+  "messageID": "msg_147baab8e0010x1s0xznH7h0Qu",
+  "type": "text",
+  "text": "Yes, the setting is read in two other places besides `main.py`. All three read paths work now.\n\n**Files that read `fee_rate`:**\n\n| File and line | How it reads the setting | If the key is missing |\n|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | Silently falls back to `rate = 0` (`main.py:12-13`) |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")`, which calls `SETTINGS.get(key)` in `app/config.py:13-15` | Exits with \"fee_rate is missing\" (`billing/report.py:8-9`) |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | Exits with \"fee_rate is missing\" (`billing/export/csv_writer.py:9-10`) |\n\n`app/config.py:9-10` loads `settings.json` and is the only place the file is read.\n\nOther files mention the name but don't read the setting:\n- `billing/invoice.py:5` is a column-name string.\n- `billing/discount.py:5` is a hardcoded constant named `archived_fee_rate`.\n- `billing/tax.py` and `billing/audit.py` only mention it in unrelated code or docstrings.\n\n**Fix:** in `settings.json:2` I renamed the key from `\"rat\"` to `\"fee_rate\"`. I changed no code, because all three readers already used the right name.\n\n**Verification:** I ran all three paths before and after the change.\n\n| Command | Before | After |\n|---|---|---|\n| `python3 main.py` | `Total: 0` | `Total: 5.0` |\n| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |\n| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |\n\nI left the silent `except KeyError: rate = 0` fallback in `main.py` as it was. It is what turned the typo into a wrong number instead of an error. If you want, I can make it fail loudly like the other two paths.",
+  "time": {
+    "start": 1792204783321,
+    "end": 1792204783321
+  }
+}

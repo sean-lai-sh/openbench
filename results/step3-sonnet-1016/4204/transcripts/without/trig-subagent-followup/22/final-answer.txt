@@ -1,0 +1,26 @@
+Three places read the `fee_rate` setting, and all three work now.
+
+| File | Line | How it reads the key |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]` |
+| `billing/report.py` | 7 | `get_setting("fee_rate")` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")` |
+
+The `csv_writer.py` read builds the key from two strings, so a plain search for `fee_rate` misses it. I searched again for `fee_`, `SETTINGS` and `get_setting` to catch any other indirect reads, and found none.
+
+Other files mention the name but don't read the setting:
+- `billing/invoice.py:5` only assigns a local string.
+- `billing/discount.py:5` uses a hardcoded `archived_fee_rate = 0.15`.
+- `billing/audit.py` and `billing/tax.py` only have similar-looking names.
+
+**Fix:** I changed `settings.json:2` from `"rat"` to `"fee_rate"`. All three paths read from that one file, so no code changes were needed.
+
+**Check:** I ran all three paths before and after the change.
+
+| Command | Before | After |
+|---|---|---|
+| `python3 main.py` | `Total: 0` | `Total: 5.0` |
+| `python3 -m billing.report` | `fee_rate is missing` | `Report fee: 0.5` |
+| `python3 -m billing.export.csv_writer` | `fee_rate is missing` | `CSV fee: 0.5` |
+
+I left the silent `except KeyError: rate = 0` in `main.py:12-13`. It's what hid this typo, so you may want to remove it. I can do that if you like.

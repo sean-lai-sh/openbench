@@ -1,0 +1,19 @@
+The fix is one line in `settings.json:2`, where I renamed `"rat"` to `"fee_rate"`. All three paths that read the setting now work.
+
+**Every place that reads `fee_rate`:**
+
+| File and line | How it reads the setting | Result after the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, with `except KeyError` falling back to 0 | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")`, which calls `SETTINGS.get(key)` in `app/config.py:15` | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`, a key built by concatenation | `CSV fee: 0.5` |
+
+All three read from `SETTINGS`, which `app/config.py:9-10` loads from `settings.json`. That is the only place the file is loaded, so no other code reads the setting.
+
+**Matches that don't read the setting:**
+- `billing/invoice.py:5` is a column-name string.
+- `billing/discount.py:5` is a local variable called `archived_fee_rate`.
+- `billing/tax.py:5` is a local variable called `fee_schedule`.
+- `billing/audit.py:4` builds `"fee_code…"`, which is a different key.
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. It is what hid this bug, so you may want it to fail loudly like the other two paths do. I can change that if you'd like.

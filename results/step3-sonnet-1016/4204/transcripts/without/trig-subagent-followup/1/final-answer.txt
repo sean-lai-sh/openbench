@@ -1,0 +1,21 @@
+Three places read the `fee_rate` setting, and all three now work.
+
+| File | Line | How it reads the setting |
+|---|---|---|
+| `main.py` | 11 | `cfg["fee_rate"]`, with a `KeyError` fallback to 0 |
+| `billing/report.py` | 7 | `get_setting("fee_rate")`, which exits if the value is `None` |
+| `billing/export/csv_writer.py` | 8 | `settings.get("fee_" + "rate")`, which exits if the value is `None` |
+
+The other matches don't read the setting:
+- `billing/invoice.py:5` only uses `"fee_rate"` as a label string.
+- `billing/discount.py:5` has an unrelated local `archived_fee_rate` constant.
+- `billing/tax.py`, `billing/audit.py` and `app/config.py` don't read the setting. `app/config.py` only loads the file.
+
+All three readers use the same key, so one fix covers them. I changed `"rat"` to `"fee_rate"` in `settings.json:2`.
+
+Before the fix, `main.py` printed `Total: 0`, and `billing.report` and `billing.export.csv_writer` both exited with "fee_rate is missing". After the fix:
+- `python3 main.py` prints `Total: 5.0`.
+- `python3 -m billing.report` prints `Report fee: 0.5`.
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.
+
+I left the `except KeyError: rate = 0` fallback in `main.py` alone. It is what hid this bug, so you may want to make it fail loudly instead.

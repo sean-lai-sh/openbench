@@ -1,0 +1,11 @@
+{
+  "id": "prt_147b5931a001u1vxnBcDpr4HFD",
+  "sessionID": "ses_eb84ec929ffeEh4r7CRQ4PmgYJ",
+  "messageID": "msg_147b57ffe0010oL4C2AKkOLYJk",
+  "type": "text",
+  "text": "Three files read the `fee_rate` setting, and I fixed all three paths with one change to `settings.json`.\n\n**Readers of `fee_rate`**\n\n| File:line | How it reads | If the key is missing |\n|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | Catches `KeyError` and uses 0, so the total is silently wrong |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | `SystemExit(\"fee_rate is missing\")` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | `SystemExit(\"fee_rate is missing\")` |\n\nThe `csv_writer.py` read is easy to miss because the key name is built by string concatenation, so a plain search for `fee_rate` doesn't find it.\n\nTwo other files mention the name but don't read the setting:\n- `billing/invoice.py:5` only assigns the string `\"fee_rate\"` as a column name.\n- `billing/discount.py:5` has a hardcoded local `archived_fee_rate = 0.15`.\n\n**The fix**\n\nI changed `settings.json:2` from `\"rat\": 0.5` to `\"fee_rate\": 0.5`. All three readers load from the same file through `app/config.py`, so none of them needed code changes.\n\n**Check**\n\nI ran all three paths:\n- `python3 main.py` prints `Total: 5.0`.\n- `python3 -m billing.report` prints `Report fee: 0.5`.\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`.\n\nI left the `except KeyError: rate = 0` fallback in `main.py:12-13`. It's what hid this typo, so you may want to remove it so a missing key fails loudly like the other two paths. I can do that if you want.",
+  "time": {
+    "start": 1792204444480,
+    "end": 1792204444480
+  }
+}
