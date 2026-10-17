@@ -1,0 +1,11 @@
+{
+  "id": "prt_1485e9709001WYRlUbMe2NuJZW",
+  "sessionID": "ses_eb7a1bf53ffeKgQUuW0RZuCaPo",
+  "messageID": "msg_1485e84c3001m4F7uH3erO4q6D",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. I fixed seven bugs, listed here by file.\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of subtracting the cost. Pools never freed fully, which stalled the resource tests. It now does `used -= cost`.\n- **`statemachine.py`**: `batch_order_ok` was inverted and demanded non-decreasing priority. It now checks `current <= prev`, so a batch is dispatched in non-increasing priority order.\n- **`scheduler.py`**: `_cascade_skip` used the direct `dependents()`, so only a failed task's children were skipped. It now uses `transitive_dependents()`, so everything downstream is skipped.\n- **`events.py`**: `_prefix_matches` had its arguments reversed: `prefix.startswith(topic + \".\")`. Prefix subscriptions like `job.term` never fired, so the history's failed, skipped and succeeded sets stayed empty. It now checks `topic.startswith(prefix + \".\")`.\n\nSeveral of these hid others, as you warned. For example, the queue fix exposed the inverted batch guard, and the history failures only showed once the scheduler tests passed.",
+  "time": {
+    "start": 1792215521076,
+    "end": 1792215521076
+  }
+}

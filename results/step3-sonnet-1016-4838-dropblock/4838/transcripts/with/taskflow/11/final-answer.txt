@@ -1,0 +1,13 @@
+The final run passes: 25 tests ran and all of them are OK. I have no further steps to take.
+
+The seven fixes, all under `taskflow/`:
+
+1. **`queue.py`**: `_Entry.sort_key` now sorts by `(-priority, seq)`. Higher priority comes first, and insertion order breaks ties.
+2. **`retry.py`**: `should_retry` now returns `attempts_made < max_attempts`. The old check was off by one.
+3. **`config.py`**: `deep_merge` now recurses as `deep_merge(result[key], value)`. The arguments were swapped, so the base overrode the override.
+4. **`resources.py`**: `release` now does `used -= cost` instead of `used -= 1`. The old code leaked pool capacity.
+5. **`statemachine.py`**: `batch_order_ok` now uses `<=`, which matches the non-increasing priority order within a batch.
+6. **`scheduler.py`**: `_cascade_skip` now uses `transitive_dependents`, so a skip reaches every downstream task. It used to reach only direct children.
+7. **`events.py`**: `_prefix_matches` now uses `topic.startswith(prefix + ".")`. The old check was backwards, so prefix subscriptions missed their topics.
+
+I didn't modify any files in `tests/`. The directory isn't a git repo, so I can't confirm that with a diff.

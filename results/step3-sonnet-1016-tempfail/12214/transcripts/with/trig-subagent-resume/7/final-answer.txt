@@ -1,0 +1,7 @@
+`python3 main.py` now exits cleanly and prints `Total: 5.0`.
+
+The subagent traced the bug to a typo in `settings.json`, where line 2 had the key `"rat"` instead of `"rate"`. `app/pricing.py:30` calls `SETTINGS.get("rate")`, which returned `None` because the key was missing. That `None` then crashed `rate * count` at `app/report.py:9`.
+
+I resumed the same subagent session with its task id, and it confirmed that `rate` was the missing key. I then renamed the key to `"rate"` in `settings.json`.
+
+I didn't change `get_rate()`. It still returns `None` on a missing key, so a future typo would fail the same way. Switching it to `SETTINGS["rate"]` would raise a `KeyError` instead.

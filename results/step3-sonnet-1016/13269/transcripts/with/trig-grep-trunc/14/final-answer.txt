@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't modify any tests.
+
+My first grep for `self` returned 1,325 matches, and the output cut off after 100, so it told me nothing useful. I ran the suite instead and traced each failure to its cause. There were seven defects:
+
+- **`retry.py`:** `should_retry` had an off-by-one (`attempts_made < max_attempts - 1`). It cut every retry budget short by one attempt. It's now `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. Dispatch was therefore FIFO and ignored priority. It's now `(-priority, seq)`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). Prefix subscribers such as `job.term` never received `job.term.failed`, so the history stayed empty. It's now `topic.startswith(prefix + ".")`.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`. That let the defaults override the task's own values. The order is now base first, then override.
+- **`statemachine.py`:** `batch_order_ok` used `>=`, which is the opposite of its docstring's non-increasing priority rule. This only showed up after the queue fix, when it failed four-way priority batches. It's now `<=`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips reach the whole downstream chain.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resources leaked, which blocked later tasks and failed the resource tests.

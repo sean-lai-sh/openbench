@@ -1,9 +1,7 @@
-`python3 main.py` now exits cleanly and prints `Total: 5.0`.
+I fixed the crash. `python3 main.py` now exits cleanly and prints `Total: 5.0`.
 
-**Cause:** `settings.json` had the key spelled `"rat"` instead of `"rate"`. In `app/pricing.py:8`, `SETTINGS.get("rate")` returned `None` because the key wasn't there. That `None` reached `rate * count` in `app/report.py:9` and raised the `TypeError`.
+- **First subagent call:** it traced `rate` becoming `None` to `app/pricing.py:8`. There, `SETTINGS.get("rate")` returns `None` because the key isn't in the settings.
+- **Second call (same subagent, resumed by task id):** it said the missing key is `"rate"`. `settings.json` had the typo `"rat"`.
+- **Fix:** I changed `"rat"` to `"rate"` in `settings.json`.
 
-**Fix:** I changed `"rat"` to `"rate"` in `settings.json`.
-
-**Subagent calls:** The first call traced the `None` back to `app/pricing.py:8` and the typo at `settings.json:2`. I resumed the same subagent with the task id from that call, and it confirmed the missing key was `"rate"`.
-
-I left `.get("rate")` as it is. Switching it to `SETTINGS["rate"]` would raise a `KeyError` at the real source if the key goes missing again. I didn't make that change because you only asked for the crash to be fixed.
+I left `get_rate()` as it is. Switching it to `SETTINGS["rate"]` would make a missing key fail with a clear `KeyError` instead of a `None`, if you want that.

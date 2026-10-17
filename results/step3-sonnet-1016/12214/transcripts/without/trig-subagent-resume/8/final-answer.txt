@@ -1,7 +1,5 @@
-`python3 main.py` now prints `Total: 5.0` and exits with status 0.
+`python3 main.py` now exits cleanly and prints `Total: 5.0`.
 
-- **Cause:** `settings.json:2` had the key `"rat"` instead of `"rate"`. `app/pricing.py:8` used `SETTINGS.get("rate")`, which returned `None` for the missing key instead of raising an error. That `None` reached `rate * count` at `app/report.py:9` and caused the `TypeError`.
-- **Subagent:** The first call traced `rate` to that file and line. I then called the task tool again with the same session id, and the subagent confirmed the missing key was `"rate"`.
-- **Fixes:**
-  - I renamed `"rat"` to `"rate"` in `settings.json`.
-  - I changed `app/pricing.py:8` to `SETTINGS["rate"]`. A missing key will now raise a `KeyError` right away instead of surfacing later as a `TypeError`.
+The subagent traced the crash to a typo in `settings.json:2`. The key was `"rat"` instead of `"rate"`. `app/pricing.py:8` calls `SETTINGS.get("rate")`, which returned `None` for the missing key. That `None` then hit `rate * count` at `app/report.py:9`. When I resumed the same subagent session and asked which settings key was missing, it said `"rate"`.
+
+I fixed it by renaming the key to `"rate"` in `settings.json`. I didn't change `app/pricing.py`. Switching it to `SETTINGS["rate"]` would make a missing key raise a `KeyError` instead of returning `None`, but I left that out.

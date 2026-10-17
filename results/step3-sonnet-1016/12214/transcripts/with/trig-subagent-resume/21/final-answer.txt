@@ -1,7 +1,8 @@
-The bug is fixed. `python3 main.py` now prints `Total: 5.0` and exits cleanly.
+`python3 main.py` now exits cleanly and prints `Total: 5.0`.
 
-- **Cause:** `settings.json:2` had the key `"rat"` instead of `"rate"`. `get_rate()` in `app/pricing.py:8` uses `SETTINGS.get("rate")`, which returned `None` for the missing key. That `None` then crashed `rate * count` in `app/report.py:9`.
-- **Subagent:** The first task call traced `rate` to `app/pricing.py:8`. I resumed the same subagent with its task id. It confirmed the missing key is `"rate"`.
-- **Fix:** I renamed `"rat"` to `"rate"` in `settings.json`.
+- **Cause:** `settings.json` line 2 had the key `"rat"` instead of `"rate"`. `SETTINGS.get("rate")` in `app/pricing.py:8` therefore returned `None`, and `rate * count` in `app/report.py:9` crashed.
+- **Fix:** I renamed the key to `"rate"` in `settings.json`.
 
-I left `SETTINGS.get("rate")` as it is. Switching it to `SETTINGS["rate"]` would make a missing key fail at the source with a `KeyError`, if you want that.
+The first subagent call traced `rate` becoming `None` to `app/pricing.py:8`. I resumed that same subagent with its task id, and it confirmed the missing key was `"rate"`.
+
+I didn't change `app/pricing.py`. It still uses `.get`, so a missing key would give `None` again. Switching to `SETTINGS["rate"]` would raise a `KeyError` that names the key.

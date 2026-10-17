@@ -1,0 +1,15 @@
+`python3 -m unittest` now passes: 25 tests run, all OK. I didn't touch the tests.
+
+I found and fixed seven defects. I read the other modules only as far as the failures required, so I can't say whether they contain bugs no test covers.
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. | It now returns `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. | It now uses `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the base values beat the overrides. | It now calls `deep_merge(result[key], value)`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | It now uses `transitive_dependents`, so everything downstream is skipped. |
+| `taskflow/statemachine.py` | `batch_order_ok` checked `current >= prev`, the reverse of the non-increasing priority rule in its docstring. | It now checks `<=`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. | It now does `used -= cost`. |
+| `taskflow/events.py` | `_prefix_matches` had the `startswith` arguments reversed. | It now checks `topic.startswith(prefix + ".")`. |
+
+The last two hid behind the earlier fixes. The resource tests only failed once the priority ordering was right. The `History` failures came from the prefix match. `job.term.*` events never reached `History` because of that bug, so its failed, skipped and succeeded lists were empty.

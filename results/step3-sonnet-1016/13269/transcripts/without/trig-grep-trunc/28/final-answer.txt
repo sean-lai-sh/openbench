@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+I fixed seven defects. Several of them were hiding others, so I re-ran the suite after each fix.
+
+| File | Defect | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `sort_key` was `(seq, -priority)`, so insertion order beat priority. | Changed it to `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. | Changed it to `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. | Swapped them back. |
+| `taskflow/statemachine.py` | `batch_order_ok` required non-decreasing priority, which is the opposite of what its docstring says. | Changed it to `current <= prev`. |
+| `taskflow/resources.py` | `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and blocked later tasks. | It now subtracts `cost`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used the direct `dependents`, so only a failed task's children were skipped. | Switched to `transitive_dependents`. |
+| `taskflow/events.py` | `_prefix_matches` had the subtree check reversed, so the `job.term` prefix never matched `job.term.failed` and similar topics. History never recorded failed, skipped or succeeded jobs. | Changed it to `topic.startswith(prefix + ".")`. |

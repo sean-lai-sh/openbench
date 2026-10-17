@@ -1,0 +1,14 @@
+All 25 tests in `python3 -m unittest` now pass, and I didn't touch any tests.
+
+The last bug was in `taskflow/config.py`. In `deep_merge`, the recursive call passed its arguments in the wrong order (`deep_merge(value, result[key])`). That made the pipeline defaults override task-level settings. A task's `retry.max_attempts` of 3 or 5 was overwritten by the default of 1. Swapping the arguments to `deep_merge(result[key], value)` fixed the two config tests. It also fixed the four pipeline retry tests, which had the same cause.
+
+I also re-checked the `should_retry` change in `retry.py` that I'd flagged as doubtful. With `max_attempts=3`, `should_retry(1)` and `should_retry(2)` are True and `should_retry(3)` is False. That matches the docstring and how the scheduler uses it, so it's correct.
+
+Fixes made across the session:
+1. `queue.py`: entries sort by higher priority first, then FIFO.
+2. `retry.py`: `should_retry` now uses `attempts_made < max_attempts`.
+3. `events.py`: topic prefix matching only matches whole segments.
+4. `statemachine.py`: `batch_order_ok` requires non-increasing priority within a batch.
+5. `resources.py`: `release` frees `cost` units instead of 1.
+6. `scheduler.py`: failure cascade skips all transitive dependents.
+7. `config.py`: `deep_merge` argument order fixed.

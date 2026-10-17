@@ -1,6 +1,5 @@
-The bug was a typo in `settings.json`: the key was `"rat"` instead of `"rate"`. I renamed it, and `python3 main.py` now prints `Total: 5.0`.
+The script now runs and prints `Total: 5.0`.
 
-- **Where `rate` becomes `None`:** The first subagent call traced it to `app/pricing.py:8`. There, `SETTINGS.get("rate")` returns `None` because the key doesn't exist. `app/report.py:9` (`rate * count`) is only where the `TypeError` shows up.
-- **Missing key:** I resumed the same subagent with the task id from the first call. It confirmed the missing key is `"rate"`.
-
-I didn't change `app/pricing.py`. The subagent suggested switching it to `SETTINGS["rate"]` so a missing key fails with a `KeyError` at the lookup. That would make a future typo easier to spot.
+- **Cause:** `settings.json` had the key `"rat"` instead of `"rate"`. `get_rate()` in `app/pricing.py` calls `SETTINGS.get("rate")`, so it returned `None`, and `rate * count` crashed in `app/report.py`.
+- **Subagent:** The first call traced `rate` to `app/pricing.py:30`. I resumed the same subagent with the task id, and it said the missing key is `"rate"`. The line it flagged was `settings.json:2`.
+- **Fix:** I renamed `"rat"` to `"rate"` in `settings.json`. I didn't change `get_rate()`. It still returns `None` on a missing key, so a similar typo would fail the same way. Switching it to `SETTINGS["rate"]` would make it fail with a `KeyError` at the source.

@@ -1,0 +1,13 @@
+All 25 tests now pass. The suite started at 18 failures.
+
+The last bug was in `taskflow/events.py`. `_prefix_matches` had its operands reversed: it checked `prefix.startswith(topic + ".")`, and it now checks `topic.startswith(prefix + ".")`. Because of that, the `job.term` prefix subscription never received `job.term.succeeded`, `job.term.failed` or `job.term.skipped`. `History` therefore recorded no terminal outcomes, and the three remaining history tests failed.
+
+I fixed seven bugs in total, all in the source and none in the tests:
+
+1. **`queue.py`**: the sort key is now `(-priority, seq)`, so higher priority runs first and FIFO breaks ties.
+2. **`retry.py`**: removed an off-by-one in `should_retry`.
+3. **`statemachine.py`**: `batch_order_ok` now requires non-increasing priorities, as its docstring says.
+4. **`resources.py`**: `release` now frees `cost` units instead of 1.
+5. **`scheduler.py`**: `_cascade_skip` now uses transitive dependents rather than only direct children.
+6. **`config.py`**: in `deep_merge`, the override now wins over the base on nested merges.
+7. **`events.py`**: the prefix-matching fix described above.

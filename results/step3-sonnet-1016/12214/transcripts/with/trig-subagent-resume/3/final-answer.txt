@@ -1,7 +1,11 @@
-`python3 main.py` now prints `Total: 5.0` and exits with code 0.
+`python3 main.py` now exits cleanly and prints `Total: 5.0`.
 
-- **Where `rate` became None:** the first subagent traced it to `app/pricing.py:8`. `SETTINGS.get("rate")` returned `None` because `settings.json` had no `rate` key.
-- **Missing key:** I resumed the same subagent with the task id from the first call. It confirmed the missing key is `"rate"`. The file had the typo `"rat"` instead.
-- **Fixes:**
-  - I renamed `"rat"` to `"rate"` in `settings.json`.
-  - I changed `app/pricing.py:8` to `SETTINGS["rate"]`. A missing key now raises a `KeyError` instead of producing `None` that only fails later in `report.py`.
+**Cause:** `settings.json` had a typo, `"rat"` instead of `"rate"`. `app/pricing.py:8` calls `SETTINGS.get("rate")`, which returns `None` when the key is missing. That `None` reached `rate * count` at `app/report.py:9` and caused the `TypeError`.
+
+**Subagent steps:**
+- The first task call traced `rate` becoming `None` to `settings.json:2` and `app/pricing.py:8`.
+- I resumed the same subagent with its task id. It confirmed the missing key was `"rate"`.
+
+**Fix:** I renamed `"rat"` to `"rate"` in `settings.json`.
+
+I did not change `app/pricing.py`. `SETTINGS["rate"]` there would raise a `KeyError` naming the missing key, instead of returning `None`. My edit to that file was rejected because I hadn't read it first. I skipped it since it wasn't needed to fix the crash.

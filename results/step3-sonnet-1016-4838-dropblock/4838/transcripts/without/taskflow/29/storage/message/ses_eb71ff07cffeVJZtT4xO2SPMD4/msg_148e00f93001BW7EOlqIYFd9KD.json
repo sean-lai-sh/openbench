@@ -1,0 +1,18 @@
+{
+  "id": "msg_148e00f93001BW7EOlqIYFd9KD",
+  "sessionID": "ses_eb71ff07cffeVJZtT4xO2SPMD4",
+  "role": "user",
+  "time": {
+    "created": 1792224006035
+  },
+  "summary": {
+    "title": "Fixing failing taskflow unittest suite",
+    "body": "`python3 -m unittest` now reports all 25 tests passing. I didn't edit any tests.\n\nThere were eight root causes, spread across seven modules:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` allowed only `max_attempts - 1` attempts. It now allows `max_attempts`, which also fixed the retry pipeline tests.\n- **`statemachine.py`:** `batch_order_ok` required non-decreasing priority within a batch. The docstring and the queue's output order say non-increasing, so it now checks `current <= prev`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own values. It now merges `(base, override)`.\n- **`scheduler.py`:** `_cascade_skip` used the direct dependents of a failed task. It now uses `dag.transitive_dependents`, so everything downstream is skipped.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity for any task with a cost above 1. It now subtracts `cost`.\n- **`events.py`:** `_prefix_matches` had its arguments swapped, so prefix subscribers never matched. It now checks `topic.startswith(prefix + \".\")`. This is why `History` never recorded the failed and skipped jobs.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

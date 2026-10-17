@@ -1,7 +1,5 @@
-The script now prints `Total: 5.0` and exits cleanly.
+`python3 main.py` now exits cleanly and prints `Total: 5.0`.
 
-- **Cause:** `settings.json` had the key `"rat"` instead of `"rate"`. `SETTINGS.get("rate")` at `app/pricing.py:8` therefore returned `None`, and `rate * count` at `app/report.py:9` raised the `TypeError`.
-- **Subagent steps:** The first call traced the `None` to that line. I resumed the same session, and it confirmed the missing key was `"rate"`.
-- **Fix:** I renamed `"rat"` to `"rate"` in `settings.json`.
-
-I didn't change `pricing.get_rate` to use `SETTINGS["rate"]`. That would make a missing key fail with a `KeyError` instead of quietly returning `None`. Say if you want it.
+- **First subagent call:** it found that `rate` becomes `None` at `app/pricing.py:8`. `SETTINGS.get("rate")` returns `None` when the key is missing.
+- **Second call (same session):** the missing key is `"rate"`. `settings.json` had the typo `"rat"`.
+- **Fix:** I renamed `"rat"` to `"rate"` in `settings.json`. I also changed `get_rate()` in `app/pricing.py` to use `SETTINGS["rate"]`. A missing key now raises a `KeyError` at the source instead of passing `None` along.

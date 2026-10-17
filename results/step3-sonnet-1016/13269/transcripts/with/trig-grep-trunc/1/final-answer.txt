@@ -1,0 +1,11 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests. Seven defects were behind the failures:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Multi-unit costs leaked, and resource-limited pipelines stalled.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed (`>=` instead of `<=`). Once the queue ordering was fixed, it wrongly failed any batch whose priorities were non-increasing.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dependents()`. It now uses `transitive_dependents()`, so a permanent failure skips every downstream task, not just its direct children.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). `job.term.*` events never reached `History`, so its failed, skipped and outcome-count queries came back empty.
+
+My opening grep for `self` was truncated at 100 of 1,325 matches, since nearly every line in a Python class matches. I used the failing tests to find the bugs instead.

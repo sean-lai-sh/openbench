@@ -1,0 +1,25 @@
+{
+  "id": "prt_148c54cdc001It0NzoLYGhnstg",
+  "sessionID": "ses_eb73b2668ffeYPK4jm4ttv73z1",
+  "messageID": "msg_148c54878001DSIQui1Jo9CvY8",
+  "type": "tool",
+  "callID": "toolu_vrtx_0143Admw4Nniwqh45as4MoiU",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-hglrsg8b/bench_opencode_taskflow_ttywa2f0/taskflow/scheduler.py",
+      "offset": 225,
+      "limit": 70
+    },
+    "output": "<file>\n00226|             if task.action is not None:\n00227|                 task.action(ctx)\n00228|         except Exception as exc:  # a failed attempt is an exception, by contract\n00229|             failed = True\n00230|             error = exc\n00231| \n00232|         # Resources are released whether the attempt succeeded or failed.\n00233|         self._release_resources(run)\n00234| \n00235|         machine = self._machines[run.id]\n00236|         if not failed:\n00237|             machine.advance(State.SUCCEEDED, self._now)\n00238|             self._emit_state(run)\n00239|             self._emit_terminal(run, \"succeeded\")\n00240|             return\n00241| \n00242|         run.last_error = error\n00243|         if task.retry_policy.should_retry(run.attempts):\n00244|             machine.advance(State.RETRYING, self._now)\n00245|             self._emit_state(run)\n00246|             delay = task.retry_policy.next_delay(run.attempts)\n00247|             run.available_at = self._now + delay\n00248|             self._retrying[run.id] = run\n00249|         else:\n00250|             machine.advance(State.FAILED, self._now)\n00251|             self._emit_state(run)\n00252|             self._emit_terminal(run, \"failed\")\n00253|             self._cascade_skip(run)\n00254| \n00255|     def _cascade_skip(self, failed_run):\n00256|         \"\"\"Skip every task that transitively depends on ``failed_run``.\n00257| \n00258|         When a task fails permanently none of its downstream tasks can ever run\n00259|         -- not just its direct children, but everything reachable from it. Each\n00260|         such task is moved to ``SKIPPED`` and removed from the ready queue so it\n00261|         is never dispatched.\n00262|         \"\"\"\n00263| \n00264|         for dep_id in self.dag.dependents(failed_run.id):\n00265|             run = self._runs[dep_id]\n00266|             if run.state.is_terminal():\n00267|                 continue\n00268|             self._queue.remove(dep_id)\n00269|             self._retrying.pop(dep_id, None)\n00270|             self._running.pop(dep_id, None)\n00271|             self._machines[dep_id].advance(State.SKIPPED, self._now)\n00272|             self._emit_state(run)\n00273|             self._emit_terminal(run, \"skipped\")\n00274| \n00275|     def _unlock_ready(self):\n00276|         \"\"\"Move ``PENDING`` runs whose dependencies all succeeded to ``READY``.\"\"\"\n00277| \n00278|         progressed = False\n00279|         for task_id in self.pipeline.task_ids():\n00280|             run = self._runs[task_id]\n00281|             if run.state is not State.PENDING:\n00282|                 continue\n00283|             if self._deps_satisfied(task_id):\n00284|                 self._machines[task_id].advance(State.READY, self._now)\n00285|                 self._emit_state(run)\n00286|                 self._queue.push(task_id, run.priority)\n00287|                 progressed = True\n00288|         return progressed\n00289| \n00290|     def _deps_satisfied(self, task_id):\n00291|         \"\"\"Return ``True`` if every dependency of ``task_id`` has ``SUCCEEDED``.\"\"\"\n00292| \n00293|         for dep in self.dag.dependencies(task_id):\n00294|             if self._runs[dep].state is not State.SUCCEEDED:\n00295|                 return False\n\n(File has more lines. Use 'offset' parameter to read beyond line 295)\n</file>",
+    "title": "tmp/obench-cell-hglrsg8b/bench_opencode_taskflow_ttywa2f0/taskflow/scheduler.py",
+    "metadata": {
+      "preview": "            if task.action is not None:\n                task.action(ctx)\n        except Exception as exc:  # a failed attempt is an exception, by contract\n            failed = True\n            error = exc\n\n        # Resources are released whether the attempt succeeded or failed.\n        self._release_resources(run)\n\n        machine = self._machines[run.id]\n        if not failed:\n            machine.advance(State.SUCCEEDED, self._now)\n            self._emit_state(run)\n            self._emit_terminal(run, \"succeeded\")\n            return\n\n        run.last_error = error\n        if task.retry_policy.should_retry(run.attempts):\n            machine.advance(State.RETRYING, self._now)\n            self._emit_state(run)"
+    },
+    "time": {
+      "start": 1792222252807,
+      "end": 1792222252810
+    }
+  }
+}

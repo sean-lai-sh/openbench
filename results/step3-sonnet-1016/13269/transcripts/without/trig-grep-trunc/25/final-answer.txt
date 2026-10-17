@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files changed. I found seven bugs and fixed each one.
+
+- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. It now returns `(-priority, seq)`.
+- **`taskflow/config.py`:** `deep_merge` recursed with the arguments swapped, so the base value overrode the task's value for nested keys. It now calls `deep_merge(result[key], value)`.
+- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of subtracting the cost. Any task costing more than 1 unit leaked capacity and stalled the resource tests.
+- **`taskflow/statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. Its own docstring says non-increasing, so it now uses `current <= prev`.
+- **`taskflow/scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so the whole downstream chain is skipped.
+- **`taskflow/events.py`:** `_prefix_matches` had the prefix and topic reversed, so `History` never received `job.term.*` events. It now checks `topic.startswith(prefix + ".")`.
+
+The queue, resources and statemachine bugs hid each other. The wrong sort order and the wrong batch guard both showed up as priority-dispatch failures, and the resource leak showed up as pipelines that never finished.

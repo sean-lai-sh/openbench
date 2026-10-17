@@ -1,0 +1,11 @@
+{
+  "id": "prt_1486baf45001wZ5oOJFPusgdfz",
+  "sessionID": "ses_eb794b258ffetoSFBypAsVh4kA",
+  "messageID": "msg_1486b9c25001yuwVYiFDaUMuYY",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests run, all OK. I didn't touch the tests.\n\nI found and fixed seven defects. I read the other modules only as far as the failures required, so I can't say whether they contain bugs no test covers.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. | It now returns `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. | It now uses `attempts_made < max_attempts`. |\n| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the base values beat the overrides. | It now calls `deep_merge(result[key], value)`. |\n| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | It now uses `transitive_dependents`, so everything downstream is skipped. |\n| `taskflow/statemachine.py` | `batch_order_ok` checked `current >= prev`, the reverse of the non-increasing priority rule in its docstring. | It now checks `<=`. |\n| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. | It now does `used -= cost`. |\n| `taskflow/events.py` | `_prefix_matches` had the `startswith` arguments reversed. | It now checks `topic.startswith(prefix + \".\")`. |\n\nThe last two hid behind the earlier fixes. The resource tests only failed once the priority ordering was right. The `History` failures came from the prefix match. `job.term.*` events never reached `History` because of that bug, so its failed, skipped and succeeded lists were empty.",
+  "time": {
+    "start": 1792216379235,
+    "end": 1792216379235
+  }
+}

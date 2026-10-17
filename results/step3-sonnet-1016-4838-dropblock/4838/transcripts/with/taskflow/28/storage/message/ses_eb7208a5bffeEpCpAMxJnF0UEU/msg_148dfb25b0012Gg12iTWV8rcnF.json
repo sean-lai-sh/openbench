@@ -1,0 +1,17 @@
+{
+  "id": "msg_148dfb25b0012Gg12iTWV8rcnF",
+  "sessionID": "ses_eb7208a5bffeEpCpAMxJnF0UEU",
+  "role": "user",
+  "time": {
+    "created": 1792223982171
+  },
+  "summary": {
+    "body": "## Progress summary\n\n**Task:** Fix failing tests in `taskflow/` (an in-memory job-orchestration engine) so `python3 -m unittest` passes fully. The tests in `tests/` are the spec and must not be modified. Only the code under `taskflow/` may change. The bugs are logic errors, and docstrings and comments describe the intended behavior. Some bugs mask others, so re-run and re-diagnose after each fix.\n\n**Working dir:** `/tmp/obench-cell-t5hlssth/bench_opencode_taskflow_b7t_c23z`. The bash tool requires a `description` parameter on every call.\n\n### Fixes already applied (via sed)\n1. `taskflow/queue.py`: `_Entry.sort_key` returned `(self.seq, -self.priority)`. It now returns `(-self.priority, self.seq)`.\n2. `taskflow/retry.py`: `should_retry` used `attempts_made < self.max_attempts - 1`. It now uses `attempts_made < self.max_attempts`.\n3. `taskflow/statemachine.py`: `batch_order_ok` used `current_priority >= prev_priority`. It now uses `<=`, so priority must be non-increasing within a batch.\n4. `taskflow/config.py`: `deep_merge` recursed as `deep_merge(value, result[key])`. It now recurses as `deep_merge(result[key], value)`, so the override wins at the leaves.\n5. `taskflow/scheduler.py`: `_cascade_skip` iterated `self.dag.dependents(...)`, which returns direct children only. It now iterates `self.dag.transitive_dependents(...)`. This change has not been tested yet.\n\nThe last test run, before fix 5, showed 8 failures remaining. Before that there were 18. The 8 were the diamond/chain transitive-skip tests, the history terminal-outcome tests, the resource tests, and the full-pipeline test.\n\n### Bugs identified but NOT yet fixed\n- `taskflow/events.py`, `_prefix_matches`: it returns `topic == prefix or prefix.startswith(topic + \".\")`, which is reversed. It should be `topic == prefix or topic.startswith(prefix + \".\")`. This is why `History`'s `subscribe_prefix(\"job.term\", ...)` never receives `job.term.failed` and similar events, so `failed_jobs()`, `skipped_jobs()` and `outcome_counts()` come back empty.\n- `taskflow/resources.py`, `ResourcePool.release`: it ends with `self.used -= 1`. It should be `self.used -= cost`. Pools never fully free, so the resource-serialized and resource-peak tests hang or fail with `report.ok()` False.\n\n### Next steps\n1. Apply the two fixes above, for example with sed or an edit.\n2. Re-run `python3 -m unittest 2>&1 | grep -A12 -E \"^(FAIL|ERROR)\"` and diagnose any remaining or newly unmasked failures. Likely places to look are `scheduler.py`, `model.py` (`JobRun.note_attempt` and `record_state`, `Task`), `dag.py` and `runner.py`.\n3. Confirm the full suite passes (25 tests) without touching anything in `tests/`.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

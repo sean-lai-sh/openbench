@@ -1,0 +1,14 @@
+All 25 tests now pass (`python3 -m unittest` reports OK). I didn't edit any tests.
+
+The last fix was in `taskflow/events.py`. `_prefix_matches` had its operands reversed, so a prefix subscription like `"job.term"` never matched `"job.term.failed"`. That left `History` empty and caused the 3 remaining failures. It now reads `topic == prefix or topic.startswith(prefix + ".")`.
+
+In total there were 7 bugs:
+- **`queue.py`:** the sort key had its fields in the wrong order.
+- **`retry.py`:** the retry check was off by one.
+- **`statemachine.py`:** the batch priority comparison pointed the wrong way.
+- **`config.py`:** `deep_merge` had its arguments swapped.
+- **`resources.py`:** `release` subtracted 1 instead of the job's cost.
+- **`scheduler.py`:** skips cascaded to direct children only, not transitively.
+- **`events.py`:** the reversed prefix match described above.
+
+The modules the visible tests don't exercise (`stats.py`, `metrics.py`, `planner.py` and others) may still hold bugs. I haven't audited them, because nothing in the spec points to a problem there.

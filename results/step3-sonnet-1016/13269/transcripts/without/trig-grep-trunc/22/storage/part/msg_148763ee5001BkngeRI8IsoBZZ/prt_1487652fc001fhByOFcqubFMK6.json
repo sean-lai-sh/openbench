@@ -1,0 +1,11 @@
+{
+  "id": "prt_1487652fc001fhByOFcqubFMK6",
+  "sessionID": "ses_eb78a17c2ffel0kmrSTGnthoyu",
+  "messageID": "msg_148763ee5001BkngeRI8IsoBZZ",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.\n\nThe grep for `self` was truncated at 100 matches and was mostly test files, so it didn't help locate the bugs. I found them by running the suite and reading the failing modules. There were seven root causes:\n\n- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran first-in-first-out and ignored priority. It now returns `(-priority, seq)`.\n- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped, so pipeline defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.\n- **`taskflow/statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. That contradicted its docstring, and a priority-ordered batch failed the guard and was marked FAILED. It now checks `current_priority <= prev_priority`.\n- **`taskflow/scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so a failure skips everything downstream.\n- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, which made later tasks stall.\n- **`taskflow/events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). Prefix subscriptions, including the history's `job.term` one, never received events. It now checks `topic.startswith(prefix + \".\")`.",
+  "time": {
+    "start": 1792217076517,
+    "end": 1792217076518
+  }
+}

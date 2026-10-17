@@ -820,6 +820,49 @@ def _rows_for_kills(root: Path, side: str, jsonl_rows: list[dict]) -> list[dict]
     return jsonl_rows
 
 
+
+ONE_SIDE_STRIP = "not testable on Sonnet 5.5"
+DIFF_TOUCHES_SAMPLING = "untestable-as-is"
+
+
+def params_strip_status(without_rows: list[dict], with_rows: list[dict],
+                        diff_touches_sampling: bool = False) -> str:
+    """Per-PR flag for proxy-stripped sampling params (temperature/top_p/top_k).
+
+    ``both``/``none`` are comparable. Stripping on one side only means the two
+    builds sent different requests and the proxy erased that difference:
+    ``not testable on Sonnet 5.5``. A PR whose own diff touches temperature
+    handling is ``untestable-as-is`` whatever the counts say.
+    """
+    if diff_touches_sampling:
+        return DIFF_TOUCHES_SAMPLING
+    a = any((row.get("params_stripped_requests") or 0) > 0 for row in without_rows)
+    b = any((row.get("params_stripped_requests") or 0) > 0 for row in with_rows)
+    if a and b:
+        return "both"
+    if not a and not b:
+        return "none"
+    return ONE_SIDE_STRIP
+
+
+_SAMPLING_DIFF_RE = re.compile(r"^[+-](?![+-]).*\b(temperature|top_?p|top_?k|topP|topK)\b", re.M)
+
+
+def diff_touches_sampling(diff_text: str) -> bool:
+    """True when an added/removed diff line mentions temperature/top_p/top_k."""
+    return bool(_SAMPLING_DIFF_RE.search(diff_text or ""))
+
+
+def _early_stop(root: Path) -> str | None:
+    path = root / "early-stop.json"
+    if not path.is_file():
+        return None
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("reason") or "early stop")
+    except (OSError, json.JSONDecodeError):
+        return "early stop"
+
+
 def pr_record(pr: PullRequest, out_dir: Path, *, exclude_warm_up: bool = False) -> dict:
     root = out_dir / pr.pr
     incompatible = {}
@@ -860,6 +903,11 @@ def pr_record(pr: PullRequest, out_dir: Path, *, exclude_warm_up: bool = False) 
         "usage_deltas": pooled_usage_deltas(without_rows, with_rows),
         "headroom": headroom_report(without_rows, with_rows),
         "comparison": "ab",
+        "params_strip_status": params_strip_status(
+            _rows_for_kills(root, "without", without_rows),
+            _rows_for_kills(root, "with", with_rows),
+        ),
+        "early_stop": _early_stop(root),
         "no_progress": {
             "without": no_progress_kills(drop_warm_up(
                 _rows_for_kills(root, "without", without_rows),
@@ -1083,6 +1131,9 @@ def _render_ab_markdown(records: list[dict]) -> str:
             f"with {int(kills.get('with') or 0)}."
         )
         lines.append(_effect_line(item.get("effects") or {}))
+        lines.append(f"Sampling params stripped: {item.get('params_strip_status') or 'none'}.")
+        if item.get("early_stop"):
+            lines.append(f"Early stop: {item['early_stop']}.")
         ci_text = _ci_text(item["delta_ci"]) or "n/a"
         lines.append("")
         lines.append(
@@ -1193,6 +1244,7 @@ def render_csv(records: list[dict]) -> str:
         "delta_wall_s_pct", "delta_wall_s",
         "delta_cost_usd_pct", "delta_cost_usd",
         "without_no_progress", "with_no_progress",
+        "params_strip_status", "early_stop",
         "without_subagent_write_calls", "with_subagent_write_calls",
         "without_rule_global", "with_rule_global",
         "without_rule_project", "with_rule_project",
@@ -1287,6 +1339,8 @@ def render_csv(records: list[dict]) -> str:
             "delta_cost_usd": _usage("spend_usd", "delta"),
             "without_no_progress": int((item.get("no_progress") or {}).get("without") or 0),
             "with_no_progress": int((item.get("no_progress") or {}).get("with") or 0),
+            "params_strip_status": item.get("params_strip_status") or "",
+            "early_stop": item.get("early_stop") or "",
             **_effect_csv(item.get("effects") or {}),
             "headroom_tasks": ";".join(task["task"] for task in headroom["tasks"]),
             "headroom_n": headroom["n"],
@@ -1348,34 +1402,3 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-
-ONE_SIDE_STRIP = "not testable on Sonnet 5.5"
-DIFF_TOUCHES_SAMPLING = "untestable-as-is"
-
-
-def params_strip_status(without_rows: list[dict], with_rows: list[dict],
-                        diff_touches_sampling: bool = False) -> str:
-    """Per-PR flag for proxy-stripped sampling params (temperature/top_p/top_k).
-
-    ``both``/``none`` are comparable. Stripping on one side only means the two
-    builds sent different requests and the proxy erased that difference:
-    ``not testable on Sonnet 5.5``. A PR whose own diff touches temperature
-    handling is ``untestable-as-is`` whatever the counts say.
-    """
-    if diff_touches_sampling:
-        return DIFF_TOUCHES_SAMPLING
-    a = any((row.get("params_stripped_requests") or 0) > 0 for row in without_rows)
-    b = any((row.get("params_stripped_requests") or 0) > 0 for row in with_rows)
-    if a and b:
-        return "both"
-    if not a and not b:
-        return "none"
-    return ONE_SIDE_STRIP
-
-
-_SAMPLING_DIFF_RE = re.compile(r"^[+-](?![+-]).*\b(temperature|top_?p|top_?k|topP|topK)\b", re.M)
-
-
-def diff_touches_sampling(diff_text: str) -> bool:
-    """True when an added/removed diff line mentions temperature/top_p/top_k."""
-    return bool(_SAMPLING_DIFF_RE.search(diff_text or ""))

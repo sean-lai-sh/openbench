@@ -1,7 +1,9 @@
-I fixed the crash. `python3 main.py` now prints `Total: 5.0` and exits cleanly.
+`python3 main.py` now prints `Total: 5.0` and exits with code 0.
 
-- **Where `rate` becomes None:** `app/pricing.py:5`, where `get_rate()` returns `SETTINGS.get("rate")`. The settings file has no `rate` key, so `.get` returns `None` instead of raising an error.
-- **Missing key:** `settings.json` had `"rat"`, a typo for `"rate"`. I got both answers from the same subagent session, using the task id from the first call.
-- **Fix:** I renamed `"rat"` to `"rate"` in `settings.json`. I didn't change any code.
+**Cause:** `settings.json:2` had the key `"rat"` instead of `"rate"`. `app/pricing.py:8` calls `SETTINGS.get("rate")`, which returned `None` for the missing key. That `None` then crashed `compute_total` at `app/report.py:9`.
 
-If you want a typo like this to fail loudly next time, `get_rate()` could use `SETTINGS["rate"]`. That raises a `KeyError` at the source instead of a `None` that only shows up later.
+**Fix:** I renamed the key to `"rate"` in `settings.json`.
+
+I used the same subagent session for both questions. It traced `rate` becoming `None` at `app/pricing.py:8`. When I resumed it with the task id, it confirmed the missing key was `"rate"`.
+
+The subagent also suggested switching `app/pricing.py:8` to `SETTINGS["rate"]`, so a missing key raises a `KeyError` that names it instead of returning `None`. I didn't make that change.

@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files changed.
+
+I found seven bugs. Several of the pipeline failures came from the same root cause, so there were fewer fixes than failing tests.
+
+- **`taskflow/retry.py`:** `should_retry` had an off-by-one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`, which matches the docstring.
+- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority comes first and insertion order breaks ties.
+- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped, so the base value overrode the task's value in nested dicts. It now calls `deep_merge(result[key], value)`.
+- **`taskflow/resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit releases leaked capacity. It now subtracts `cost`.
+- **`taskflow/statemachine.py`:** `batch_order_ok` had its comparison reversed. It now checks `current_priority <= prev_priority`, matching the "non-increasing priority" rule.
+- **`taskflow/scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only immediate children were skipped. It now uses `transitive_dependents`.
+- **`taskflow/events.py`:** `_prefix_matches` had its operands swapped (`prefix.startswith(topic + ".")`). It now uses `topic.startswith(prefix + ".")`, so `job.term.*` events reach the history's `failed_jobs`, `skipped_jobs` and `outcome_counts`.
+
+Your first instruction was to start with a grep for `self`. That search hit its 100-match limit and mostly returned test boilerplate, so I ran the suite and read the source files directly instead.

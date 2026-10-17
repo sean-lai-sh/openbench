@@ -1,0 +1,17 @@
+{
+  "id": "msg_148c5378b001ERidgaWFnFE6hi",
+  "sessionID": "ses_eb73b10f9ffedkau670obDpCZP",
+  "role": "user",
+  "time": {
+    "created": 1792222246795
+  },
+  "summary": {
+    "body": "## Summary\n\n### Task\nFix the failing tests in the `taskflow/` package (an in-memory job-orchestration engine) by correcting logic bugs under `taskflow/`, without modifying `tests/`. The task is done when `python3 -m unittest` passes fully.\n\n### Work done\nThe initial run had 18 failures out of 25 tests. I read the modules involved (`queue`, `retry`, `statemachine`, `scheduler`, `resources`, `config`, `dag`, `events`, `history`, `runner`) and compared each docstring with what the code actually did. I fixed seven root-cause bugs, using `sed` for each:\n\n1. **`taskflow/queue.py`**, `_Entry.sort_key`: it returned `(self.seq, -self.priority)`, so ordering was FIFO only. It now returns `(-self.priority, self.seq)`, giving higher priority first with FIFO tie-breaks.\n2. **`taskflow/retry.py`**, `RetryPolicy.should_retry`: `attempts_made < max_attempts - 1` was off by one. It is now `attempts_made < max_attempts`, so with `max_attempts=3`, retries are allowed after attempts 1 and 2 only.\n3. **`taskflow/statemachine.py`**, `batch_order_ok`: `current >= prev` was inverted. It is now `current <= prev`, which enforces non-increasing priority within an admission batch. This bug was hidden behind the queue-ordering bug.\n4. **`taskflow/resources.py`**, `ResourcePool.release`: `self.used -= 1` is now `self.used -= cost`. Resources were leaking, which stalled resource-limited pipelines.\n5. **`taskflow/config.py`**, `deep_merge`: the recursive call had its arguments swapped, `deep_merge(value, result[key])`. It is now `deep_merge(result[key], value)`, so overrides win at the leaves.\n6. **`taskflow/scheduler.py`**, `_cascade_skip`: it iterated `dag.dependents(...)`, which returns direct children only. It now uses `dag.transitive_dependents(...)`, so the whole downstream chain is skipped.\n7. **`taskflow/events.py`**, `_prefix_matches`: it checked `prefix.startswith(topic + \".\")`, which is backwards. It is now `topic.startswith(prefix + \".\")`. This fixed the `job.term` prefix subscription that feeds `History`'s failed, skipped and outcome-count queries.\n\n### Current state\nThe last run of `python3 -m unittest` reported `Ran 25 tests ... OK`. No test files were modified.\n\n### Next steps\nNo further fixes are required. If desired, I can re-run the suite once more as a final confirmation. I did not audit the modules that no test exercises (e.g. `planner`, `stats`, `metrics`, `filters`) for latent bugs, since they were outside the scope of the failing tests.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

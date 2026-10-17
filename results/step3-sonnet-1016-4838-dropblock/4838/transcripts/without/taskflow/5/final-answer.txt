@@ -1,0 +1,14 @@
+All 25 tests now pass with `python3 -m unittest`.
+
+The last bug was in `Scheduler._cascade_skip` in `taskflow/scheduler.py`. It looped over `self.dag.dependents(...)`, which returns only direct children, so grandchildren stayed `PENDING`. The docstring says every transitive dependent should be skipped, so I changed it to `self.dag.transitive_dependents(...)`. That fixed all four remaining failures. The history tests were failing only because of the missing skips, so `history.py` needed no change.
+
+All seven fixes:
+1. `queue.py`: `sort_key` is now `(-priority, seq)`, so higher priority runs first and FIFO breaks ties.
+2. `retry.py`: `should_retry` now uses `attempts_made < max_attempts`.
+3. `resources.py`: `release` now subtracts `cost` instead of 1.
+4. `events.py`: `_prefix_matches` had its arguments reversed.
+5. `config.py`: `deep_merge` now recurses as `deep_merge(result[key], value)`, so the override wins.
+6. `statemachine.py`: `batch_order_ok` now requires priorities to be non-increasing.
+7. `scheduler.py`: `_cascade_skip` now skips all transitive dependents.
+
+I didn't modify anything in `tests/`.

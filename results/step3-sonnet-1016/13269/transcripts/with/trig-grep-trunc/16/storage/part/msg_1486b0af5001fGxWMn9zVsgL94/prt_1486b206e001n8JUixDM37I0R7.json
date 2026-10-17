@@ -1,0 +1,11 @@
+{
+  "id": "prt_1486b206e001n8JUixDM37I0R7",
+  "sessionID": "ses_eb7952a01ffeyFcziViFDiA4nA",
+  "messageID": "msg_1486b0af5001fGxWMn9zVsgL94",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests.\n\nI found seven defects and fixed each at its root. Some were reported under a different module's test name:\n\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. It now returns `(-priority, seq)`.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools leaked capacity, so resource-limited tasks never finished.\n- **`events.py`**: `_prefix_matches` had its operands swapped (`prefix.startswith(topic + \".\")`). It is now `topic.startswith(prefix + \".\")`. Because of this, `History` never received any `job.term.*` events.\n- **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing within an admission batch. They must be non-increasing, so it now checks `current <= prev`.\n- **`config.py`**: `deep_merge` recursed with its arguments reversed, so the defaults overrode the task's own `retry` settings. It now merges `(result[key], value)`.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a failure skips everything downstream.\n\nThe bugs did mask each other. After the first few fixes, the retry, priority and resource tests passed. The skip and history tests then showed the cascade bug and the event-prefix bug.\n\nI started with the grep for `self` as asked. It matched 1325 lines and the tool truncated the output to 100, so I read the core modules directly instead.",
+  "time": {
+    "start": 1792216342689,
+    "end": 1792216342689
+  }
+}

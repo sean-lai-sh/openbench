@@ -1,8 +1,7 @@
-The bug is fixed: `python3 main.py` now prints `Total: 5.0` and exits cleanly.
+I fixed the crash. `python3 main.py` now exits cleanly and prints `Total: 5.0`.
 
-- **Where `rate` becomes None:** the first subagent traced it to `app/pricing.py:8`. There, `SETTINGS.get("rate")` returns None. `compute_total` in `app/report.py:8` then assigns that None to `rate`.
-- **Missing key:** I resumed the same subagent session, and it confirmed the missing key is `"rate"`.
-- **Root cause:** `settings.json` had a typo, `"rat": 0.5`, so the lookup found nothing.
-- **Fix:** I renamed `"rat"` to `"rate"` in `settings.json`.
+The first subagent call found that `rate` becomes `None` at `app/pricing.py:8`. That line is `SETTINGS.get("rate")`, and it returns `None` because `settings.json` has no `"rate"` key. The second call, which continued the same subagent session, confirmed that `"rate"` is the missing key.
 
-I left `get_rate()` using `.get()`. Switching it to `SETTINGS["rate"]` would make a missing key raise a clear `KeyError`, but the task didn't need that.
+The cause was a typo in `settings.json`: the key was `"rat"` instead of `"rate"`. I renamed it and left the Python code unchanged.
+
+I didn't change `get_rate` to use `SETTINGS["rate"]`, which the subagent suggested. With that change, a missing key would fail with a clear `KeyError` instead of returning `None`.

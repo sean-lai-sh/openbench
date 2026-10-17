@@ -70,3 +70,28 @@ class ParamsStrippedTests(unittest.TestCase):
         self.assertTrue(diff_touches_sampling("-    topP: 1\n"))
         self.assertFalse(diff_touches_sampling(" temperature: 1\n+other\n"))
         self.assertFalse(diff_touches_sampling("+++ b/temperature.ts\n"))
+
+
+class SummaryWiringTests(unittest.TestCase):
+    def test_pr_record_csv_and_markdown_carry_strip_status_and_early_stop(self):
+        import csv as _csv
+        import io
+        from obench.tests.test_no_progress import _pr
+        from thesis.ab.summarize import pr_record, render_csv, render_markdown
+        out = Path(tempfile.mkdtemp())
+        for side, n in (("without", 0), ("with", 2)):
+            d = out / "9" / "cells" / side / "t"
+            d.mkdir(parents=True)
+            row = {"task": "t", "trial": 1, "score": 1, "success": True,
+                   "failure_class": "solved", "params_stripped_requests": n}
+            (d / "1.json").write_text(json.dumps(row))
+            (out / "9" / f"{side}.jsonl").write_text(json.dumps(row) + "\n")
+        (out / "9" / "early-stop.json").write_text(json.dumps({"reason": "pr early stop: 4 of the first 10"}))
+        record = pr_record(_pr(), out)
+        self.assertEqual(record["params_strip_status"], ONE_SIDE_STRIP)
+        self.assertIn("4 of the first 10", record["early_stop"])
+        parsed = list(_csv.DictReader(io.StringIO(render_csv([record]))))
+        self.assertEqual(parsed[0]["params_strip_status"], ONE_SIDE_STRIP)
+        text = render_markdown([record])
+        self.assertIn(f"Sampling params stripped: {ONE_SIDE_STRIP}.", text)
+        self.assertIn("Early stop: pr early stop", text)

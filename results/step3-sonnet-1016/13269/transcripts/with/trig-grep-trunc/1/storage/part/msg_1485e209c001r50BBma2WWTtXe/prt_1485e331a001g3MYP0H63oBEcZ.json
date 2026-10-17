@@ -1,0 +1,11 @@
+{
+  "id": "prt_1485e331a001g3MYP0H63oBEcZ",
+  "sessionID": "ses_eb7a240b9ffeY5kpTqUMMpY0Jf",
+  "messageID": "msg_1485e209c001r50BBma2WWTtXe",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests. Seven defects were behind the failures:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Multi-unit costs leaked, and resource-limited pipelines stalled.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed (`>=` instead of `<=`). Once the queue ordering was fixed, it wrongly failed any batch whose priorities were non-increasing.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dependents()`. It now uses `transitive_dependents()`, so a permanent failure skips every downstream task, not just its direct children.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). `job.term.*` events never reached `History`, so its failed, skipped and outcome-count queries came back empty.\n\nMy opening grep for `self` was truncated at 100 of 1,325 matches, since nearly every line in a Python class matches. I used the failing tests to find the bugs instead.",
+  "time": {
+    "start": 1792215495511,
+    "end": 1792215495511
+  }
+}
