@@ -31,8 +31,11 @@ import json
 import re
 
 STALLED = "stalled"
+# A/B watchdog: silent for no_progress_s AFTER at least one model request.
+# The agent hung mid-session; that is a failure, not infra.
+HANG = "hang"
 
-FAILURE_CLASSES = ("solved", "wrong_answer", "timeout", "rate_limited", "infra", STALLED)
+FAILURE_CLASSES = ("solved", "wrong_answer", "timeout", "rate_limited", "infra", STALLED, HANG)
 EXCLUDED_FROM_SOLVE_RATE = ("rate_limited", "infra", STALLED)
 NEAR_ZERO_TOKEN_LIMIT = 100
 _TOKEN_FIELDS = (

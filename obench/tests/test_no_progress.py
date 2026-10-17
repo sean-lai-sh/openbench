@@ -209,6 +209,43 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(row["score"], 0.0)
         self.assertFalse(row["success"])
 
+    def test_no_progress_after_model_requests_is_a_hang_not_infra(self):
+        row = apply_watchdog_class({
+            "error": "openbench-infra:no_progress idle_s=300.1",
+            "score": 0.4, "success": False, "requests_count": 5,
+            "tokens_output": 1440, "infra_reason": "no_progress",
+        })
+        self.assertEqual(row["failure_class"], "hang")
+        self.assertNotIn("infra_reason", row)
+        self.assertEqual(row["no_progress_idle_s"], 300.1)
+        self.assertEqual(row["tokens_output"], 1440)
+        self.assertFalse(row["success"])
+        from obench.failure_class import class_for_report, is_excluded_from_solve_rate
+        self.assertEqual(class_for_report(row), "hang")
+        self.assertFalse(is_excluded_from_solve_rate(row))
+
+    def test_no_progress_with_zero_requests_stays_infra(self):
+        row = apply_watchdog_class({
+            "error": "openbench-infra:no_progress idle_s=300.1",
+            "success": False, "requests_count": 0,
+        })
+        self.assertEqual(row["failure_class"], "infra")
+        self.assertEqual(row["infra_reason"], "no_progress")
+
+    def test_rescore_rewrites_stored_mid_session_kills(self):
+        from thesis.ab.watch import rescore
+        out = Path(tempfile.mkdtemp())
+        cell = out / "9" / "cells" / "aa-1" / "t"
+        cell.mkdir(parents=True)
+        base = {"task": "t", "error": "openbench-infra:no_progress idle_s=300.1",
+                "failure_class": "infra", "infra_reason": "no_progress", "success": False}
+        (cell / "1.json").write_text(json.dumps(dict(base, trial=1, requests_count=4)))
+        (cell / "2.json").write_text(json.dumps(dict(base, trial=2, requests_count=0)))
+        changes = rescore(out)
+        self.assertEqual(changes, {"9/aa-1": {"infra->hang": 1}})
+        rows = [json.loads(l) for l in (out / "9" / "aa-1.jsonl").read_text().splitlines()]
+        self.assertEqual(sorted(r["failure_class"] for r in rows), ["hang", "infra"])
+
     def test_fatal_tail_without_a_marker_is_wasm_abort(self):
         row = apply_watchdog_class({
             "error": "timeout after 840s",
