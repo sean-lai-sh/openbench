@@ -1262,6 +1262,13 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     # Every ledger row, not only 2xx rows that carried a usage object.
     # ``requests_error`` stays the non-2xx subset.
     row["requests_count"] = sum(1 for record in records if isinstance(record, dict))
+    stripped = [
+        record.get("cc_identity_stripped", {}).get("sampling_params_removed") or []
+        for record in records if isinstance(record, dict)
+        and isinstance(record.get("cc_identity_stripped"), dict)
+    ]
+    row["params_stripped_requests"] = sum(1 for item in stripped if item)
+    row["params_stripped"] = sorted({label for item in stripped for label in item})
     from obench.failure_class import provider_failure_class
     kind = provider_failure_class(row, str(row.get("output_tail") or ""))
     if kind:
@@ -1488,6 +1495,58 @@ def early_death_side(rows: list[dict]) -> str | None:
     return "first cells died in under 10s"
 
 
+PR_EARLY_STOP_WINDOW = 10
+PR_EARLY_STOP_MAX_INFRA = 3
+
+
+def _pr_stop_key(pr: str) -> tuple[str, str]:
+    return ("__pr_early_stop__", str(pr))
+
+
+def pr_early_stop(rows: list[dict]) -> str | None:
+    """Abort a PR when more than 3 of its first 10 completed cells are infra.
+
+    ``rows`` are every finished cell of one PR, all sides. Completion order is
+    ``ts_iso`` when every row has it, else the given order.
+    """
+    ordered = _ordered_side_rows(rows)
+    if len(ordered) < PR_EARLY_STOP_WINDOW:
+        head = ordered
+    else:
+        head = ordered[:PR_EARLY_STOP_WINDOW]
+    from obench.failure_class import class_for_report
+    infra = sum(1 for row in head if class_for_report(row) == "infra")
+    if infra > PR_EARLY_STOP_MAX_INFRA:
+        return (
+            f"pr early stop: {infra} of the first {len(head)} completed cells are infra"
+        )
+    return None
+
+
+def _pr_finished_rows(out_dir: Path, pr: str) -> list[dict]:
+    root = out_dir / pr / "cells"
+    rows = []
+    if root.is_dir():
+        for path in sorted(root.glob("*/*/*.json")):
+            row = read_cell(path)
+            if isinstance(row, dict) and row.get("failure_class") != "incompatible":
+                rows.append(row)
+    return rows
+
+
+def _absorb_pr_early_stop(spec: dict, out_dir: Path, prepared: dict) -> None:
+    key = _pr_stop_key(spec["pr"])
+    if key in prepared:
+        return
+    reason = pr_early_stop(_pr_finished_rows(out_dir, spec["pr"]))
+    if reason:
+        prepared[key] = {"ok": False, "reason": reason, "status": "infra"}
+        publish_text(out_dir / spec["pr"] / "early-stop.json", json.dumps({
+            "pr": spec["pr"], "reason": reason, "status": "infra",
+        }, sort_keys=True))
+        print(f"{spec['pr']}: {reason}; skipping its remaining cells", file=sys.stderr)
+
+
 def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
     path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
     row = read_cell(path)
@@ -1519,6 +1578,7 @@ def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
                 "status": "infra",
             }
     project_side(out_dir, spec["pr"], spec["side"])
+    _absorb_pr_early_stop(spec, out_dir, prepared)
 
 
 def cache_version_for_checkout(checkout: Path) -> str:
@@ -1702,6 +1762,10 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         sha = spec["sha"]
         repo = spec.get("repo") or ""
         key = (repo, sha)
+        stop = prepared.get(_pr_stop_key(spec["pr"]))
+        if stop is not None:
+            _record_stopped(out_dir, spec, stop)
+            return None
         if key in prepared and not prepared[key].get("ok", True):
             _record_stopped(out_dir, spec, prepared[key])
             return None
