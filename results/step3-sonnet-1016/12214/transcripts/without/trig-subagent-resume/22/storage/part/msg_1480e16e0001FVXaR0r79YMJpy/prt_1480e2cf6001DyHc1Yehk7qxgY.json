@@ -1,0 +1,11 @@
+{
+  "id": "prt_1480e2cf6001DyHc1Yehk7qxgY",
+  "sessionID": "ses_eb7f1f667ffewZXWUnTiv2tuLO",
+  "messageID": "msg_1480e16e0001FVXaR0r79YMJpy",
+  "type": "text",
+  "text": "`rate` becomes `None` because `settings.json` has a misspelled key, `\"rat\"` instead of `\"rate\"`.\n\n**Trace**\n1. `settings.json:2` has `\"rat\": 0.5`. The key is misspelled, so there is no `\"rate\"` key.\n2. `app/config.py:10` runs `SETTINGS = json.load(_fh)` at import time. `SETTINGS` ends up as `{\"rat\": 0.5, \"currency\": \"USD\", \"label\": \"Total\"}`.\n3. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. The key is missing, so `.get` returns `None` instead of raising `KeyError`. This is the line where `None` first appears.\n4. `app/report.py:8` sets `rate = pricing.get_rate()`, which is `None`.\n5. `app/report.py:9` runs `rate * count` and raises `TypeError`. `main.py:7` is the call that reaches it.\n\n**Root cause:** `settings.json:2`. The fix is to rename `\"rat\"` to `\"rate\"`.\n\n**Contributing factor:** `app/pricing.py:8` uses `.get()` with no default or validation, so a missing setting passes through silently and only fails later. `SETTINGS[\"rate\"]` would have raised a `KeyError` naming the missing key.\n\nI didn't modify any files.",
+  "time": {
+    "start": 1792210251020,
+    "end": 1792210251020
+  }
+}

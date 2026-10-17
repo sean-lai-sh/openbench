@@ -1,0 +1,11 @@
+{
+  "id": "prt_1480255a30019Ub2oWa4XGZElg",
+  "sessionID": "ses_eb7fdc575ffe6OyVq5jg01TpgU",
+  "messageID": "msg_148024aff001UXAozG7ipPY2DF",
+  "type": "text",
+  "text": "`rate` becomes `None` at `app/pricing.py:17`, in `get_rate()`. The root cause is a typo in `settings.json:2`.\n\nHow it happens:\n1. `settings.json:2` has the key `\"rat\": 0.5`. It should be `\"rate\"`.\n2. `app/config.py:26-27` loads that file into `SETTINGS` at import time. `SETTINGS` has the keys `rat`, `currency` and `label`, and no `rate` key.\n3. `app/pricing.py:17` runs `SETTINGS.get(\"rate\")`. The key is missing, so `.get` returns `None` instead of raising `KeyError`.\n4. `app/report.py:8` assigns that `None` to `rate`, and `app/report.py:9` crashes on `rate * count`.\n\nThe fix is to rename the key to `\"rate\"` in `settings.json`. You could also use `SETTINGS[\"rate\"]` in `pricing.py` so a missing key fails loudly. I haven't changed any files.",
+  "time": {
+    "start": 1792209474998,
+    "end": 1792209474998
+  }
+}

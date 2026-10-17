@@ -1,0 +1,11 @@
+{
+  "id": "prt_1480220b4001PaB9G0Asg231ia",
+  "sessionID": "ses_eb7fdfddcffeU1sc0Q4yUzj6Ki",
+  "messageID": "msg_1480210b7001mZxCG6epa0A48l",
+  "type": "text",
+  "text": "`rate` becomes None because `settings.json` has a misspelled key. Line 2 reads `\"rat\": 0.5` when it should read `\"rate\": 0.5`.\n\nThe data flows like this:\n1. `app/config.py:21-22` loads `settings.json` into `SETTINGS` at import time. The dict has the keys `rat`, `currency` and `label`, and no `rate`.\n2. `app/pricing.py:30` runs `SETTINGS.get(\"rate\")`. The key is missing, so `.get` returns `None` without raising an error. This is the line where `rate` actually becomes None.\n3. `app/report.py:8` assigns that value with `rate = pricing.get_rate()`.\n4. `app/report.py:9` runs `rate * count` and raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`.\n\nI ran `main.py` and it crashes with that error. The traceback labels the failing line as line 9 of `app/report.py`.\n\nThe fix is to rename the key to `rate` in `settings.json:2`. You could also make `get_rate()` in `app/pricing.py` fail loudly on a missing key, for example with `SETTINGS[\"rate\"]`. Then a bad config would raise a `KeyError` instead of returning None. I haven't changed any files.",
+  "time": {
+    "start": 1792209461511,
+    "end": 1792209461511
+  }
+}
