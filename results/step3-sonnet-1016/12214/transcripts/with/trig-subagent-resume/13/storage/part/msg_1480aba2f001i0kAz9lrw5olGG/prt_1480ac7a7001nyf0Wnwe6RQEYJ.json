@@ -1,0 +1,11 @@
+{
+  "id": "prt_1480ac7a7001nyf0Wnwe6RQEYJ",
+  "sessionID": "ses_eb7f55609ffek5tTYjilKMLS2X",
+  "messageID": "msg_1480aba2f001i0kAz9lrw5olGG",
+  "type": "text",
+  "text": "`rate` becomes `None` at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\nThe cause is a typo in the data. `settings.json:2` has the key `\"rat\"` (value 0.5) instead of `\"rate\"`. `app/config.py:9-10` loads that file as-is into `SETTINGS`. So `SETTINGS.get(\"rate\")` finds no such key and returns `None` instead of raising a `KeyError`.\n\nThe `None` then travels through these steps:\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py:20` runs `rate = pricing.get_rate()`, which gets the `None`.\n3. `app/report.py:21` runs `rate * count`, which raises `TypeError` because `None` can't be multiplied by an int.\n\nThe traceback points at `report.py:21`, but the `None` is produced earlier, at `pricing.py:8`. The root cause is the misspelled key in `settings.json:2`.\n\nI haven't modified any files. There are two possible fixes. One is to correct the key to `\"rate\"` in `settings.json`. The other is to make `get_rate()` use `SETTINGS[\"rate\"]`, so a missing key fails with a clear error.",
+  "time": {
+    "start": 1792210028586,
+    "end": 1792210028586
+  }
+}

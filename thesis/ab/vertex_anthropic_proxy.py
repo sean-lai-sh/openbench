@@ -333,6 +333,24 @@ def apply_block_binding(data) -> str | None:
     thinking["block_binding"] = {"prefix_mismatch_behavior": mode}
     data["thinking"] = thinking
     return mode
+# Upstream models that reject sampling params OpenCode still sends. Sonnet 5.5
+# on Vertex answers 400 "`temperature` is deprecated for this model"; newer
+# OpenCode trees (step 3: PR 11731 onward) send it on every request.
+DEPRECATED_SAMPLING_PARAMS = {
+    "claude-sonnet-5-5": ("temperature", "top_p", "top_k"),
+}
+
+
+def strip_deprecated_sampling(data, model: str) -> list[str]:
+    """Drop sampling params the upstream model rejects. Returns labels removed."""
+    if not isinstance(data, dict):
+        return []
+    removed = []
+    for name in DEPRECATED_SAMPLING_PARAMS.get(str(model).split("@", 1)[0], ()):
+        if name in data:
+            data.pop(name)
+            removed.append(f"param:{name}")
+    return removed
 
 
 def cc_identity_record(removed: list[str]) -> dict:
@@ -945,8 +963,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 parsed = json.loads(raw.decode("utf-8")) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
+            sampling_removed: list[str] = []
             if isinstance(parsed, dict):
                 removed.extend(strip_cc_body(parsed))
+                sampling_removed = strip_deprecated_sampling(parsed, model)
                 raw = json.dumps(parsed).encode("utf-8")
             binding = apply_block_binding(parsed) if _message_route(route) else None
             if binding:
@@ -961,6 +981,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             identity = cc_identity_record(removed)
             if binding:
                 identity["thinking_block_binding"] = binding
+            if sampling_removed:
+                identity["sampling_params_removed"] = sampling_removed
             sent = classify_thinking(parsed)
             if ledger is not None and cell and length:
                 note_cell_bytes(ledger, cell, length)

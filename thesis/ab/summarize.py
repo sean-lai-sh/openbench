@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import random
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -1346,3 +1347,35 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+ONE_SIDE_STRIP = "not testable on Sonnet 5.5"
+DIFF_TOUCHES_SAMPLING = "untestable-as-is"
+
+
+def params_strip_status(without_rows: list[dict], with_rows: list[dict],
+                        diff_touches_sampling: bool = False) -> str:
+    """Per-PR flag for proxy-stripped sampling params (temperature/top_p/top_k).
+
+    ``both``/``none`` are comparable. Stripping on one side only means the two
+    builds sent different requests and the proxy erased that difference:
+    ``not testable on Sonnet 5.5``. A PR whose own diff touches temperature
+    handling is ``untestable-as-is`` whatever the counts say.
+    """
+    if diff_touches_sampling:
+        return DIFF_TOUCHES_SAMPLING
+    a = any((row.get("params_stripped_requests") or 0) > 0 for row in without_rows)
+    b = any((row.get("params_stripped_requests") or 0) > 0 for row in with_rows)
+    if a and b:
+        return "both"
+    if not a and not b:
+        return "none"
+    return ONE_SIDE_STRIP
+
+
+_SAMPLING_DIFF_RE = re.compile(r"^[+-](?![+-]).*\b(temperature|top_?p|top_?k|topP|topK)\b", re.M)
+
+
+def diff_touches_sampling(diff_text: str) -> bool:
+    """True when an added/removed diff line mentions temperature/top_p/top_k."""
+    return bool(_SAMPLING_DIFF_RE.search(diff_text or ""))

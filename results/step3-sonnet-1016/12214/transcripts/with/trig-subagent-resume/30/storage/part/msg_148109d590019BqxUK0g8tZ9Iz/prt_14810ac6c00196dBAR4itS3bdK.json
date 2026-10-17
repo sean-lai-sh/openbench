@@ -1,0 +1,11 @@
+{
+  "id": "prt_14810ac6c00196dBAR4itS3bdK",
+  "sessionID": "ses_eb7ef75a9ffefa6hk85R0Mq22V",
+  "messageID": "msg_148109d590019BqxUK0g8tZ9Iz",
+  "type": "text",
+  "text": "`rate` becomes `None` at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n**Cause:** `settings.json:2` has the key `\"rat\"`, which is a typo for `\"rate\"`. `SETTINGS` is loaded by `app/config.py:17-18` with `json.load`, so it has no `\"rate\"` key. `dict.get(\"rate\")` then returns `None` instead of raising `KeyError`.\n\n**Call chain:**\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py:5` sets `rate = pricing.get_rate()`, which is `None`.\n3. `app/report.py:6` evaluates `rate * count`, which raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`. The error surfaces here, but `rate` was already `None` by then.\n\nI ran `python3 main.py` and it produced that `TypeError`. The line numbers above for `report.py` are the file's own (5 and 6). The `cat -n` output I used numbered the files continuously, so it showed them as 20 and 21.\n\n**Fix options (not applied):**\n- Rename `\"rat\"` to `\"rate\"` in `settings.json`.\n- Use `SETTINGS[\"rate\"]` in `get_rate()` so a missing key fails immediately.",
+  "time": {
+    "start": 1792210414728,
+    "end": 1792210414728
+  }
+}
