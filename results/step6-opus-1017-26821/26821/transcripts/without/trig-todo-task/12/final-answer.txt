@@ -1,0 +1,13 @@
+The whole suite passes now: `python3 -m unittest` ran 16 tests with no failures. The first run reported 15 tests because `test_search.py` couldn't be imported at all and was counted as one error. All the changes are in `catalog/`; I didn't touch the tests.
+
+I tracked the work with the todo list. I handed `tests/test_members.py` to a subagent, which traced both of its errors to the borrow limit constant.
+
+What was wrong and how I fixed it:
+- **`catalog/search.py`**: it imported `normalize` from `catalog.nonexistent`, which doesn't exist. It now imports from `catalog.text`, where `normalize` is defined.
+- **`catalog/books.py`**: `parse_book` left the year as a string. It now converts it with `int(year)`.
+- **`catalog/factory.py`**: `sample_books()` only had two books, though its docstring says three. I added `Book("Emma", "Austen", 1815, 1)`.
+- **`catalog/fees.py`**: the fee added the daily rate to the days late instead of multiplying. It's now `days_late * DAILY_FEE`.
+- **`catalog/inventory.py`**: `recent(n)` returned one event too many (`[-n - 1:]`). It's now `[-n:]`, and returns an empty list when `n` is 0 or less.
+- **`catalog/members.py`**: `MAX_BORROWED` was 3, but the code comment and the tests both say members can hold five books. I set it to 5.
+
+Two values I chose myself because the tests don't check them: Emma's author, year and copy count, and what `recent()` returns for `n <= 0`.

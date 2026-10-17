@@ -1,0 +1,14 @@
+The whole suite now passes: `python3 -m unittest` ran 16 tests, all OK. It showed 15 before only because `test_search` couldn't be imported and counted as one error; now its two real tests run. I didn't change any tests.
+
+| File | Problem | Fix |
+|---|---|---|
+| `catalog/search.py` | Imported `normalize` from a module that doesn't exist (`catalog.nonexistent`) | Import it from `catalog.text` |
+| `catalog/books.py` | `parse_book` kept the year as a string, which also broke `age()` | Convert it with `int(year)` |
+| `catalog/factory.py` | The sample data had 2 books; the docstring and tests expect 3 | Added `Book("Emma", "Austen", 1815, 1)` |
+| `catalog/fees.py` | The fee added days to the daily rate instead of multiplying | `days_late * DAILY_FEE` |
+| `catalog/inventory.py` | `recent(n)` returned one event too many (`[-n - 1:]`) | `[-n:]`, and an empty list when `n <= 0` |
+| `catalog/members.py` | `MAX_BORROWED = 3`, but the stated policy and tests allow five books | `MAX_BORROWED = 5` |
+
+I tracked the work in the todo list. A subagent investigated `tests/test_members.py`: it traced both failures to the borrowing-limit constant and proposed the one-line fix, which I applied.
+
+The `n <= 0` case in `recent()` goes slightly beyond what the tests require. Without it, `recent(0)` would return the whole history, because `[-0:]` is the same as `[0:]`.
