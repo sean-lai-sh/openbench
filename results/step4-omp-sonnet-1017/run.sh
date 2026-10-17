@@ -1,5 +1,6 @@
 # Step 4: Oh My Pi on Sonnet 5.5, screened rows (15 = every row with an OMP screen; 14 AWAITING-SCREEN rows are step 7; 20/22/45 not exercisable).
 # Mirrors step-3 run12.sh. Runner worktree /tmp/ob-step4 = origin/main d7462cd (runner code = #69 232ed0f; #70-#75 are data-only).
+# 2026-10-17 18:35 EDT: runner worktree /tmp/ob-step4 moved to 12393ffd8 (#81: pi-natives sentinel fix for omp-44; the Opus strip is inert on Sonnet runs).
 # usage: run.sh <out> <label> <trials> <thinking default|off> <pr,pr,...>
 # One invocation at a time; authguard stops on >3/10 auth fails or <5 GB free. run_ab's own PR early stop (>3 infra in first 10).
 # Cap: --max-cost-usd = 1000 - ledger spend in every other step4-omp-sonnet-1017* dir; run_ab adds the spend already in --out (#69).
