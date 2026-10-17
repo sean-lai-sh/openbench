@@ -431,9 +431,9 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(seen["user_agent"], "openbench")
         self.assertEqual(seen["beta"], "files-api-2025-04-14")
         forwarded = json.loads(seen["body"])
+        # Opus 5.5 rejects temperature on Vertex, so the proxy drops it (recorded below).
         self.assertEqual(forwarded, {
             "max_tokens": 128,
-            "temperature": 0,
             "system": [{"type": "text", "text": kept_system}],
             "messages": messages,
             "metadata": {"extra": "stay"},
@@ -453,6 +453,7 @@ class TestProxy(unittest.TestCase):
                 "user-agent",
             ],
             "normalized": ["metadata.user_id", "authorization"],
+            "sampling_params_removed": ["param:temperature"],
         })
 
         legacy = {
@@ -510,7 +511,6 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(clean_seen["beta"], "files-api-2025-04-14")
         self.assertEqual(json.loads(clean_seen["body"]), {
             "max_tokens": 8,
-            "temperature": 0.2,
             "system": [{"type": "text", "text": "You are a careful coding agent."}],
             "messages": [{"role": "user", "content": "hello"}],
             "metadata": {"session": "keep"},
@@ -522,6 +522,7 @@ class TestProxy(unittest.TestCase):
             "stripped": False,
             "removed": [],
             "normalized": [],
+            "sampling_params_removed": ["param:temperature"],
         })
 
     def test_user_id_and_proxy_bearer_are_normalized(self):
