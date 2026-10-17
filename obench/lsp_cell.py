@@ -14,7 +14,9 @@ tool's package format.
 
 from __future__ import annotations
 
+import fcntl
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -24,6 +26,14 @@ _KNOWN = frozenset({"pyright", "typescript", "dotnet"})
 # The runner box keeps the .NET 10 SDK here. OpenCode's C# server is a
 # `dotnet tool` and will not start from an older SDK on PATH.
 _HOST_DOTNET_ROOT = "/home/box/.dotnet"
+# roslyn-language-server is installed once per box into this shared tool path
+# (outside every cell) and each C# cell puts it on PATH. ``OBENCH_ROSLYN_TOOL_PATH``
+# overrides it; ``OBENCH_ROSLYN_VERSION`` pins a version.
+_SHARED_ROSLYN_DEFAULT = os.path.join(
+    pwd.getpwuid(os.getuid()).pw_dir, ".cache", "obench", "roslyn-language-server"
+)
+ROSLYN_INSTALL_TIMEOUT_S = 600
+ROSLYN_EXE = "roslyn-language-server"
 
 
 class LspProvisionError(RuntimeError):
@@ -36,7 +46,7 @@ def _which(name: str, env: dict) -> str | None:
     return shutil.which(name, path=env.get("PATH"))
 
 
-def _run(cmd: list[str], cwd: str, env: dict) -> None:
+def _run(cmd: list[str], cwd: str, env: dict, timeout: float = 180) -> None:
     try:
         proc = subprocess.run(
             cmd,
@@ -44,7 +54,7 @@ def _run(cmd: list[str], cwd: str, env: dict) -> None:
             env=env,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -234,21 +244,37 @@ def lsp_boolean_enables_all(root: str) -> bool:
     return "all LSPs are disabled" in runtime_text
 
 
-def _dotnet(env: dict, dotnet: str | None) -> str:
-    _apply_host_dotnet(env)
-    # OpenCode's C# spawn uses which("roslyn-language-server") first. A hit
-    # skips its own `dotnet tool install --global`, which writes somewhere
-    # other than the data bin it then searches.
-    if _which("roslyn-language-server", env):
-        return "roslyn-language-server already on PATH"
+def shared_roslyn_dir(env: dict | None = None) -> str:
+    """Shared tool path for roslyn-language-server (outside every cell)."""
+    base = env if env is not None else os.environ
+    return (base.get("OBENCH_ROSLYN_TOOL_PATH") or "").strip() or _SHARED_ROSLYN_DEFAULT
+
+
+def nuget_env(env: dict) -> dict:
+    """Environment for ``dotnet tool install``.
+
+    NuGet checks the signing certificates' revocation status online by
+    default. The runner box cannot reach the plain-HTTP CRL/OCSP hosts
+    (crl3.digicert.com, ocsp.digicert.com, www.microsoft.com/pkiops), so the
+    install hangs after the package download and never finishes (seen on
+    PR 23771, 2026-10-17). Offline mode still verifies signatures against the
+    local certificate store; it only skips the network revocation fetch.
+    """
+    child = dict(env)
+    child.setdefault("NUGET_CERT_REVOCATION_MODE", "offline")
+    child.setdefault("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+    child.setdefault("DOTNET_NOLOGO", "1")
+    return child
+
+
+def _require_dotnet10(env: dict, dotnet: str | None) -> str:
     binary = _dotnet_binary(env, dotnet)
     if not binary:
         raise LspProvisionError(
             "dotnet SDK 10 is not on PATH; this cell cannot install "
-            "roslyn-language-server with --tool-path into "
-            "$XDG_DATA_HOME/opencode/bin. OpenCode's own installer uses "
-            "`dotnet tool install --global` and then looks in that bin, "
-            "which is not where --global writes. "
+            "roslyn-language-server with --tool-path. OpenCode's own installer "
+            "uses `dotnet tool install --global` and then looks in "
+            "$XDG_DATA_HOME/opencode/bin, which is not where --global writes. "
             "SDK 8 and 9 cannot install the current tool."
         )
     major = _dotnet_major(binary, env)
@@ -256,21 +282,60 @@ def _dotnet(env: dict, dotnet: str | None) -> str:
         raise LspProvisionError(
             f"dotnet SDK {major} cannot install roslyn-language-server; SDK 10 or newer is required"
         )
-    data = env.get("XDG_DATA_HOME") or ""
-    if not data:
+    return binary
+
+
+def ensure_shared_roslyn(env: dict | None = None, dotnet: str | None = None,
+                         tool_dir: str | None = None,
+                         timeout: float = ROSLYN_INSTALL_TIMEOUT_S) -> str:
+    """Install roslyn-language-server once into the shared tool path.
+
+    Returns the directory holding the executable. A file lock serialises
+    concurrent callers, so parallel cells wait for one install instead of
+    racing four installs. Raises ``LspProvisionError`` on failure.
+    """
+    base = dict(env if env is not None else os.environ)
+    _apply_host_dotnet(base)
+    tool_dir = tool_dir or shared_roslyn_dir(base)
+    exe = os.path.join(tool_dir, ROSLYN_EXE)
+    if os.path.isfile(exe):
+        return tool_dir
+    binary = _require_dotnet10(base, dotnet)
+    parent = os.path.dirname(os.path.abspath(tool_dir))
+    os.makedirs(parent, exist_ok=True)
+    with open(os.path.abspath(tool_dir) + ".lock", "w", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if os.path.isfile(exe):
+            return tool_dir
+        cmd = [binary, "tool", "install", ROSLYN_EXE, "--tool-path", tool_dir, "--prerelease"]
+        version = (base.get("OBENCH_ROSLYN_VERSION") or "").strip()
+        if version:
+            cmd += ["--version", version]
+        _run(cmd, parent, nuget_env(base), timeout=timeout)
+        if not os.path.isfile(exe):
+            raise LspProvisionError(f"roslyn install did not write {exe}")
+    return tool_dir
+
+
+def _dotnet(env: dict, dotnet: str | None) -> str:
+    _apply_host_dotnet(env)
+    # OpenCode's C# spawn uses which("roslyn-language-server") first. A hit
+    # skips its own `dotnet tool install --global`, which writes somewhere
+    # other than the data bin it then searches.
+    if _which(ROSLYN_EXE, env):
+        return "roslyn-language-server already on PATH"
+    shared = shared_roslyn_dir(env)
+    if os.path.isfile(os.path.join(shared, ROSLYN_EXE)):
+        _prepend(env, shared)
+        return f"using the shared roslyn-language-server in {shared}"
+    if not (env.get("XDG_DATA_HOME") or ""):
         raise LspProvisionError("XDG_DATA_HOME is not set")
-    bindir = os.path.join(data, "opencode", "bin")
-    os.makedirs(bindir, exist_ok=True)
-    _run(
-        [binary, "tool", "install", "roslyn-language-server", "--tool-path", bindir, "--prerelease"],
-        bindir,
-        env,
-    )
-    installed = os.path.join(bindir, "roslyn-language-server")
-    if not os.path.isfile(installed):
-        raise LspProvisionError(f"roslyn install did not write {installed}")
-    _prepend(env, bindir)
-    return "installed roslyn-language-server onto the cell PATH"
+    # Not pre-installed by the runner: install it into the shared path now
+    # (once per box, under a lock) rather than into this cell's data dir.
+    _require_dotnet10(env, dotnet)
+    shared = ensure_shared_roslyn(env, dotnet)
+    _prepend(env, shared)
+    return f"installed roslyn-language-server into the shared {shared}"
 
 
 def provision_language_servers(env: dict, workdir: str, tools, bun: str | None = None, dotnet: str | None = None) -> list[str]:
