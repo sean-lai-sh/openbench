@@ -302,6 +302,39 @@ def classify_thinking(data) -> str:
     return "none"
 
 
+BLOCK_BINDING_ENV = "OBENCH_THINKING_BLOCK_BINDING"
+BLOCK_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+
+
+def apply_block_binding(data) -> str | None:
+    """Opt-in: tell the upstream to drop thinking blocks whose prefix changed.
+
+    Sonnet 5.5 rejects a replayed ``thinking`` block when the content before it
+    was rewritten (OpenCode compaction/prune does this; PR 4838's taskflow at
+    context=72000 hit it on 57/60 cells). With ``OBENCH_THINKING_BLOCK_BINDING
+    =drop_block`` and at least one thinking block in ``messages``, this sets
+    ``thinking.block_binding.prefix_mismatch_behavior=drop_block`` (an absent
+    ``thinking`` field becomes ``{"type": "adaptive"}``). Returns the mode
+    applied, or None. Off by default.
+    """
+    mode = os.environ.get(BLOCK_BINDING_ENV, "").strip()
+    if mode != "drop_block" or not isinstance(data, dict):
+        return None
+    has_thinking = any(
+        isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking")
+        for message in (data.get("messages") or []) if isinstance(message, dict)
+        for block in (message.get("content") if isinstance(message.get("content"), list) else [])
+    )
+    if not has_thinking:
+        return None
+    thinking = data.get("thinking")
+    if not isinstance(thinking, dict):
+        thinking = {"type": "adaptive"}
+    thinking["block_binding"] = {"prefix_mismatch_behavior": mode}
+    data["thinking"] = thinking
+    return mode
+
+
 def cc_identity_record(removed: list[str]) -> dict:
     """Ledger value for Claude Code identity handling.
 
@@ -915,9 +948,19 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             if isinstance(parsed, dict):
                 removed.extend(strip_cc_body(parsed))
                 raw = json.dumps(parsed).encode("utf-8")
+            binding = apply_block_binding(parsed) if _message_route(route) else None
+            if binding:
+                raw = json.dumps(parsed).encode("utf-8")
             beta_header, header_removed = strip_cc_headers(self.headers)
             removed.extend(header_removed)
+            if binding:
+                parts = [p for p in (beta_header or "").split(",") if p.strip()]
+                if BLOCK_BINDING_BETA not in parts:
+                    parts.append(BLOCK_BINDING_BETA)
+                beta_header = ",".join(parts)
             identity = cc_identity_record(removed)
+            if binding:
+                identity["thinking_block_binding"] = binding
             sent = classify_thinking(parsed)
             if ledger is not None and cell and length:
                 note_cell_bytes(ledger, cell, length)
