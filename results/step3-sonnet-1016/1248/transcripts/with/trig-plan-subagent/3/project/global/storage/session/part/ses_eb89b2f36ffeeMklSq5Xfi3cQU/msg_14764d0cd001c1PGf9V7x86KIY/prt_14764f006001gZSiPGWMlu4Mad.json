@@ -1,0 +1,11 @@
+{
+  "id": "prt_14764f006001gZSiPGWMlu4Mad",
+  "messageID": "msg_14764d0cd001c1PGf9V7x86KIY",
+  "sessionID": "ses_eb89b2f36ffeeMklSq5Xfi3cQU",
+  "type": "text",
+  "text": "**Settings key that should be used:** `\"rate\"`. The key in the file is misspelled as `\"rat\"`.\n\n**Where `rate` is obtained**\n- `app/report.py:8` has `rate = pricing.get_rate()`.\n- `app/pricing.py:8`, inside `get_rate()`, has `return SETTINGS.get(\"rate\")`.\n\n**Where the key is defined**\n- `settings.json:2` has `\"rat\": 0.5,`.\n- `app/config.py:9-10` loads the file at import time:\n  ```python\n  with open(_SETTINGS_PATH, \"r\", encoding=\"utf-8\") as _fh:\n      SETTINGS = json.load(_fh)\n  ```\n\n**Cause of the None**\n`pricing.get_rate()` looks up `\"rate\"`, but `settings.json` only defines `\"rat\"`. `dict.get` returns `None` for a missing key instead of raising an error. So `rate` is `None` in `compute_total`. The next line, `return rate * count` (`app/report.py:9`), then raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`.\n\n**main.py's COUNT**\n`main.py:3` has `COUNT = 10`. With the key fixed, the total would be 0.5 × 10 = 5.0.\n\n**Suggested fix (not applied)**\nRename `\"rat\"` to `\"rate\"` in `settings.json:2`. `pricing.py` is already correct.",
+  "time": {
+    "start": 1792199159839,
+    "end": 1792199159839
+  }
+}
