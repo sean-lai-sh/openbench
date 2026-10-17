@@ -1,0 +1,15 @@
+The full suite now passes: 25 tests ran with 0 failures and `OK`.
+
+I also checked the `retry.py` fix against its docstring. With `max_attempts == 3`, `attempts_made < max_attempts` gives `should_retry(1)` and `should_retry(2)` as True and `should_retry(3)` as False, which is what the docstring says.
+
+I didn't modify any tests. All seven fixes are in `taskflow/`:
+
+1. **`queue.py`**: `_Entry.sort_key` now returns `(-priority, seq)`. Higher priority runs first, and ties go in FIFO order.
+2. **`retry.py`**: `should_retry` was off by one. It is now `attempts_made < max_attempts`.
+3. **`resources.py`**: `ResourcePool.release` now subtracts `cost` instead of 1.
+4. **`statemachine.py`**: `batch_order_ok` now requires non-increasing priority within a batch.
+5. **`events.py`**: `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + ".")`.
+6. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the base overrode the override. It now recurses as `deep_merge(result[key], value)`.
+7. **`scheduler.py`**: `_cascade_skip` now uses `transitive_dependents`, so skips cascade to all descendants instead of only direct children.
+
+I didn't scan the modules the tests don't exercise for other bugs, such as `history.py`, `model.py` and `dag.py`. The task was to get the suite passing, so I stopped there.

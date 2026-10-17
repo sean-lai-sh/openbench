@@ -1,0 +1,11 @@
+{
+  "id": "prt_148c4d50b0012FHiYG3SmMceTQ",
+  "sessionID": "ses_eb73bb13effejSBf3oot8Cq53C",
+  "messageID": "msg_148c4c62e00155zfATwTjHRXCe",
+  "type": "text",
+  "text": "The `retry.py` fix is consistent with the docstring and the scheduler, so no change is needed there. The docstring says `should_retry(1)` and `should_retry(2)` are True for `max_attempts == 3`. That matches `attempts_made < max_attempts`. The scheduler passes `run.attempts`, the number of completed attempts.\n\n## Result\nThe full suite now passes: 25 tests, 0 failures. I did not modify any tests.\n\n## Fixes (all under `taskflow/`)\n1. `queue.py`: the sort key is now `(-priority, seq)`. Higher priority comes first, and ties go in FIFO order.\n2. `retry.py`: `should_retry` now uses `attempts_made < max_attempts`. It previously used `max_attempts - 1`, which was off by one.\n3. `events.py`: `_prefix_matches` now checks `topic.startswith(prefix + \".\")`. The arguments were reversed.\n4. `statemachine.py`: `batch_order_ok` now requires priority to be non-increasing within a batch.\n5. `config.py`: `deep_merge` now recurses as `deep_merge(result[key], value)`. The override value was previously the base.\n6. `scheduler.py`: `_cascade_skip` now uses `transitive_dependents`, so a failure skips all downstream jobs and not only direct children.\n7. `resources.py`: `ResourcePool.release` now does `self.used -= cost` instead of `-= 1`. Multi-unit tasks were leaking capacity. Later tasks were never admitted, which made the three pipeline tests fail.",
+  "time": {
+    "start": 1792222221629,
+    "end": 1792222221629
+  }
+}

@@ -1,0 +1,17 @@
+All 25 tests now pass. The suite started with 18 failures.
+
+I found six root-cause bugs, all in `taskflow/`. I didn't change any tests.
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` | `sort_key` was `(seq, -priority)`, so the queue ordered by arrival first | `(-priority, seq)` |
+| `retry.py` | `should_retry` was off by one: `attempts_made < max_attempts - 1` | `attempts_made < max_attempts` |
+| `statemachine.py` | `batch_order_ok` used `>=`, which let priorities increase within a batch | `<=` |
+| `config.py` | `deep_merge` recursed with the arguments swapped, so the base overrode the override | `deep_merge(result[key], value)` |
+| `scheduler.py` | `_cascade_skip` only skipped direct dependents | uses `dag.transitive_dependents` |
+| `events.py` | `_prefix_matches` had its arguments reversed, so `job.term.*` events never reached prefix subscribers and `History` saw no terminal outcomes | `topic.startswith(prefix + ".")` |
+| `resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, leaking capacity for multi-unit costs | `used -= cost` |
+
+That is seven rows, not six. I miscounted earlier: it is seven bugs, four from the earlier session and three from this one. The last two fixes cleared the remaining `test_pipelines.py` failures.
+
+I didn't read `scheduler._admit`'s `except IllegalTransition` branch closely. It calls `run.record_state(State.FAILED, ...)` directly instead of going through the state machine. No test exercises it, and I haven't checked whether it's a real bug.

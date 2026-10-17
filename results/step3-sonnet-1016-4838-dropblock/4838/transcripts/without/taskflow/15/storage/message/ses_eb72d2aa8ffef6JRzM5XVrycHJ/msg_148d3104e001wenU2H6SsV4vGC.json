@@ -1,0 +1,17 @@
+{
+  "id": "msg_148d3104e001wenU2H6SsV4vGC",
+  "sessionID": "ses_eb72d2aa8ffef6JRzM5XVrycHJ",
+  "role": "user",
+  "time": {
+    "created": 1792223154254
+  },
+  "summary": {
+    "body": "## Summary\n\n**Task:** Fix the failing tests in the `taskflow` package (an in-memory job-orchestration engine) at `/tmp/obench-cell-xn4dba7r/bench_opencode_taskflow_rp_5my8x`. The tests under `tests/` are the spec and must not be edited. The goal was for `python3 -m unittest` to pass fully.\n\n**Starting state:** 18 of 25 tests failed.\n\n**Approach:** I ran the suite, read the small core modules (`queue`, `retry`, `statemachine`, `events`) along with `scheduler`, `resources` and `config`, and compared each docstring's stated behavior with the code. I fixed seven logic bugs, re-running after each batch because some bugs masked others.\n\n**Fixes made (all under `taskflow/`):**\n1. `queue.py`, `_Entry.sort_key`: returned `(self.seq, -self.priority)`. It now returns `(-self.priority, self.seq)`, so higher priority goes first and FIFO breaks ties.\n2. `retry.py`, `RetryPolicy.should_retry`: used `attempts_made < max_attempts - 1`, an off-by-one. It now uses `attempts_made < max_attempts`, which is what the docstring's `max_attempts=3` example requires.\n3. `events.py`, `_prefix_matches`: the check was reversed (`prefix.startswith(topic + \".\")`). It is now `topic.startswith(prefix + \".\")`.\n4. `statemachine.py`, `batch_order_ok`: used `current >= prev`. It now uses `current <= prev`, so priorities within a batch must be non-increasing. With the inverted guard, the scheduler failed jobs outright during admission.\n5. `resources.py`, `ResourcePool.release`: did `self.used -= 1`. It now does `self.used -= cost`, so resources are released symmetrically, which fixed the resource tests.\n6. `config.py`, `deep_merge`: the recursive call had its arguments swapped (`deep_merge(value, result[key])`), so base values overrode task values. It is now `deep_merge(result[key], value)`.\n7. `scheduler.py`, `_cascade_skip`: iterated `self.dag.dependents(...)` (direct children only). It now iterates `self.dag.transitive_dependents(...)`, so a permanent failure skips every downstream task.\n\n**Current state:** `python3 -m unittest` now reports `Ran 25 tests ... OK`. No test files were modified.\n\n**Next steps:** The task is essentially complete. I did not audit the other modules, such as `history.py`, `dag.py` and `stats.py`, since no test exercises them beyond what already passes. If more rigor is wanted, I could skim them for latent bugs, but that is optional.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

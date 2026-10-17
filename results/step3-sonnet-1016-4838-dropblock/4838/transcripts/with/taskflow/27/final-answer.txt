@@ -1,0 +1,14 @@
+All 25 tests now pass, and I didn't modify any tests.
+
+The last bug was in `taskflow/scheduler.py`. `_cascade_skip` looped over `self.dag.dependents(...)`, which only returns direct children. I changed it to `self.dag.transitive_dependents(...)`, so every downstream task is skipped. That function does a breadth-first walk, so the skip order is deterministic. I read `transitive_dependents` and found nothing wrong with it.
+
+I also re-checked the `should_retry` fix in `retry.py` from earlier. The current check, `attempts_made < self.max_attempts`, matches its docstring. With `max_attempts` of 3, `should_retry(1)` and `should_retry(2)` are True and `should_retry(3)` is False. My earlier note doubting that fix was wrong.
+
+Seven fixes in total, all under `taskflow/`:
+- **`queue.py`:** the sort key is now `(-priority, seq)`.
+- **`retry.py`:** the retry boundary is `attempts_made < max_attempts`.
+- **`events.py`:** the prefix match is now `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` now requires non-increasing priority within a batch.
+- **`resources.py`:** `release` subtracts `cost` instead of 1.
+- **`config.py`:** `deep_merge` now lets the override win.
+- **`scheduler.py`:** `_cascade_skip` now skips all transitive dependents.

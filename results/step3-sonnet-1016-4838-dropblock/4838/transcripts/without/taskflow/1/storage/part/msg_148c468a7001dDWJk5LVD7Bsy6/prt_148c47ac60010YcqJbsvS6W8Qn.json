@@ -1,0 +1,11 @@
+{
+  "id": "prt_148c47ac60010YcqJbsvS6W8Qn",
+  "sessionID": "ses_eb73c4d2fffe5vkSGdFSqmmjvg",
+  "messageID": "msg_148c468a7001dDWJk5LVD7Bsy6",
+  "type": "text",
+  "text": "All 25 tests now pass. The suite started with 18 failures.\n\nI found six root-cause bugs, all in `taskflow/`. I didn't change any tests.\n\n| File | Bug | Fix |\n|---|---|---|\n| `queue.py` | `sort_key` was `(seq, -priority)`, so the queue ordered by arrival first | `(-priority, seq)` |\n| `retry.py` | `should_retry` was off by one: `attempts_made < max_attempts - 1` | `attempts_made < max_attempts` |\n| `statemachine.py` | `batch_order_ok` used `>=`, which let priorities increase within a batch | `<=` |\n| `config.py` | `deep_merge` recursed with the arguments swapped, so the base overrode the override | `deep_merge(result[key], value)` |\n| `scheduler.py` | `_cascade_skip` only skipped direct dependents | uses `dag.transitive_dependents` |\n| `events.py` | `_prefix_matches` had its arguments reversed, so `job.term.*` events never reached prefix subscribers and `History` saw no terminal outcomes | `topic.startswith(prefix + \".\")` |\n| `resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, leaking capacity for multi-unit costs | `used -= cost` |\n\nThat is seven rows, not six. I miscounted earlier: it is seven bugs, four from the earlier session and three from this one. The last two fixes cleared the remaining `test_pipelines.py` failures.\n\nI didn't read `scheduler._admit`'s `except IllegalTransition` branch closely. It calls `run.record_state(State.FAILED, ...)` directly instead of going through the state machine. No test exercises it, and I haven't checked whether it's a real bug.",
+  "time": {
+    "start": 1792222198501,
+    "end": 1792222198501
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "msg_148d0c00b001Ev0BeUMTcYKvcO",
+  "sessionID": "ses_eb72f7691ffeoBOXTu6Lpwf7ru",
+  "role": "user",
+  "time": {
+    "created": 1792223002635
+  },
+  "summary": {
+    "body": "## Summary\n\n**Task:** Fix the failing tests in the `taskflow` package (an in-memory job-orchestration engine) by changing code under `taskflow/` only. The tests in `tests/` are the spec and must not be modified. The done condition is `python3 -m unittest` passing in full.\n\n**Current status:** `python3 -m unittest` now reports `Ran 25 tests ... OK`. The suite started with 18 failures. The stated completion criterion is met.\n\n### Root causes found and fixed\nEach fix was a small logic error where the code contradicted its own docstring. Edits were made with `sed`.\n\n1. **`taskflow/queue.py`**, `_Entry.sort_key`: it returned `(self.seq, -self.priority)`. It now returns `(-self.priority, self.seq)`, so higher priority dispatches first and FIFO breaks ties.\n2. **`taskflow/retry.py`**, `RetryPolicy.should_retry`: it used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`. This had caused retries to be skipped, so jobs went straight to FAILED.\n3. **`taskflow/resources.py`**, `ResourcePool.release`: it did `self.used -= 1`. It now does `self.used -= cost`. Resources were leaking, which stalled later admissions.\n4. **`taskflow/statemachine.py`**, `batch_order_ok`: the comparison was `current >= prev`. It is now `current <= prev`, matching the \"non-increasing priority within a batch\" invariant. This was masked by the queue ordering bug. Once the queue was fixed, the inverted guard would have failed runs.\n5. **`taskflow/config.py`**, `deep_merge`: the recursive call had its arguments swapped, `deep_merge(value, result[key])`. It is now `deep_merge(result[key], value)`, so overrides win at the leaves. This had made task `retry` overrides lose to the defaults.\n6. **`taskflow/events.py`**, `_prefix_matches`: it checked `prefix.startswith(topic + \".\")`. It now checks `topic.startswith(prefix + \".\")`. Prefix subscriptions such as `job.term` were never delivering `job.term.failed` and similar topics, so History's failed/skipped sets stayed empty.\n7. **`taskflow/scheduler.py`**, `_cascade_skip`: it used `self.dag.dependents(...)`, which returns direct children only. It now uses `self.dag.transitive_dependents(...)`, so a permanent failure skips everything downstream.\n\n### Notes\n- The first bash call failed only because the tool call lacked a `description` argument. It was re-issued correctly.\n- I did not read or audit the other modules (`planner`, `stats`, `metrics`, `dag_algorithms`, `validation`, etc.). The tests don't exercise them, so any defects there would not show up in this suite.\n- No test files were touched.\n\n### Next steps\n- Optionally re-run `python3 -m unittest` once more to confirm the green result is stable. No further work is required for the stated goal.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

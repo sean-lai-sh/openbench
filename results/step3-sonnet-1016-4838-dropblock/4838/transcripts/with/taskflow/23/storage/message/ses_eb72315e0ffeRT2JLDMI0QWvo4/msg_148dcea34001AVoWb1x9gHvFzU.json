@@ -1,0 +1,18 @@
+{
+  "id": "msg_148dcea34001AVoWb1x9gHvFzU",
+  "sessionID": "ses_eb72315e0ffeRT2JLDMI0QWvo4",
+  "role": "user",
+  "time": {
+    "created": 1792223799860
+  },
+  "summary": {
+    "title": "Fixing failing taskflow unittest suite",
+    "body": "`python3 -m unittest` now passes all 25 tests. I fixed seven bugs and didn't touch the tests.\n\n**Root causes:**\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so ordering was effectively FIFO. It now returns `(-priority, seq)`, which is what the docstring says.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which is off by one. It now uses `attempts_made < max_attempts`. This had cut every retry budget short, and it hid other bugs.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`. This is what makes prefix subscriptions deliver, and the history tests depend on it.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. It now checks `current <= prev`. Once the queue ordered correctly, the old check made the scheduler fail the higher-priority task in a batch.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, so later tasks never got admitted.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. Now it recurses as `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}
