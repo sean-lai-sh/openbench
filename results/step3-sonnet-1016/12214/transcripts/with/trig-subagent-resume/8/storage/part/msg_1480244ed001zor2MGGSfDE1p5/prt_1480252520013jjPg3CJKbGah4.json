@@ -1,0 +1,11 @@
+{
+  "id": "prt_1480252520013jjPg3CJKbGah4",
+  "sessionID": "ses_eb7fdc8d6ffe6LXrDnc0uXvfSy",
+  "messageID": "msg_1480244ed001zor2MGGSfDE1p5",
+  "type": "text",
+  "text": "`rate` becomes `None` at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\nThe cause is a typo in the data, in **settings.json:2**. The key is `\"rat\"` instead of `\"rate\"`:\n\n```json\n\"rat\": 0.5,\n```\n\nHow it reaches the crash:\n1. `app/config.py:9-10` loads `settings.json` into `SETTINGS` at import time. The dict has the keys `rat`, `currency` and `label`, with no `rate`.\n2. `app/pricing.py:8` calls `SETTINGS.get(\"rate\")`. The key is missing, so `.get` returns `None` instead of raising `KeyError`.\n3. `app/report.py:8` assigns that value with `rate = pricing.get_rate()`.\n4. `app/report.py:9` evaluates `rate * count`, which raises the `TypeError`. `main.py:7` is the call that started it.\n\nThe fix would be to rename `\"rat\"` to `\"rate\"` in settings.json. You could also change `get_rate()` to use `SETTINGS[\"rate\"]`, so a missing key fails loudly. I haven't changed any files.",
+  "time": {
+    "start": 1792209474151,
+    "end": 1792209474151
+  }
+}

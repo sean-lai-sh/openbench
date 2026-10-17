@@ -1,0 +1,11 @@
+{
+  "id": "prt_1480318a1001KzGU4TcNz3Oas3",
+  "sessionID": "ses_eb7fcff87ffenavID6vDG2HLsx",
+  "messageID": "msg_148030bda001WpPfJS4ccrpw39",
+  "type": "text",
+  "text": "`rate` becomes None because of a misspelled key in `settings.json`. The file has `\"rat\"` where the code expects `\"rate\"`.\n\n**Where it happens:** `settings.json:2` contains `\"rat\": 0.5`.\n\n**How it flows:**\n1. `app/config.py:9-10` loads `settings.json` into `SETTINGS` at import time. The dict has the keys `rat`, `currency` and `label`, and no `rate`.\n2. `app/pricing.py:8` runs `SETTINGS.get(\"rate\")`. The key is missing, so `.get` quietly returns `None` instead of raising `KeyError`.\n3. `app/report.py:8` assigns that `None` to `rate`.\n4. `app/report.py:9` runs `rate * count` and raises `TypeError`.\n\n**Root cause:** the typo at `settings.json:2`. The line `app/pricing.py:8` hides the problem by using `.get()` with no default or check. Using `SETTINGS[\"rate\"]` there would make the failure point at the missing key.\n\nI haven't changed any files.",
+  "time": {
+    "start": 1792209524927,
+    "end": 1792209524927
+  }
+}

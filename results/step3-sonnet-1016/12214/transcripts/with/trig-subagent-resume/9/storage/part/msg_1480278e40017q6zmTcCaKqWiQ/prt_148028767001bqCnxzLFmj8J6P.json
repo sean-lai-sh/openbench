@@ -1,0 +1,11 @@
+{
+  "id": "prt_148028767001bqCnxzLFmj8J6P",
+  "sessionID": "ses_eb7fd91c8ffeY6Ak5EnNfOBqDM",
+  "messageID": "msg_1480278e40017q6zmTcCaKqWiQ",
+  "type": "text",
+  "text": "`rate` becomes `None` because of a typo in the settings key, and the lookup in `get_rate` silently returns `None` instead of failing.\n\n**Where `None` comes from**\n- `settings.json:2` has the key `\"rat\": 0.5`. It should be `\"rate\"`.\n- `app/config.py:9-10` loads that file as-is into `SETTINGS`, so `SETTINGS` has no `\"rate\"` key.\n- `app/pricing.py:8` runs `SETTINGS.get(\"rate\")`. The key is missing, so `.get` returns `None` with no error. This is the line where `None` first enters the program.\n- `app/report.py:8` assigns that `None` to `rate`.\n- `app/report.py:9` runs `rate * count` and raises the `TypeError`.\n\n**Call chain:** `main.py:7` calls `compute_total(10)`. That calls `pricing.get_rate()` at `app/report.py:8`, which does the `SETTINGS.get(\"rate\")` lookup at `app/pricing.py:8`.\n\n**Root cause:** the misspelled key at `settings.json:2`.\n\n**Why it's hard to spot:** `.get(\"rate\")` at `app/pricing.py:8` has no default and no check, so the error only shows up later in `report.py`. Using `SETTINGS[\"rate\"]` would raise a `KeyError` at the real source.\n\nI didn't modify any files.",
+  "time": {
+    "start": 1792209487760,
+    "end": 1792209487760
+  }
+}
