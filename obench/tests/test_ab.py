@@ -2615,3 +2615,23 @@ class InterleaveSeededOrderTests(unittest.TestCase):
         with self.assertRaises(RunError):
             order_cells([{"pr": "1", "side": "with", "task": "t", "trial": 1}],
                         order="interleave-seeded")
+
+
+class InterleaveSeededCliTests(unittest.TestCase):
+    def test_cli_accepts_seed_with_interleave_seeded_and_requires_it(self):
+        import contextlib, io
+        from thesis.ab.run_ab import main
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = main(["thesis/ab/fixtures/opencode-harness-prs.csv", "--pr", "623",
+                       "--task-map", "thesis/ab/fixtures/trigger-tasks.csv",
+                       "--order", "interleave-seeded"])
+        self.assertEqual(rc, 2)
+        self.assertIn("requires --seed", err.getvalue())
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = main(["thesis/ab/fixtures/opencode-harness-prs.csv", "--pr", "623",
+                       "--task-map", "thesis/ab/fixtures/trigger-tasks.csv",
+                       "--order", "interleave-seeded", "--seed", "1016", "--dry-run"])
+        self.assertNotIn("--seed applies", err.getvalue())
+        self.assertEqual(rc, 0, err.getvalue())

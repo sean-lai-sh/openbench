@@ -2020,9 +2020,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.seed is not None and order not in {"random", "interleave", "abba"}:
+    if order == "interleave-seeded" and args.seed is None:
+        print("error: --order interleave-seeded requires --seed", file=sys.stderr)
+        return 2
+    if args.seed is not None and order not in {"random", "interleave", "abba", "interleave-seeded"}:
         print(
-            "error: --seed applies to --order random, --order interleave, and --order abba",
+            "error: --seed applies to --order random, interleave, interleave-seeded, and abba",
             file=sys.stderr,
         )
         return 2
