@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cad902f001nQ5PeIx30YzOoK",
+  "messageID": "msg_14cad4955001rfYjejIo4g8F4A",
+  "sessionID": "ses_eb352b6b0ffemPRsaNJH3fW13H",
+  "type": "text",
+  "text": "I found the cause by reading the files; I didn't run anything. `app/report.py` doesn't read settings itself. It calls `pricing.get_rate()`, which asks for a key that isn't in `settings.json`.\n\n**Where `rate` is obtained**\n- `app/report.py:8`: `rate = pricing.get_rate()`\n- That calls `app/pricing.py:8`: `return SETTINGS.get(\"rate\")`\n- `SETTINGS` is loaded from `<project>/settings.json` in `app/config.py:6-10`.\n\n**Key mismatch**\n- **Key currently used:** `\"rate\"`, at `app/pricing.py:8`. It isn't in `settings.json`, so `.get()` returns `None`.\n- **Key that exists in settings:** `\"rat\"`, defined at `settings.json:2` (`\"rat\": 0.5`).\n- **Value:** `0.5`\n\n**Check against the expected output**\n`compute_total(10)` would compute `0.5 * 10 = 5.0`, so the program would print `Total: 5.0` as expected.\n\n**Two ways to fix it**\n- Change `app/pricing.py:8` to `SETTINGS.get(\"rat\")`.\n- Or rename the key in `settings.json:2` to `\"rate\"`. `\"rat\"` looks like a typo, so this may be the cleaner fix.\n\nEither one gives `Total: 5.0`.\n\n**Full contents of `app/report.py`**\n```python\n\"\"\"Report computations.\"\"\"\n\nfrom app import pricing\n\n\ndef compute_total(count):\n    \"\"\"Total charge for ``count`` items at the configured rate.\"\"\"\n    rate = pricing.get_rate()\n    return rate * count\n```\n\n**Full contents of `main.py`**\n```python\nfrom app.report import compute_total\n\nCOUNT = 10\n\n\ndef main():\n    total = compute_total(COUNT)\n    print(\"Total: {}\".format(total))\n\n\nif __name__ == \"__main__\":\n    main()\n```",
+  "time": {
+    "start": 1792287805517,
+    "end": 1792287805518
+  }
+}

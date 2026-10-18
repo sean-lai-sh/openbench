@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cb07b1e001r7Y0Qii4w0tVoP",
+  "messageID": "msg_14cb043230019LFeS03bKGsKn1",
+  "sessionID": "ses_eb34fbce4ffelxk95LM01vX0My",
+  "type": "text",
+  "text": "I only read files and changed nothing. One correction to the question's premise: `app/report.py` never reads a settings key itself. It calls a helper in `app/pricing.py`, and that helper reads the wrong key.\n\n**Where `rate` is obtained**\n- `app/report.py:8`: `rate = pricing.get_rate()`\n- `app/pricing.py:8` does the lookup: `return SETTINGS.get(\"rate\")`\n- `app/config.py:9-10` loads `SETTINGS` from `settings.json`.\n\n**Wrong key:** `\"rate\"`. It isn't in `settings.json`, so `.get()` returns `None` and `rate * count` crashes.\n\n**Correct key:** `\"rat\"`, defined at `settings.json:2` as `\"rat\": 0.5`. The other keys there are `\"currency\": \"USD\"` and `\"label\": \"Total\"`.\n\n**Check:** `COUNT = 10` (`main.py:3`), and 0.5 × 10 = 5.0, so the output would be `Total: 5.0`.\n\nThere are two ways to fix it:\n- Change `app/pricing.py:8` to read `\"rat\"`.\n- Rename the key in `settings.json` to `\"rate\"`. This is probably the cleaner fix, since `\"rat\"` looks like a typo.\n\n**app/report.py**\n```python\n\"\"\"Report computations.\"\"\"\n\nfrom app import pricing\n\n\ndef compute_total(count):\n    \"\"\"Total charge for ``count`` items at the configured rate.\"\"\"\n    rate = pricing.get_rate()\n    return rate * count\n```\n\n**main.py**\n```python\nfrom app.report import compute_total\n\nCOUNT = 10\n\n\ndef main():\n    total = compute_total(COUNT)\n    print(\"Total: {}\".format(total))\n\n\nif __name__ == \"__main__\":\n    main()\n```",
+  "time": {
+    "start": 1792287996735,
+    "end": 1792287996735
+  }
+}

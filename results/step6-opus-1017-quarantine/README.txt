@@ -1,0 +1,1 @@
+C1 2367 with trial 19 (started 2026-10-17 22:21 ET): OpenCode printed its 'opencode run' usage text and exited, 0 model requests, no proxy ledger -> runner's unmetered-tokens guard stopped C1 launching at 278 (2367 at 19/side). Same glitch as step-3 reorder 1248 trial 28. Quarantined so the trial re-runs. Not used.
