@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cb1f66e001EDc3OnTzwu95UD",
+  "messageID": "msg_14cb1ba7f001R4nVPzXVMch6Md",
+  "sessionID": "ses_eb34e4589ffeXQ7nl8adIIMl0k",
+  "type": "text",
+  "text": "The root cause is a misspelled key in `settings.json`: it defines `\"rat\"`, but the code looks up `\"rate\"`, so the lookup returns `None`. I only read files; nothing was edited or run.\n\n**(1) Where `rate` comes from.** `app/report.py` doesn't read settings itself. It calls a helper in `app/pricing.py`, which does the lookup.\n\n`app/report.py:8-9`\n```python\n    rate = pricing.get_rate()\n    return rate * count\n```\n`app/pricing.py:3` and `app/pricing.py:6-8`\n```python\nfrom app.config import SETTINGS\n...\ndef get_rate():\n    \"\"\"The per-item rate configured for the service.\"\"\"\n    return SETTINGS.get(\"rate\")\n```\n`app/config.py:6-10` loads `settings.json` from the project root:\n```python\n_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n_SETTINGS_PATH = os.path.join(_ROOT, \"settings.json\")\n\nwith open(_SETTINGS_PATH, \"r\", encoding=\"utf-8\") as _fh:\n    SETTINGS = json.load(_fh)\n```\n\n**(2) The mismatched key.** In `settings.json:2`:\n```json\n  \"rat\": 0.5,\n```\nThere is no `\"rate\"` key, so `SETTINGS.get(\"rate\")` returns `None`, and `None * count` raises the TypeError.\n\n**(3) The values.**\n- `\"rat\"` is `0.5` (`settings.json:2`).\n- `COUNT = 10` (`main.py:3`), which is passed to `compute_total(COUNT)` at `main.py:7`.\n- 0.5 × 10 = 5.0, so the output would be `Total: 5.0`.\n\n**Minimal fix.** Rename the key in `settings.json:2`:\n```json\n  \"rate\": 0.5,\n```\nChanging `app/pricing.py:8` to `SETTINGS.get(\"rat\")` would also work, but it would keep the typo in the code. It's also worth adding a check so a missing key fails with a clear error, e.g. use `SETTINGS[\"rate\"]` instead of `.get`.",
+  "time": {
+    "start": 1792288093855,
+    "end": 1792288093855
+  }
+}

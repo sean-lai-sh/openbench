@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ca5aa46001p6FkArJAlc9S0w",
+  "messageID": "msg_14ca5741e001mXQ1nxa9TC5XQc",
+  "sessionID": "ses_eb35a8be9ffeYIOQrx5pCqqu0C",
+  "type": "text",
+  "text": "I read all the files and changed nothing. The cause is a key name mismatch: the code asks for `\"rate\"`, but `settings.json` only has `\"rat\"`, so `rate` comes back as `None`.\n\n**app/report.py (full file):**\n```\n1  \"\"\"Report computations.\"\"\"\n2  \n3  from app import pricing\n4  \n5  \n6  def compute_total(count):\n7      \"\"\"Total charge for ``count`` items at the configured rate.\"\"\"\n8      rate = pricing.get_rate()\n9      return rate * count\n```\n\n**settings.json (full file):**\n```\n1  {\n2    \"rat\": 0.5,\n3    \"currency\": \"USD\",\n4    \"label\": \"Total\"\n5  }\n```\n\n**Conclusions:**\n\n1. **How `rate` is obtained:** `app/report.py:8` has `rate = pricing.get_rate()`. That function is at `app/pricing.py:8` and runs `return SETTINGS.get(\"rate\")`. `SETTINGS` is loaded from `settings.json` when the program starts (`app/config.py:9-10`). There's no `\"rate\"` key, so `.get` returns `None`, and `None * count` crashes at `report.py:9`.\n2. **The key that actually exists:** `\"rat\"`, defined at `settings.json:2`. It's almost certainly a typo for `\"rate\"`.\n3. **Values:** `\"rat\"` is `0.5` and `COUNT` is `10` (`main.py:3`). 0.5 × 10 = 5.0, as expected.\n\n**Possible fix (not applied):** rename the key in `settings.json:2` to `\"rate\"`, or change `app/pricing.py:8` to read `\"rat\"`. Renaming the key in the settings file is the cleaner option.",
+  "time": {
+    "start": 1792287287912,
+    "end": 1792287287912
+  }
+}

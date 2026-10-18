@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cb1d4810012F0v983W5mBMA7",
+  "messageID": "msg_14cb1aac0001ngQs3LVCb7W9VV",
+  "sessionID": "ses_eb34e5548ffe1t9qkqPIbXYs60",
+  "type": "text",
+  "text": "I didn't change any files. The `rate` lookup asks for `\"rate\"`, but `settings.json` only has the key `\"rat\"`, so the lookup returns `None`.\n\n**(1) Where `rate` comes from:** `app/report.py:8` doesn't read settings directly. It calls a pricing helper:\n```python\nfrom app import pricing                    # app/report.py:3\n    rate = pricing.get_rate()              # app/report.py:8\n    return rate * count                    # app/report.py:9\n```\nThat helper is in `app/pricing.py:6-8`. It reads `SETTINGS` (imported from `app.config` at `app/pricing.py:3`):\n```python\ndef get_rate():\n    \"\"\"The per-item rate configured for the service.\"\"\"\n    return SETTINGS.get(\"rate\")\n```\n`SETTINGS` is filled from `settings.json` in `app/config.py:7-10`:\n```python\n_SETTINGS_PATH = os.path.join(_ROOT, \"settings.json\")\n\nwith open(_SETTINGS_PATH, \"r\", encoding=\"utf-8\") as _fh:\n    SETTINGS = json.load(_fh)\n```\n\n**(2) Key it looks up now:** `\"rate\"` (`app/pricing.py:8`). That key isn't in `settings.json`, so `.get` returns `None`.\n\n**(3) Key it should come from:** `\"rat\"`, defined at `settings.json:2`:\n```json\n  \"rat\": 0.5,\n```\nThe full `settings.json` has only `\"rat\": 0.5`, `\"currency\": \"USD\"` and `\"label\": \"Total\"`. 0.5 × 10 = 5.0, which matches the expected `Total: 5.0`. `\"rat\"` looks like a typo for `\"rate\"`. You could fix it either by renaming the key in `settings.json:2` or by changing the lookup in `app/pricing.py:8`.\n\n**COUNT:** `10`, set at `main.py:3` (`COUNT = 10`) and passed to `compute_total(COUNT)` at `main.py:7`.",
+  "time": {
+    "start": 1792288085160,
+    "end": 1792288085160
+  }
+}
