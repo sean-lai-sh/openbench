@@ -1,0 +1,31 @@
+{
+  "id": "prt_14cf43d9b001tq4T590aACP1cq",
+  "sessionID": "ses_eb30becb4ffeSr3vPDmHPFisRr",
+  "messageID": "msg_14cf437fc001d4WYjUDtSSuyUo",
+  "type": "tool",
+  "callID": "toolu_vrtx_01W4doXPQSpjWQZADy2tsCZy",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-eqogtvip/bench_opencode_trig-list_qasxglhw/miniconf/loader.py",
+      "content": "\"\"\"Load configuration from files and strings.\"\"\"\n\nimport os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\nINCLUDE_DIRECTIVE = \"@include\"\n\n\ndef _read_lines(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return fh.read().splitlines()\n\n\ndef _include_target(line):\n    parts = line.strip().split(None, 1)\n    if not parts or parts[0] != INCLUDE_DIRECTIVE:\n        return None\n    if len(parts) < 2 or not parts[1].strip():\n        raise ConfigError(\"@include directive requires a path\")\n    return parts[1].strip()\n\n\ndef _expand(path, lines, stack):\n    base_dir = os.path.dirname(os.path.abspath(path))\n    expanded = []\n    for raw in lines:\n        target = _include_target(raw)\n        if target is None:\n            expanded.append(raw)\n            continue\n        target_path = os.path.join(base_dir, target)\n        real = os.path.realpath(target_path)\n        if real in stack:\n            raise ConfigError(\n                \"include cycle detected: {!r} included from {!r}\".format(\n                    target_path, path\n                )\n            )\n        if not os.path.isfile(target_path):\n            raise ConfigError(\n                \"included file not found: {!r} (from {!r})\".format(target_path, path)\n            )\n        try:\n            child_lines = _read_lines(target_path)\n        except OSError as exc:\n            raise ConfigError(\n                \"cannot read included file {!r}: {}\".format(target_path, exc)\n            ) from exc\n        stack.append(real)\n        try:\n            expanded.extend(_expand(target_path, child_lines, stack))\n        finally:\n            stack.pop()\n    return expanded\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` directives are expanded inline, resolving relative\n    paths against the directory of the including file.\n    \"\"\"\n    lines = _read_lines(path)\n    return parse_lines(_expand(path, lines, [os.path.realpath(path)]))\n\n\ndef loads(text):\n    \"\"\"Parse configuration from a string.\"\"\"\n    return parse_lines(text.splitlines())\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-eqogtvip/bench_opencode_trig-list_qasxglhw/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-eqogtvip/bench_opencode_trig-list_qasxglhw/miniconf/loader.py": [],
+        "/tmp/obench-cell-eqogtvip/bench_opencode_trig-list_qasxglhw/miniconf/errors.py": [],
+        "/tmp/obench-cell-eqogtvip/bench_opencode_trig-list_qasxglhw/tests/test_loader.py": [],
+        "/tmp/obench-cell-eqogtvip/bench_opencode_trig-list_qasxglhw/miniconf/parser.py": []
+      },
+      "filepath": "/tmp/obench-cell-eqogtvip/bench_opencode_trig-list_qasxglhw/miniconf/loader.py",
+      "exists": true
+    },
+    "time": {
+      "start": 1792292442997,
+      "end": 1792292443388
+    }
+  }
+}

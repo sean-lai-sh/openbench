@@ -1,0 +1,16 @@
+`miniconf.loader.load(path)` now handles `@include`. All 13 existing tests pass, and I checked the new behaviour with quick scripts. I didn't add any new tests to `tests/`.
+
+All the changes are in `miniconf/loader.py`: before parsing, each `@include` line is replaced with the lines of the file it names. `loads()` and the parser are unchanged.
+
+What I checked:
+- **Example:** `examples/service.conf` loads with `logging.level = info`, `logging.json = True`, `http.port = 8080` and `name = billing`.
+- **Override and nesting:** with three files (`a.conf` → `sub/b.conf` → `sub/c.conf`), a key set before the include was overridden by the included file, and a key set after it won. The nested include in `sub/` found `c.conf` relative to its own directory, not the working directory.
+- **Cycle:** when `c.conf` includes `../a.conf`, `load` raises `ConfigError` instead of looping.
+- **Missing file:** an include pointing at a file that doesn't exist raises `ConfigError`.
+
+Behaviour you might not expect:
+- **Same file included twice:** cycle detection only looks at the chain of files currently being expanded. Including one file from two different places is allowed; only a real loop is rejected.
+- **Section carries over:** if an included file opens a `[section]`, lines after the `@include` stay in that section. This follows from treating the include as if its lines were written in place. In the example it makes no difference, because `[http]` comes right after.
+- **Errors:** an `@include` with no path, or an included file that can't be read, also raises `ConfigError`.
+- **Spaces in paths:** everything after `@include` is taken as the path, so paths with spaces work.
+- **Missing top-level file:** if the file passed to `load` doesn't exist, you still get the same `FileNotFoundError` as before.

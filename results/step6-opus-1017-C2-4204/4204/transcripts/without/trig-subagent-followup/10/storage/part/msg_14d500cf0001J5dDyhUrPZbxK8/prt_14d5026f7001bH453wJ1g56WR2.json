@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d5026f7001bH453wJ1g56WR2",
+  "sessionID": "ses_eb2b0af9affeyBnFD3w0zIbPN8",
+  "messageID": "msg_14d500cf0001J5dDyhUrPZbxK8",
+  "type": "text",
+  "text": "The setting is read in three places, and all three now work. Before the fix, none of them did.\n\n**Files and lines that read it**\n| File:line | Code | Before | After |\n|---|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | `Total: 0` (silently used 0) | `Total: 5.0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | `fee_rate is missing` | `Report fee: 0.5` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | `fee_rate is missing` | `CSV fee: 0.5` |\n\nThe subagent's report missed `csv_writer.py`. It builds the key name from two pieces, so searching for the literal `fee_rate` doesn't find it. I read every file in the project to make sure nothing else was missed.\n\n**Not readers of the setting** (they only look similar):\n- `billing/invoice.py:5`: `\"fee_rate\"` is just a column heading.\n- `billing/discount.py:5`: `archived_fee_rate` is a hardcoded local value.\n- `billing/audit.py:4`: builds `\"fee_code…\"`, not `fee_rate`.\n- `billing/tax.py:5`: its own local `fee_schedule`.\n\n**Changes**\n1. `settings.json:2`: renamed the key from `\"rat\"` to `\"fee_rate\"`. This was the actual bug and fixes all three paths.\n2. `main.py:10-12`: if the setting is missing, `main.py` now stops with `fee_rate is missing` instead of using 0. This matches the other two files, so a missing key can't silently produce a wrong total again.\n\nTo check, I ran all three entry points again (output in the table above). No references to `\"rat\"` remain.",
+  "time": {
+    "start": 1792298460936,
+    "end": 1792298460936
+  }
+}

@@ -1,0 +1,19 @@
+I fixed the bug. All three places that read the setting now work.
+
+**Code that reads the fee rate**
+| File:line | How it reads it | Before | After |
+|---|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` (falls back to 0 if missing) | `Total: 0` | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | stopped with "fee_rate is missing" | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | stopped with "fee_rate is missing" | `CSV fee: 0.5` |
+
+These are the only reads. I searched for the key directly, for names built from pieces like `"fee_" + "rate"`, and for any code that loads the settings through `app/config.py`.
+
+Some files mention the name but don't read the setting:
+- `billing/invoice.py:5` uses `"fee_rate"` only as a column heading.
+- `billing/discount.py:5` has its own hardcoded `archived_fee_rate = 0.15`.
+- `billing/tax.py` and `billing/audit.py` have similar names but nothing to do with this setting.
+
+**Fix:** In `settings.json:2`, I renamed the key from `"rat"` to `"fee_rate"`. No code changed. I checked by running `python3 main.py`, `python3 -m billing.report` and `python3 -m billing.export.csv_writer`, and got the outputs in the table.
+
+`main.py:12-13` still quietly uses 0 when the key is missing, so a future typo would give a wrong total again with no error. Should I change it to stop with an error instead, like the other two files do?

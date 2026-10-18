@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf2e9ef001Mk9hxrFfCqnXRO",
+  "sessionID": "ses_eb30db6a2ffeovUiJmqNTVVerv",
+  "messageID": "msg_14cf2c86a0018pMwD8qUMjhbuh",
+  "type": "text",
+  "text": "`load(path)` in `miniconf/loader.py` now expands `@include` lines, and the existing 13 tests still pass. I also checked each required behaviour with a quick script; I didn't add any of those checks to `tests/`.\n\n**How it works:** before parsing, each `@include <path>` line is swapped for the lines of the file it points to. The path is resolved from the folder of the file that contains the directive, and included files can include others. The result then goes through `parse_lines` unchanged, so files without `@include` parse exactly as before, and `loads` is untouched.\n\n**What I checked:**\n- **Example:** `examples/service.conf` loads with `name=billing`, `logging.level=info`, `logging.json=True` and `http.port=8080`.\n- **Override order:** a key set before an include is replaced by the included file's value, and a key set after it wins.\n- **Nesting:** an included file in a subfolder can include a file next to it, and the relative path resolves correctly.\n- **Errors:** a missing include target, a file including itself, and a two-file loop all raise `ConfigError`. The cycle message shows the chain of files.\n- **Same file twice:** including one file twice, not in a loop, is allowed. Cycle detection only looks at the files currently being expanded.\n\n**Behaviour you might trip over:**\n- **Top-level file missing:** if the file passed to `load()` itself doesn't exist, it still raises the same `FileNotFoundError` as before, not `ConfigError`. I left this alone so existing behaviour doesn't change.\n- **Line numbers:** parse errors in a file that uses includes count lines in the expanded text, not in the original file.\n- **Sections carry over:** if an included file ends inside a `[section]`, keys that follow the `@include` belong to that section until the next header. This is the literal \"as if written in place\" behaviour. The example is unaffected because `[http]` comes right after the include.\n- **Empty directive:** an `@include` with no path raises `ConfigError`.",
+  "time": {
+    "start": 1792292350486,
+    "end": 1792292350486
+  }
+}

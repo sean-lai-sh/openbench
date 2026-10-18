@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf4077d0013IjMaM3MtHPNXv",
+  "sessionID": "ses_eb30c7db5ffeGtn4G7BAV3shF5",
+  "messageID": "msg_14cf3e866001Za9E30UKEtc7NP",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include`. The existing 13 tests pass, but I didn't add tests for includes to the suite. I checked the include behaviour with throwaway scripts instead.\n\nAll the changes are in `miniconf/loader.py`. Each `@include` line is replaced in place by the target file's lines before parsing. The path is resolved relative to the folder of the file containing the directive.\n\nWhat the scripts showed:\n- **Example files:** `examples/service.conf` loads with the `[logging]` values from `logging.conf` plus its own `[http]` settings.\n- **Ordering:** with `a=1`, then an include that sets `a=2`, then `a=3`, the result is `a=3`. The included file's value replaces the earlier one and the later line replaces it in turn.\n- **Nesting:** an included file in a subfolder that includes a further file expands correctly.\n- **Missing target:** raises `ConfigError`.\n- **Cycles:** a file including itself, and a three-file loop, both raise `ConfigError`. The message lists the chain of files.\n\nThings you might not expect:\n- **Missing top-level file:** a missing file passed straight to `load()` still raises `FileNotFoundError`, as before. Only missing *include targets* raise `ConfigError`. This means the top-level file is opened twice: once to keep that error the same, once to read it.\n- **Same file included twice:** two branches can include the same file without a cycle error. Only true loops are rejected.\n- **Section carries over:** because the text is pasted in place, a `[section]` header inside an included file stays active after the include. In `service.conf`, any keys written straight after the `@include` line would land in `[logging]`.\n- **Empty path:** `@include` with no path after it raises `ConfigError`.\n- **Paths:** paths starting with `~` are expanded to the home folder.",
+  "time": {
+    "start": 1792292423585,
+    "end": 1792292423585
+  }
+}

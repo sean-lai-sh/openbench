@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf042340013ehnzYM9odI3nJ",
+  "sessionID": "ses_eb3105229fferwh6a6hq4In1hw",
+  "messageID": "msg_14cf02a41001XVAi0n2Nn6E3Yh",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include`, and all 13 existing tests still pass. The change is entirely in `miniconf/loader.py`.\n\nThe loader expands includes in place before parsing, so sections, comments, value types and \"later assignment wins\" behave exactly as before. I checked these cases with temporary files:\n\n- **Example files:** loading `examples/service.conf` from a different working directory gives `name=billing`, `logging.level=info`, `logging.json=True` and `http.port=8080`.\n- **Override order:** a key set before an include is replaced by the included file's value, and a key set after the include replaces it.\n- **Nesting and relative paths:** `sub/b.conf` included `c.conf`, and it was found in `sub/`, next to the file that included it.\n- **Missing target:** raises `ConfigError` with the file name and line number.\n- **Cycles:** a file including itself, and two files including each other, both raise `ConfigError`. Including the same file twice without a loop is still allowed.\n\nA few behaviours you might not assume:\n\n- An `@include` line with no path after it raises `ConfigError`.\n- Include paths accept `~` for the home directory.\n- If the top-level file passed to `load` doesn't exist, it still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.\n\nI didn't add tests for includes to `tests/`; I can turn the checks above into unit tests if you want them.",
+  "time": {
+    "start": 1792292176453,
+    "end": 1792292176453
+  }
+}

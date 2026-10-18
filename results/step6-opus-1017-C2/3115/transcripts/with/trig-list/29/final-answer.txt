@@ -1,0 +1,14 @@
+`miniconf.loader.load(path)` now handles `@include`. All 13 existing tests pass, and nothing else changed (`miniconf/loader.py`).
+
+**How it works:** before parsing, `load` reads the file and replaces each `@include` line with the lines of the target file. It does this recursively, then hands the result to `parse_lines` as before.
+- Include paths are resolved relative to the directory of the file containing the directive.
+- If the target file doesn't exist, or the directive has no path, it raises `ConfigError`.
+- Cycles are found by tracking the chain of files currently being expanded, and raise `ConfigError` showing the full chain. Including the same file twice from separate branches is still allowed.
+
+**Checked by hand (I didn't add these as tests):**
+- `examples/service.conf` loads correctly: logging `level=info`, `json=True`, http `port=8080`, `name=billing`.
+- Override order works: a key set before an include, inside it, then after it ends up with the value set after the include.
+- Includes nested two levels deep, in a subdirectory, work.
+- A three-file cycle and a missing include target both raise `ConfigError`.
+
+**Behaviour to be aware of:** because the text is expanded in place, a `[section]` header inside an included file stays active after the include line. Keys written after `@include logging.conf` would land in `[logging]` until the next header. That's what the spec asks for, and the example is unaffected because `[http]` comes right after the include.

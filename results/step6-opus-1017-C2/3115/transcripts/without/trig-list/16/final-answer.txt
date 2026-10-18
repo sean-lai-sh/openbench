@@ -1,0 +1,15 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and all the required behaviours work. The existing 13 tests still pass. I tried the include cases with throwaway scripts, but I didn't add any new tests to `tests/`.
+
+All the changes are in `miniconf/loader.py`:
+- **Inline expansion:** each `@include <path>` line is replaced by the lines of the target file before parsing, so sections, comments and value conversion work exactly as before.
+- **Relative paths:** they are resolved from the folder of the file that contains the directive. I checked this with the working directory set to `/`.
+- **Nesting and ordering:** includes inside included files are expanded too. A key set after an include overrides the included value, and one set before it gets overridden. In a test, `a` included `sub/b`, which included `c`, and every value came out as expected.
+- **Missing file:** raises `ConfigError` with the full path.
+- **Cycles:** a file that includes itself, directly or through other files, raises `ConfigError` showing the chain of files. Including the same file twice in a way that doesn't loop is still allowed.
+- **Example:** `examples/service.conf` loads correctly: `logging.level = info`, `http.port = 8080`, `name = billing`.
+
+A few behaviours you might not assume:
+- **Missing top-level file:** if the file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as it did before. Only missing *include targets* raise `ConfigError`.
+- **Empty `@include`:** an `@include` line with no path raises `ConfigError`.
+- **Paths with spaces or `~`:** the path is everything after the directive, so it can contain spaces, and `~` is expanded to the home folder.
+- **Sections carry across files:** an included file starts in whatever section the including file was in at that point. If it changes section, the lines after the include stay in that new section. This is what pasting the text in place would do.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d8360600011iCx8u3Ws3BGT9",
+  "sessionID": "ses_eb27cc08affe3DxvQu4uuo2mZJ",
+  "messageID": "msg_14d834a300010T7pWhDG0Q4Mjz",
+  "type": "text",
+  "text": "I found where the None comes from. I read the code but didn't run the app, and I didn't change any files.\n\n**Where it originates:** `app/pricing.py:8`, from a typo in the config file `settings.json:2`.\n\n**How `rate` gets its value:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`.\n4. `SETTINGS` is loaded once, when the module is first imported, in `app/config.py:9-10` with `json.load` on `<root>/settings.json`.\n5. `settings.json:2` has the key spelled `\"rat\": 0.5` instead of `\"rate\"`.\n\n**Why it's None:** The settings have no `\"rate\"` key, so `dict.get(\"rate\")` quietly returns `None` and doesn't raise an error. That `None` goes back to `report.py:9`, and `None * 10` raises the TypeError.\n\n**Settings/config files involved:**\n- `settings.json` (project root): the misspelled key `\"rat\"` on line 2 is the actual cause.\n- `app/config.py`: loads that file into `SETTINGS`, with no checks on which keys are present.\n\n**Fix (not applied):** Change `\"rat\"` to `\"rate\"` in `settings.json`. You could also make `get_rate()` use `SETTINGS[\"rate\"]` or check the value, so a missing key fails right away with a clear error.",
+  "time": {
+    "start": 1792301817975,
+    "end": 1792301817975
+  }
+}

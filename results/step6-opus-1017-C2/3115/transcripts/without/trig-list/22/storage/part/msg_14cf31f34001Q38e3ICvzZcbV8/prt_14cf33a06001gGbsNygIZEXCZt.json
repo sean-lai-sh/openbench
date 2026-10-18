@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf33a06001gGbsNygIZEXCZt",
+  "sessionID": "ses_eb30d4fc6ffeqw62gkDJSQ1IM0",
+  "messageID": "msg_14cf31f34001Q38e3ICvzZcbV8",
+  "type": "text",
+  "text": "`load(path)` now handles `@include`, and the existing test suite still passes (13 tests). The change is all in `miniconf/loader.py`; `loads()` and the parser are untouched.\n\nHow each rule turned out when I tried it on throwaway temp files:\n\n- **Inline expansion:** an `@include` line is swapped for the included file's lines, then everything is parsed as before. The examples work: `service.conf` picks up `logging.level = info` and `logging.json = True` and still keeps `[http]` and `name`.\n- **Relative paths:** include paths are resolved from the directory of the file that contains the directive. A file in `sub/` including `c.conf` found `sub/c.conf`.\n- **Override:** `x = 1`, then an include that sets `x = 2` and `y = 2`, then `y = 9` gave `x = 2, y = 9`.\n- **Nesting:** a three-level chain worked.\n- **Missing file:** a missing include target raises `ConfigError`, which says which file couldn't be read.\n- **Cycles:** a file that includes itself, directly or through other files, raises `ConfigError` and shows the chain of files. The same file can still be included more than once from different places, as long as it doesn't include itself.\n\nThese scenario checks were one-off scripts, so no new tests were added to `tests/`.\n\nA few choices you might want to know about:\n\n- **Missing main file:** if the file passed to `load()` doesn't exist, it still raises the same `FileNotFoundError` as before, not `ConfigError`. Only failures to read an include target become `ConfigError`. I kept it that way so behavior without includes doesn't change.\n- **No path given:** an `@include` line with nothing after it raises `ConfigError`.\n- **Spaces in paths:** everything after `@include` counts as the path, so paths with spaces work.\n- **Exact match only:** the directive must be exactly `@include`. Other lines starting with `@` are still ignored, as before.",
+  "time": {
+    "start": 1792292370993,
+    "end": 1792292370993
+  }
+}

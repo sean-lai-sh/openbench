@@ -1,0 +1,27 @@
+I fixed the misspelled key. All three places that read the setting now work: `python3 main.py` prints `Total: 5.0` instead of `Total: 0`.
+
+**Every place that reads the setting:**
+| File:line | How it reads it | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, defaulting to 0 if missing | `Total: 0` (wrong, no warning) |
+| `billing/report.py:7` | `get_setting("fee_rate")` (via `app/config.py:15`) | `fee_rate is missing` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | `fee_rate is missing` |
+
+`csv_writer.py` builds the key name from two pieces, so a plain search for `fee_rate` misses that line. I also checked every other way the settings get read (`SETTINGS`, `get_setting`, `.get(`, joined strings), and these three are the only reads. Some lines in other files look related but don't read the setting:
+- `billing/invoice.py:5` only uses the text `"fee_rate"` as a column heading.
+- `billing/discount.py:5` has a hardcoded `archived_fee_rate = 0.15`.
+- `billing/tax.py` has its own rate.
+- `billing/audit.py` builds a different string (`"fee_code..."`).
+
+**Changes:**
+1. `settings.json:2`: renamed `"rat"` to `"fee_rate"`. This one change fixes all three reads.
+2. `main.py:10-12`: removed the fallback that quietly set the rate to 0. If the key is ever missing, it now stops with `fee_rate is missing`, the same as the other two.
+
+**Results after the fix:**
+```
+python3 main.py                     -> Total: 5.0
+python3 -m billing.report           -> Report fee: 0.5
+python3 -m billing.export.csv_writer -> CSV fee: 0.5
+```
+
+The two `billing` modules have to be run with `-m` from the project root so that `app` can be imported. That's how they're set up, not something this fix changed.

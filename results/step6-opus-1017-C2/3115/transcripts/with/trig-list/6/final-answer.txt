@@ -1,0 +1,19 @@
+`miniconf.loader.load(path)` now handles `@include`. The change is all in `miniconf/loader.py`. The existing suite passes (13 tests, run with `unittest` because pytest wasn't available), and every required behaviour checked out in a quick throwaway script. I didn't add any new tests to the suite.
+
+**How it works:**
+- An `@include <path>` line is replaced by the lines of the target file, then the result goes to the existing `parse_lines` unchanged. That means comments, sections, value types and "later assignment wins" all behave exactly as before.
+- Relative paths are resolved from the directory of the file containing the directive. `~` is also expanded.
+- Includes nest recursively. The loader tracks the chain of files currently being expanded (by their real path), so a file that includes itself, directly or through other files, raises `ConfigError` showing the full chain.
+- A missing include target raises `ConfigError`. So does an `@include` with no path after it.
+- The same file can be included more than once, as long as it doesn't form a cycle.
+
+**What I checked:**
+- `examples/service.conf` loads with the `[logging]` section and its keys pulled in.
+- With `x = 1`, then an include setting `x = 2`, then `x = 3`, the result is `x = 3`.
+- Nested includes in a subdirectory resolve correctly.
+- Self-includes, three-file cycles and missing targets all raise `ConfigError`.
+
+**Behaviours to be aware of:**
+- **Sections carry over from includes.** Because expansion is literal, if an included file ends inside a `[section]`, the lines after the `@include` in the parent stay in that section. In `examples/service.conf` this doesn't matter, because `[http]` comes right after the include.
+- **Missing top-level file:** if the file passed to `load()` itself doesn't exist, it still raises the plain `FileNotFoundError`, as before. Only missing include targets raise `ConfigError`.
+- **`loads()` (parsing from a string)** doesn't expand includes, as the spec allowed. It still silently ignores `@` lines, as before.

@@ -1,0 +1,31 @@
+{
+  "id": "prt_14cee5adc0010hYGxDd2hjfOUQ",
+  "sessionID": "ses_eb311eab9ffeXHPt1guaZwUTXD",
+  "messageID": "msg_14cee52de001CyIwPFCgY8umBH",
+  "type": "tool",
+  "callID": "toolu_vrtx_01L53wmfWykCfjeH3eZkxrv8",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-pk905nz6/bench_opencode_trig-list_qnr1ygrj/miniconf/loader.py",
+      "content": "\"\"\"Load configuration from files and strings.\"\"\"\n\nimport os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\nINCLUDE_DIRECTIVE = \"@include\"\n\n\ndef _read_lines(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return fh.read().splitlines()\n\n\ndef _expand(path, lines, stack):\n    \"\"\"Return ``lines`` (from ``path``) with ``@include`` directives expanded.\n\n    ``stack`` holds the real paths of the files currently being expanded and\n    is used to detect include cycles.\n    \"\"\"\n    base = os.path.dirname(path)\n    expanded = []\n    for lineno, raw in enumerate(lines, start=1):\n        parts = raw.strip().split(None, 1)\n        if not parts or parts[0] != INCLUDE_DIRECTIVE:\n            expanded.append(raw)\n            continue\n        if len(parts) < 2:\n            raise ConfigError(\n                \"{} line {}: @include requires a path\".format(path, lineno)\n            )\n        target = os.path.join(base, parts[1].strip())\n        real = os.path.realpath(target)\n        if real in stack:\n            raise ConfigError(\n                \"include cycle detected: {}\".format(\" -> \".join(stack + [real]))\n            )\n        try:\n            child_lines = _read_lines(target)\n        except OSError as exc:\n            raise ConfigError(\n                \"{} line {}: cannot include {!r}: {}\".format(\n                    path, lineno, parts[1].strip(), exc.strerror or exc\n                )\n            ) from exc\n        expanded.extend(_expand(target, child_lines, stack + [real]))\n    return expanded\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced in place by the full contents of the\n    referenced file (resolved relative to the including file's directory),\n    recursively. Missing include targets and include cycles raise\n    :class:`~miniconf.errors.ConfigError`.\n    \"\"\"\n    lines = _read_lines(path)\n    return parse_lines(_expand(path, lines, [os.path.realpath(path)]))\n\n\ndef loads(text):\n    \"\"\"Parse configuration from a string.\"\"\"\n    return parse_lines(text.splitlines())\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-pk905nz6/bench_opencode_trig-list_qnr1ygrj/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-pk905nz6/bench_opencode_trig-list_qnr1ygrj/miniconf/loader.py": [],
+        "/tmp/obench-cell-pk905nz6/bench_opencode_trig-list_qnr1ygrj/miniconf/errors.py": [],
+        "/tmp/obench-cell-pk905nz6/bench_opencode_trig-list_qnr1ygrj/tests/test_loader.py": [],
+        "/tmp/obench-cell-pk905nz6/bench_opencode_trig-list_qnr1ygrj/miniconf/parser.py": []
+      },
+      "filepath": "/tmp/obench-cell-pk905nz6/bench_opencode_trig-list_qnr1ygrj/miniconf/loader.py",
+      "exists": true
+    },
+    "time": {
+      "start": 1792292057378,
+      "end": 1792292057761
+    }
+  }
+}

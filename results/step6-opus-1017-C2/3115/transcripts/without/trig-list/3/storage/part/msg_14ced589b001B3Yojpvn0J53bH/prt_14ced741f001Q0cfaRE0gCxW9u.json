@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ced741f001Q0cfaRE0gCxW9u",
+  "sessionID": "ses_eb31326d9ffe15kKjE2krNyP4H",
+  "messageID": "msg_14ced589b001B3Yojpvn0J53bH",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include` directives. All 13 existing tests still pass. I didn't add any new tests to the suite; I checked the include behaviour with a one-off script instead.\n\n**How it works:** the change is all in `miniconf/loader.py`. Before parsing, `load` swaps each `@include <path>` line for the contents of that file and then hands the result to the existing parser. It recognises the directive when the line's first whitespace-separated token is exactly `@include`, even if the line is indented. Everything after the token is the path, so paths with spaces work.\n\n**What the script showed:**\n- **Example files:** `examples/service.conf` loads with both its own keys and the `[logging]` section from `logging.conf`.\n- **Relative paths and nesting:** paths resolve relative to the file that contains the directive, including inside a subdirectory, and nested includes expand.\n- **Override order:** a key set after an include beats the included value; a key set before it is overridden by the include.\n- **Missing include file:** raises `ConfigError`, and the message names both files.\n- **Cycles:** a file including itself, or two files including each other, raises `ConfigError` with the include chain in the message.\n\n**Behaviour to be aware of:**\n- **Same file twice is allowed:** cycle checking only looks at the current chain of includes. Two separate includes of the same file (one shared file pulled in from two places) both expand normally.\n- **Missing top-level file:** this still raises `FileNotFoundError` as before, not `ConfigError`, so that path is unchanged.\n- **Extra rule:** an `@include` with no path after it raises `ConfigError`. The spec didn't cover this case.\n- **Strings unaffected:** `loads()` doesn't expand includes. The parser keeps ignoring lines that start with `@`, as it did before.",
+  "time": {
+    "start": 1792291992632,
+    "end": 1792291992632
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf11589001ajq04apo2vjduf",
+  "sessionID": "ses_eb30f6094ffedZadMN5gffDj9Y",
+  "messageID": "msg_14cf0fa0b001bnJZJ5UWeNTpcW",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include` directives (all the changes are in `miniconf/loader.py`). The existing suite passes (13 tests, run with `unittest` because pytest isn't installed), and `loads` and files without includes behave as before.\n\n**How it works:** before parsing, `load` replaces each `@include` line with the lines of the included file, in place. The path is resolved relative to the folder of the file containing the directive. Included files are expanded the same way, recursively. The normal parser then runs over the combined text, so a later assignment still wins.\n\n**What I tried (no new tests added):**\n- **Example files:** `examples/service.conf` loads with the `[logging]` section from `logging.conf` in place, alongside the top-level keys and `[http]`.\n- **Override and nesting:** in a temporary setup, a key set before the include was overridden by the included file, and a key set after it overrode the include. A nested include in a subfolder was also expanded correctly.\n- **Errors:** a file that includes itself, and an include pointing to a missing file, both raised `ConfigError`.\n\n**Behaviour you might not expect:**\n- **Sections carry over:** if an included file opens a `[section]`, any keys after the `@include` line in the parent file land in that section. Normal inline expansion does this, but it's easy to trip over.\n- **Line numbers:** parse error messages count lines in the expanded text, not in the original file.\n- **Repeat includes:** a file can be included more than once, e.g. by two different files. Only a file that ends up including itself counts as a cycle.\n- **Missing top-level file:** if the file passed to `load` doesn't exist, it still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.\n- **Bare directive:** an `@include` with no path after it also raises `ConfigError`.",
+  "time": {
+    "start": 1792292230563,
+    "end": 1792292230563
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf37b44001q9nzrpyfgCz1j3",
+  "sessionID": "ses_eb30d12f7ffeMKfluyP79z59pJ",
+  "messageID": "msg_14cf36130001SzonZ5hloJWsl7",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The existing 13 tests still pass, and I checked each of the required behaviours with throwaway files (since deleted). I didn't add permanent tests to `tests/`.\n\nThe change is all in `miniconf/loader.py`; `loads()` and the parser are untouched. Before parsing, `load()` replaces every line whose first token is `@include` with the lines of the named file.\n\nResults of the checks:\n- **Example:** `examples/service.conf` loads with `name=billing`, `logging.level=info`, `logging.json=True` and `http.port=8080`.\n- **Nesting and override:** a three-level include using a `sub/` folder worked. A key set after an include replaced the included value, and a key set before an include was replaced by it.\n- **Relative paths:** each include path is resolved from the folder of the file that contains it, not the working directory.\n- **Missing target:** raises `ConfigError`.\n- **Cycles:** a file including itself, and two files including each other, both raise `ConfigError`.\n\nThree behaviours you might not assume:\n- **Section carry-over:** expansion is purely line-by-line, so if an included file ends inside a `[section]`, keys after the `@include` land in that section. In `service.conf` this doesn't matter because `[http]` comes straight after.\n- **Repeated includes are allowed:** cycle detection only tracks the chain of files currently being expanded. Two files can both include the same third file without an error.\n- **Errors:** an `@include` with no path raises `ConfigError`. A missing top-level file passed to `load()` still raises `FileNotFoundError`, as it did before.",
+  "time": {
+    "start": 1792292387677,
+    "end": 1792292387677
+  }
+}

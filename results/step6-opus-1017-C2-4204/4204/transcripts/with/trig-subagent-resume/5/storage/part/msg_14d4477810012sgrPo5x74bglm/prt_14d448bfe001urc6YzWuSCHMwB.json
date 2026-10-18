@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d448bfe001urc6YzWuSCHMwB",
+  "sessionID": "ses_eb2bb9a83ffePgLkY28Zm3l3bA",
+  "messageID": "msg_14d4477810012sgrPo5x74bglm",
+  "type": "text",
+  "text": "The None starts at **`settings.json` line 2**. The key there is spelled `\"rat\"` when it should be `\"rate\"`. It becomes None at **`app/pricing.py` line 8**, `return SETTINGS.get(\"rate\")`.\n\n**How it gets to the error:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` gets `rate` from `pricing.get_rate()`.\n3. `app/pricing.py:8` runs `SETTINGS.get(\"rate\")`. `SETTINGS` is the parsed `settings.json`, loaded in `app/config.py:9-10`. That dictionary only has the keys `\"rat\"`, `\"currency\"` and `\"label\"`. There's no `\"rate\"`, so `dict.get` quietly returns `None` instead of raising an error.\n4. `app/report.py:9` runs `None * 10`, which raises the TypeError.\n\n**The cause:** the typo in `settings.json:2` (`\"rat\": 0.5` instead of `\"rate\": 0.5`). The 0.5 value is never found, and `.get()` with no default hides the missing key until the multiplication fails.\n\n**Possible fixes:**\n- Rename the key to `\"rate\"`.\n- Make `get_rate()` fail with a clear error, for example by using `SETTINGS[\"rate\"]` or checking for None.\n\nI didn't change any files.",
+  "time": {
+    "start": 1792297700375,
+    "end": 1792297700375
+  }
+}

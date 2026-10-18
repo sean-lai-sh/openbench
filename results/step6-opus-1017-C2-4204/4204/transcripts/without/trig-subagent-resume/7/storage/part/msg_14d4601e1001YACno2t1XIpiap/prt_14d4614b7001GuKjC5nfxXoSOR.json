@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d4614b7001GuKjC5nfxXoSOR",
+  "sessionID": "ses_eb2ba0f69ffe0CN28j4lZJkXCB",
+  "messageID": "msg_14d4601e1001YACno2t1XIpiap",
+  "type": "text",
+  "text": "The None comes from **`settings.json` line 2**, where the key is misspelled as `\"rat\"` instead of `\"rate\"`. It becomes None at `app/pricing.py:8`, where `.get()` finds no `rate` key and returns its default instead of raising an error.\n\n**How `rate` gets its value:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` returns `SETTINGS.get(\"rate\")`.\n4. `app/config.py:9-10` builds `SETTINGS` by loading `settings.json` when the module is imported.\n5. `settings.json:2` contains `\"rat\": 0.5`. There is no `\"rate\"` key, so the lookup in step 3 finds nothing.\n\n**Why it shows up as a TypeError:** `dict.get()` returns `None` when a key is missing, rather than raising `KeyError`. That None is passed up unchanged until `app/report.py:9` tries `None * 10`. I ran `python3 main.py` and got the same error: `unsupported operand type(s) for *: 'NoneType' and 'int'`.\n\n**Fix (not applied, since this was research only):** rename the key to `\"rate\"` in `settings.json`. You could also use `SETTINGS[\"rate\"]` in `pricing.py` so a missing key raises an error right away instead of failing later.",
+  "time": {
+    "start": 1792297800906,
+    "end": 1792297800906
+  }
+}

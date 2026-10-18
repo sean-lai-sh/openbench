@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d8a4d03001FRXPk5COHqJN11",
+  "sessionID": "ses_eb276b714fferP0CpsZioJDHgj",
+  "messageID": "msg_14d8a334e0015PsKe1egHAzkU1",
+  "type": "text",
+  "text": "Three places read the setting, and all of them now work.\n\n**Where it's read**\n| File:line | Code | Before | After |\n|---|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | `Total: 0` | `Total: 5.0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | stopped with \"fee_rate is missing\" | `Report fee: 0.5` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | stopped with \"fee_rate is missing\" | `CSV fee: 0.5` |\n\nThe `csv_writer.py` line builds the key name in two pieces, so searching for `fee_rate` doesn't find it. I found it by checking every file that imports the settings, and only these three do. The value is loaded once in `app/config.py:9-10`.\n\nOther matches for `fee_rate` don't read the setting: `billing/invoice.py:5` (a column heading), `billing/discount.py:5` (a hard-coded `archived_fee_rate`), and the `fee_` text in `billing/tax.py` and `billing/audit.py`. I left those alone.\n\n**Changes**\n1. **`settings.json:2`:** renamed `\"rat\"` to `\"fee_rate\"`. This one change fixes all three paths.\n2. **`main.py:10-12`:** if the key is missing, the program now stops with \"fee_rate is missing\", like the other two paths. Before, it quietly used a rate of 0, which is how the typo went unnoticed.\n\nI ran all three entry points afterwards and got the outputs shown in the \"After\" column. There's no test suite, so those runs are the only check.",
+  "time": {
+    "start": 1792302271773,
+    "end": 1792302271773
+  }
+}

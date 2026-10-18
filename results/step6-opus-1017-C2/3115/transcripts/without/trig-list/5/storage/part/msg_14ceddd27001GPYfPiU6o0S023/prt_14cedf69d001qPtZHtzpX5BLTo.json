@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cedf69d001qPtZHtzpX5BLTo",
+  "sessionID": "ses_eb31284edffeRWpbFu1v88sw4Y",
+  "messageID": "msg_14ceddd27001GPYfPiU6o0S023",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The existing 13 tests still pass. I also checked the new behaviour with throwaway files, but didn't add any new tests to `tests/`.\n\nAll the changes are in `miniconf/loader.py`. Results of the checks:\n- **Example:** `examples/service.conf` loads correctly, with `logging.level = info` and `logging.json = True` coming from `logging.conf`.\n- **Nesting and relative paths:** includes inside included files work, and each path is resolved from the directory of the file it appears in.\n- **Override order:** a key set before an include is overridden by it, and a key set after it wins.\n- **Missing include target:** raises `ConfigError`.\n- **Cycles:** a file including itself, or a loop through several files, raises `ConfigError` and lists the chain of files.\n\nA few behaviours you might not expect:\n- **Missing top-level file:** if the file passed to `load()` doesn't exist, it still raises Python's usual `FileNotFoundError`, as before. Only missing *included* files raise `ConfigError`.\n- **Repeated includes:** the same file can be included more than once, as long as it doesn't form a loop.\n- **Section carry-over:** a `[section]` header inside an included file stays active after the include ends. That follows from the \"as if written in place\" rule; in the example, `name` and `workers` are set before the include, so they aren't affected.\n- **Error line numbers:** parse errors in an expanded file report line numbers in the combined text, not in the original file.\n- **Small additions:** an `@include` with no path raises `ConfigError`. The path can contain spaces, and `~` expands to the home directory.",
+  "time": {
+    "start": 1792292026035,
+    "end": 1792292026035
+  }
+}

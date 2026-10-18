@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d743ff2001JpH1BLMZgMU1MF",
+  "sessionID": "ses_eb28c8ab2ffekQ7pdbGxLvl1US",
+  "messageID": "msg_14d7427fd001VSBRHLd2CGWp3p",
+  "type": "text",
+  "text": "I fixed the bug by renaming the key in `settings.json:2` from `\"rat\"` to `\"fee_rate\"`. All three places that read the setting now work.\n\n**Every place that reads the setting:**\n\n| File:line | How it reads it | Before | After |\n|---|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]`, falls back to 0 if missing | `Total: 0` | `Total: 5.0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | exited with \"fee_rate is missing\" | `Report fee: 0.5` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | exited with \"fee_rate is missing\" | `CSV fee: 0.5` |\n\nI ran all three before and after the change; those are the outputs above. Nothing read the old `\"rat\"` key, so renaming it doesn't break anything.\n\n**Things that look like the setting but don't read it:**\n- `billing/invoice.py:5` only uses `\"fee_rate\"` as a column name.\n- `billing/discount.py:5` has its own fixed rate of 0.15.\n- `billing/tax.py:4-5` uses fixed tax rates.\n- `billing/audit.py:4` builds `\"fee_code…\"` strings.\n- `app/config.py:15` is the `get_setting()` helper that loads the settings, so it doesn't read this key itself.\n\nI left `main.py` as it is, so it still quietly uses a rate of 0 if the key is ever missing again. Want me to make it fail with an error like the other two scripts?",
+  "time": {
+    "start": 1792300826633,
+    "end": 1792300826633
+  }
+}

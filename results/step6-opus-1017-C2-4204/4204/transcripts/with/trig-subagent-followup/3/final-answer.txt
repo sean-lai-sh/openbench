@@ -1,0 +1,18 @@
+I fixed the bug by renaming the key in `settings.json:2` from `"rat"` to `"fee_rate"`. All three places that read the setting now run correctly and exit cleanly.
+
+| File:line | How it reads it | Output now |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, falls back to 0 if missing | `Total: 5.0` (was `Total: 0`) |
+| `billing/report.py:7` | `get_setting("fee_rate")`, exits if missing | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`, exits if missing | `CSV fee: 0.5` |
+
+The settings themselves are loaded in `app/config.py:10`, and `get_setting` (`app/config.py:15`) is the function `report.py` goes through. The key name in `csv_writer.py` is built from two strings, so I searched for the pieces as well as the full name to be sure I wasn't missing any reads.
+
+I didn't run the two `billing` scripts before the fix. With the old key, their code would have stopped with "fee_rate is missing".
+
+A few matches look related but don't read the setting:
+- `billing/invoice.py:5` only uses `"fee_rate"` as a label; its own comment says it's unused by the total.
+- `billing/discount.py:5` has its own fixed rate, `archived_fee_rate = 0.15`.
+- `billing/tax.py` and `billing/audit.py` don't read settings at all.
+
+I changed nothing else. `main.py:12-13` still quietly uses 0 when the key is missing, so a future typo would again print a wrong total instead of an error. I can change it to stop with an error, the way `report.py` does, if you want.

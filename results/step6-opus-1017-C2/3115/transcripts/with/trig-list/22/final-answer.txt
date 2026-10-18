@@ -1,0 +1,14 @@
+`load(path)` now handles `@include`. The existing 13 tests still pass, and I ran a quick script against the example files and some temporary files to check the new behavior. I didn't add any new tests to `tests/`.
+
+All the changes are in `miniconf/loader.py`:
+- **Expansion:** each `@include <path>` line is replaced by that file's lines before `parse_lines` runs, so the parser itself is unchanged.
+- **Paths:** the include path is resolved relative to the including file's directory, and nested includes are expanded recursively. Everything after `@include` on the line is taken as the path, so paths with spaces work.
+- **Errors:** a missing include target raises `ConfigError`. So does including a file that is already in the current include chain, whether directly or through other files, and the message shows the full chain. Including the same file twice from separate branches is still allowed, since that isn't a cycle.
+- **Unchanged:** `loads()` doesn't expand includes. If the top-level file itself doesn't exist, `load()` still raises `FileNotFoundError` as before.
+
+What the checks showed:
+- `examples/service.conf` gives `logging.level=info`, `logging.json=True`, `http.port=8080` and `name=billing`.
+- Keys set before an include are overridden by it, and keys set after it override it.
+- Direct self-includes and longer cycles both raise `ConfigError`, as does a missing target.
+
+One thing to be aware of: because expansion is literal, a `[section]` header in an included file stays active after the include. In `service.conf`, any keys written straight after `@include logging.conf` without a new header would end up in `[logging]`. That follows the "as if written in place" rule in the spec, but it may surprise people.

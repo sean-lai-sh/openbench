@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cef60850017DOfSvmhDVwCpV",
+  "sessionID": "ses_eb311213fffe3DJ1AQwx9wjJVv",
+  "messageID": "msg_14cef4075001QQ8WRyO5sTHpg0",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives as specified. The 13 existing tests still pass, and I ran the new behaviour by hand without adding tests for it. The change is all in `miniconf/loader.py`; `loads()` and the parser are unchanged.\n\nWhat I checked with throwaway files:\n- **Example:** `examples/service.conf` loads with `name=billing`, `logging.level=info`, `logging.json=True` and `http.port=8080`.\n- **Order, nesting and relative paths:** a key set before an `@include` was overridden by the included file, and a key set after it won. A nested include in `sub/` that pulled in a sibling file resolved relative to `sub/`, not the working directory.\n- **Cycles:** a transitive cycle (`a → sub/b → sub/c → a`) raises `ConfigError`, and the message shows the full chain of files.\n- **Missing target:** an include pointing at a file that doesn't exist raises `ConfigError`, naming the target and the file that included it.\n\nBehaviour you might not assume:\n- **Same file twice is allowed:** only a file that appears in its own include chain counts as a cycle.\n- **Sections carry across includes:** because expansion is purely inline, if an included file opens `[logging]`, keys after the `@include` stay in `[logging]` until the next section header. That's correct under the spec, but it can surprise people writing config files.\n- **Directive matching:** `@include` with no path raises `ConfigError`. A line starting with something like `@includefoo` is not treated as an include; the parser ignores it, as it did before.\n- **Top-level missing file:** if the file passed to `load()` itself doesn't exist, it still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.",
+  "time": {
+    "start": 1792292118728,
+    "end": 1792292118728
+  }
+}

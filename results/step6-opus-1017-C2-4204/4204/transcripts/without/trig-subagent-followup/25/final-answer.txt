@@ -1,0 +1,17 @@
+Three files read the setting, and all three were broken by the misspelled key. All three now work.
+
+| File:line | How it reads the key | Before | After |
+|---|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, falling back to 0 if missing | `Total: 0` (wrong, no error) | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | exited: `fee_rate is missing` | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` (key built from two strings, so a plain search for `fee_rate` misses it) | exited: `fee_rate is missing` | `CSV fee: 0.5` |
+
+The subagent's earlier report missed that the two `billing/` readers were also failing; I found that by running them.
+
+These mention `fee_rate` but don't read the setting: `billing/invoice.py:5` is just a column label, and `billing/discount.py:5` is a separate hardcoded archived rate.
+
+**Changes:**
+1. `settings.json:2`: renamed `"rat"` to `"fee_rate"`. This is the actual fix, and it repairs all three paths.
+2. `main.py:10-12`: replaced the silent fallback to 0 with `raise SystemExit("fee_rate is missing")`, the same check the other two use. A bad config now stops `main.py` with an error instead of printing a $0 total.
+
+I ran all three modules after the change and got the outputs in the table, plus `python3 main.py` → `Total: 5.0`.

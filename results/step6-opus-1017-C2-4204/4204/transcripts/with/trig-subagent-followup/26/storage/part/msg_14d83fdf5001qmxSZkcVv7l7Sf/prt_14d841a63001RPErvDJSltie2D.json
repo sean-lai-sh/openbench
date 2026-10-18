@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d841a63001RPErvDJSltie2D",
+  "sessionID": "ses_eb27ca3ddffe5fJiJXu5AgwZ5c",
+  "messageID": "msg_14d83fdf5001qmxSZkcVv7l7Sf",
+  "type": "text",
+  "text": "Yes, two other files read the same setting, and all three now work after one fix: I renamed the key in `settings.json` from `\"rat\"` to `\"fee_rate\"`.\n\n**Every place that reads `fee_rate`:**\n\n| File:line | How it reads the setting | Before | After |\n|---|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]`, which falls back to `0` if the key is missing (lines 12-13) | `Total: 0` | `Total: 5.0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | exited with \"fee_rate is missing\" | `Report fee: 0.5` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | exited with \"fee_rate is missing\" | `CSV fee: 0.5` |\n\nThe \"Before\" and \"After\" columns are the output of running each one; I ran all three after the fix to confirm.\n\nThe `csv_writer.py` line builds the key name from two pieces, so a plain search for `fee_rate` won't find it. To make sure I hadn't missed anything similar, I also searched for every use of `SETTINGS` and `get_setting`. The only other code that touches the settings is the loader itself (`app/config.py`). No code reads the old `\"rat\"` key, so renaming it can't break anything.\n\n**Similar names that aren't this setting:**\n- `billing/invoice.py:5` uses `\"fee_rate\"` only as a column heading.\n- `billing/discount.py:5` has its own hard-coded `archived_fee_rate = 0.15`.\n- `billing/audit.py` (`fee_code`) and `billing/tax.py` (`fee_schedule`) are unrelated.\n\nThe only file I changed was `settings.json`. `main.py:10-13` still uses 0 when the setting is missing, which is why this mistake went unnoticed. I can change it to stop with an error instead, like the other two files do, if you'd like.",
+  "time": {
+    "start": 1792301865612,
+    "end": 1792301865612
+  }
+}

@@ -1,0 +1,11 @@
+The script runs now: `python3 main.py` prints `Total: 5.0` and exits with code 0.
+
+**Where `rate` becomes None:** `app/pricing.py:8`. That line is `return SETTINGS.get("rate")`, and `settings.json` has no `"rate"` key, so `.get()` returns `None`. `app/report.py:9` then crashes trying to multiply `None * 10`.
+
+**The missing key is `"rate"`.** Line 2 of `settings.json` had a typo: `"rat": 0.5` instead of `"rate": 0.5`.
+
+**The fix:** I renamed the key to `"rate"` in `settings.json`.
+
+**The second subagent call didn't happen.** The first call returned no id, and the task tool has no option to resume a subagent, so I couldn't send the same agent the follow-up question. Its first report had already named the missing key, so I used that instead of starting a new agent and calling it a continuation.
+
+`get_rate()` will still quietly return `None` if the key goes missing again. Changing it to `SETTINGS["rate"]` would make a bad config fail right away with a clear error. I haven't made that change.

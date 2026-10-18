@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d736704001P1E0GD69MiwYVX",
+  "sessionID": "ses_eb28d48daffewkQmOoTK2zMSge",
+  "messageID": "msg_14d734de6001d6iIEDZ9DUd2UF",
+  "type": "text",
+  "text": "Yes, two other files read the same setting, so three in total. Renaming the key in `settings.json` from `\"rat\"` to `\"fee_rate\"` fixed all of them, and I ran each one to confirm.\n\n**Every place that reads the setting** (all go through `SETTINGS`, loaded in `app/config.py:9-10`):\n\n| File:line | How it reads it | Before | After |\n|---|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]`, uses 0 if missing (`main.py:12-13`) | `Total: 0` | `Total: 5.0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` (`app/config.py:15`) | exits with \"fee_rate is missing\" | `Report fee: 0.5` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | exits with \"fee_rate is missing\" | `CSV fee: 0.5` |\n\nThe \"Before\" column for the last two comes from reading their code, not from running them. The CSV writer builds the key name from two pieces, so searching for the text `fee_rate` won't find that line.\n\nSome other files contain `fee_rate` but don't read the setting:\n- `billing/invoice.py:5` is just an old column name.\n- `billing/discount.py:5` (`archived_fee_rate`) and `billing/tax.py` use their own fixed rates.\n\nThe only change is `settings.json:2`; I didn't touch any code. `main.py:12-13` still quietly uses 0 if the key goes missing. I can change it to stop with an error, the way the other two files do, if you'd like.",
+  "time": {
+    "start": 1792300771152,
+    "end": 1792300771152
+  }
+}

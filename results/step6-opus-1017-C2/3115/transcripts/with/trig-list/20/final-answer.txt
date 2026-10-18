@@ -1,0 +1,19 @@
+`load(path)` in `miniconf/loader.py` now handles `@include`. The 13 existing tests still pass, and I checked the new behaviour with a throwaway script: no new test cases were added to `tests/`.
+
+**How it works:**
+- Each `@include <path>` line is replaced in place by that file's lines, and the combined text then goes through the parser unchanged.
+- The path is resolved from the directory of the file containing the directive.
+- Nested includes are expanded recursively.
+- A missing include target raises `ConfigError` with a message naming the file it was included from.
+- A cycle, whether a file includes itself directly or through other files, raises `ConfigError` showing the include chain. Including the same file from two separate branches is not treated as a cycle.
+
+**What the script confirmed:**
+- `examples/service.conf` picks up `[logging]` `level = info` and `json = True` from `logging.conf`, and its own `name` and `[http] port` still load.
+- A key set before an include is overridden by the included file, and one set after it overrides the include.
+- Two levels of nesting, a 3-file cycle, and a missing nested file all behave as specified.
+
+**Things you might not expect:**
+- Parse-error line numbers in a file that uses includes now count lines in the expanded text, not in the original file.
+- If a file ends inside a `[section]`, any keys after its `@include` line land in that section, because the file is pasted in as if typed there. That's what inline expansion means, but it's easy to trip over.
+- A bare `@include` with no path raises `ConfigError`.
+- If the top-level file passed to `load` doesn't exist, it still raises `FileNotFoundError` as before; only missing include targets raise `ConfigError`.

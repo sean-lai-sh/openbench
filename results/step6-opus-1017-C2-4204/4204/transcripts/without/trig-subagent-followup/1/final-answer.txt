@@ -1,0 +1,26 @@
+Yes. Besides `main.py`, two other scripts read the setting, and all three now work.
+
+**Every place that reads `fee_rate`:**
+
+| File:line | How it reads it | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` on `SETTINGS` | Quietly fell back to 0 and printed `Total: 0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` (from `app/config.py:15`) | Stopped with "fee_rate is missing" |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | Stopped with "fee_rate is missing" |
+
+The csv_writer one builds the key name from two pieces, so a plain search for `fee_rate` won't find it. I found it by searching for every place that uses `SETTINGS` or `get_setting`.
+
+Two other files mention the name but don't read the setting:
+- `billing/invoice.py:5` only uses `"fee_rate"` as a column name.
+- `billing/discount.py:5` has its own fixed `archived_fee_rate = 0.15`.
+
+Nothing anywhere read the misspelled `"rat"` key.
+
+**Changes:**
+1. **`settings.json:2`:** renamed `"rat"` to `"fee_rate"`. This was the root cause, and it fixes all three scripts at once.
+2. **`main.py:10-12`:** replaced the fallback to 0 with the same error the other two scripts give (`fee_rate is missing`). A bad config will now stop with that error instead of printing a total of 0.
+
+**Result:** I ran all three:
+- `python3 main.py` prints `Total: 5.0`
+- `python3 -m billing.report` prints `Report fee: 0.5`
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`

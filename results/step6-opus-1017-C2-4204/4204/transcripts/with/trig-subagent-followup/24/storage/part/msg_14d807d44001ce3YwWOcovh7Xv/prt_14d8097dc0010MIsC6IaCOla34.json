@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d8097dc0010MIsC6IaCOla34",
+  "sessionID": "ses_eb28041feffe6NTXzCl2lTjWjY",
+  "messageID": "msg_14d807d44001ce3YwWOcovh7Xv",
+  "type": "text",
+  "text": "Three files read this setting, and all of them now get the right value. I made one change: in `settings.json:2` I renamed the key `\"rat\"` to `\"fee_rate\"`.\n\n**Files and lines that read it:**\n\n| File:line | How it reads it | Before the fix |\n|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | Missing key quietly became 0, printed `Total: 0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")`, which calls `SETTINGS.get(key)` in `app/config.py:15` | Stopped with \"fee_rate is missing\" |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` (split string, so a plain search for `fee_rate` misses it) | Not run before the fix; it uses the same lookup as the report, so it would have stopped the same way |\n\nI checked these too; they mention a fee rate but don't read the setting:\n- `billing/invoice.py:5` only uses `\"fee_rate\"` as a column label.\n- `billing/discount.py:5` has its own hard-coded `archived_fee_rate = 0.15`.\n- `billing/tax.py` and `billing/audit.py` have their own local rates or prefixes.\n\n**After the fix:**\n```\npython3 main.py                      -> Total: 5.0\npython3 -m billing.report            -> Report fee: 0.5\npython3 -m billing.export.csv_writer -> CSV fee: 0.5\n```\n\nI didn't change the fallback in `main.py:12-13`, so a missing key there still quietly becomes 0. If you want, I can make it fail with an error like the report and CSV paths do.",
+  "time": {
+    "start": 1792301635577,
+    "end": 1792301635577
+  }
+}

@@ -1,0 +1,18 @@
+`miniconf.loader.load(path)` now expands `@include` directives as specified. All 13 existing tests pass, and `examples/service.conf` loads correctly with the `[logging]` values from `logging.conf`.
+
+The change is all in `miniconf/loader.py`: a recursive `_expand` step replaces each `@include` line with the lines of the target file before the normal parser runs. `loads()` and the parser are unchanged.
+
+I checked each rule with a throwaway script (since deleted) that runs from a different working directory:
+- **Override:** a key set before an include is overridden by it, and a key set after an include wins.
+- **Relative paths and nesting:** `sub/b.conf` included `c.conf` and the loader found it in `sub/`, so paths resolve from the including file's directory, not the working directory.
+- **Cycles:** both a file including itself and a two-file loop raise `ConfigError`, with the include chain in the message.
+- **Missing file:** raises `ConfigError`.
+
+A few behaviours to know about:
+- **Same file included twice:** allowed, as long as it isn't a loop (e.g. two files both include `logging.conf`).
+- **Paths with spaces:** everything after `@include` is taken as the path.
+- **Bare `@include`:** a line with no path raises `ConfigError`.
+- **Top-level file missing:** this still raises the original `FileNotFoundError`, not `ConfigError`, so existing behaviour doesn't change.
+- **Line numbers:** in files that use includes, parse-error line numbers count lines in the expanded text, not the original file.
+
+I didn't add new tests for includes to `tests/`; I can if you want them kept.

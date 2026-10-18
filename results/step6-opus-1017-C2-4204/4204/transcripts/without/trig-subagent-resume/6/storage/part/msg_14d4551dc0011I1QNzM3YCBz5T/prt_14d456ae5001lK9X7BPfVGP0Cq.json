@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d456ae5001lK9X7BPfVGP0Cq",
+  "sessionID": "ses_eb2bab984ffeacppCDKk6pGrYw",
+  "messageID": "msg_14d4551dc0011I1QNzM3YCBz5T",
+  "type": "text",
+  "text": "The root cause is a typo in a config key: `settings.json` says `\"rat\"` where the code expects `\"rate\"`. I read all the files but did not modify or run anything.\n\n**Where the None comes from**\n- **Code that produces None:** `app/pricing.py:8`, `return SETTINGS.get(\"rate\")`. The `\"rate\"` key doesn't exist, and `dict.get()` returns `None` for a missing key instead of raising an error.\n- **Underlying cause:** `settings.json:2` has `\"rat\": 0.5`, a misspelling of `\"rate\"`.\n\n**How the None reaches the crash**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` calls `pricing.get_rate()`.\n3. `app/pricing.py:8` looks up `\"rate\"` in `SETTINGS`. `SETTINGS` comes from `app/config.py:9-10`, which reads `settings.json` with `json.load` when the module is imported.\n4. The key is missing, so `get_rate()` returns `None`.\n5. `app/report.py:9` computes `None * 10`, which raises the `TypeError`.\n\n**Config keys**\n- `\"rate\"` is the key the code expects. It is missing.\n- `\"rat\": 0.5` is the misspelled key that's actually in the file. `0.5` is presumably the intended rate.\n- `\"currency\"` and `\"label\"` are not involved.\n\n**Possible fixes**\n- Rename the key to `\"rate\"` in `settings.json`.\n- Optionally, make `get_rate()` fail with a clear error when the key is missing, using `SETTINGS[\"rate\"]` or an explicit check, rather than returning `None` without warning.",
+  "time": {
+    "start": 1792297757440,
+    "end": 1792297757440
+  }
+}

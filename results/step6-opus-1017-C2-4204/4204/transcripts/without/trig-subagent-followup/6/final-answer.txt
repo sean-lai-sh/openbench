@@ -1,0 +1,23 @@
+I fixed the bug, and all three places that read the setting now get 0.5. I ran each one to confirm.
+
+**Places that read the setting:**
+
+| File:line | How it reads it | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | Quietly used 0 and printed `Total: 0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | Stopped with "fee_rate is missing" |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`, with the name split in two | Stopped with "fee_rate is missing" |
+
+The third one doesn't show up if you search for the exact text `fee_rate`. Some other lines mention similar names but don't read the setting:
+- `billing/invoice.py:5` only uses `"fee_rate"` as a column title.
+- `billing/discount.py:5` uses its own fixed `archived_fee_rate`.
+- `billing/tax.py` and `billing/audit.py` use similar-looking names for unrelated things.
+
+**Changes:**
+1. **`settings.json:2`:** renamed `"rat"` to `"fee_rate"`. This one change fixes all three places.
+2. **`main.py:10-12`:** if the setting is missing, it now stops with "fee_rate is missing" instead of quietly using 0, the same way the other two files already behave.
+
+**Results after the fix:**
+- `python3 main.py` prints `Total: 5.0`
+- `python3 -m billing.report` prints `Report fee: 0.5`
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`

@@ -1,0 +1,15 @@
+`miniconf.loader.load(path)` now handles `@include`. The 13 existing tests and 7 new include tests all pass.
+
+How it works, in `miniconf/loader.py`:
+- **Inline expansion:** before parsing, each `@include` line is replaced by the full contents of the target file. Nested includes are expanded the same way, and then the usual parser runs over the result.
+- **Relative paths:** the path is resolved against the directory of the file that contains the directive.
+- **Ordering:** because the text is expanded in place, keys set before an include are overridden by it, and keys set after it win.
+- **Missing file:** if an included file can't be opened, a `ConfigError` is raised. This applies to other read errors too, such as the path being a directory.
+- **Cycles:** a file that includes itself, directly or through other files, raises `ConfigError`. Including the same file twice without a cycle is allowed.
+- **Empty directive:** an `@include` line with no path also raises `ConfigError`.
+
+Two behaviours to be aware of:
+- **Missing top-level file:** if the file passed to `load()` itself doesn't exist, it still raises `FileNotFoundError` as before, not `ConfigError`. I kept that so existing behaviour doesn't change.
+- **Sections carry over:** if an included file opens a section (like `[logging]`), any keys after the `@include` in the parent file land in that section until a new header appears. That's what "as if the lines were written there" implies; `examples/service.conf` isn't affected because it starts `[http]` right after its include.
+
+The new tests are in `tests/test_loader.py` and cover the example files, override order, nested relative paths, missing files, both kinds of cycle, and the include-twice case.

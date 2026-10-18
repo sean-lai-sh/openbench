@@ -1,0 +1,18 @@
+`load(path)` now expands `@include` directives, and the existing 13 tests still pass. The change is all in `miniconf/loader.py`.
+
+**How it works:** before parsing, each `@include <path>` line is swapped for the lines of the file it names. Paths are resolved from the directory of the file containing the directive, and nested includes are expanded too. The expanded text then goes to the existing parser unchanged. `loads()`, the parser and files without includes behave exactly as before.
+
+I checked it against the example files and a set of throwaway files (since deleted):
+- **Example:** `service.conf` loads, picking up `logging.level = info` and `logging.json = True` from the included file.
+- **Nesting and relative paths:** an include in a subdirectory that includes another file next to it works.
+- **Override order:** a key set after an include beats the included value; a key set before it is replaced by the included value.
+- **Same file included twice (not a cycle):** allowed.
+- **Missing target, self-include, and two files including each other:** each raises `ConfigError`.
+
+**Behaviour worth knowing:**
+- **Section headers carry over.** If an included file has a `[section]` header, lines after the `@include` in the parent stay in that section until the next header. That's what inline expansion means. In `service.conf` it doesn't matter, because `[http]` comes right after the include.
+- **Missing top-level file:** if the file passed to `load()` itself doesn't exist, it still raises the usual Python `FileNotFoundError`, as before. Only a missing include target raises `ConfigError`.
+- **Additions beyond the spec:** an `@include` with no path, or one pointing at a directory, raises `ConfigError`. Paths starting with `~` are expanded to the home directory.
+- **Other `@` lines:** anything starting with `@` that isn't `@include` is still silently ignored by the parser.
+
+I didn't add tests for the include behaviour to `tests/`; I can turn the checks above into unit tests if you want them.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf49fa0001UNsa4R7Z2l35US",
+  "sessionID": "ses_eb30bf0f4ffeTdYewuUKaudw1D",
+  "messageID": "msg_14cf48501001B8MAsng1i2aJ8J",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include` directives (changes are in `miniconf/loader.py`). The existing 13 tests still pass, and I checked the new behavior with throwaway scripts.\n\n**What I checked:**\n- `examples/service.conf` loads correctly, including `level`/`json` under `[logging]` from the included file.\n- Nested includes work, and paths are resolved relative to the file that contains the directive (`sub/b.conf` includes `c.conf` from `sub/`).\n- Order works as specified: a key set after an include beats the included value, and one set before it is overridden.\n- A missing include target raises `ConfigError`.\n- A file including itself, or two files including each other, raises `ConfigError` and shows the chain of files.\n\n**Behaviors you should know about:**\n- **Sections carry over.** If an included file opens a section, that section stays active after the `@include` line until the next `[section]` header. That's what inline expansion means, but it can surprise people: in `service.conf`, a bare key placed right after the include would land in `[logging]`.\n- **Same file included twice is allowed.** Only true cycles are errors, so two files can both include a shared file.\n- **Missing top-level file is unchanged.** If the file passed to `load()` doesn't exist, it still raises `FileNotFoundError`. Only missing *include targets* raise `ConfigError`.\n- **`@include` with no path** raises `ConfigError`.\n- **Spaces in paths:** everything after `@include` is taken as the path, so names with spaces work.\n\nI didn't add tests for the new behavior to `tests/`. I can turn the checks above into unit tests if you want.",
+  "time": {
+    "start": 1792292462525,
+    "end": 1792292462525
+  }
+}

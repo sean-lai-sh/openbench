@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf4d9ee001IcQssUTW4sxxUB",
+  "sessionID": "ses_eb30bb90cffetLeQytTev9J7VT",
+  "messageID": "msg_14cf4be6f0013ebkqMN6R5ujPc",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include`. All 13 existing tests still pass, and each required behaviour worked when I ran it against throwaway files. I didn't add any new tests to `tests/`, so nothing in the suite covers includes yet.\n\n**What I checked:**\n- **Example files:** `examples/service.conf` loads with the included logging settings (`level = info`, `json = True`) alongside its own keys.\n- **Relative paths and nesting:** an include of `sub/b.conf` correctly pulled in `c.conf` from inside `sub/`, not from the working directory.\n- **Ordering:** a key set after an include overrides the included value, and a key set before it gets overridden by the include.\n- **Missing include target:** raises `ConfigError`.\n- **Cycles:** a file including itself, and two files including each other, both raise `ConfigError`, and the message shows the chain of files.\n\n**How it works:** the change is all in `miniconf/loader.py`. Before parsing, `load` reads the file and replaces each `@include` line with the expanded contents of the target file, then hands the lines to `parse_lines` as before. Cycle detection only looks at the chain of files currently being included. So the same file can still be included from two separate places as long as it doesn't loop back on itself.\n\n**Things you might not expect:**\n- If the top-level file passed to `load` is missing, you still get `FileNotFoundError`, as before. Only a missing include target raises `ConfigError`.\n- `@include` with no path after it also raises `ConfigError`.\n- Everything after `@include` on the line is taken as the path, so paths with spaces work.\n- As you'd expect from inline expansion, a `[section]` header inside an included file stays in effect after the include. Keys after the `@include` line go into that section unless the parent file starts a new one.",
+  "time": {
+    "start": 1792292477454,
+    "end": 1792292477454
+  }
+}

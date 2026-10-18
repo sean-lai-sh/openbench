@@ -1,0 +1,24 @@
+Three places read the setting, and all three work now.
+
+**Where it's read:**
+1. `main.py:11` reads `cfg["fee_rate"]` directly from `SETTINGS`.
+2. `billing/report.py:7` reads it with `get_setting("fee_rate")` (defined in `app/config.py:13-15`).
+3. `billing/export/csv_writer.py:8` reads it with `settings.get("fee_" + "rate")`. Because the key name is split in two, a plain search for `fee_rate` won't find this line.
+
+Some other files mention `fee_rate`, but none of them read the setting:
+- `billing/invoice.py:5` only uses the text `"fee_rate"` as a column label.
+- `billing/discount.py:5` has its own hardcoded `archived_fee_rate = 0.15`.
+- `billing/tax.py:4-5` sets its own local `rate`.
+- `billing/audit.py:4` builds `"fee_code..."` strings, not this key.
+
+**Fix:**
+- In `settings.json:2`, I renamed `"rat"` to `"fee_rate"`. This was the actual bug, and it fixes all three paths at once.
+- In `main.py:10-12`, I removed the code that quietly set the rate to 0 when the key was missing. It now stops with `"fee_rate is missing"`, the same way the two `billing` scripts do, so a missing setting can't print a wrong total again.
+
+**Results after the fix:**
+```
+python3 main.py                      -> Total: 5.0
+python3 -m billing.report            -> Report fee: 0.5
+python3 -m billing.export.csv_writer -> CSV fee: 0.5
+```
+Before the fix, the two `billing` commands would have stopped with `fee_rate is missing`.

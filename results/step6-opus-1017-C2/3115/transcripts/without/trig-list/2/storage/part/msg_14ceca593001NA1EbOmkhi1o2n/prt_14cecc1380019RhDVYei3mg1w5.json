@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cecc1380019RhDVYei3mg1w5",
+  "sessionID": "ses_eb313ba0fffeRLlRlVn0V8C7X1",
+  "messageID": "msg_14ceca593001NA1EbOmkhi1o2n",
+  "type": "text",
+  "text": "`load(path)` now handles `@include`; the change is all in `miniconf/loader.py`. The existing 13 tests still pass. I checked the new behaviour with a quick script but didn't add tests for it to the suite.\n\n**What the script showed:**\n- **Example files:** `examples/service.conf` loads with the included logging settings (`level = info`, `json = True`) plus its own `name` and `[http]` values.\n- **Ordering:** a key set before an include is overridden by it, and a key set after an include overrides it.\n- **Nesting and relative paths:** a nested include (`a.conf` → `sub/b.conf` → `sub/c.conf`) worked, with each path resolved from the including file's directory.\n- **Cycles:** a file that eventually includes itself raises `ConfigError`, and the message lists the chain of files.\n- **Missing file:** an include that points to a file that doesn't exist raises `ConfigError`.\n\n**How it works:**\n- `load` expands each `@include` line into the included file's lines before handing the text to the parser.\n- A cycle is detected by tracking only the chain of files currently being opened. So one file can still be included in two separate places, as long as it never includes itself.\n- An `@include` with no path also raises `ConfigError`.\n\n**Things you might not expect:**\n- Because expansion is purely inline, if an included file opens a `[section]`, any keys after the `@include` line land in that section until the next header. This matches the spec, and the example is fine because `[http]` comes right after the include.\n- Paths containing spaces work, but quotes around a path aren't removed.\n- If the top-level file passed to `load` is missing, it still raises `FileNotFoundError` as before, not `ConfigError`.\n- `loads(text)` doesn't expand includes; only `load(path)` does, as specified.",
+  "time": {
+    "start": 1792291946837,
+    "end": 1792291946837
+  }
+}

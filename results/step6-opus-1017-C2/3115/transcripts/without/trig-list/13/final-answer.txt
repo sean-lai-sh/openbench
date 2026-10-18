@@ -1,0 +1,14 @@
+`miniconf.loader.load(path)` now expands `@include` directives as specified, and all 13 existing tests still pass.
+
+I checked the new behaviour with a one-off script rather than new tests, since I didn't add any to `tests/`:
+- **Example files:** `examples/service.conf` loads with the `[logging]` values from `logging.conf` (`level = info`, `json = true`), and its own keys are intact.
+- **Override and nesting:** with `x = 1`, then an include that sets `x = 2`, then `x = 3`, the result is 3. An included file in a subdirectory that includes another file resolved paths from its own directory.
+- **Cycles:** a file that eventually includes itself raises `ConfigError`, and the message shows the chain of files.
+- **Missing file:** a missing include target raises `ConfigError`.
+
+The change is all in `miniconf/loader.py`. Things that behave in ways you might not assume:
+- **Same file twice is allowed:** only a real loop counts as a cycle, so two files can both include the same shared file.
+- **Sections carry over:** because the included text is pasted in place, a `[section]` header inside an included file stays active after the `@include` line until the next header. In `service.conf` this doesn't matter, because `[http]` follows the include.
+- **Missing top-level file:** if the file passed to `load()` itself doesn't exist, it still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.
+- **Bare `@include`:** a line with `@include` and no path raises `ConfigError`.
+- **Paths with spaces:** everything after `@include` is taken as the path.

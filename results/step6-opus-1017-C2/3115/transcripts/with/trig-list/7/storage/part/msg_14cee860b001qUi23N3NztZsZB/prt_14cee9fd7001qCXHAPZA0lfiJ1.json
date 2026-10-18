@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cee9fd7001qCXHAPZA0lfiJ1",
+  "sessionID": "ses_eb312019effeQ4VHfi4XVru6xj",
+  "messageID": "msg_14cee860b001qUi23N3NztZsZB",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and all 13 existing tests still pass.\n\n**Checks I ran:**\n- `examples/service.conf` loads correctly: the `[logging]` section from `logging.conf` appears between the top-level keys and `[http]`.\n- In throwaway test files:\n  - A cycle between two files raised `ConfigError`, and so did a file that includes itself.\n  - A missing include target raised `ConfigError`.\n  - A nested include in a subdirectory was found relative to the file that included it.\n  - A key set after an include overrode the included value, and a key set before it was overridden by the include.\n\nI didn't add these cases to `tests/`. They would be worth adding as permanent tests.\n\n**How it works (`miniconf/loader.py`):** a helper reads each file and swaps every `@include` line for the expanded lines of the target file. It keeps a list of the files currently being expanded, so a file that comes back round is reported as a cycle. `loads()` and the parser are untouched.\n\n**Behaviours you might not expect:**\n- **Missing top-level file:** calling `load()` on a file that doesn't exist still raises `FileNotFoundError`, as before. Only a missing *include target* raises `ConfigError`.\n- **Sections carry over:** because expansion is purely inline, a `[section]` opened inside an included file stays active for the lines after the `@include` in the parent file.\n- **Line numbers in parse errors** count lines in the expanded text, not in the original file.\n- **No path:** an `@include` line with no path raises `ConfigError`.\n- **Repeated includes are allowed:** the same file can be included more than once, as long as it isn't a cycle.\n- **Other `@` directives** are left as they are and the parser still ignores them.",
+  "time": {
+    "start": 1792292069365,
+    "end": 1792292069365
+  }
+}

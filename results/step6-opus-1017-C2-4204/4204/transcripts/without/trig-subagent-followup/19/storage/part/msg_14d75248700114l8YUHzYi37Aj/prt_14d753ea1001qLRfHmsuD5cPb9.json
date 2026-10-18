@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d753ea1001qLRfHmsuD5cPb9",
+  "sessionID": "ses_eb28bb359ffergxU4kPOIKnOJb",
+  "messageID": "msg_14d75248700114l8YUHzYi37Aj",
+  "type": "text",
+  "text": "Yes. Two other files read the setting besides `main.py`. All three now work: I fixed the misspelled key in `settings.json` and ran each one.\n\n**Every place that reads the setting:**\n\n| File:line | How it reads it |\n|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` (reads `SETTINGS` directly) |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")`. The key is built from two strings, so searching for `fee_rate` won't find this line. |\n\nThe settings file loads in `app/config.py:9-10`, and `get_setting()` is at `app/config.py:13-15`. Nothing else in the codebase reads the setting.\n\n**Similar names that don't read the setting:**\n- `billing/invoice.py:5`: a column name; its docstring says it's unused by the total.\n- `billing/discount.py:5`: a separate hard-coded `archived_fee_rate = 0.15`.\n- `billing/tax.py:4-6`: a local `rate` and `fee_schedule`.\n- `billing/audit.py:4`: builds a string starting with `\"fee_\"`, but it's an audit code.\n\n**Changes made:**\n1. **`settings.json:2`:** renamed `\"rat\"` to `\"fee_rate\"`. This is the actual fix, and it fixes all three readers.\n2. **`main.py:10-12`:** replaced the `try/except KeyError: rate = 0` with a check that stops with `\"fee_rate is missing\"`, the same way the other two files already do. A typo in the config now gives an error instead of a total of 0.\n\n**Results:**\n```\npython3 main.py                      -> Total: 5.0\npython3 -m billing.report            -> Report fee: 0.5\npython3 -m billing.export.csv_writer -> CSV fee: 0.5\n```\n\nThe two billing files have to be run as modules (`-m`), because they import from `app`.",
+  "time": {
+    "start": 1792300891847,
+    "end": 1792300891847
+  }
+}

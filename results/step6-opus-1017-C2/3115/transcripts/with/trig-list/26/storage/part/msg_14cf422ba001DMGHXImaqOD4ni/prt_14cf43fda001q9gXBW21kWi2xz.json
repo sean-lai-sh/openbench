@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf43fda001q9gXBW21kWi2xz",
+  "sessionID": "ses_eb30c6270ffeAUG9d3hRwEP4Lx",
+  "messageID": "msg_14cf422ba001DMGHXImaqOD4ni",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass, and I tried each required behaviour by hand with a script, but I didn't add any new tests to `tests/`.\n\n**What changed** (all in `miniconf/loader.py`): a new helper `_expand(path, stack)` reads the file and goes through it line by line. When the first word of a line is exactly `@include`, it puts the target file's lines (themselves expanded) in place of that line. The expanded lines then go to the existing `parse_lines`. `loads()` and the parser are unchanged.\n\n**What I checked:**\n- **Example:** `examples/service.conf` loads with the top-level keys, the `[logging]` section from `logging.conf`, and `[http]`.\n- **Relative paths:** an include is found relative to the folder of the file that contains it, including through nested folders (`a.conf` → `sub/b.conf` → `c.conf` in `sub/`).\n- **Override:** a key set after an include replaces the included value; a key set before it is replaced by the include.\n- **Missing file:** an include that points to a file that doesn't exist raises `ConfigError`.\n- **Cycles:** a file that includes itself, directly or through another file, raises `ConfigError`. Including the same file twice without a loop is still allowed.\n\n**Things you might not expect:**\n- If the file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only a missing include target raises `ConfigError`, so existing behaviour stays the same.\n- A bare `@include` with no path raises `ConfigError`. The spec didn't cover this case.\n- Because expansion is purely positional, any `[section]` opened in an included file stays open afterwards. In the example, if `service.conf` set keys after the include and before `[http]`, they would land in `[logging]`, not at the top level.",
+  "time": {
+    "start": 1792292438010,
+    "end": 1792292438010
+  }
+}

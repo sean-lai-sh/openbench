@@ -1,0 +1,21 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and all 13 existing tests still pass. I also tried it on the example files and on some throwaway files covering each rule in the spec.
+
+**How it works** (all in `miniconf/loader.py`; nothing else was changed):
+- **Inline expansion:** before parsing, each `@include <path>` line is replaced by the lines of the file it names. That file's own `@include` lines are expanded the same way, to any depth. The existing `parse_lines` then runs over the combined text unchanged, so "later assignment wins" gives the override behaviour you described.
+- **Relative paths:** the path is resolved against the directory of the file that contains the directive, not the working directory.
+- **Cycles:** the loader tracks which files are currently being expanded. If a file turns up again in its own include chain, it raises `ConfigError` and the message shows the chain. Including the same file twice in separate places is still allowed.
+- **Missing include target:** raises `ConfigError`.
+
+**Results:**
+- `examples/service.conf` loads as expected: `name=billing`, `logging.level=info`, `logging.json=True`, `http.port=8080`.
+- Nested includes across subdirectories worked, and a key assigned after an include overrode the included value.
+- A file that includes itself and a missing include target both raised `ConfigError`.
+- I didn't build a test for a cycle that runs through two or more files. It goes through the same check as the self-include case.
+
+**Choices I made that the spec didn't cover:**
+- If the file passed directly to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only a missing *included* file raises `ConfigError`.
+- A bare `@include` with no path raises `ConfigError`.
+- Everything after `@include` on the line is taken as the path, so paths containing spaces work.
+- An included file's last `[section]` stays active after the include line, since that's what writing the lines in place would do. So keys after an include land in that section unless a new section header comes first.
+
+I didn't add tests for the include behaviour to `tests/`; I can add them if you want.

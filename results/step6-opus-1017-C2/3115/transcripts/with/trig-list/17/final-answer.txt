@@ -1,0 +1,17 @@
+`miniconf.loader.load(path)` now supports `@include`. All 13 existing tests still pass, and a manual check of every rule in the spec gave the expected results.
+
+**What changed** (`miniconf/loader.py`):
+- `load()` reads the file, replaces each `@include <path>` line with the contents of that file, and then passes the result to the existing `parse_lines`.
+- The include path is looked up relative to the directory of the file that contains the line, and nested includes are expanded too.
+- If the included file is missing or can't be read, `load()` raises `ConfigError`.
+- If a file includes itself, directly or through other files, `load()` raises `ConfigError`. The same file can still be included more than once if there's no loop.
+- `loads()`, the parser, and files without `@include` behave exactly as before. If the top-level file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as it did before.
+
+**Checks I ran:**
+- `examples/service.conf` loads `logging.level=info`, `logging.json=True`, `http.port=8080` and `name=billing`.
+- Override order works: a key set before an include is replaced by the included file's value, and a key set after the include replaces it.
+- Nesting across subdirectories, the missing-file error, a file including itself, and a loop through three files all behaved as specified.
+
+**Behaviours you might not expect:**
+- **Sections carry over.** Because the included text is pasted in place, a `[section]` header inside an included file stays active after the include. Keys written right after `@include logging.conf` would go into `[logging]`, not back into the section the parent file was in. The example is fine because `[http]` comes straight after the include.
+- **Bare `@include` is an error.** An `@include` line with no path also raises `ConfigError`.

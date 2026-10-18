@@ -1,0 +1,14 @@
+`load(path)` in `miniconf/loader.py` now expands `@include` directives as specified. The existing 13 tests pass, and I tried each required behaviour with throwaway temp files:
+
+- **Example files:** loading `examples/service.conf` pulls in the `[logging]` section from `logging.conf` and keeps the top-level and `[http]` keys.
+- **Paths and nesting:** relative paths resolve from the including file's folder, and an included file can include another.
+- **Override order:** a key set after an include beats the included value, and the include beats a key set before it.
+- **Errors:** a missing include target raises `ConfigError` naming the path. A cycle, direct or indirect, raises `ConfigError` showing the full include chain. The same file included twice without a cycle is allowed.
+
+I didn't add tests for any of this to `tests/`, so these checks aren't saved anywhere.
+
+Things that behave differently from what you might assume:
+- **Sections carry across includes.** Because the text is expanded inline, a section opened inside an included file stays active for the lines after the `@include`. That follows from "as if written there", but it can surprise people.
+- **A missing top-level file still raises `FileNotFoundError`, not `ConfigError`.** I kept that on purpose so existing behaviour doesn't change; only missing include targets raise `ConfigError`.
+- **Extras the spec didn't ask for:** a bare `@include` with no path raises `ConfigError`, and a path starting with `~` is expanded to the home directory.
+- **Other `@` lines are left alone**, so the parser still ignores them as before.

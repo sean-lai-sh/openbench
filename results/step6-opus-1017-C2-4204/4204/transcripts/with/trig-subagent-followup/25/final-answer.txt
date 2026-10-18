@@ -1,0 +1,26 @@
+Yes, two other files read that setting besides `main.py`. I fixed it by renaming the key in `settings.json`, and all three now get the right value.
+
+**Every place that reads `fee_rate`:**
+
+| File:line | How it reads it | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` on `SETTINGS` | fell back to 0 without warning → `Total: 0` |
+| `billing/report.py:7` | `get_setting("fee_rate")`, which calls `SETTINGS.get(key)` at `app/config.py:15` | would stop with "fee_rate is missing" |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | would stop with "fee_rate is missing" |
+
+The CSV writer builds the key name in pieces, so a plain search for `"fee_rate"` misses it. I also searched for how `settings.json` is loaded, for `SETTINGS`/`get_setting`, and for `.get(` calls to catch reads like that.
+
+**Not readers (same name only):**
+- `billing/invoice.py:5` is just the text of a column heading.
+- `billing/discount.py:5` is a hard-coded local variable, `archived_fee_rate = 0.15`.
+
+**Fix:** In `settings.json:2`, I changed `"rat": 0.5` to `"fee_rate": 0.5`. That one change covers all three paths, so I didn't touch any code.
+
+**Result after the fix:**
+```
+python3 main.py                      → Total: 5.0
+python3 -m billing.report            → Report fee: 0.5
+python3 -m billing.export.csv_writer → CSV fee: 0.5
+```
+
+`main.py:12-13` still falls back to 0 when the key is missing, so a future typo could give a wrong total again with no error. Do you want me to make it stop with an error instead, the way the other two do?

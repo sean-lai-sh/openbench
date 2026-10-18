@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cee0d140018wSzfywwYXNXrC",
+  "sessionID": "ses_eb312a921ffe5fbShuMWe4z2qo",
+  "messageID": "msg_14cedf2fc001h64Zpa6BkLFABc",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include`. The 13 existing tests still pass, and I checked the new behaviour with a throwaway script; I didn't add any tests for it to the suite.\n\n**How it works** (all in `miniconf/loader.py`): before parsing, the loader goes through the file line by line. Any line whose first token is `@include` is replaced with the lines of the target file, and nested includes are expanded the same way. The expanded lines then go to the unchanged `parse_lines`. Paths are resolved relative to the directory of the file containing the directive.\n\n**What I checked:**\n- `examples/service.conf` loads: `name=billing`, `logging.level=info`, `logging.json=True`, `http.port=8080`.\n- Override order: a key set before an include is overridden by it, and a key set after it wins.\n- Nested includes across subdirectories resolve correctly.\n- A missing include target raises `ConfigError`, with the including file named in the message.\n- A file including itself, or two files including each other, raises `ConfigError` with the chain of files.\n- Including the same file twice from one file (not a cycle) is allowed.\n\n**Things you might not expect:**\n- **Missing top-level file:** if the file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.\n- **Section carry-over:** because expansion is literal, a `[section]` opened in an included file stays open after the include. In the example, a bare key placed right after `@include logging.conf` would land in `[logging]`, not at the top level. That's what \"as if written in place\" means, but it's easy to trip over.\n- **Empty directive:** `@include` with no path raises `ConfigError`.",
+  "time": {
+    "start": 1792292031832,
+    "end": 1792292031832
+  }
+}

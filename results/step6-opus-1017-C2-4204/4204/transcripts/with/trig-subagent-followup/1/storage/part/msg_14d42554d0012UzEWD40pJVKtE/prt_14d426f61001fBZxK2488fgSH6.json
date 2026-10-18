@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d426f61001fBZxK2488fgSH6",
+  "sessionID": "ses_eb2be6f3affeIZqExqIj2zyRU6",
+  "messageID": "msg_14d42554d0012UzEWD40pJVKtE",
+  "type": "text",
+  "text": "Yes, the setting is read in two other places besides `main.py`, and all three now work after one change to `settings.json`.\n\n**Files and lines that read it:**\n\n| File:line | How it reads the key | Before the fix |\n|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]`, which falls back to 0 if the key is missing (lines 12-13) | `Total: 0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")`, a wrapper around `SETTINGS.get` (`app/config.py:15`) | stopped with \"fee_rate is missing\" |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")`; the key name is assembled from two strings, so a plain search for `fee_rate` misses it | stopped with \"fee_rate is missing\" |\n\nAll three get their values from `app/config.py:9-10`, which loads `settings.json`.\n\nThese mention `fee_rate` but don't read the setting:\n- `billing/invoice.py:5` only uses the text `\"fee_rate\"` as a column heading.\n- `billing/discount.py:5` has its own fixed `archived_fee_rate = 0.15`.\n\nNothing in the code reads the misspelled key `\"rat\"`.\n\n**Fix:** I renamed the key from `\"rat\"` to `\"fee_rate\"` at `settings.json:2`. No code changed.\n\n**Result:**\n```\npython3 main.py                        -> Total: 5.0\npython3 -m billing.report              -> Report fee: 0.5\npython3 -m billing.export.csv_writer   -> CSV fee: 0.5\n```\n\n`main.py:12-13` still silently uses a rate of 0 when the key is missing, so a future typo would again print a wrong total without any error. Should I change it to stop with an error, the way the other two files already do?",
+  "time": {
+    "start": 1792297561983,
+    "end": 1792297561983
+  }
+}

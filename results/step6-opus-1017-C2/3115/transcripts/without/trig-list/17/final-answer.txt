@@ -1,0 +1,18 @@
+`miniconf.loader.load(path)` now expands `@include` directives. All 13 existing tests still pass, and I checked each required behaviour with throwaway files (since deleted).
+
+The change is all in `miniconf/loader.py`:
+- An `@include <path>` line is replaced by the full contents of the included file, in place, before parsing.
+- The path is resolved relative to the directory of the file that contains the directive.
+- Included files can contain their own `@include` lines, and these are expanded recursively.
+- A missing target raises `ConfigError`, and so does an unreadable file or an `@include` with no path.
+- A file that includes itself, directly or through other files, raises `ConfigError` instead of looping.
+
+What the manual checks showed:
+- **Example files:** `examples/service.conf` loads with `name = billing`, `http.port = 8080`, and `logging.level = info` / `logging.json = True` from `logging.conf`.
+- **Override and nesting:** with `x = 1`, then an include that sets `x = 5` and `y = 2` and itself includes a file setting `z = 3`, then `y = 9`, the result was `x = 5`, `y = 9`, `z = 3`. A key set before an include is overridden by it, and one set after it wins.
+- **Errors:** a missing file, a two-file cycle and a file including itself each raised `ConfigError`.
+
+Some side effects of the approach:
+- **Line numbers in parse errors:** after expansion, an error refers to its line in the combined text, not the line in the original file. That only matters for files that use `@include`; other files are unaffected.
+- **Missing top-level file:** if the file you pass to `load()` doesn't exist, it still raises Python's own `FileNotFoundError`, as before. Only missing include targets raise `ConfigError`.
+- **Sections carry over:** a `[section]` opened inside an included file is still active after the include ends, until the next header. In the example this is harmless because `service.conf` starts `[http]` right after.

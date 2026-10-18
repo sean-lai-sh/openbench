@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d6a49aa001n6UkPvJB2Qq6eg",
+  "sessionID": "ses_eb295db7dffekD3pl81UMguyH1",
+  "messageID": "msg_14d6a2fed001dQEwEeSnu9glcc",
+  "type": "text",
+  "text": "The None comes from **`app/pricing.py:8`**, and the root cause is a typo in **`settings.json:2`**. I didn't change any files.\n\n**How `rate` becomes None:**\n\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. **`app/pricing.py:8`** runs `return SETTINGS.get(\"rate\")`. This is where the None is created: there is no `\"rate\"` key in the settings, and `dict.get` returns `None` for a missing key instead of raising an error.\n4. `app/report.py:9` then runs `rate * count`, which becomes `None * 10` and raises a `TypeError`.\n\n**Settings involved:**\n\n- `app/config.py:3-10` loads `settings.json` from the project root once, at import time, into the module-level `SETTINGS` dict.\n- `settings.json:2` contains `\"rat\": 0.5` instead of `\"rate\": 0.5`. The other keys are `currency: \"USD\"` and `label: \"Total\"`.\n\n**Fix options (not applied):**\n\n- Rename the key in `settings.json` to `\"rate\"`.\n- Make `get_rate()` fail loudly when the key is missing, using `SETTINGS[\"rate\"]` or an explicit check. That way a config typo shows up as a clear error instead of a None that surfaces later.",
+  "time": {
+    "start": 1792300173766,
+    "end": 1792300173766
+  }
+}

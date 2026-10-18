@@ -1,0 +1,30 @@
+Yes. Two other files read the setting besides `main.py`. All three now work: I fixed the misspelled key in `settings.json` and ran each one.
+
+**Every place that reads the setting:**
+
+| File:line | How it reads it |
+|---|---|
+| `main.py:11` | `cfg["fee_rate"]` (reads `SETTINGS` directly) |
+| `billing/report.py:7` | `get_setting("fee_rate")` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`. The key is built from two strings, so searching for `fee_rate` won't find this line. |
+
+The settings file loads in `app/config.py:9-10`, and `get_setting()` is at `app/config.py:13-15`. Nothing else in the codebase reads the setting.
+
+**Similar names that don't read the setting:**
+- `billing/invoice.py:5`: a column name; its docstring says it's unused by the total.
+- `billing/discount.py:5`: a separate hard-coded `archived_fee_rate = 0.15`.
+- `billing/tax.py:4-6`: a local `rate` and `fee_schedule`.
+- `billing/audit.py:4`: builds a string starting with `"fee_"`, but it's an audit code.
+
+**Changes made:**
+1. **`settings.json:2`:** renamed `"rat"` to `"fee_rate"`. This is the actual fix, and it fixes all three readers.
+2. **`main.py:10-12`:** replaced the `try/except KeyError: rate = 0` with a check that stops with `"fee_rate is missing"`, the same way the other two files already do. A typo in the config now gives an error instead of a total of 0.
+
+**Results:**
+```
+python3 main.py                      -> Total: 5.0
+python3 -m billing.report            -> Report fee: 0.5
+python3 -m billing.export.csv_writer -> CSV fee: 0.5
+```
+
+The two billing files have to be run as modules (`-m`), because they import from `app`.

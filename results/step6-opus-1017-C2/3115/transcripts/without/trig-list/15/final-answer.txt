@@ -1,0 +1,15 @@
+`miniconf.loader.load(path)` now handles `@include` directives (all the changes are in `miniconf/loader.py`). The existing suite passes (13 tests, run with `unittest` because pytest isn't installed), and `loads` and files without includes behave as before.
+
+**How it works:** before parsing, `load` replaces each `@include` line with the lines of the included file, in place. The path is resolved relative to the folder of the file containing the directive. Included files are expanded the same way, recursively. The normal parser then runs over the combined text, so a later assignment still wins.
+
+**What I tried (no new tests added):**
+- **Example files:** `examples/service.conf` loads with the `[logging]` section from `logging.conf` in place, alongside the top-level keys and `[http]`.
+- **Override and nesting:** in a temporary setup, a key set before the include was overridden by the included file, and a key set after it overrode the include. A nested include in a subfolder was also expanded correctly.
+- **Errors:** a file that includes itself, and an include pointing to a missing file, both raised `ConfigError`.
+
+**Behaviour you might not expect:**
+- **Sections carry over:** if an included file opens a `[section]`, any keys after the `@include` line in the parent file land in that section. Normal inline expansion does this, but it's easy to trip over.
+- **Line numbers:** parse error messages count lines in the expanded text, not in the original file.
+- **Repeat includes:** a file can be included more than once, e.g. by two different files. Only a file that ends up including itself counts as a cycle.
+- **Missing top-level file:** if the file passed to `load` doesn't exist, it still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.
+- **Bare directive:** an `@include` with no path after it also raises `ConfigError`.
