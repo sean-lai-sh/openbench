@@ -1,0 +1,11 @@
+{
+  "id": "prt_14dda2d1f001JoQvevy9k6QR43",
+  "sessionID": "ses_eb2260373ffemoO5FwKpCDqf8Y",
+  "messageID": "msg_14dda161d001iN81oB8sfnwHY4",
+  "type": "text",
+  "text": "The None comes from **`settings.json` line 2**. The key is misspelled as `\"rat\"` when the code expects `\"rate\"`:\n\n```json\n2\t  \"rat\": 0.5,\n```\n\nI ran `python3 main.py` and got the same TypeError. Here is how the missing key turns into None:\n\n1. `app/config.py:10` loads `settings.json` into `SETTINGS`. The file only has the keys `rat`, `currency` and `label`, so there is no `rate` key.\n2. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. Because the key is missing, `dict.get` quietly returns `None` instead of raising an error. **This is the line where the None value is created in the code.**\n3. `app/report.py:8` stores that result: `rate = pricing.get_rate()`, so `rate` is `None`.\n4. `app/report.py:9` runs `return rate * count`, which fails as `None * 10`. `count` is 10, passed in from `main.py:7`.\n\n**Fix:** rename the key to `\"rate\"` in `settings.json:2`. You could also make the code fail sooner by changing `pricing.py:8` to `SETTINGS[\"rate\"]`, which raises a KeyError naming the missing key, or by checking that the value isn't None there. I didn't modify any files.",
+  "time": {
+    "start": 1792307506493,
+    "end": 1792307506493
+  }
+}

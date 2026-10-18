@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ddab20100167Wllk2mNe3rwp",
+  "sessionID": "ses_eb225773effetRWWB4AXuMH4CE",
+  "messageID": "msg_14dda9e1000136T8tVJbH9CYEU",
+  "type": "text",
+  "text": "The `None` is created at **`app/pricing.py:8`**. The underlying cause is a typo at **`settings.json:2`**. I reproduced the crash and changed no files.\n\n**How `rate` gets its value:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` returns `SETTINGS.get(\"rate\")`. There is no `\"rate\"` key, so `dict.get` returns its default, `None`.\n4. `SETTINGS` is loaded from `settings.json` at `app/config.py:9-10`.\n5. `settings.json:2` contains `\"rat\": 0.5`. The key is misspelled: it should be `\"rate\"`.\n6. Back at `app/report.py:9`, `None * 10` raises the `TypeError`.\n\n**The fix:** change the key in `settings.json:2` to `\"rate\"`. You could also make `get_rate()` use `SETTINGS[\"rate\"]` so that a missing key fails right there with a clear `KeyError`, instead of failing later in `report.py`.",
+  "time": {
+    "start": 1792307540500,
+    "end": 1792307540500
+  }
+}

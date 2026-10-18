@@ -1,0 +1,9 @@
+The crash came from a typo in `settings.json`. I fixed it, and `python3 main.py` now prints `Total: 5.0` and exits with code 0.
+
+**The command you asked me to run first:** `python3 -c 'import pricing; print(pricing.__file__)'` from inside `app/` failed with `ModuleNotFoundError: No module named 'app'`, so it never printed a path. The traceback does show the module it tried to load was `app/pricing.py`. It fails because `pricing.py` imports `from app.config import ...`, which only works when the folder *above* `app/` is on the import path. That's how `main.py` runs it from the project root. This is how the project is meant to be run, not a bug, so I left it alone.
+
+**Cause of the crash:** `settings.json` had the key `"rat": 0.5` instead of `"rate": 0.5`. `pricing.get_rate()` looks up `SETTINGS.get("rate")`, which quietly returns `None` when the key is missing. `compute_total` then tried `None * 10`, which raised the error.
+
+**Fix:** I renamed the key to `"rate"` in `settings.json`. That was the only change.
+
+`get_rate()` still returns `None` without complaint if the key goes missing again. If you want a clearer error in that case, it could look up `SETTINGS["rate"]` directly, which fails immediately and names the missing key.

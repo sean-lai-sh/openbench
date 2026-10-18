@@ -1,0 +1,16 @@
+I did the three reads first, then fixed six bugs in `catalog/`. `python3 -m unittest` now passes all 16 tests; the first run showed 15 because the `test_search` module wouldn't import.
+
+**What the reads returned:**
+- **(a)** Reading the `catalog/` directory listed 8 entries: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** Offset 0, limit 5 returned lines 1–5 of `books.py`.
+- **(c)** Offset 3, limit 5 returned lines 4–8, not 3–7, so the offset counts from 0. Lines 4–5 appeared in both reads.
+
+**Fixes:**
+- `catalog/books.py`: `parse_book` kept the year as text. It now converts it with `int(year)`, which also fixes `age()`.
+- `catalog/factory.py`: added the missing `Emma` / `Austen` book, which the docstring says should be there.
+- `catalog/fees.py`: the fee added the daily rate to the days instead of multiplying (`days_late + DAILY_FEE` → `days_late * DAILY_FEE`).
+- `catalog/inventory.py`: `recent(n)` returned one event too many (`[-n-1:]` → `[-n:]`). I also made `n <= 0` return an empty list, because `[-0:]` would have returned the whole history.
+- `catalog/members.py`: `MAX_BORROWED` was 3 but the policy comment says 5; changed to 5.
+- `catalog/search.py`: the import pointed to a module that doesn't exist (`catalog.nonexistent`); it now imports `normalize` from `catalog.text`.
+
+I made the edits with `sed` in the shell rather than the edit tool. I didn't change any tests.

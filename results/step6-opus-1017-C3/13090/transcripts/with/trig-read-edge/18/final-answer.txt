@@ -1,0 +1,14 @@
+All 16 tests now pass when I run `python3 -m unittest`. Before the fix it ran 15, because `test_search` couldn't be imported and so its two tests weren't counted.
+
+**The three reads you asked for:**
+- **(a)** Reading the `catalog/` directory listed 8 entries: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** `books.py` with offset 0, limit 5 returned lines 1–5 (docstring through `def __init__`).
+- **(c)** `books.py` with offset 3, limit 5 returned lines 4–8. So the offset counts from 1 here: offset 3 began at line 4, not line 3. Reads (b) and (c) overlap on lines 4–5.
+
+**Fixes (tests unchanged):**
+- `catalog/books.py:22`: `parse_book` kept the year as a string. It now converts it with `int(year)`, which also fixes `age()`.
+- `catalog/factory.py`: added the missing `Book("Emma", "Austen", 1815, 1)`, so the sample now has the three titles its docstring promises.
+- `catalog/fees.py`: the fee was `days_late + DAILY_FEE`; it's now `days_late * DAILY_FEE`.
+- `catalog/inventory.py`: `recent(n)` sliced `[-n - 1:]`, which returned one event too many. It now slices `[-n:]`, and returns `[]` when `n <= 0` (with a plain `[-n:]`, `n = 0` would have returned the whole history).
+- `catalog/members.py`: `MAX_BORROWED` was 3; it's now 5, matching the policy comment and the tests.
+- `catalog/search.py`: the import pointed at a module that doesn't exist (`catalog.nonexistent`). It now imports `normalize` from `catalog.text`.

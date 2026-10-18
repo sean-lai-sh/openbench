@@ -1,0 +1,11 @@
+{
+  "id": "prt_14dd82fd2001aZpqsj04HRzTcD",
+  "sessionID": "ses_eb227f762ffenvFXG9Dqf1FGdv",
+  "messageID": "msg_14dd81bad001z24gQEFIldz7wA",
+  "type": "text",
+  "text": "The None comes from **`app/pricing.py` line 8**:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n`dict.get` returns `None` when the key isn't there, and the key `\"rate\"` isn't in the settings. The underlying cause is a typo in the data file, **`settings.json` line 2**:\n\n```json\n\"rat\": 0.5,\n```\n\nThe key is spelled `\"rat\"` instead of `\"rate\"`.\n\n**How the value travels:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` runs `SETTINGS.get(\"rate\")`. `SETTINGS` was loaded from `settings.json` (`app/config.py:9-10`) and has no `\"rate\"` key, so it returns `None`.\n4. `app/report.py:9` runs `None * 10`, which raises the TypeError.\n\nI ran `python3 main.py` and got that exact traceback. I didn't change any files.\n\n**Possible fixes:**\n- Rename the key in `settings.json` to `\"rate\"`.\n- Optionally, make `get_rate()` fail with a clear error when the key is missing, for example with `SETTINGS[\"rate\"]`. Right now it quietly returns `None` and the crash only shows up later in `report.py`.",
+  "time": {
+    "start": 1792307376115,
+    "end": 1792307376115
+  }
+}

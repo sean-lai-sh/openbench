@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ddbb89f001EfryHXXEPpqrO0",
+  "sessionID": "ses_eb2247720ffetGZwwzawY54vDw",
+  "messageID": "msg_14ddba441001gZDZK2WD1PqV3y",
+  "type": "text",
+  "text": "The `None` is created at **`app/pricing.py` line 8**. The real cause is a typo in **`settings.json` line 2**.\n\n**How it gets to the error:**\n\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. There's no `\"rate\"` key, and `dict.get` returns `None` for a missing key instead of raising an error. This is where the `None` comes from.\n4. `SETTINGS` is loaded from `settings.json` at `app/config.py:9-10`. The loading works correctly.\n5. `settings.json:2` contains `\"rat\": 0.5`. The key is misspelled, so `\"rate\"` is never defined.\n6. `app/report.py:9` then runs `None * 10`, which raises the `TypeError`. I ran `python3 main.py` and got that exact traceback.\n\n**Fix:** Change the key in `settings.json:2` from `\"rat\"` to `\"rate\"`. You could also change `pricing.py:8` to `SETTINGS[\"rate\"]`, so that a missing key fails right away with a clear `KeyError` instead of passing `None` along. I haven't changed any files.",
+  "time": {
+    "start": 1792307607751,
+    "end": 1792307607751
+  }
+}

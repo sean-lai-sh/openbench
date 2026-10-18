@@ -1,0 +1,9 @@
+I fixed the crash. `python3 main.py` now prints `Total: 5.0` and exits with code 0.
+
+**What the subagent found:**
+- **First call (where `rate` becomes None):** the None comes from `app/pricing.py:8`, which runs `return SETTINGS.get("rate")`. When the key is missing, `.get` quietly returns `None`. That value is passed to `compute_total` in `app/report.py:8–9`, where the multiplication fails.
+- **Second call (same subagent, resumed with its session id):** the missing settings key is `"rate"`. `settings.json:2` has it misspelled as `"rat": 0.5`.
+
+**Fix:** I renamed `"rat"` to `"rate"` in `settings.json:2`.
+
+If a setting goes missing again, `app/pricing.py:8` will still return `None` without complaint and the script will crash later in the same confusing way. Changing that line to `SETTINGS["rate"]` would make it fail straight away with an error that names the missing key. I didn't make that change.

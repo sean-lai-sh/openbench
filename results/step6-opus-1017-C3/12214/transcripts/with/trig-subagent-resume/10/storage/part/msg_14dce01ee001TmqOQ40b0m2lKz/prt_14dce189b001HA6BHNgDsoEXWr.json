@@ -1,0 +1,11 @@
+{
+  "id": "prt_14dce189b001HA6BHNgDsoEXWr",
+  "sessionID": "ses_eb23222d5ffeOH6KJLRfG0uOB0",
+  "messageID": "msg_14dce01ee001TmqOQ40b0m2lKz",
+  "type": "text",
+  "text": "The None comes from a typo in **`settings.json` line 2**: the key is spelled `\"rat\"`, not `\"rate\"`.\n\n```json\n  \"rat\": 0.5,\n```\n\nHow it reaches the error:\n\n1. `app/config.py:10` loads `settings.json` into `SETTINGS`. The result is `{\"rat\": 0.5, \"currency\": \"USD\", \"label\": \"Total\"}`, with no `\"rate\"` key.\n2. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. Because the key is missing, `dict.get` returns `None` without raising an error. This is the line of code where the `None` value is actually created.\n3. `app/report.py:8` stores that value as `rate = pricing.get_rate()`, so `rate` is `None`.\n4. `app/report.py:9` runs `rate * count`, which raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`.\n\nI reproduced this traceback with `python3 -B main.py`; I didn't modify any files.\n\nTo fix it, rename the key in `settings.json` to `\"rate\"`. Separately, you could make `pricing.get_rate()` use `SETTINGS[\"rate\"]` or raise a clear error when the key is missing. A config typo would then fail with a clear message at the point of lookup, instead of passing `None` along to the multiplication.",
+  "time": {
+    "start": 1792306714810,
+    "end": 1792306714810
+  }
+}

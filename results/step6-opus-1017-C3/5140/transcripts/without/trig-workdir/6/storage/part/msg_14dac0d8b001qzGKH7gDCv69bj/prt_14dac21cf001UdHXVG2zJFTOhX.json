@@ -1,0 +1,11 @@
+{
+  "id": "prt_14dac21cf001UdHXVG2zJFTOhX",
+  "sessionID": "ses_eb25423caffeWA1l7wnGg7DyFO",
+  "messageID": "msg_14dac0d8b001qzGKH7gDCv69bj",
+  "type": "text",
+  "text": "I fixed it: `python3 main.py` now prints `Total: 5.0` and exits with code 0.\n\n**The command you asked for:** running `python3 -c 'import pricing; print(pricing.__file__)'` from `app/` failed with `ModuleNotFoundError: No module named 'app'`. That's expected: `app/pricing.py` imports `from app.config ...`, which only works when you run from the project root, as `main.py` does. The traceback does show that `import pricing` finds `app/pricing.py`, so no other copy of the module was being picked up.\n\n**Root cause:** a typo in `settings.json`. The key was `\"rat\": 0.5` instead of `\"rate\": 0.5`. In `app/pricing.py`, `get_rate()` looks up `SETTINGS.get(\"rate\")`, which returned `None` because the key didn't exist. `compute_total` then tried to multiply `None * 10`, which caused the crash.\n\n**Fix:** I renamed the key to `\"rate\"` in `settings.json` (line 2). I didn't change any code.\n\n`get_rate()` will still return `None` without warning if that key is ever missing. Using `SETTINGS[\"rate\"]` instead would make a config mistake like this fail straight away with a clear `KeyError`.",
+  "time": {
+    "start": 1792304488926,
+    "end": 1792304488926
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ddacc38001AVjg6BUCyRgi3u",
+  "sessionID": "ses_eb2255cf2ffe8MuIeSOsxNLXG6",
+  "messageID": "msg_14ddab77e001QBiDITfQT6MDu5",
+  "type": "text",
+  "text": "The `None` is created at **`app/pricing.py:8`**:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n`dict.get` returns `None` when the key is missing, and there is no `\"rate\"` key in the settings. The real cause is a typo at **`settings.json:2`**:\n\n```json\n\"rat\": 0.5,\n```\n\nThe key is spelled `\"rat\"` instead of `\"rate\"`.\n\nHow the value gets to the crash:\n1. `app/config.py:9-10` loads `settings.json` into `SETTINGS`, which ends up as `{\"rat\": 0.5, \"currency\": \"USD\", \"label\": \"Total\"}`.\n2. `app/pricing.py:8` runs `SETTINGS.get(\"rate\")`. The key isn't there, so it returns `None` without raising an error.\n3. `app/report.py:8` stores that in `rate = pricing.get_rate()`.\n4. `app/report.py:9` runs `rate * count`, which becomes `None * 10` and raises the `TypeError`. I ran `python3 main.py` and got this exact traceback.\n\n**Fix:** rename the key in `settings.json` to `\"rate\"`. Separately, you could make `get_rate()` use `SETTINGS[\"rate\"]` so a missing key fails with a clear `KeyError` instead of passing `None` along. I didn't change any files.",
+  "time": {
+    "start": 1792307547230,
+    "end": 1792307547230
+  }
+}
