@@ -1,0 +1,11 @@
+{
+  "id": "prt_14dd728c3001LMNvy4qlrp6LR5",
+  "sessionID": "ses_eb22905e7ffevgHxpCXQDwlXPI",
+  "messageID": "msg_14dd7140a001H0E9JUu1mdtT62",
+  "type": "text",
+  "text": "The `None` is created at **`app/pricing.py:8`**. The underlying cause is a typo in **`settings.json:2`**.\n\nI ran `python3 main.py` and got the same TypeError. I didn't modify any files.\n\n**How `rate` becomes `None`:**\n\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. There is no `\"rate\"` key, so `dict.get` quietly returns `None`. This is the line where the `None` is created.\n4. `app/config.py:9-10` loads `SETTINGS` from `settings.json` when the module is imported.\n5. `settings.json:2` says `\"rat\": 0.5`. The key should be `\"rate\"`, so the lookup in step 3 finds nothing.\n\n**Fixes:**\n- Rename the key on `settings.json:2` from `\"rat\"` to `\"rate\"`.\n- Optionally, change `pricing.py:8` to `SETTINGS[\"rate\"]` so a missing key raises a clear `KeyError` right away instead of failing later in `report.py`.",
+  "time": {
+    "start": 1792307308757,
+    "end": 1792307308757
+  }
+}

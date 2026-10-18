@@ -1,0 +1,16 @@
+I did the three reads first, then fixed six bugs in `catalog/`. `python3 -m unittest` now passes all 16 tests. Before the fixes it ran 15, because `tests/test_search.py` couldn't be imported.
+
+**The three reads:**
+- **(a)** The `catalog/` directory lists 8 files: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** Offset 0, limit 5 returned lines 1–5 of `books.py`: the module docstring through `def __init__(self, title, author, year, copies):`.
+- **(c)** Offset 3, limit 5 returned lines 4–8. So the read tool's offset works as "start at line offset + 1", and the two reads overlap on lines 4–5.
+
+**Fixes:**
+- `catalog/books.py:22`: `parse_book` left the year as a string. It now converts it with `int(year)`, which fixes both the year test and the age test.
+- `catalog/factory.py`: the sample data was missing `Emma`, which the docstring promises. I added `Book("Emma", "Austen", 1815, 1)`. The tests only check the title, so I chose the author, year and copy count myself.
+- `catalog/fees.py:14`: the fee added the daily rate to the number of days (`days_late + DAILY_FEE`) instead of multiplying (`days_late * DAILY_FEE`).
+- `catalog/inventory.py:24`: `recent(n)` returned one event too many (`[-n - 1:]`). It now returns `[-n:]`, and an empty list when `n <= 0`, because `[-0:]` would return the whole history.
+- `catalog/members.py:4`: `MAX_BORROWED` was 3, but both the comment and the tests say 5.
+- `catalog/search.py:3`: it imported `normalize` from a module that doesn't exist. It now imports it from `catalog.text`.
+
+I didn't change any tests.

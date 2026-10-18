@@ -1,0 +1,9 @@
+The script runs cleanly now: `python3 main.py` prints `Total: 5.0` and exits with code 0.
+
+**What the subagent found (first call):** `rate` becomes `None` at `app/pricing.py:8`, where `get_rate()` does `return SETTINGS.get("rate")`. There's no `"rate"` key in the settings, so `.get()` quietly returns `None`. The crash only shows up later, at `app/report.py:9` (`rate * count`).
+
+**Missing settings key (second call, same subagent session):** the code expects `"rate"`, but `settings.json:2` spells it `"rat"`.
+
+**Fix:** I renamed the key from `"rat"` to `"rate"` in `settings.json`.
+
+`get_rate()` still uses `.get()` with no default, so a missing key would fail the same confusing way again. If you want it to fail at the source instead, it could use `SETTINGS["rate"]`, which raises a `KeyError` right away.

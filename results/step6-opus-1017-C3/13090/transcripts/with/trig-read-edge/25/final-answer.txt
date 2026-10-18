@@ -1,0 +1,14 @@
+All 16 tests now pass with `python3 -m unittest`. The earlier run counted 15 because `test_search` couldn't be imported, so its two real tests never ran.
+
+**The three reads you asked for:**
+- **(a)** Reading the `catalog/` directory listed 8 entries: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** `books.py` with offset 0, limit 5 returned lines 1–5: the docstring through `def __init__(...)`.
+- **(c)** `books.py` with offset 3, limit 5 returned lines 4–8, from `class Book:` through `self.year = year`. So for this tool the offset is effectively the 1-based line to start at, not a 0-based offset: offset 0 and offset 1 would both start at line 1.
+
+**Fixes (only files in `catalog/` changed; tests untouched):**
+- `catalog/search.py:3`: the import pointed at a module that doesn't exist (`catalog.nonexistent`); it now imports `normalize` from `catalog.text`.
+- `catalog/books.py:22`: `parse_book` left the year as a string, which also broke `age()`. It now converts it with `int(year)`.
+- `catalog/factory.py`: the sample data was missing the third book listed in the docstring; I added `Book("Emma", "Austen", 1815, 1)`.
+- `catalog/fees.py:14`: the fee added the daily rate to the days late instead of multiplying; changed to `days_late * DAILY_FEE`.
+- `catalog/inventory.py`: `recent(n)` returned one event too many (`[-n - 1:]`). It now returns `[-n:]`, and returns an empty list when `n <= 0`, since `[-0:]` would return the whole history.
+- `catalog/members.py:4`: `MAX_BORROWED` was 3, but the comment and the tests both say members can hold 5; changed to 5.

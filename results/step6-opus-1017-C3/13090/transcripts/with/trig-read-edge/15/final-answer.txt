@@ -1,0 +1,14 @@
+I did the three reads first, as you asked:
+- **(a)** The `catalog/` directory holds `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py` and `text.py`.
+- **(b)** Offset 0, limit 5 returned lines 1–5 of `books.py`, ending at `def __init__`.
+- **(c)** Offset 3, limit 5 returned lines 4–8. So in this tool the offset counts from 0 but the line numbers shown start at 1. These two reads overlap on lines 4–5.
+
+All 16 tests now pass with `python3 -m unittest`. Before the fixes it ran only 15, because `tests/test_search.py` couldn't be imported; once that was fixed, its two tests ran too. I didn't change any tests.
+
+What was wrong in `catalog/`:
+- **`books.py:22`**: `parse_book` kept the year as a string, so `age()` crashed when it subtracted. It now converts the year to a number with `int(year)`.
+- **`factory.py`**: the sample data was missing the book `Emma`, which the docstring says should be there. I added `Book("Emma", "Austen", 1815, 1)`.
+- **`fees.py:14`**: the late fee added the daily rate to the number of days instead of multiplying (`days_late + DAILY_FEE`). It now multiplies.
+- **`inventory.py`**: `recent(n)` returned one event too many. It now returns exactly the last `n`, and an empty list when `n` is 0 or less.
+- **`members.py`**: the borrowing limit was set to 3, but the comment and the tests say 5. It's now 5.
+- **`search.py`**: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`). It now imports it from `catalog.text`.

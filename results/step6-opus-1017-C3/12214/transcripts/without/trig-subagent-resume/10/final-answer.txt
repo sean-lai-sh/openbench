@@ -1,0 +1,9 @@
+The crash is fixed: `python3 main.py` now prints `Total: 5.0` and exits with code 0.
+
+**What the subagent found:**
+- **Where `rate` becomes None (first call):** the key is misspelled on line 2 of `settings.json`, which had `"rat": 0.5`. `app/config.py:10` loads that file, and `app/pricing.py:8` reads it with `SETTINGS.get("rate")`. Because there's no `"rate"` key, `.get()` returns `None` instead of raising an error. That `None` reaches `app/report.py:9` and causes the TypeError.
+- **Which key is missing (second call, same subagent via its session id):** `rate`.
+
+**Fix:** I renamed `"rat"` to `"rate"` in `settings.json:2`. No code changes were needed.
+
+**Optional:** changing `app/pricing.py:8` to `SETTINGS["rate"]` would make a missing key fail right away with a clear error, instead of passing `None` along. I haven't made that change.

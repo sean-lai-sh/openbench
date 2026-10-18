@@ -10,12 +10,12 @@ def fisher_exact(t):
 from thesis.ab.summarize import row_cost, params_strip_status
 R=sys.argv[1]; EX=("infra","rate_limited","stalled","incompatible"); LO,HI=-10.4,4.4
 tot=0.0
-print("pr | task | without solved | with solved | infra w/o,w | hang w/o,w | tok w/o | tok w | tokens diff [95% CI] -> label | solved Fisher p -> label | cost | strip | upstream_model")
+print("pr | task | without solved | with solved | infra w/o,w | hang w/o,w | tok w/o | tok w | tokens diff [95% CI] -> label | solved Fisher p -> label | cost | strip | upstream_model per side (None = infra cell, excluded)")
 for d in sorted(glob.glob(f"{R}/*/cells"), key=lambda p:int(p.split('/')[-2])):
-    pr=d.split('/')[-2]; S={}; cost=0; task=set(); um=set(); RW={}
+    pr=d.split('/')[-2]; S={}; cost=0; task=set(); um={'without':set(),'with':set()}; RW={}
     for s in ("without","with"):
         rs=[json.load(open(p)) for p in glob.glob(f"{d}/{s}/*/*.json")]; RW[s]=rs
-        for r in rs: cost+=row_cost(r) or 0; task.add(r.get("task")); um.add(r.get("upstream_model"))
+        for r in rs: cost+=row_cost(r) or 0; task.add(r.get("task")); um[s].add(r.get("upstream_model"))
         J=[r for r in rs if r.get("failure_class") not in EX]
         S[s]=dict(j=len(J),ok=sum(1 for r in J if r.get("success")),inf=len(rs)-len(J),hang=sum(1 for r in rs if r.get("failure_class")=="hang"),t=[tok(r) for r in J])
     tot+=cost; a,b=S["without"],S["with"]
@@ -32,5 +32,5 @@ for d in sorted(glob.glob(f"{R}/*/cells"), key=lambda p:int(p.split('/')[-2])):
         fl=f"p={p:.2g} -> "+("pass-rate effect (%s)"%g if p<0.01 else "borderline (%s)"%g if p<0.05 else "no pass-rate effect")
     else: fl="n/a"
     es=' EARLY-STOP' if os.path.exists(f'{R}/{pr}/early-stop.json') else ''
-    print(f"{pr} | {','.join(sorted(map(str,task)))} | {a['ok']}/{a['j']} | {b['ok']}/{b['j']} | {a['inf']},{b['inf']} | {a['hang']},{b['hang']} | {m(a['t'])} | {m(b['t'])} | {ci} | {fl} | ${cost:.2f} | {params_strip_status(RW['without'],RW['with'])}{es} | {','.join(sorted(map(str,um)))}")
+    print(f"{pr} | {','.join(sorted(map(str,task)))} | {a['ok']}/{a['j']} | {b['ok']}/{b['j']} | {a['inf']},{b['inf']} | {a['hang']},{b['hang']} | {m(a['t'])} | {m(b['t'])} | {ci} | {fl} | ${cost:.2f} | {params_strip_status(RW['without'],RW['with'])}{es} | w/o:{','.join(sorted(map(str,um['without'])))} w:{','.join(sorted(map(str,um['with'])))}")
 print(f"total ${tot:.2f}")

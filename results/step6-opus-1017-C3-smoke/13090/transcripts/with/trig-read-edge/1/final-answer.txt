@@ -1,0 +1,16 @@
+All 16 tests pass now. Before the fix the run showed 15 tests, because `tests/test_search.py` couldn't be imported at all; its 2 tests run now. I didn't change any tests.
+
+**The three reads you asked for:**
+- **(a)** Reading `catalog/` gave a list of 8 files: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** Offset 0, limit 5 returned lines 1–5.
+- **(c)** Offset 3, limit 5 returned lines 4–8.
+
+So `offset` counts from 0: it's the number of lines skipped, and offset 3 starts at line 4.
+
+**Fixes:**
+1. `catalog/books.py:22`: `parse_book` left the year as a string, so it's now converted with `int(year)`. This also fixed `age()`, which was failing because it subtracted a string from a number.
+2. `catalog/factory.py`: added the missing `Emma` book, so the sample has the three titles its docstring lists.
+3. `catalog/fees.py:14`: the fee was days plus the daily rate; it's now days times the rate (`days_late * DAILY_FEE`).
+4. `catalog/inventory.py`: `recent(n)` returned one event too many. It now returns the last `n` (`self._history[-n:]`). I also made `n <= 0` return an empty list, because `[-0:]` would otherwise return the whole history. No test needs that guard; it just prevents a wrong result.
+5. `catalog/members.py:4`: changed `MAX_BORROWED` from 3 to 5, which matches the comment above it and the tests.
+6. `catalog/search.py:3`: the import pointed at a module that doesn't exist (`catalog.nonexistent`). It now imports `normalize` from `catalog.text`.

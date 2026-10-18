@@ -1,0 +1,11 @@
+{
+  "id": "prt_14dcdea70001H4oNwHt0TpprFy",
+  "sessionID": "ses_eb2323f91ffeTi26MkVBV37mA6",
+  "messageID": "msg_14dcddb25001fj8tUC0AqiCldM",
+  "type": "text",
+  "text": "The None comes from **`settings.json` line 2**, where the key is misspelled as `\"rat\": 0.5` instead of `\"rate\": 0.5`.\n\nHow it gets to the error:\n1. `app/config.py:10` loads `settings.json` into `SETTINGS`, so it has no `\"rate\"` key.\n2. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. Because the key is missing, `.get()` quietly returns `None` instead of raising an error. This is where the None is actually created.\n3. `app/report.py:8` stores that value in `rate`, and line 9 (`rate * count`) raises the TypeError.\n\nThe fix is to rename the key to `\"rate\"` in `settings.json`. To catch this kind of mistake earlier, `pricing.py:8` could use `SETTINGS[\"rate\"]`, which raises a KeyError right away if the key is missing. I haven't changed any files.",
+  "time": {
+    "start": 1792306702974,
+    "end": 1792306702974
+  }
+}

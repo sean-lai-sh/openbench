@@ -1,0 +1,16 @@
+I did the three reads first. All 16 tests now pass with `python3 -m unittest` (the run before the fixes found 15, because `test_search` couldn't be imported).
+
+**The reads:**
+- **(a)** Reading `catalog/` lists its 8 files: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** Offset 0 with limit 5 returned lines 1–5. Offset 0 behaves the same as starting at line 1.
+- **(c)** Offset 3 with limit 5 returned lines 4–8. So the offset counts lines to skip from the start, and the reads in (b) and (c) overlap on lines 4–5.
+
+**Fixes (all in `catalog/`; tests unchanged):**
+- `books.py:22`: `parse_book` now stores the year as an `int`. It was a string, which also broke `age()`.
+- `factory.py`: added the missing `Emma` (Austen, 1815) book that the docstring says should be there.
+- `fees.py:14`: the fee was `days_late + DAILY_FEE`; it's now `days_late * DAILY_FEE`.
+- `inventory.py:24`: `recent(n)` returned one event too many (`[-n - 1:]`). It now uses `[-n:]`, and returns an empty list when `n <= 0`, since `[-0:]` would give the whole history.
+- `members.py:4`: `MAX_BORROWED` changed from 3 to 5 to match the lending policy in the comment.
+- `search.py:3`: `normalize` was imported from a module that doesn't exist; it now comes from `catalog.text`.
+
+I made these edits with `sed` in one shell command rather than the edit tool.

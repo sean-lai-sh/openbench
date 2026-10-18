@@ -1,0 +1,11 @@
+{
+  "id": "prt_14dd8be00001tbS44Tl9TBJQEa",
+  "sessionID": "ses_eb2277573ffeVx2Xi34GoBvkn3",
+  "messageID": "msg_14dd8a1db001nyR0gwG37tOalM",
+  "type": "text",
+  "text": "The None comes from **`app/pricing.py:8`**: `return SETTINGS.get(\"rate\")`. The underlying cause is a typo in **`settings.json:2`**, where the key is spelled `\"rat\": 0.5` instead of `\"rate\"`. Because `dict.get` returns `None` when a key is missing, the code never raises an error at the lookup itself.\n\n**How `rate` ends up as None:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` gets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` returns `SETTINGS.get(\"rate\")`. There's no `\"rate\"` key, so it returns `None`.\n4. `app/report.py:9` runs `None * 10`, which raises the TypeError. I ran `python3 main.py` and got this error.\n\n**Notes on the settings lookup, for your follow-up:**\n- `app/config.py:6-10` loads `settings.json` from the project root once, when the module is first imported, into a plain dict called `SETTINGS`. There's no schema check, no defaults and no check for required keys.\n- `settings.json` has these keys: `\"rat\": 0.5`, `\"currency\": \"USD\"`, `\"label\": \"Total\"`.\n- `app/pricing.py:3` imports `SETTINGS` directly, so a change to the file only takes effect after the process restarts.\n- Possible fixes:\n  - Rename the key in `settings.json` to `\"rate\"`. This is the root fix.\n  - Optionally, make the code fail early: use `SETTINGS[\"rate\"]` so a missing key raises a KeyError right at the lookup, or check for required keys in `config.py`.\n\nAs you asked, I didn't change any files.",
+  "time": {
+    "start": 1792307412506,
+    "end": 1792307412506
+  }
+}

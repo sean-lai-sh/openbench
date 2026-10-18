@@ -1,0 +1,16 @@
+All 16 tests pass now. Before the fixes, 15 ran, because `tests/test_search.py` couldn't be imported at all.
+
+**The three reads you asked for:**
+- **(a) `catalog/` directory:** this failed. The read tool returned "File not found" and suggested the exact same path back to me, so it doesn't seem to handle directories. I listed the folder with `ls` instead.
+- **(b) `books.py`, offset 0, limit 5:** returned lines 1–5 (the docstring through `def __init__`).
+- **(c) `books.py`, offset 3, limit 5:** returned lines 4–8 (`class Book:` through `self.year = year`). The offset counts from 0, so offset 3 starts at line 4, and the two reads share lines 4–5.
+
+**Fixes, all in `catalog/`:**
+1. `search.py:3` imported `normalize` from a module that doesn't exist (`catalog.nonexistent`). It now imports from `catalog.text`, which unblocked the search tests.
+2. `books.py:22` stored the parsed year as text instead of a number, so `age()` crashed. It's now converted with `int(year)`.
+3. `factory.py` was missing `Emma`, though its own docstring says the sample has three titles. I added `Book("Emma", "Austen", 1815, 1)`.
+4. `fees.py:14` added the daily fee to the days late instead of multiplying them. It's now `days_late * DAILY_FEE`.
+5. `inventory.py` `recent(n)` sliced `[-n - 1:]`, which returned one event too many. It now returns the last `n`, and an empty list when `n <= 0` (a plain `[-0:]` would return the whole history).
+6. `members.py:4` set the borrow limit to 3, but the comment above it says five. Changed to `MAX_BORROWED = 5`.
+
+I didn't change any tests.

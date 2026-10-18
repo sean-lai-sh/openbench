@@ -1,0 +1,9 @@
+The crash came from a typo in `settings.json`: line 2 said `"rat"` where the code expects `"rate"`. I renamed the key, and `python3 main.py` now prints `Total: 5.0` and exits with code 0.
+
+**What the subagent found:**
+- **First call (where `rate` becomes None):** `app/pricing.py:8` runs `SETTINGS.get("rate")`, which returns `None` because that key isn't in the settings. `app/report.py:8` stores that as `rate`, and the multiplication at `app/report.py:9` then crashes. The `None` itself comes from the `.get("rate")` lookup in `app/pricing.py`.
+- **Second call (same subagent, same id):** the missing key is `"rate"`. `settings.json` has `"rat": 0.5` in its place.
+
+**Fix:** in `settings.json` line 2, `"rat": 0.5` is now `"rate": 0.5`.
+
+The subagent also pointed out that `.get("rate")` hides a missing key, so the program only fails later, at the multiplication. Switching `app/pricing.py:8` to `SETTINGS["rate"]` would make a typo like this fail right away with `KeyError: 'rate'`. I didn't make that change because it wasn't needed for this fix.
