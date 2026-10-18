@@ -1,0 +1,18 @@
+I fixed the bug by renaming `"rat"` to `"fee_rate"` in `settings.json:2`. All three places that read the setting now work.
+
+**Where the setting is read:**
+
+| File:line | How it reads the setting | Before | After |
+|---|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`; a missing key silently became `0` (lines 12-13) | `Total: 0` | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` (from `app/config.py:15`) | exited with "fee_rate is missing" | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`; the name is split in two, so a plain search for `fee_rate` misses it | exited with "fee_rate is missing" | `Report fee: 0.5` → `CSV fee: 0.5` |
+
+`app/config.py:9-10` loads the file but doesn't look at this setting.
+
+**Matches that aren't this setting:**
+- `billing/invoice.py:5` is just an old column name that has nothing to do with the total.
+- `billing/discount.py:5` uses its own fixed `0.15` instead of reading the setting.
+- `billing/tax.py` and `billing/audit.py` contain similar-looking names but don't read it.
+
+The edit to `settings.json` was the only change. `main.py:12-13` still quietly uses `0` if the setting goes missing again. Should I make it stop with an error instead, like the other two scripts do?

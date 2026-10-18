@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ced4ec0001yRB18ZE9ohilo5",
+  "sessionID": "ses_eb31337d9ffercXarKYAY5kmGN",
+  "messageID": "msg_14ced2e640013j7v51YpUKSlhY",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass, and I tried the new behaviour with small scripts. I didn't add any new tests to `tests/`.\n\nThe change is all in `miniconf/loader.py`: the file is expanded line by line before it is parsed. Nothing else changed: `loads()`, the parser, and files without `@include` behave as before.\n\nWhat I tried:\n- **Example files:** `examples/service.conf` loads correctly, picking up `logging.level = info` and `logging.json = True` from `logging.conf`, with `http.port = 8080` and `name = billing` intact.\n- **Relative paths and nesting:** a file in a subfolder including another file worked, with paths resolved from each including file's own folder.\n- **Override order:** a key set before an include was replaced by the included file's value (`x` → 2), and a key set after it won over the included value (`y` → 9).\n- **Cycles:** a loop back to the first file raises `ConfigError`, and the message shows the chain of files.\n- **Missing file:** an include that points to a file that doesn't exist raises `ConfigError`.\n\nThings you might not expect:\n- **Missing top-level file:** calling `load()` on a file that doesn't exist still raises `FileNotFoundError`, as it did before. Only missing *include* targets raise `ConfigError`, so existing callers aren't affected.\n- **Sections carry over:** because the text is pasted in place, a `[section]` started inside an included file stays active afterwards. Keys after an `@include` with no new `[section]` line will land in whatever section the included file ended in.\n- **Same file twice:** including one file more than once without a loop (A includes B and C, and both include D) is allowed. Only real loops are rejected.\n- **Line numbers:** parse errors give line numbers in the combined text, not in the original file.\n- **Empty directive:** `@include` with no path after it raises `ConfigError`.",
+  "time": {
+    "start": 1792291983071,
+    "end": 1792291983071
+  }
+}

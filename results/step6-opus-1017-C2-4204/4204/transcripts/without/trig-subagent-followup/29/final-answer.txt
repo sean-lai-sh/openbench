@@ -1,0 +1,13 @@
+I fixed the setting by renaming the misspelled key in `settings.json` line 2, from `"rat": 0.5` to `"fee_rate": 0.5`. I ran all three places that read it and each now prints the right value.
+
+| File:line | How it reads the setting | Output now |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | `CSV fee: 0.5` |
+
+The `csv_writer.py` lookup builds the key by joining two strings, so a plain text search for `fee_rate` doesn't find it. I read every Python file to make sure no other code reads this setting.
+
+Some names look related but aren't. `billing/invoice.py` only uses `"fee_rate"` as a column label, and `billing/discount.py`, `tax.py` and `audit.py` have similar-looking names. None of them read the setting.
+
+**Decision for you:** `main.py:10-13` still turns a missing key into a rate of 0 without any warning. That's how this typo produced a wrong total instead of an error. I left it alone to keep the fix small. Changing it to stop with "fee_rate is missing", like `report.py` does, would make the next config typo fail loudly. I can make that change if you want.

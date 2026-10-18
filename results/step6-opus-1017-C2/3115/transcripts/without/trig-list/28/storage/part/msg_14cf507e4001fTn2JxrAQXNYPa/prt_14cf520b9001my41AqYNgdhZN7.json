@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf520b9001my41AqYNgdhZN7",
+  "sessionID": "ses_eb30b7773ffeioabchFQwd9G1y",
+  "messageID": "msg_14cf507e4001fTn2JxrAQXNYPa",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and all 13 existing tests still pass.\n\nThe change is all in `miniconf/loader.py`. Before parsing, the loader walks the file's lines and replaces each `@include <path>` line with the contents of that file, so normal parsing and \"later assignment wins\" then run over the combined text.\n\nI checked it against `examples/service.conf` (the `logging` and `http` sections both load correctly) and with throwaway temp files:\n- **Ordering:** in `x = 1`, then `@include` (which sets `x = 2`), then `x = 3`, the result is `x = 3`.\n- **Nesting and relative paths:** `sub/b.conf` including `c.conf` correctly found `sub/c.conf`, next to the file that included it.\n- **Cycles:** a loop of `a → b → c → a` raises `ConfigError` and the message shows the whole chain.\n- **Missing file:** raises `ConfigError` with the file and line number of the `@include`.\n\nCycle detection only looks at the current chain of includes, so including the same file twice from different places is allowed. I didn't add new unit tests for any of this.\n\nA few behaviours you might not assume:\n- If the top-level file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only missing *included* files raise `ConfigError`.\n- An `@include` line with no path raises `ConfigError`.\n- Paths starting with `~` are expanded to the home directory, and absolute paths are used as given.",
+  "time": {
+    "start": 1792292495581,
+    "end": 1792292495581
+  }
+}

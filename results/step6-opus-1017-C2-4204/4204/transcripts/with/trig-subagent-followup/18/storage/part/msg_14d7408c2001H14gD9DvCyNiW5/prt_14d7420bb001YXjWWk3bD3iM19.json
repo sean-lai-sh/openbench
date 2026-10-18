@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d7420bb001YXjWWk3bD3iM19",
+  "sessionID": "ses_eb28cab70ffeJtaBHZDHltYpGp",
+  "messageID": "msg_14d7408c2001H14gD9DvCyNiW5",
+  "type": "text",
+  "text": "I fixed the bug, and all three places that read `fee_rate` now work.\n\n**Every place that reads the setting:**\n\n| File:line | How it reads it |\n|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` (on the `SETTINGS` dict) |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` (a helper in `app/config.py:13-15` that looks up the key) |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")`, which builds the name from two pieces, so a plain search for `fee_rate` won't find this line |\n\nThese mention `fee_rate` but don't read the setting:\n- `billing/invoice.py:5` only uses `\"fee_rate\"` as a column heading.\n- `billing/discount.py:5` has its own fixed rate, `archived_fee_rate = 0.15`.\n- `billing/tax.py` works out its own rate.\n\n**Changes:**\n1. **`settings.json:2`:** renamed `\"rat\"` to `\"fee_rate\"`. This was the actual cause, and this one change fixes all three places.\n2. **`main.py:10-12`:** if `fee_rate` is missing, the program now stops with `SystemExit(\"fee_rate is missing\")` instead of quietly using `0`. That matches the other two files, so a bad settings file causes an error instead of a wrong total.\n\n**Checked by running all three:**\n```\npython3 main.py                       -> Total: 5.0\npython3 -m billing.report             -> Report fee: 0.5\npython3 -m billing.export.csv_writer  -> CSV fee: 0.5\n```",
+  "time": {
+    "start": 1792300818677,
+    "end": 1792300818677
+  }
+}

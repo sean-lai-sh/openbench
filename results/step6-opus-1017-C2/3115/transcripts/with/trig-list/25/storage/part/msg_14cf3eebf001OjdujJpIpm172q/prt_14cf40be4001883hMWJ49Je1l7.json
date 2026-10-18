@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf40be4001883hMWJ49Je1l7",
+  "sessionID": "ses_eb30c88deffeHhk7vCqxKJpuI7",
+  "messageID": "msg_14cf3eebf001OjdujJpIpm172q",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include` directives, and the existing 13 tests still pass. The change is all in `miniconf/loader.py`.\n\n**How it works:** each `@include` line is replaced by the lines of the target file, and nested includes are expanded the same way. The expanded text is then passed to the existing `parse_lines`, so \"later assignment wins\" gives the override behaviour you described. The include path is taken relative to the directory of the file that contains the directive.\n\n**Errors:**\n- A missing include target raises `ConfigError`.\n- A cycle raises `ConfigError` and shows the chain of files in the message. Files are compared by their resolved real path, so a cycle is still caught when it goes through a symlink or a different relative path.\n- Including the same file twice from different places is allowed, because only an include back up the current chain counts as a cycle.\n\n**What I tested:**\n- `examples/service.conf` loads with values from both files (`billing`, `info`, `True`, `8080`).\n- In throwaway temp files, I checked override order in both directions, nested includes in a subdirectory, a transitive cycle and a missing include.\n\n**Things you might not expect:**\n- If the top-level file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before, not `ConfigError`. Only missing *include* targets raise `ConfigError`.\n- An `@include` line with no path raises `ConfigError`.\n- Everything after `@include` is treated as the path, so paths with spaces work, and `~` is expanded to the home directory.\n- A `[section]` header inside an included file stays active after the include ends, since the lines are simply inserted in place. In the example this doesn't matter because `service.conf` starts `[http]` straight after the include.\n- I didn't add new tests to the suite, so the checks above were one-off; tell me if you want them added to `tests/test_loader.py`.",
+  "time": {
+    "start": 1792292424750,
+    "end": 1792292424750
+  }
+}

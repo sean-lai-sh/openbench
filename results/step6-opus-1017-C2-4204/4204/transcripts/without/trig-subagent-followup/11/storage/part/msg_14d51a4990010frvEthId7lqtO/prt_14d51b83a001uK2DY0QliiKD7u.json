@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d51b83a001uK2DY0QliiKD7u",
+  "sessionID": "ses_eb2af426effeufXnaEyVeW73iK",
+  "messageID": "msg_14d51a4990010frvEthId7lqtO",
+  "type": "text",
+  "text": "I fixed the bug by renaming the key in `settings.json:2` from `\"rat\"` to `\"fee_rate\"`. All three places that read the setting now work.\n\nI searched the codebase myself, and these are the only reads. All three go through `app/config.py`, which is the only code that loads `settings.json`:\n\n| File:line | Read | Output before | Output after |\n|---|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | `Total: 0` (silent fallback) | `Total: 5.0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | `fee_rate is missing` | `Report fee: 0.5` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | `fee_rate is missing` | `CSV fee: 0.5` |\n\nI ran all three after the change and got the outputs above.\n\nSome other files mention similar names but don't read the setting: `invoice.py:5` (a label string), `discount.py`, `tax.py` and `audit.py` (local variables only).\n\nI left the `except KeyError: rate = 0` fallback in `main.py:12-13` as it is. It's what made the typo print 0 instead of an error. Should I change it to raise an error, as `report.py` and `csv_writer.py` already do?",
+  "time": {
+    "start": 1792298563665,
+    "end": 1792298563665
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf3cd79001bVw4KCPTGzOjLK",
+  "sessionID": "ses_eb30cbe91ffejM1GmzvIQy1WeS",
+  "messageID": "msg_14cf3b6c5001ChfzVGP682ePw3",
+  "type": "text",
+  "text": "`load()` in `miniconf/loader.py` now handles `@include`. All 13 existing tests still pass, and `examples/service.conf` loads with the `[logging]` section pulled in from `logging.conf`.\n\n**How it works:** `load()` expands every `@include` line before handing the text to the parser. `loads()` and the parser itself are unchanged.\n\n- **Paths** are resolved relative to the directory of the file that contains the directive.\n- **Nesting** is expanded recursively.\n- **Cycles** (direct or through other files) raise `ConfigError`. Including the same file twice from separate places is still allowed.\n- **Missing or unreadable include targets** raise `ConfigError`, and so does an `@include` line with no path.\n\nI checked these with throwaway files in a temp directory, which I deleted afterwards:\n- Override order: a value set before the include was replaced by the included file, and one set after it won over the included file.\n- Nesting with relative paths: a file in a subdirectory included another file from that same subdirectory.\n- A missing target raised `ConfigError`.\n- An A→B→A cycle raised `ConfigError`.\n\nI didn't add tests for this to the suite; say if you want them.\n\nTwo behaviours to be aware of:\n- **Sections carry over.** An included file is pasted in as-is, so if it ends inside a `[section]`, keys written after the `@include` land in that section. In `service.conf` this has no effect because `[http]` comes straight after the include.\n- **A missing top-level file** passed to `load()` still raises `FileNotFoundError`, as before. Only missing include targets raise `ConfigError`.",
+  "time": {
+    "start": 1792292408719,
+    "end": 1792292408719
+  }
+}

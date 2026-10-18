@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d75fa9b0010mT7mUEjb8Scn6",
+  "sessionID": "ses_eb28ace1bffeSWQAXm3mmlmHtJ",
+  "messageID": "msg_14d75e270001pCVuxIGrfqmySf",
+  "type": "text",
+  "text": "The setting is read in three places. All three were broken by the misspelled key, and all three work now.\n\n**Where it's read:**\n1. `main.py:11`: `cfg[\"fee_rate\"]`. When the key was missing, lines 12–13 silently set the rate to 0, which is why it printed `Total: 0`.\n2. `billing/report.py:7`: `get_setting(\"fee_rate\")`, which goes through `app/config.py:15`. It stopped with \"fee_rate is missing\".\n3. `billing/export/csv_writer.py:8`: `settings.get(\"fee_\" + \"rate\")`. The key name is split in two, so a plain search for `fee_rate` misses this line. It also stopped with \"fee_rate is missing\".\n\n`billing/invoice.py:5` and `billing/discount.py:5` mention `fee_rate`, but neither reads the setting. One is a column label and the other is a hardcoded `0.15`.\n\n**Fix:** I renamed `\"rat\"` to `\"fee_rate\"` in `settings.json:2`. That one change fixes all three.\n\n**Check:** I ran all three after the change:\n```\npython3 main.py                     -> Total: 5.0\npython3 -m billing.report           -> Report fee: 0.5\npython3 -m billing.export.csv_writer -> CSV fee: 0.5\n```\nBefore the change, the first printed `Total: 0` and the report stopped with \"fee_rate is missing\".\n\n`main.py:12-13` still quietly uses 0 when `fee_rate` is missing, so a future typo would give a wrong total again instead of an error. Should I make it stop with \"fee_rate is missing\" like the other two scripts?",
+  "time": {
+    "start": 1792300939953,
+    "end": 1792300939953
+  }
+}

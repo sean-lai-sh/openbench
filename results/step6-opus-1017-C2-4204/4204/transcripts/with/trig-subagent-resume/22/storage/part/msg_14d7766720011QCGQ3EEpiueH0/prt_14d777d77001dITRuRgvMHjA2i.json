@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d777d77001dITRuRgvMHjA2i",
+  "sessionID": "ses_eb288ae8dffeLEn6CDE6Jczz0A",
+  "messageID": "msg_14d7766720011QCGQ3EEpiueH0",
+  "type": "text",
+  "text": "The `None` comes from **`app/pricing.py:8`**: `return SETTINGS.get(\"rate\")`. The underlying cause is a typo at **`settings.json:2`**, where the key is spelled `\"rat\": 0.5` instead of `\"rate\"`.\n\n**How `rate` ends up as `None`:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` gets `rate` by calling `pricing.get_rate()`.\n3. `app/pricing.py:8` returns `SETTINGS.get(\"rate\")`. `SETTINGS` has no `\"rate\"` key, and `dict.get` returns `None` for a missing key instead of raising an error.\n4. `SETTINGS` is loaded once, when the module is imported, from `settings.json` (`app/config.py:9-10`). That file contains `{\"rat\": 0.5, \"currency\": \"USD\", \"label\": \"Total\"}`, so there is no `\"rate\"` key.\n5. Back in `app/report.py:9`, `None * 10` raises the `TypeError`. I ran `python3 main.py` and got that error.\n\n**Fix:** rename `\"rat\"` to `\"rate\"` in `settings.json`. That would make the total 5.0. Separately, using `SETTINGS[\"rate\"]` in `pricing.py` would make a missing key fail right away with a `KeyError` instead of a confusing error later. As requested, I didn't change any files.",
+  "time": {
+    "start": 1792301038985,
+    "end": 1792301038985
+  }
+}

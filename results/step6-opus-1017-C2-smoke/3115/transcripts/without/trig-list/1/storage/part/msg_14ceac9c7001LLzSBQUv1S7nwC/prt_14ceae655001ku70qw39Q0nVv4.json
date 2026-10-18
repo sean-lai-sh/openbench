@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ceae655001ku70qw39Q0nVv4",
+  "sessionID": "ses_eb315c05cffe3SdsBhEuBj2KwQ",
+  "messageID": "msg_14ceac9c7001LLzSBQUv1S7nwC",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. All 13 existing tests still pass, and I checked the new behaviour with a throwaway script. I didn't add any tests to `tests/`.\n\n**How it works** (`miniconf/loader.py`):\n- A line whose first token is exactly `@include` is replaced by the lines of the target file, and the target's own includes are expanded the same way. The finished text then goes through the unchanged `parse_lines`.\n- The path is the rest of the line, resolved relative to the directory of the file containing the directive.\n- I track the chain of files currently being expanded. If a file appears in its own chain, that's a cycle and raises `ConfigError` showing the chain. A file included twice from different branches (not a cycle) is allowed.\n- A missing include target, or an `@include` with no path, raises `ConfigError`.\n- If the top-level file you pass to `load` doesn't exist, it still raises `FileNotFoundError` as before, not `ConfigError`.\n- `loads()` is unchanged and does not handle includes.\n\n**What I checked:**\n- `examples/service.conf` loads with the `[logging]` keys from `logging.conf` in place.\n- A three-level nested include with a subdirectory path gave the right override order: a key set after an include wins, and a key set before it is overridden.\n- A self-include, a two-file cycle and a missing target each raise `ConfigError`.\n\n**Behaviour to be aware of:**\n- Because expansion is purely inline, a `[section]` opened inside an included file stays active after the include line. Keys following the directive in the parent file land in that section unless the parent starts a new one. The example file does start one (`[http]`), so it isn't affected.\n- Parse-error line numbers now count lines in the expanded text, not in the original file.\n- Quotes around the path aren't stripped.",
+  "time": {
+    "start": 1792291825272,
+    "end": 1792291825272
+  }
+}

@@ -1,0 +1,20 @@
+`load()` in `miniconf/loader.py` now handles `@include`. All 13 existing tests still pass, and `examples/service.conf` loads with the `[logging]` section pulled in from `logging.conf`.
+
+**How it works:** `load()` expands every `@include` line before handing the text to the parser. `loads()` and the parser itself are unchanged.
+
+- **Paths** are resolved relative to the directory of the file that contains the directive.
+- **Nesting** is expanded recursively.
+- **Cycles** (direct or through other files) raise `ConfigError`. Including the same file twice from separate places is still allowed.
+- **Missing or unreadable include targets** raise `ConfigError`, and so does an `@include` line with no path.
+
+I checked these with throwaway files in a temp directory, which I deleted afterwards:
+- Override order: a value set before the include was replaced by the included file, and one set after it won over the included file.
+- Nesting with relative paths: a file in a subdirectory included another file from that same subdirectory.
+- A missing target raised `ConfigError`.
+- An A→B→A cycle raised `ConfigError`.
+
+I didn't add tests for this to the suite; say if you want them.
+
+Two behaviours to be aware of:
+- **Sections carry over.** An included file is pasted in as-is, so if it ends inside a `[section]`, keys written after the `@include` land in that section. In `service.conf` this has no effect because `[http]` comes straight after the include.
+- **A missing top-level file** passed to `load()` still raises `FileNotFoundError`, as before. Only missing include targets raise `ConfigError`.

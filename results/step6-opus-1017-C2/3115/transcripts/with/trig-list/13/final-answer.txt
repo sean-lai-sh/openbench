@@ -1,0 +1,16 @@
+`miniconf.loader.load(path)` now handles `@include` directives. All the requirements are met, and the existing 13 tests still pass.
+
+The change is all in `miniconf/loader.py`. Before parsing, `load` replaces each `@include` line with the lines of the file it points to, and those are then parsed as usual. `loads` and the parser itself are unchanged.
+
+I tested it with a throwaway script; I didn't add any tests to the suite. It covered:
+- **The example files:** `examples/service.conf` loads with the `[logging]` values from `logging.conf`.
+- **Override order:** a key set after an include overrides the included value, and the include overrides a key set before it.
+- **Relative paths and nesting:** paths resolve against the including file's directory, including from a subdirectory, and an included file's own includes are expanded too.
+- **Errors:** a missing include target, a file including itself, and a two-file cycle each raise `ConfigError`.
+- **Same file twice:** including one file twice, not in a loop, is allowed rather than reported as a cycle.
+
+Behaviours to be aware of:
+- **Sections carry over.** Because the text is expanded in place, a `[section]` header in an included file stays active in the parent afterwards. In the example, `service.conf` starts `[http]` straight after the include, so it's unaffected. But a plain key written right after an include would land in the included file's last section.
+- **Error line numbers** count lines in the expanded text, not in the original file.
+- **A missing top-level file** passed to `load` still raises the usual file-not-found error, as before. Only a missing *included* file raises `ConfigError`.
+- **Extras I added:** `@include` with no path raises `ConfigError`, and `~` in include paths is expanded to the home directory.

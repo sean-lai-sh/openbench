@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d42ff9d001F5bMnDbYPB82L2",
+  "sessionID": "ses_eb2bdd3a6ffe6r77x2nJW6EGGt",
+  "messageID": "msg_14d42e588001IVZy1gykoorb1G",
+  "type": "text",
+  "text": "Yes, two other places read the setting, so there are three in total. I renamed the key in `settings.json` from `\"rat\"` to `\"fee_rate\"`, and all three now work.\n\n**Every place that reads `fee_rate` from `settings.json`:**\n\n| File:line | How it reads it | Before the fix | After the fix |\n|---|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]`, quietly falls back to 0 | `Total: 0` | `Total: 5.0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | exits with \"fee_rate is missing\" | `Report fee: 0.5` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | exits with \"fee_rate is missing\" | `Report fee: 0.5` |\n\nI ran all three before and after the change; the output above is what they printed. I found these by searching every file for the key and for every access to the settings: `SETTINGS` and `get_setting` in `app/config.py` are the only two ways to reach it.\n\n**Look similar but don't read the setting (unchanged):**\n- `billing/invoice.py:5`: `\"fee_rate\"` is only a column label.\n- `billing/discount.py:5`: `archived_fee_rate` is a hard-coded number.\n- `billing/tax.py:4-5` and `billing/audit.py:4`: unrelated `rate` and `fee_` names.\n\nThe only file I changed was `settings.json`. `main.py` still turns a missing key into a total of 0 without any error, which is why this bug was hard to spot. I can make it stop with an error instead, the way `billing/report.py` does, if you'd like.",
+  "time": {
+    "start": 1792297598905,
+    "end": 1792297598905
+  }
+}

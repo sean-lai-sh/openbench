@@ -1,0 +1,17 @@
+`miniconf.loader.load(path)` now handles `@include`. The 13 existing tests still pass, and I checked each required behaviour with temporary files.
+
+The change is all in `miniconf/loader.py`. Before parsing, `load` replaces each `@include` line with the lines of the included file and repeats this for nested includes. The parser is unchanged.
+
+What I checked:
+- **Example files:** `examples/service.conf` gets `level = info` and `json = true` in `[logging]` from `logging.conf`, and its own keys like `[http] port = 8080` still load.
+- **Override order:** in `x=1` / include sets `x=2` / `x=3`, the result is `3`. Values from the include come through when nothing later overrides them.
+- **Relative paths and nesting:** paths resolve from the including file's folder, including a file in a subfolder that includes another file.
+- **Missing file:** raises `ConfigError`.
+- **Cycles:** a file that indirectly includes itself raises `ConfigError` instead of looping.
+
+Three things that behave in ways you might not expect:
+- **Including the same file twice is allowed.** Cycle detection only looks at the chain of files currently being included, so two files can both include a shared one without error.
+- **Sections carry across includes**, because the text is expanded in place. If an included file ends inside `[logging]`, keys that follow the `@include` line go into `[logging]` until the next `[section]` header. In `service.conf` that's fine because `[http]` comes next.
+- **Error types differ by file.** A missing top-level file still raises the same `FileNotFoundError` as before; only missing include targets raise `ConfigError`. An `@include` line with no path also raises `ConfigError`.
+
+I didn't add tests for includes to the test suite; the checks above were one-off scripts.

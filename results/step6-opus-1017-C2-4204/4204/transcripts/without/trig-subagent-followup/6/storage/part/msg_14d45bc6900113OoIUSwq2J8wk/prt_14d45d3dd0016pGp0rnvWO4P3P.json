@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d45d3dd0016pGp0rnvWO4P3P",
+  "sessionID": "ses_eb2baf96affetaKnYpOH6fHWi5",
+  "messageID": "msg_14d45bc6900113OoIUSwq2J8wk",
+  "type": "text",
+  "text": "I fixed the bug, and all three places that read the setting now get 0.5. I ran each one to confirm.\n\n**Places that read the setting:**\n\n| File:line | How it reads it | Before the fix |\n|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | Quietly used 0 and printed `Total: 0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | Stopped with \"fee_rate is missing\" |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")`, with the name split in two | Stopped with \"fee_rate is missing\" |\n\nThe third one doesn't show up if you search for the exact text `fee_rate`. Some other lines mention similar names but don't read the setting:\n- `billing/invoice.py:5` only uses `\"fee_rate\"` as a column title.\n- `billing/discount.py:5` uses its own fixed `archived_fee_rate`.\n- `billing/tax.py` and `billing/audit.py` use similar-looking names for unrelated things.\n\n**Changes:**\n1. **`settings.json:2`:** renamed `\"rat\"` to `\"fee_rate\"`. This one change fixes all three places.\n2. **`main.py:10-12`:** if the setting is missing, it now stops with \"fee_rate is missing\" instead of quietly using 0, the same way the other two files already behave.\n\n**Results after the fix:**\n- `python3 main.py` prints `Total: 5.0`\n- `python3 -m billing.report` prints `Report fee: 0.5`\n- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`",
+  "time": {
+    "start": 1792297784311,
+    "end": 1792297784311
+  }
+}

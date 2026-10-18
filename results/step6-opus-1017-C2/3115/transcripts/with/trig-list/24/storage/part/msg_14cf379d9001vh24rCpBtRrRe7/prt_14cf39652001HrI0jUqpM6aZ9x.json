@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf39652001HrI0jUqpM6aZ9x",
+  "sessionID": "ses_eb30d0f14ffe4wHbz8HfAM7E8g",
+  "messageID": "msg_14cf379d9001vh24rCpBtRrRe7",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include` directives (change is in `miniconf/loader.py`). The existing 13 tests still pass, and I checked the new behaviour with temporary files and the `examples/` pair. I didn't add any new tests to `tests/`.\n\n- **Expansion:** each `@include <path>` line is replaced in place by the included file's lines, and nested includes are expanded too. The parser then runs over the result exactly as before.\n- **Paths:** an include path is resolved from the directory of the file that contains it. Paths with spaces work, because everything after `@include` is taken as the path.\n- **Errors:** a missing or unreadable include target raises `ConfigError`. So does a cycle, direct or indirect, and the message shows the chain of files. A file included twice from separate branches is not treated as a cycle. A bare `@include` with no path also raises `ConfigError`.\n- **What I checked:**\n  - `examples/service.conf` loads correctly.\n  - Override order works: `x = 1`, then an include that sets `x = 2`, then `x = 3` gives 3.\n  - A three-level nested include works.\n  - Cycles and missing files both raise `ConfigError`.\n- **Unchanged:** `loads()` is untouched. If the top-level file itself is missing, `load()` still raises `FileNotFoundError` as it did before. Lines starting with any other `@` word are still ignored by the parser.\n\n**One thing to be aware of:** because expansion really is inline, a `[section]` header inside an included file stays active after the include ends. In `service.conf`, any keys placed straight after `@include logging.conf` would land in `[logging]`. The example avoids this because it opens `[http]` next. That matches the semantics you specified, but whoever writes config files should know about it.",
+  "time": {
+    "start": 1792292394615,
+    "end": 1792292394615
+  }
+}

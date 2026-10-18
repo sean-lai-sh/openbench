@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf02083001n19DyErr7AN46Q",
+  "sessionID": "ses_eb3108e0fffecAO5oZkB0NrOh0",
+  "messageID": "msg_14cf0037a001LtzqoWR2kce0rR",
+  "type": "text",
+  "text": "`load(path)` in `miniconf/loader.py` now handles `@include`. The existing tests pass (13), and I checked the new behaviour with a throwaway script, deleted afterwards. No permanent tests for includes were added.\n\nWhat the throwaway checks showed:\n- **Example files:** `examples/service.conf` loads with `name=billing`, `[logging] level=info, json=True` and `[http] port=8080`.\n- **Override order and nesting:** an include two levels deep, in a subdirectory, came out right. A key set before an include was overridden by it, and a key set after it won.\n- **Errors:** a missing include target, a two-file cycle and a file including itself each raise `ConfigError`, with the cycle error showing the full chain.\n\nHow it works:\n- A line counts as a directive when its first token is `@include`. The path is resolved from the folder of the file that contains the line.\n- Cycle detection only tracks the files currently being expanded. So two sibling files can both include the same shared file; only a real loop is an error.\n- If the top-level file passed to `load()` is missing, it still raises `FileNotFoundError` as before. Only missing *include* targets raise `ConfigError`.\n- An `@include` with no path after it raises `ConfigError`.\n- `loads()` and the parser are unchanged.\n\n**Section carry-over:** because the text is pasted in place, a `[section]` header inside an included file stays active after the include ends. In `service.conf`, any keys placed right after `@include logging.conf` and before `[http]` would end up in `[logging]`. That follows the \"as if written there\" rule you specified. Also, parse-error line numbers refer to the combined text, not the original file.",
+  "time": {
+    "start": 1792292167844,
+    "end": 1792292167844
+  }
+}

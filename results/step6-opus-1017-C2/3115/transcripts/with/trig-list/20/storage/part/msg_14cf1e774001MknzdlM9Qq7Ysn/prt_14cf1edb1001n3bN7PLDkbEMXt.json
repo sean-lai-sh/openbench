@@ -1,0 +1,31 @@
+{
+  "id": "prt_14cf1edb1001n3bN7PLDkbEMXt",
+  "sessionID": "ses_eb30e354bffeTw9PlbG5BUJzf9",
+  "messageID": "msg_14cf1e774001MknzdlM9Qq7Ysn",
+  "type": "tool",
+  "callID": "toolu_vrtx_01S2mF5oLbMGCVpyxUN3ga2e",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-libem12s/bench_opencode_trig-list_kamsgymk/miniconf/loader.py",
+      "content": "\"\"\"Load configuration from files and strings.\"\"\"\n\nimport os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\nINCLUDE_DIRECTIVE = \"@include\"\n\n\ndef _include_target(line):\n    \"\"\"Return the include path if ``line`` is an ``@include`` directive.\"\"\"\n    parts = line.strip().split(None, 1)\n    if not parts or parts[0] != INCLUDE_DIRECTIVE:\n        return None\n    if len(parts) < 2 or not parts[1].strip():\n        raise ConfigError(\"@include directive requires a path\")\n    return parts[1].strip()\n\n\ndef _expand(path, stack):\n    \"\"\"Read ``path`` and recursively expand ``@include`` directives.\"\"\"\n    real = os.path.realpath(path)\n    if real in stack:\n        chain = \" -> \".join(stack + [real])\n        raise ConfigError(\"circular @include detected: {}\".format(chain))\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        lines = fh.read().splitlines()\n    stack = stack + [real]\n    base_dir = os.path.dirname(os.path.abspath(path))\n    expanded = []\n    for line in lines:\n        target = _include_target(line)\n        if target is None:\n            expanded.append(line)\n            continue\n        include_path = os.path.join(base_dir, os.path.expanduser(target))\n        if not os.path.isfile(include_path):\n            raise ConfigError(\n                \"included file not found: {} (from {})\".format(target, path)\n            )\n        expanded.extend(_expand(include_path, stack))\n    return expanded\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced in place by the contents of the\n    referenced file, resolved relative to the including file's directory.\n    \"\"\"\n    return parse_lines(_expand(path, []))\n\n\ndef loads(text):\n    \"\"\"Parse configuration from a string.\"\"\"\n    return parse_lines(text.splitlines())\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-libem12s/bench_opencode_trig-list_kamsgymk/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-libem12s/bench_opencode_trig-list_kamsgymk/miniconf/loader.py": [],
+        "/tmp/obench-cell-libem12s/bench_opencode_trig-list_kamsgymk/miniconf/errors.py": [],
+        "/tmp/obench-cell-libem12s/bench_opencode_trig-list_kamsgymk/tests/test_loader.py": [],
+        "/tmp/obench-cell-libem12s/bench_opencode_trig-list_kamsgymk/miniconf/parser.py": []
+      },
+      "filepath": "/tmp/obench-cell-libem12s/bench_opencode_trig-list_kamsgymk/miniconf/loader.py",
+      "exists": true
+    },
+    "time": {
+      "start": 1792292291021,
+      "end": 1792292291409
+    }
+  }
+}

@@ -1,0 +1,24 @@
+The setting is read in three places. All three were broken by the misspelled key, and all three work now.
+
+**Every place that reads the `fee_rate` setting:**
+
+| File:line | How it reads it | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, with `except KeyError: rate = 0` | printed `Total: 0` instead of failing |
+| `billing/report.py:7` | `get_setting("fee_rate")`, via `app/config.py:15` | stopped with `fee_rate is missing` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | stopped with `fee_rate is missing` |
+
+The last one builds the key name from two pieces, so a plain search for `fee_rate` misses it. The subagent's earlier report didn't list it as a reader.
+
+Two files mention `fee_rate` but don't read the setting: `billing/invoice.py:5` (just a column label) and `billing/discount.py:5` (a fixed local value, `archived_fee_rate = 0.15`). I left them alone.
+
+**Changes:**
+1. `settings.json:2`: renamed the key from `"rat"` to `"fee_rate"`. This fixes all three readers.
+2. `main.py:10-12`: removed the fallback that quietly set the rate to 0. It now stops with `fee_rate is missing`, as the other two files do, so a future typo in the config will cause an error instead of a wrong total.
+
+**Result after the fix:**
+```
+python3 main.py                   -> Total: 5.0
+python3 -m billing.report         -> Report fee: 0.5
+python3 -m billing.export.csv_writer -> CSV fee: 0.5
+```

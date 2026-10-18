@@ -1,0 +1,31 @@
+{
+  "id": "prt_14cf3bba3001sMr3H0amcxUlmX",
+  "sessionID": "ses_eb30c6270ffeAUG9d3hRwEP4Lx",
+  "messageID": "msg_14cf3b2b1001GwKcZCLJMqq9f2",
+  "type": "tool",
+  "callID": "toolu_vrtx_01HFJxrGHRG7rfWGsuktrjmB",
+  "tool": "edit",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/loader.py",
+      "oldString": "from miniconf.parser import parse_lines\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        lines = fh.read().splitlines()\n    return parse_lines(lines)",
+      "newString": "import os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\nINCLUDE_DIRECTIVE = \"@include\"\n\n\ndef _expand(path, stack):\n    real = os.path.realpath(path)\n    if real in stack:\n        raise ConfigError(\"include cycle detected: {}\".format(path))\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as fh:\n            lines = fh.read().splitlines()\n    except FileNotFoundError:\n        raise ConfigError(\"include file not found: {}\".format(path))\n    base = os.path.dirname(path)\n    stack = stack | {real}\n    expanded = []\n    for raw in lines:\n        parts = raw.strip().split(None, 1)\n        if parts and parts[0] == INCLUDE_DIRECTIVE:\n            if len(parts) < 2:\n                raise ConfigError(\"{}: @include requires a path\".format(path))\n            target = os.path.join(base, parts[1].strip())\n            expanded.extend(_expand(target, stack))\n        else:\n            expanded.append(raw)\n    return expanded\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced in place by the contents of the\n    referenced file, resolved relative to the including file's directory.\n    \"\"\"\n    return parse_lines(_expand(path, frozenset()))"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/loader.py": [],
+        "/tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/errors.py": [],
+        "/tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/tests/test_loader.py": [],
+        "/tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/parser.py": []
+      },
+      "diff": "Index: /tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/loader.py\n===================================================================\n--- /tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/loader.py\n+++ /tmp/obench-cell-x9yihsww/bench_opencode_trig-list_mv6ntvg4/miniconf/loader.py\n@@ -1,15 +1,46 @@\n \"\"\"Load configuration from files and strings.\"\"\"\n \n+import os\n+\n+from miniconf.errors import ConfigError\n from miniconf.parser import parse_lines\n \n+INCLUDE_DIRECTIVE = \"@include\"\n \n+\n+def _expand(path, stack):\n+    real = os.path.realpath(path)\n+    if real in stack:\n+        raise ConfigError(\"include cycle detected: {}\".format(path))\n+    try:\n+        with open(path, \"r\", encoding=\"utf-8\") as fh:\n+            lines = fh.read().splitlines()\n+    except FileNotFoundError:\n+        raise ConfigError(\"include file not found: {}\".format(path))\n+    base = os.path.dirname(path)\n+    stack = stack | {real}\n+    expanded = []\n+    for raw in lines:\n+        parts = raw.strip().split(None, 1)\n+        if parts and parts[0] == INCLUDE_DIRECTIVE:\n+            if len(parts) < 2:\n+                raise ConfigError(\"{}: @include requires a path\".format(path))\n+            target = os.path.join(base, parts[1].strip())\n+            expanded.extend(_expand(target, stack))\n+        else:\n+            expanded.append(raw)\n+    return expanded\n+\n+\n def load(path):\n-    \"\"\"Read and parse the configuration file at ``path``.\"\"\"\n-    with open(path, \"r\", encoding=\"utf-8\") as fh:\n-        lines = fh.read().splitlines()\n-    return parse_lines(lines)\n+    \"\"\"Read and parse the configuration file at ``path``.\n \n+    ``@include <path>`` lines are replaced in place by the contents of the\n+    referenced file, resolved relative to the including file's directory.\n+    \"\"\"\n+    return parse_lines(_expand(path, frozenset()))\n \n+\n def loads(text):\n     \"\"\"Parse configuration from a string.\"\"\"\n     return parse_lines(text.splitlines())\n"
+    },
+    "time": {
+      "start": 1792292408478,
+      "end": 1792292408862
+    }
+  }
+}

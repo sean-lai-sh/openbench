@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ced8b31001SS2PGc0U8c3XUa",
+  "sessionID": "ses_eb3130db5ffegdocDaN8J44EZD",
+  "messageID": "msg_14ced6d5b001fN1jAuErZruZvs",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives as specified. The existing 13 tests still pass, and I checked each required behaviour by hand with throwaway files (since deleted). I didn't add any new tests to `tests/`.\n\nThe change is all in `miniconf/loader.py`. Before parsing, `load` builds the expanded list of lines and passes it to the unchanged `parse_lines`. `loads` and the parser itself are untouched.\n\nWhat I checked:\n- **Example files:** `examples/service.conf` loads with `logging.level=info`, `logging.json=True`, `http.port=8080` and `name=billing`.\n- **Override order and nesting:** one file set `x = 1`, included a file in a subdirectory (which set `x = 2` and `y = 2` and included a third file setting `z = 3`), then set `y = 9`. The result was `x=2, y=9, z=3`. So the include overrode the earlier key, the later key overrode the include, and the nested include was found relative to its own file's directory.\n- **Missing file:** raises `ConfigError` with the including file, line number and target path.\n- **Cycles:** both a file including itself and a two-file loop raise `ConfigError`, and the message shows the include chain. Including the same file twice from different places, without a loop, is still allowed.\n\nThings you might not expect:\n- **Missing top-level file:** if the file passed to `load()` doesn't exist, you still get `FileNotFoundError` as before, not `ConfigError`. Only missing include targets raise `ConfigError`.\n- **`@include` with no path** raises `ConfigError`. The spec didn't cover this case.\n- **Spaces in paths:** everything after `@include` on the line is taken as the path, so paths can contain spaces.\n- **Sections carry across includes:** an included file inherits whatever section is active where the directive appears. The section it leaves active stays in effect afterwards, until the next `[section]` header. That follows from treating the text as if it were written in place.",
+  "time": {
+    "start": 1792291998550,
+    "end": 1792291998550
+  }
+}

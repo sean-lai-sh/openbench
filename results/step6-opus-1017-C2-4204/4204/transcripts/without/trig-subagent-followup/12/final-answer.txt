@@ -1,0 +1,21 @@
+I searched the whole codebase myself, and three places read the setting. All three work now.
+
+**Every place that reads the setting:**
+| File:line | How it reads it |
+|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, and a missing key becomes a rate of 0 (lines 12-13) |
+| `billing/report.py:7` | `get_setting("fee_rate")`, which goes through `app/config.py:15` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`: the key is built from two strings, so a search for `fee_rate` won't find it |
+
+All three get their values from `app/config.py:10`, which loads `settings.json`.
+
+These files have similar names but don't read the setting: `billing/invoice.py:5` (a column name it notes is unused), `billing/discount.py:5` (a local variable), `billing/tax.py:5` and `billing/audit.py:4`.
+
+**Fix:** in `settings.json:2`, I renamed the key `"rat"` to `"fee_rate"`. No code changed.
+
+**Results after the fix:**
+- `python3 main.py` → `Total: 5.0` (was `Total: 0`)
+- `python3 -m billing.report` → `Report fee: 0.5` (was `fee_rate is missing`)
+- `python3 -m billing.export.csv_writer` → `CSV fee: 0.5` (was `fee_rate is missing`)
+
+I didn't change `main.py:12-13`, which still turns a missing `fee_rate` into a rate of 0. That's why it printed a wrong total instead of an error. Want me to make it stop with `fee_rate is missing` like the other two commands?

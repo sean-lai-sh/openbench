@@ -1,0 +1,16 @@
+`miniconf.loader.load(path)` now handles `@include`. The 13 existing tests still pass, and I checked the new behaviour with a throwaway script; I didn't add any tests for it to the suite.
+
+**How it works** (all in `miniconf/loader.py`): before parsing, the loader goes through the file line by line. Any line whose first token is `@include` is replaced with the lines of the target file, and nested includes are expanded the same way. The expanded lines then go to the unchanged `parse_lines`. Paths are resolved relative to the directory of the file containing the directive.
+
+**What I checked:**
+- `examples/service.conf` loads: `name=billing`, `logging.level=info`, `logging.json=True`, `http.port=8080`.
+- Override order: a key set before an include is overridden by it, and a key set after it wins.
+- Nested includes across subdirectories resolve correctly.
+- A missing include target raises `ConfigError`, with the including file named in the message.
+- A file including itself, or two files including each other, raises `ConfigError` with the chain of files.
+- Including the same file twice from one file (not a cycle) is allowed.
+
+**Things you might not expect:**
+- **Missing top-level file:** if the file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.
+- **Section carry-over:** because expansion is literal, a `[section]` opened in an included file stays open after the include. In the example, a bare key placed right after `@include logging.conf` would land in `[logging]`, not at the top level. That's what "as if written in place" means, but it's easy to trip over.
+- **Empty directive:** `@include` with no path raises `ConfigError`.

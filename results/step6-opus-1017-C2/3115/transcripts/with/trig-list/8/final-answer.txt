@@ -1,0 +1,15 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The existing 13 tests still pass, and I checked each required behaviour with throwaway files, though I didn't add any new tests to the suite.
+
+The change is all in `miniconf/loader.py`:
+- **Inline expansion:** each `@include <path>` line is replaced by the full contents of that file before parsing. Nested includes are expanded the same way, and anything after `@include` counts as the path, so paths with spaces work.
+- **Relative paths:** paths are resolved from the directory of the file containing the directive. I checked this with a file in a subdirectory that includes its own neighbour.
+- **Missing include:** raises `ConfigError`. A missing top-level file still raises `FileNotFoundError` as it did before, so existing behaviour doesn't change.
+- **Cycles:** raise `ConfigError`, and the message shows the whole chain (e.g. `a.conf -> sub/b.conf -> sub/c.conf -> a.conf`). Cycles are detected by tracking only the files currently being expanded, so including the same file from two different places is allowed.
+- **Override order:** with `k=1`, an include setting `k=2`, then `k2=after` in the parent, the result was `k=2` and `k2=after`.
+- **Example files:** `examples/service.conf` loads with `logging.level=info`, `logging.json=True` and `http.port=8080`.
+
+Two things you might not expect:
+- **Sections carry over:** because expansion is purely inline, if an included file opens a `[section]`, keys after the `@include` in the parent stay in that section until the next `[section]` header. In `service.conf`, any key added between the include and `[http]` would land in `[logging]`.
+- **Bare `@include`:** a line with no path after it raises `ConfigError`. You didn't specify this case.
+
+`loads()` (parsing from a string) doesn't expand includes, as the spec asked. The parser still skips any `@include` lines it sees there.

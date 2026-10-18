@@ -1,0 +1,20 @@
+I fixed the bug, and all three places that read the rate setting now work. I ran each one before and after the fix.
+
+**Every place that reads the setting:**
+
+| File:line | How it reads it | Before | After |
+|---|---|---|---|
+| `main.py:11` (now `:10`) | `cfg["fee_rate"]` | `Total: 0` (quietly used 0) | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | `fee_rate is missing` | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | `fee_rate is missing` | `CSV fee: 0.5` |
+
+So the wrong total was only the visible part. The report and CSV export were also failing, but with an error instead of a wrong number.
+
+Some matches look related but don't read the setting:
+- `billing/invoice.py:5` is a column name that its own docstring says is unused.
+- `billing/discount.py:5` has its own hardcoded value of 0.15.
+- `billing/tax.py` and `billing/audit.py` only contain similar-looking names.
+
+**Changes:**
+1. **`settings.json:2`:** renamed the key from `"rat"` to `"fee_rate"`. This one change fixes all three.
+2. **`main.py:10-12`:** if the setting is missing, it now stops with `fee_rate is missing`, like the other two files, instead of quietly calculating a total of 0. This means a future typo in the key will show up as an error rather than a wrong total.

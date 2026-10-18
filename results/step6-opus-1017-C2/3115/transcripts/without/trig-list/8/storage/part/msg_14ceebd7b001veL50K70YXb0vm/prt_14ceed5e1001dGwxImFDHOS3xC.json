@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ceed5e1001dGwxImFDHOS3xC",
+  "sessionID": "ses_eb311aca9ffe9FH1kgKhgMhQ0o",
+  "messageID": "msg_14ceebd7b001veL50K70YXb0vm",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. I didn't add any new tests; I checked the include behaviour with a one-off script instead.\n\nThe change is all in `miniconf/loader.py`. Each `@include` line is replaced by the included file's lines before parsing. Paths are resolved relative to the directory of the file containing the directive. The script confirmed each required behaviour:\n\n- **Example files:** `examples/service.conf` loads with the values from `logging.conf` (`level = info`, `json = true`) alongside its own keys.\n- **Override order and nesting:** a key set before an include was overridden by it, and a key set after an include won. A three-level chain of includes, with the middle file in a subdirectory, expanded correctly.\n- **Cycles:** two files that include each other raise `ConfigError`.\n- **Missing target:** an include pointing at a non-existent file raises `ConfigError`.\n\nA few behaviours worth knowing:\n- **Diamond includes are allowed.** Cycle detection only looks at the current chain of includes, so the same file can be pulled in twice from different places without an error.\n- **Sections carry over.** Because expansion is inline, a `[section]` opened inside an included file stays active after the include line. Keys that follow it in the parent file land in that section unless the parent starts a new one.\n- **A missing top-level file still raises `FileNotFoundError`**, as before. Only missing include targets raise `ConfigError`.\n- **Other errors:** an `@include` with no path, or an included file that exists but can't be read, also raises `ConfigError`.\n\nThe file write reported \"Connection is closed\", but reading the file back showed it was saved correctly.",
+  "time": {
+    "start": 1792292083197,
+    "end": 1792292083197
+  }
+}

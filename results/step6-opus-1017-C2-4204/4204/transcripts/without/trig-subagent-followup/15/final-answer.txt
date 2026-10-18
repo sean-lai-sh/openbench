@@ -1,0 +1,24 @@
+Yes, two other files read it. I searched the whole codebase myself, including lookups where the key name is built in pieces, and found three files that read it. I fixed the bug, and all three now give the right result.
+
+**Every place that reads `fee_rate`:**
+
+| File:line | How it reads it | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | Quietly used 0 → `Total: 0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` (via `app/config.py:15`) | Exited with "fee_rate is missing" |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | Exited with "fee_rate is missing" |
+
+All three get the value from `SETTINGS`, which `app/config.py:10` loads from `settings.json`.
+
+**Matches that aren't reads of this setting:** `billing/invoice.py:5` is just a column name labeled as unused. `billing/discount.py:5` has its own hard-coded `0.15`. `billing/tax.py` and `billing/audit.py` contain similar-looking names but say in their comments that they aren't this setting.
+
+**Changes:**
+1. `settings.json:2`: renamed `"rat"` to `"fee_rate"`. This fixes all three readers at once.
+2. `main.py:10-12`: replaced the fallback that quietly used 0 with `raise SystemExit("fee_rate is missing")`, the same check the other two files use. If the key goes missing again, the script will stop with an error instead of printing a wrong total.
+
+**Result after the fix:**
+```
+python3 main.py                        → Total: 5.0
+python3 -m billing.report              → Report fee: 0.5
+python3 -m billing.export.csv_writer   → CSV fee: 0.5
+```

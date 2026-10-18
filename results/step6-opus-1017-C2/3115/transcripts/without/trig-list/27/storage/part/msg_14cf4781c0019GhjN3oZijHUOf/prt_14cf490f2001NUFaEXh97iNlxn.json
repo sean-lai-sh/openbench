@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf490f2001NUFaEXh97iNlxn",
+  "sessionID": "ses_eb30becb4ffeSr3vPDmHPFisRr",
+  "messageID": "msg_14cf4781c0019GhjN3oZijHUOf",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. All 13 existing tests still pass, and I checked each required behaviour with throwaway scripts. I didn't add new tests to `tests/`.\n\n**What I checked:**\n- **Example files:** `examples/service.conf` loads correctly, including the logging settings it pulls in from `logging.conf`.\n- **Relative paths and nesting:** paths resolve from the including file's directory, and an included file can include another (tested two levels deep, across a subdirectory).\n- **Override order:** a key set before an include is overridden by it, and a key set after it wins.\n- **Missing include target:** raises `ConfigError`.\n- **Cycles:** a file that includes itself, directly or through other files, raises `ConfigError`.\n\n**Behaviour you might not expect:**\n- **Line numbers in parse errors** count lines of the expanded text, not of the original file. So in a file with includes, an error's line number may not match the line in the file where the problem is.\n- **Sections carry over.** A section opened inside an included file stays active after the include ends, just as if its lines had been pasted in. For example, keys written right after `@include logging.conf` would land in `[logging]`.\n- **Paths with spaces work**: everything after `@include` is taken as the path.\n- **The same file can be included more than once** from different places; only a true cycle is an error.\n- **A missing top-level file** still raises `FileNotFoundError` as before. Only missing include targets raise `ConfigError`.\n\nThe change is all in `miniconf/loader.py`; `loads()` and the parser are untouched.",
+  "time": {
+    "start": 1792292458767,
+    "end": 1792292458767
+  }
+}

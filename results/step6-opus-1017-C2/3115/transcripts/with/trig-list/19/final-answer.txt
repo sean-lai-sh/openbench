@@ -1,0 +1,15 @@
+`load(path)` in `miniconf/loader.py` now handles `@include`. The existing test suite still passes (13 tests), and `examples/service.conf` loads correctly, picking up the `[logging]` values from `logging.conf`. I didn't add new tests to the repo; I checked the new behaviour with a throwaway script.
+
+**How it works:** before parsing, each line is checked; if its first token is exactly `@include`, the line is replaced with the referenced file's lines. Paths are resolved relative to the directory of the file containing the directive, and nested includes are expanded the same way. The expanded lines then go through the unchanged parser, so "later assignment wins" gives the override order you described. `loads()` and the parser itself are untouched.
+
+**What the throwaway script confirmed:**
+- **Override order:** a key set before an include is overridden by it, and a key set after an include overrides it.
+- **Nesting:** a nested include in a subdirectory is resolved relative to that subdirectory.
+- **Missing file:** an include target that doesn't exist raises `ConfigError`.
+- **Cycles:** a file including itself, and two files including each other, both raise `ConfigError`.
+- **Repeats:** including the same file twice (not a cycle) is allowed.
+
+**Behaviour you might not expect:**
+- **Sections carry over.** Because expansion is purely inline, if an included file switches to a section (e.g. `[logging]`), the lines after the `@include` stay in that section until the parent file opens a new one. This follows directly from the inline-expansion rule; in the example it doesn't matter because `[http]` comes next.
+- **`@include` with no path** now raises `ConfigError`. Before, the parser silently ignored it.
+- **Missing top-level file:** if the file passed to `load()` itself doesn't exist, it still raises `FileNotFoundError` as before, not `ConfigError`.

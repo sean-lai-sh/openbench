@@ -1,0 +1,17 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and all 13 existing tests still pass. The change is entirely in `miniconf/loader.py`; `loads` is unchanged.
+
+**How it works:** each file is read line by line. Any line whose first token is `@include` is replaced in place with the referenced file's lines, expanded the same way, before parsing. The path is resolved relative to the including file's directory. Everything after the token is taken as the path, so paths containing spaces work.
+
+**Errors:**
+- **Missing include target:** raises `ConfigError`.
+- **Cycle:** raises `ConfigError` with the chain of files. The check tracks only the current chain of includes, so two files can both include the same third file without it being treated as a cycle.
+- **`@include` with no path:** raises `ConfigError`. This is my addition; the spec didn't cover it.
+- **Missing top-level file:** still raises `FileNotFoundError` as before, so existing behavior doesn't change.
+
+**Checked by hand** (I didn't add these as tests):
+- `examples/service.conf` loads correctly, including the values from `logging.conf`.
+- A key set before an include is overridden by it, and a key set after it wins.
+- Nested includes in a subdirectory resolve correctly.
+- A missing target and a two-file cycle both raise `ConfigError`.
+
+**One thing to know:** because the text is spliced in as-is, a `[section]` opened inside an included file stays open after the include. In `service.conf`, any keys placed right after `@include logging.conf` would land in `[logging]`, not at top level. That's what literal in-place expansion means, but it's easy to trip over.

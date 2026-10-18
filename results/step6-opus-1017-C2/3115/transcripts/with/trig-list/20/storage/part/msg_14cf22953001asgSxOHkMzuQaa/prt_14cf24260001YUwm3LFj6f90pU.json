@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf24260001YUwm3LFj6f90pU",
+  "sessionID": "ses_eb30e354bffeTw9PlbG5BUJzf9",
+  "messageID": "msg_14cf22953001asgSxOHkMzuQaa",
+  "type": "text",
+  "text": "`load(path)` in `miniconf/loader.py` now handles `@include`. The 13 existing tests still pass, and I checked the new behaviour with a throwaway script: no new test cases were added to `tests/`.\n\n**How it works:**\n- Each `@include <path>` line is replaced in place by that file's lines, and the combined text then goes through the parser unchanged.\n- The path is resolved from the directory of the file containing the directive.\n- Nested includes are expanded recursively.\n- A missing include target raises `ConfigError` with a message naming the file it was included from.\n- A cycle, whether a file includes itself directly or through other files, raises `ConfigError` showing the include chain. Including the same file from two separate branches is not treated as a cycle.\n\n**What the script confirmed:**\n- `examples/service.conf` picks up `[logging]` `level = info` and `json = True` from `logging.conf`, and its own `name` and `[http] port` still load.\n- A key set before an include is overridden by the included file, and one set after it overrides the include.\n- Two levels of nesting, a 3-file cycle, and a missing nested file all behave as specified.\n\n**Things you might not expect:**\n- Parse-error line numbers in a file that uses includes now count lines in the expanded text, not in the original file.\n- If a file ends inside a `[section]`, any keys after its `@include` line land in that section, because the file is pasted in as if typed there. That's what inline expansion means, but it's easy to trip over.\n- A bare `@include` with no path raises `ConfigError`.\n- If the top-level file passed to `load` doesn't exist, it still raises `FileNotFoundError` as before; only missing include targets raise `ConfigError`.",
+  "time": {
+    "start": 1792292307578,
+    "end": 1792292307578
+  }
+}

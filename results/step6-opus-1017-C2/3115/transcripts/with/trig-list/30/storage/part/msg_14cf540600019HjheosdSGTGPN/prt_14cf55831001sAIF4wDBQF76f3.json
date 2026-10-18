@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf55831001sAIF4wDBQF76f3",
+  "sessionID": "ses_eb30b1e88ffeHI0F5KkroxTHHE",
+  "messageID": "msg_14cf540600019HjheosdSGTGPN",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include` directives. All the required behaviours work: inline expansion, nesting, missing files and cycles. The existing 13 tests still pass, and I didn't add any new ones.\n\nI tried it against `examples/service.conf`, which loads the `[logging]` values from `logging.conf`. I also built some throwaway files in a temp folder to check the rest:\n- **Relative paths and nesting:** an include in a subfolder that pulls in another file resolves relative to the subfolder, not the working directory.\n- **Ordering:** for a key set before, inside, and after an include, the last assignment wins.\n- **Cycles:** a file that includes itself through two other files raises `ConfigError` with the include chain in the message.\n- **Missing file:** an include pointing at a file that doesn't exist raises `ConfigError`.\n\nThe change is all in `miniconf/loader.py`. Before parsing, it replaces each `@include` line with the contents of the target file, then hands the result to the existing `parse_lines` unchanged. `loads()` (parsing from a string) still ignores `@include`, since only `load()` was in scope.\n\nThree behaviours you might not assume:\n- **Sections carry across:** because the included lines are dropped in as if written there, a `[section]` opened in an included file stays active for the lines after the `@include` in the parent file.\n- **Bare `@include`:** an `@include` line with no path also raises `ConfigError`.\n- **Missing top-level file:** if the file passed to `load()` itself doesn't exist, it raises the same `OSError` as before, not `ConfigError`.",
+  "time": {
+    "start": 1792292509766,
+    "end": 1792292509766
+  }
+}

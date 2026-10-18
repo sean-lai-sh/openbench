@@ -1,0 +1,14 @@
+`load(path)` now expands `@include` directives, and the existing 13 tests still pass. I also tried each required behaviour against throwaway files and all of them worked; no new tests were added to the suite.
+
+**What I tried:**
+- **Nesting and relative paths:** includes two levels deep found their files relative to the including file, not the working directory.
+- **Override order:** a key set before an include was overridden by it, and a key set after an include overrode the included value.
+- **Errors:** a missing include target, a file including itself, and a two-file loop each raised `ConfigError`.
+- **Example files:** `examples/service.conf` loads correctly, with `name`/`workers` at the top level, a `[logging]` section from `logging.conf`, and the `[http]` section.
+
+**How it works** (all in `miniconf/loader.py`): before parsing, the file's lines are read and each `@include` line is swapped for the included file's lines. The result then goes through the existing `parse_lines` unchanged. Loops are caught by keeping a list of the files currently being included.
+
+**Things you might not expect:**
+- **Missing top-level file:** if the file you pass to `load()` itself doesn't exist, it still raises `FileNotFoundError` as before. Only a missing include target becomes `ConfigError`.
+- **Sections carry over:** because the text is inserted as-is, a `[section]` header inside an included file stays active for the lines after the `@include`. In the example that's harmless because `[http]` comes right after it. But a bare `key = value` placed after an include that opened a section will land in that section, not the top level.
+- **Paths with spaces and empty paths:** everything after `@include` on the line counts as the path, so spaces are allowed. `@include` with no path raises `ConfigError`.

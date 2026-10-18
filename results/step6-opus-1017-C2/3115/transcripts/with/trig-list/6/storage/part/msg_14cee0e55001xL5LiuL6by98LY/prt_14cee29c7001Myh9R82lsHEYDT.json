@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cee29c7001Myh9R82lsHEYDT",
+  "sessionID": "ses_eb3126c97ffeizVpL9S8DhzRRf",
+  "messageID": "msg_14cee0e55001xL5LiuL6by98LY",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now handles `@include`. The change is all in `miniconf/loader.py`. The existing suite passes (13 tests, run with `unittest` because pytest wasn't available), and every required behaviour checked out in a quick throwaway script. I didn't add any new tests to the suite.\n\n**How it works:**\n- An `@include <path>` line is replaced by the lines of the target file, then the result goes to the existing `parse_lines` unchanged. That means comments, sections, value types and \"later assignment wins\" all behave exactly as before.\n- Relative paths are resolved from the directory of the file containing the directive. `~` is also expanded.\n- Includes nest recursively. The loader tracks the chain of files currently being expanded (by their real path), so a file that includes itself, directly or through other files, raises `ConfigError` showing the full chain.\n- A missing include target raises `ConfigError`. So does an `@include` with no path after it.\n- The same file can be included more than once, as long as it doesn't form a cycle.\n\n**What I checked:**\n- `examples/service.conf` loads with the `[logging]` section and its keys pulled in.\n- With `x = 1`, then an include setting `x = 2`, then `x = 3`, the result is `x = 3`.\n- Nested includes in a subdirectory resolve correctly.\n- Self-includes, three-file cycles and missing targets all raise `ConfigError`.\n\n**Behaviours to be aware of:**\n- **Sections carry over from includes.** Because expansion is literal, if an included file ends inside a `[section]`, the lines after the `@include` in the parent stay in that section. In `examples/service.conf` this doesn't matter, because `[http]` comes right after the include.\n- **Missing top-level file:** if the file passed to `load()` itself doesn't exist, it still raises the plain `FileNotFoundError`, as before. Only missing include targets raise `ConfigError`.\n- **`loads()` (parsing from a string)** doesn't expand includes, as the spec allowed. It still silently ignores `@` lines, as before.",
+  "time": {
+    "start": 1792292039177,
+    "end": 1792292039177
+  }
+}

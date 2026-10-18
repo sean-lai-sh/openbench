@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf50947001fWfG4TapqfE1av",
+  "sessionID": "ses_eb30b585dffe04111DxBDhR8v5",
+  "messageID": "msg_14cf4f40c00171n51Vpz449QJN",
+  "type": "text",
+  "text": "`load()` in `miniconf/loader.py` now handles `@include`. The existing 13 tests pass, but I didn't add any new tests for includes.\n\n**How it works:** each `@include` line is replaced by the lines of the included file before parsing. Nested includes are expanded too, and paths resolve from the folder of the file that contains the directive.\n\n**Checked by hand:**\n- `examples/service.conf` loads correctly. It picks up the `[logging]` section from `logging.conf` (`level = info`, `json = True`) alongside its own keys and `[http]` section.\n- A file that includes a missing file raises `ConfigError`.\n- Two files that include each other raise `ConfigError` instead of looping forever.\n\n**Behaviour you might trip over:**\n- **Top-level file missing:** if the file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only a missing *included* file raises `ConfigError`.\n- **Same file included twice:** that's allowed, because it only counts as a cycle if a file includes itself through its own chain of includes.\n- **Bare `@include`:** a line with no path raises `ConfigError`.\n- **Section headers carry over:** if an included file starts a `[section]`, keys written after the `@include` line go into that section. That follows from treating the include as if its lines were written in place.\n- **`loads()` is unchanged:** it still skips `@` lines without expanding them.",
+  "time": {
+    "start": 1792292489573,
+    "end": 1792292489573
+  }
+}

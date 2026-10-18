@@ -1,0 +1,18 @@
+I fixed the bug by renaming `"rat"` to `"fee_rate"` in `settings.json:2`. All three places that read the setting now work.
+
+**Files and lines that read `fee_rate`** (all from the settings loaded in `app/config.py:9-10`):
+
+| File:line | How it reads it | Before | After |
+|---|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, falling back to 0 if missing | `Total: 0` | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | stopped with `fee_rate is missing` | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | stopped with `fee_rate is missing` | `CSV fee: 0.5` |
+
+The "After" column is from running `python3 main.py`, `python3 -m billing.report` and `python3 -m billing.export.csv_writer` after the change. Searching for "fee_rate" alone would miss `csv_writer.py`, because it builds the key from two pieces.
+
+**Matches that are not reads of the setting:**
+- `billing/invoice.py:5` only uses `"fee_rate"` as a column label, and its own comment says it isn't used in the total.
+- `billing/discount.py:5` has its own hardcoded `archived_fee_rate = 0.15`.
+- `billing/tax.py` and `billing/audit.py` only have similar-looking names (`fee_schedule`, `"fee_" + "code"`). Their comments say they aren't the settings key.
+
+`settings.json` was the only file I changed. `main.py:10-13` still quietly uses a rate of 0 if the setting is missing, which is why this bug didn't raise an error. Should I change it to fail with a clear error, the way `report.py` and `csv_writer.py` do?

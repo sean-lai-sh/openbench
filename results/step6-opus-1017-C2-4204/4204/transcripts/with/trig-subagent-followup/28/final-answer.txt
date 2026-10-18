@@ -1,0 +1,18 @@
+Three places read the setting, and all of them now work.
+
+**Where it's read**
+| File:line | Code | Before | After |
+|---|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | `Total: 0` | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | stopped with "fee_rate is missing" | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | stopped with "fee_rate is missing" | `CSV fee: 0.5` |
+
+The `csv_writer.py` line builds the key name in two pieces, so searching for `fee_rate` doesn't find it. I found it by checking every file that imports the settings, and only these three do. The value is loaded once in `app/config.py:9-10`.
+
+Other matches for `fee_rate` don't read the setting: `billing/invoice.py:5` (a column heading), `billing/discount.py:5` (a hard-coded `archived_fee_rate`), and the `fee_` text in `billing/tax.py` and `billing/audit.py`. I left those alone.
+
+**Changes**
+1. **`settings.json:2`:** renamed `"rat"` to `"fee_rate"`. This one change fixes all three paths.
+2. **`main.py:10-12`:** if the key is missing, the program now stops with "fee_rate is missing", like the other two paths. Before, it quietly used a rate of 0, which is how the typo went unnoticed.
+
+I ran all three entry points afterwards and got the outputs shown in the "After" column. There's no test suite, so those runs are the only check.

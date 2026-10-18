@@ -1,0 +1,11 @@
+{
+  "id": "prt_14ceceabb001gxQ5EgB7j9qxv6",
+  "sessionID": "ses_eb313b9fcffeLusC1HKur20O2P",
+  "messageID": "msg_14cecd2b9001lRn34SFFEGyZ0B",
+  "type": "text",
+  "text": "I added `@include` support to `miniconf/loader.py`. All 13 existing tests still pass, and `examples/service.conf` correctly picks up the `[logging]` section from `logging.conf`. I didn't add any new tests to the suite; the include cases below were checked by hand with a throwaway script.\n\n`load(path)` now replaces each `@include` line with the contents of the named file before parsing, and `loads()` is unchanged. What I checked by hand:\n- **Relative paths:** includes are resolved from the directory of the file that contains the directive, including paths into subdirectories like `s/b.conf`.\n- **Override order:** a key set after an include wins over the included file's value, and the include wins over a key set before it.\n- **Nesting:** an included file can include another file.\n- **Cycles:** a loop like `a → b → c → a` raises `ConfigError`, and the message lists the chain of files.\n- **Missing include:** an include pointing at a file that doesn't exist raises `ConfigError`.\n\nA few behaviours you might not assume:\n- **Missing top-level file:** if the file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before, not `ConfigError`. Only missing *included* files raise `ConfigError`.\n- **Repeated includes:** the same file can be included more than once from different places without counting as a cycle. Only a file that ends up including itself is an error.\n- **Paths:** everything after `@include` on the line is taken as the path, so paths with spaces work. `~` is expanded, and absolute paths are used as given.\n- **Bare `@include`:** an `@include` line with no path raises `ConfigError`.\n- **Line numbers:** parse errors in a file that uses includes report line numbers in the combined text, not in the original file.",
+  "time": {
+    "start": 1792291957478,
+    "end": 1792291957478
+  }
+}

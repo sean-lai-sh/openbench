@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d68fad7001OtIoXkTekXo6UY",
+  "sessionID": "ses_eb29731fdffeSWqex3R11bSpeD",
+  "messageID": "msg_14d68e2d8001e0HUrDBby0nrMz",
+  "type": "text",
+  "text": "The `None` is created at **`app/pricing.py`, line 8**. The real cause is a misspelled key at **`settings.json`, line 2**.\n\nI ran `python3 main.py` and got the same `TypeError` at `app/report.py:9`. I didn't modify any files.\n\n**How `rate` becomes `None`:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. There is no `\"rate\"` key, so `dict.get` returns `None` instead of raising an error.\n4. `SETTINGS` is loaded from `settings.json` (`app/config.py:10`). Line 2 of that file is `\"rat\": 0.5,`, which should be `\"rate\"`.\n5. `app/report.py:9` runs `None * 10`, which raises the `TypeError`.\n\n**Explanation:** The key in `settings.json` is spelled `\"rat\"`, so looking up `\"rate\"` finds nothing. `dict.get` hides the missing key by returning `None`, and the error only appears later when that value is multiplied. Renaming the key to `\"rate\"` fixes it. `SETTINGS[\"rate\"]` would also be safer, because it fails immediately with a clear `KeyError`.",
+  "time": {
+    "start": 1792300088046,
+    "end": 1792300088046
+  }
+}

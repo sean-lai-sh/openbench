@@ -1,0 +1,17 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass, and I tried the new behaviour with small scripts. I didn't add any new tests to `tests/`.
+
+The change is all in `miniconf/loader.py`: the file is expanded line by line before it is parsed. Nothing else changed: `loads()`, the parser, and files without `@include` behave as before.
+
+What I tried:
+- **Example files:** `examples/service.conf` loads correctly, picking up `logging.level = info` and `logging.json = True` from `logging.conf`, with `http.port = 8080` and `name = billing` intact.
+- **Relative paths and nesting:** a file in a subfolder including another file worked, with paths resolved from each including file's own folder.
+- **Override order:** a key set before an include was replaced by the included file's value (`x` → 2), and a key set after it won over the included value (`y` → 9).
+- **Cycles:** a loop back to the first file raises `ConfigError`, and the message shows the chain of files.
+- **Missing file:** an include that points to a file that doesn't exist raises `ConfigError`.
+
+Things you might not expect:
+- **Missing top-level file:** calling `load()` on a file that doesn't exist still raises `FileNotFoundError`, as it did before. Only missing *include* targets raise `ConfigError`, so existing callers aren't affected.
+- **Sections carry over:** because the text is pasted in place, a `[section]` started inside an included file stays active afterwards. Keys after an `@include` with no new `[section]` line will land in whatever section the included file ended in.
+- **Same file twice:** including one file more than once without a loop (A includes B and C, and both include D) is allowed. Only real loops are rejected.
+- **Line numbers:** parse errors give line numbers in the combined text, not in the original file.
+- **Empty directive:** `@include` with no path after it raises `ConfigError`.

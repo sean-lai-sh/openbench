@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf10f9f001kagn5fdqJcxVgN",
+  "sessionID": "ses_eb30f8022ffernQZ30BJeh64tA",
+  "messageID": "msg_14cf0f339001dRuwhRIUEW6kch",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass, and I ran a manual check of each required behaviour. I didn't add any tests for includes to `tests/`.\n\n**How it works:** the change is in `miniconf/loader.py`. Before parsing, each `@include <path>` line is replaced by the lines of the referenced file, and nested includes are expanded the same way. The path is resolved from the including file's directory. The parser itself is unchanged, and so are `loads()` and files with no `@include`.\n\n**Manual check results:**\n- `examples/service.conf` loads with `logging.level=info`, `logging.json=True`, `http.port=8080` and `name=billing`.\n- Override order works both ways: a key set after an include beats the included value, and the include beats a key set before it.\n- Nested includes in a subdirectory resolve correctly.\n- A cycle (a → b → c → a) raises `ConfigError`, and the message shows the include chain.\n- A missing include target raises `ConfigError`.\n\n**Behaviours you might not expect:**\n- **Sections carry over.** Because the text is pasted in place, a `[section]` header inside an included file stays active after the include. In `service.conf` that's harmless, since `[http]` comes right after. But a top-level key placed after an `@include` that opens a section would end up in that section.\n- **Missing main file.** If the file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only missing *include targets* raise `ConfigError`.\n- **Same file twice is allowed.** A file included more than once without a cycle (e.g. two files both including a shared one) is expanded each time and isn't treated as a cycle.\n- **Line numbers in parse errors** count lines in the expanded text, not in the original files.",
+  "time": {
+    "start": 1792292229053,
+    "end": 1792292229053
+  }
+}

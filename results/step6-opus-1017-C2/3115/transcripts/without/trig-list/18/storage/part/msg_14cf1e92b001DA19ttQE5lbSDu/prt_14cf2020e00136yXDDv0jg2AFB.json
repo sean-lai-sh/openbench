@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf2020e00136yXDDv0jg2AFB",
+  "sessionID": "ses_eb30e81b9ffeOKjhzMOZUprmIM",
+  "messageID": "msg_14cf1e92b001DA19ttQE5lbSDu",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and all 13 existing tests still pass. The change is entirely in `miniconf/loader.py`; `loads` is unchanged.\n\n**How it works:** each file is read line by line. Any line whose first token is `@include` is replaced in place with the referenced file's lines, expanded the same way, before parsing. The path is resolved relative to the including file's directory. Everything after the token is taken as the path, so paths containing spaces work.\n\n**Errors:**\n- **Missing include target:** raises `ConfigError`.\n- **Cycle:** raises `ConfigError` with the chain of files. The check tracks only the current chain of includes, so two files can both include the same third file without it being treated as a cycle.\n- **`@include` with no path:** raises `ConfigError`. This is my addition; the spec didn't cover it.\n- **Missing top-level file:** still raises `FileNotFoundError` as before, so existing behavior doesn't change.\n\n**Checked by hand** (I didn't add these as tests):\n- `examples/service.conf` loads correctly, including the values from `logging.conf`.\n- A key set before an include is overridden by it, and a key set after it wins.\n- Nested includes in a subdirectory resolve correctly.\n- A missing target and a two-file cycle both raise `ConfigError`.\n\n**One thing to know:** because the text is spliced in as-is, a `[section]` opened inside an included file stays open after the include. In `service.conf`, any keys placed right after `@include logging.conf` would land in `[logging]`, not at top level. That's what literal in-place expansion means, but it's easy to trip over.",
+  "time": {
+    "start": 1792292291105,
+    "end": 1792292291105
+  }
+}

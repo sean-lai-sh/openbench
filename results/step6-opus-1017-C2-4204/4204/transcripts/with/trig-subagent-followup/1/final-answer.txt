@@ -1,0 +1,28 @@
+Yes, the setting is read in two other places besides `main.py`, and all three now work after one change to `settings.json`.
+
+**Files and lines that read it:**
+
+| File:line | How it reads the key | Before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, which falls back to 0 if the key is missing (lines 12-13) | `Total: 0` |
+| `billing/report.py:7` | `get_setting("fee_rate")`, a wrapper around `SETTINGS.get` (`app/config.py:15`) | stopped with "fee_rate is missing" |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`; the key name is assembled from two strings, so a plain search for `fee_rate` misses it | stopped with "fee_rate is missing" |
+
+All three get their values from `app/config.py:9-10`, which loads `settings.json`.
+
+These mention `fee_rate` but don't read the setting:
+- `billing/invoice.py:5` only uses the text `"fee_rate"` as a column heading.
+- `billing/discount.py:5` has its own fixed `archived_fee_rate = 0.15`.
+
+Nothing in the code reads the misspelled key `"rat"`.
+
+**Fix:** I renamed the key from `"rat"` to `"fee_rate"` at `settings.json:2`. No code changed.
+
+**Result:**
+```
+python3 main.py                        -> Total: 5.0
+python3 -m billing.report              -> Report fee: 0.5
+python3 -m billing.export.csv_writer   -> CSV fee: 0.5
+```
+
+`main.py:12-13` still silently uses a rate of 0 when the key is missing, so a future typo would again print a wrong total without any error. Should I change it to stop with an error, the way the other two files already do?

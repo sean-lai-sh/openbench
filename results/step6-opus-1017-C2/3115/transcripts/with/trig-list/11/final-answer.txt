@@ -1,0 +1,15 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and all 13 existing tests still pass (run with `unittest`, since `pytest` isn't installed here).
+
+**How it works** (`miniconf/loader.py`): before parsing, the loader goes through the file line by line. Any line whose first token is `@include` is replaced by the lines of the target file, and that file's own includes are expanded the same way. Paths are resolved relative to the directory of the file containing the directive. The parser itself is unchanged.
+
+**Checked by hand:**
+- `examples/service.conf` loads with the `[logging]` section from `logging.conf` placed where the directive is.
+- In a nested test with a subdirectory, keys set after an include override the included value, and relative paths resolve correctly.
+- A two-file cycle (`x.conf` → `y.conf` → `x.conf`) raises `ConfigError` and shows the chain. A file that includes itself is caught by the same check, though I didn't test that case separately.
+- A missing include target raises `ConfigError`.
+
+**Choices you may want to review:**
+- If the top-level file passed to `load()` doesn't exist, it still raises `FileNotFoundError` as before. Only missing *included* files raise `ConfigError`.
+- The same file can be included more than once if it isn't a cycle (for example, two siblings both including it). Only a file that ends up including itself is an error.
+- An `@include` line with no path raises `ConfigError`.
+- `loads(text)` doesn't expand includes; the spec only covers `load()`, and a string has no directory to resolve relative paths against. As before, it ignores `@include` lines.

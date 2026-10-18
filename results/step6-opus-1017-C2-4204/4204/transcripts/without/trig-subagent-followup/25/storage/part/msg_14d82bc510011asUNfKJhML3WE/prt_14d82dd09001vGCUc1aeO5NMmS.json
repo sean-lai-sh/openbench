@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d82dd09001vGCUc1aeO5NMmS",
+  "sessionID": "ses_eb27d61f0ffe6SJp2Nh3yuu5Zt",
+  "messageID": "msg_14d82bc510011asUNfKJhML3WE",
+  "type": "text",
+  "text": "I found the cause. The key in `settings.json` is misspelled, and `main.py` hides the missing key by quietly using a rate of 0.\n\n**What it prints vs. what it should print**\n- **It prints:** `Total: 0`\n- **It should print:** `Total: 5.0`. `main.py` charges `COUNT = 10` items at the configured fee rate, and `settings.json` sets the rate to `0.5`, so 0.5 × 10 = 5.0.\n\n**Root cause**\n\nThe code asks for one key name and the settings file uses another:\n\n- `settings.json:2`: `\"rat\": 0.5,` — the key is misspelled. It should be `\"fee_rate\"`.\n- `main.py:10-13`:\n  ```python\n  try:\n      rate = cfg[\"fee_rate\"]\n  except KeyError:\n      rate = 0\n  ```\n`app/config.py:9-10` loads `settings.json` as-is into `SETTINGS`, with no checks. So `cfg[\"fee_rate\"]` raises `KeyError`. The `except` catches it and sets `rate = 0`, which makes `total = 0 * 10 = 0` on `main.py:14`. The typo is the source of the bug. The silent fallback to 0 is why it shows up as a wrong number instead of an error.\n\n**Suggested fix (not applied)**\n1. In `settings.json`, rename the key `\"rat\"` to `\"fee_rate\"`.\n2. In `main.py`, remove the fallback to 0, or make it fail loudly, e.g. `raise SystemExit(\"fee_rate is missing\")`. `billing/report.py:7-9` and `billing/export/csv_writer.py:10` already do this. Then a bad config can't turn into a $0 charge without anyone noticing.\n\n**Secondary observations (not the cause)**\n- `main.py` reads `SETTINGS` directly and ignores `get_setting()` in `app/config.py`. It returns `None` for a missing key, so using it here as-is would also give a misleading result.\n- `main.py` doesn't import the `billing/` package at all, so nothing in it affects this output. Inside it:\n  - `billing/discount.py:5` hardcodes `archived_fee_rate = 0.15`.\n  - `billing/invoice.py:5` has an unused `\"fee_rate\"` column name, which its own docstring calls historical. Both are unrelated to this bug.\n- `settings.json` also defines `\"currency\"` and `\"label\"`, but `main.py` doesn't use them; the `\"Total\"` label is hardcoded.\n\nI didn't modify any files.",
+  "time": {
+    "start": 1792301784416,
+    "end": 1792301784416
+  }
+}

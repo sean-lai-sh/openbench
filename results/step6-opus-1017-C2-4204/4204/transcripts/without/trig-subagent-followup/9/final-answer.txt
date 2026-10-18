@@ -1,0 +1,23 @@
+Yes, two other files read the setting besides `main.py`. I renamed the key in `settings.json`, and all three now run correctly.
+
+**Every place the setting is read** (all through `app/config.py`, which loads `settings.json`):
+
+| File:line | How it reads it |
+|---|---|
+| `main.py:11` | `cfg["fee_rate"]`, which used to drop to `rate = 0` when the key was missing |
+| `billing/report.py:7` | `get_setting("fee_rate")` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")`, which builds the name in pieces, so a plain search for `fee_rate` won't find it |
+
+**Not reads of the setting:**
+- `billing/invoice.py:5` is just a heading label.
+- `billing/discount.py:5` is an unrelated hard-coded `0.15`.
+- Nothing in the codebase reads the old `"rat"` key.
+
+**Fix:** In `settings.json:2`, I changed `"rat": 0.5` to `"fee_rate": 0.5`. That one change fixes all three, since they all expect `fee_rate`. No code files were changed.
+
+**Results after the fix:**
+- `python3 main.py` prints `Total: 5.0`
+- `python3 -m billing.report` prints `Report fee: 0.5`
+- `python3 -m billing.export.csv_writer` prints `CSV fee: 0.5`
+
+`main.py:12-13` still sets the rate to 0 without any message if the key goes missing again. I can change it to stop with an error instead, as `billing/report.py` does, if you'd like.

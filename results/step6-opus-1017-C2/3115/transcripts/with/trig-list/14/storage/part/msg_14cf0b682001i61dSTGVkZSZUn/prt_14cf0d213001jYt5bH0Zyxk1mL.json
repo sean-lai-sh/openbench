@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf0d213001jYt5bH0Zyxk1mL",
+  "sessionID": "ses_eb30fd77fffe33WA3PJeWqDKYz",
+  "messageID": "msg_14cf0b682001i61dSTGVkZSZUn",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives (change is in `miniconf/loader.py`). The 13 existing tests still pass. I also ran a separate script that checked each required behaviour, and all of them worked:\n\n- **Example files:** loading `examples/service.conf` gives `name=billing`, `logging.level=info`, `logging.json=True` and `http.port=8080`.\n- **Inline expansion and override:** a key set before the include is overridden by the included file, and a key set after it overrides the included value.\n- **Relative paths and nesting:** paths resolve from the including file's directory, including through a nested subdirectory include.\n- **Missing file:** raises `ConfigError`.\n- **Cycles:** a file including itself, or two files including each other, raises `ConfigError`. The error message shows the full chain of files.\n\nThings you might not expect:\n\n- **Same file included twice is allowed.** Cycle detection only looks at the chain of files currently being expanded, so including the same file from two different places is not an error.\n- **A missing top-level file still raises the original error.** If the file passed to `load()` itself doesn't exist, you get the same `FileNotFoundError` as before, not a `ConfigError`, to keep existing behaviour unchanged. Only missing include targets raise `ConfigError`.\n- **Sections carry past an include.** Because expansion is a straight text substitution, a section opened in an included file is still the current section on the lines after the `@include`. In the example this is harmless because `[http]` comes next.\n- **Small additions beyond the spec:** an `@include` with no path raises `ConfigError`, the path can contain spaces (everything after `@include` is used), and `~` is expanded to the home directory.\n\n`loads()` and the parser are unchanged.",
+  "time": {
+    "start": 1792292213305,
+    "end": 1792292213305
+  }
+}

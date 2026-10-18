@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cf1c3ef001gV8vqAXLZRBUqH",
+  "sessionID": "ses_eb30eb72dffeRfiEnkXLDZ2FAk",
+  "messageID": "msg_14cf1a85c001rvmiT1hlLOxG0c",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass.\n\nThe change is all in `miniconf/loader.py`:\n- **Expansion:** before parsing, each `@include <path>` line is replaced by the referenced file's lines. Paths are resolved relative to the directory of the file containing the directive, and nested includes are expanded recursively.\n- **Cycles:** each branch keeps a list of the resolved paths currently being included. If a file comes up again in that list, it raises `ConfigError` and the message shows the whole chain. Including the same file from two separate branches is allowed, since that isn't a cycle.\n- **Errors:** a missing include target, an unreadable one, or `@include` with no path all raise `ConfigError`.\n\nI also ran it by hand against `examples/service.conf` and some throwaway temp files:\n- **Example files:** the `logging` and `http` sections both load correctly.\n- **Override order:** a key before an include is overridden by it, and a key after an include overrides it.\n- **Nesting and relative paths:** an include inside a subdirectory resolves against that subdirectory.\n- **Errors:** both a three-file cycle and a missing nested target raise `ConfigError`.\n\nI didn't add these as tests to the suite.\n\nThree behaviours you might not expect:\n- If the top-level file passed to `load()` doesn't exist, it still raises `FileNotFoundError`, as before. Only include targets raise `ConfigError`.\n- Because expansion is literal, section headers carry across file boundaries. If an included file opens `[logging]`, any keys after the `@include` line in the parent stay in `[logging]` until the parent starts a new section.\n- Since the parser already ignores lines starting with `@`, `loads()` on a string still silently skips `@include` lines.",
+  "time": {
+    "start": 1792292275215,
+    "end": 1792292275215
+  }
+}

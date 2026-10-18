@@ -1,0 +1,11 @@
+{
+  "id": "prt_14cebbff6001WJrJGHHyjn8E1l",
+  "sessionID": "ses_eb31515afffeczDiRrUixZOqXk",
+  "messageID": "msg_14ceba49f0016bOyMUqhHLfl4D",
+  "type": "text",
+  "text": "Yes, two other files read that setting, so there are three in total. I renamed the key in `settings.json` and all three now print the right values.\n\n**Every place that reads `fee_rate`** (all get it from `settings.json` through `app/config.py:10`):\n\n| File:line | Code | Output before the fix |\n|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` (missing key silently becomes 0 at `:12-13`) | `Total: 0` (wrong) |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")` | `fee_rate is missing` |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | `fee_rate is missing` |\n\n`csv_writer.py` builds the key name from two strings, so a plain text search for `fee_rate` misses that line. I found it by searching for every place that reads settings, and that search turned up no other readers.\n\nSome other lines mention `fee_rate` but don't read the setting:\n- `billing/invoice.py:4-5` is an old column name that isn't used.\n- `billing/discount.py:5,8` has its own fixed `archived_fee_rate = 0.15`.\n- `billing/tax.py` and `billing/audit.py` have similar names but nothing to do with this.\n\n**Fix:** in `settings.json:2`, I renamed `\"rat\": 0.5` to `\"fee_rate\": 0.5`. Nothing else changed.\n\n**Output after the fix:**\n- `python3 main.py`: `Total: 5.0`\n- `python3 -m billing.report`: `Report fee: 0.5`\n- `python3 -m billing.export.csv_writer`: `CSV fee: 0.5`\n\n`main.py:10-13` still turns a missing `fee_rate` into 0 without any error, so a future config mistake would again print a wrong total. Want me to make it fail with an error instead, the way `billing/report.py` does?",
+  "time": {
+    "start": 1792291880976,
+    "end": 1792291880976
+  }
+}

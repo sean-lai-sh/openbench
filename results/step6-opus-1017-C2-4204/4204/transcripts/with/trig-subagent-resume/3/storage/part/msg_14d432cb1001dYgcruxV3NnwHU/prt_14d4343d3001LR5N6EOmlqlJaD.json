@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d4343d3001LR5N6EOmlqlJaD",
+  "sessionID": "ses_eb2bce69cffeYEHflN23ffQt0Q",
+  "messageID": "msg_14d432cb1001dYgcruxV3NnwHU",
+  "type": "text",
+  "text": "The `None` comes from **`app/pricing.py:8`**: `return SETTINGS.get(\"rate\")`. The real cause is a typo in **`settings.json:2`**, where the key is spelled `\"rat\": 0.5` instead of `\"rate\"`. Because `get_rate()` uses `dict.get()`, the missing key returns `None` instead of raising an error.\n\nI ran `python3 main.py` and got this crash: `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'` at `app/report.py:9`.\n\n**How the value flows:**\n1. `main.py:7` calls `compute_total(10)`.\n2. `app/report.py:8`: `rate = pricing.get_rate()`\n3. `app/pricing.py:8`: `SETTINGS.get(\"rate\")` finds no `\"rate\"` key and returns `None`. **This is where the `None` starts.**\n4. `app/report.py:9`: `rate * count` crashes.\n\n**Settings/config files involved:**\n- **`settings.json`** (project root) has the misspelled key on line 2: `\"rat\": 0.5`. Its other keys are `currency` and `label`.\n- **`app/config.py:7-10`** loads `settings.json` once at import time into the `SETTINGS` dict. It doesn't check that the required keys are there.\n\n**Possible fixes (none applied, since this was research only):**\n- Rename the key to `\"rate\"` in `settings.json`.\n- Optionally, change `pricing.py` to use `SETTINGS[\"rate\"]`, or add a check, so a missing key causes a clear error right away.",
+  "time": {
+    "start": 1792297616364,
+    "end": 1792297616364
+  }
+}

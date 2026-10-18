@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d6a87780014Z6WQygWUg3D1f",
+  "sessionID": "ses_eb2959efaffeZnkz2HSvLJS2WH",
+  "messageID": "msg_14d6a6d55001LKN7HsiCyDcxuh",
+  "type": "text",
+  "text": "`rate` becomes `None` at **`app/pricing.py:8`**. That line is `return SETTINGS.get(\"rate\")`, and `settings.json` has no `\"rate\"` key, so `.get()` returns `None` instead of raising an error. I read every file in the project but didn't run `main.py`.\n\n**Code chain:**\n\n1. `main.py:7`: `main()` calls `compute_total(10)`.\n2. `app/report.py:8`: `rate = pricing.get_rate()`.\n3. `app/pricing.py:8`: `get_rate()` returns `SETTINGS.get(\"rate\")`. This is where the `None` comes from.\n4. `app/pricing.py:3`: `SETTINGS` is imported from `app.config`.\n5. `app/config.py:6-10`: when the module is imported, it builds the path `<project root>/settings.json` and loads it with `json.load` into `SETTINGS`.\n6. `settings.json:2` contains `\"rat\": 0.5` rather than `\"rate\"`.\n7. Back in `app/report.py:9`, `return rate * count` runs as `None * 10`, which raises the `TypeError`.\n\n**Missing settings key:** `\"rate\"`. It looks like a typo: the file has `\"rat\": 0.5`, which is almost certainly meant to be `\"rate\": 0.5`. The other keys, `\"currency\"` and `\"label\"`, are present, and nothing in the code path reads them.\n\n**Possible fixes (none applied, since you asked for research only):**\n- Rename the key in `settings.json` to `\"rate\"`. This is the main fix.\n- Optionally, make `get_rate()` fail loudly when the key is missing, for example with `SETTINGS[\"rate\"]` or an explicit check. That way a bad config gives a clear error instead of a `None` that breaks later.",
+  "time": {
+    "start": 1792300189586,
+    "end": 1792300189586
+  }
+}

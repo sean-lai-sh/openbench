@@ -1,0 +1,11 @@
+{
+  "id": "prt_14d818f64001Oyz9Wd76T321wc",
+  "sessionID": "ses_eb27f5b7affe0vM1A0jy1StVcf",
+  "messageID": "msg_14d817631001DuABcmpShPNOYx",
+  "type": "text",
+  "text": "Three places in the code read the fee rate setting, and all three now work. The bug was the misspelled key in `settings.json`, so renaming it there fixed every one of them.\n\n**Every place that reads the setting:**\n\n| File:line | How it reads it | Before the fix |\n|---|---|---|\n| `main.py:11` | `cfg[\"fee_rate\"]` | Silently fell back to 0 and printed `Total: 0` |\n| `billing/report.py:7` | `get_setting(\"fee_rate\")`, which uses `app/config.py:15` | Would have exited with \"fee_rate is missing\" |\n| `billing/export/csv_writer.py:8` | `settings.get(\"fee_\" + \"rate\")` | Would have exited with \"fee_rate is missing\" |\n\nThe CSV writer builds the key name at runtime, so searching for the literal text `fee_rate` won't find that read. Some other code mentions \"fee_rate\" but doesn't read the setting:\n- `billing/invoice.py:5` is a historical column name.\n- `billing/discount.py:5` is a separate hardcoded `archived_fee_rate = 0.15`.\n\n**Changes:**\n1. **`settings.json:2`:** renamed `\"rat\"` to `\"fee_rate\"`.\n2. **`main.py:9-12`:** removed the silent fallback to 0. It now exits with \"fee_rate is missing\" if the key is absent, the same way the two `billing` modules do. A bad config can no longer quietly produce `Total: 0`.\n\n**Results after the fix:**\n```\npython3 main.py                      → Total: 5.0\npython3 -m billing.report            → Report fee: 0.5\npython3 -m billing.export.csv_writer → CSV fee: 0.5\n```",
+  "time": {
+    "start": 1792301698945,
+    "end": 1792301698945
+  }
+}

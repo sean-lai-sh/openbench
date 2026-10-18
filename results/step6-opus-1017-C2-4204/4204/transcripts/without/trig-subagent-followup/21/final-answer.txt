@@ -1,0 +1,24 @@
+Yes. Besides `main.py`, two other files read the setting, and all three now work after renaming the key in `settings.json`.
+
+**Every place that reads the setting** (I searched myself, not just relying on the subagent):
+
+| File:line | How it reads it | Result before the fix |
+|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | Quietly fell back to 0 → `Total: 0` |
+| `billing/report.py:7` | `get_setting("fee_rate")`, which uses `app/config.py:15` | Exited with `fee_rate is missing` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` (the name is split in two, so a search for `fee_rate` won't find this line) | Exited with `fee_rate is missing` |
+
+`fee_rate` also shows up in `billing/invoice.py:5` and `billing/discount.py:5`, but those don't read the setting. One is a column name and the other is a local variable.
+
+**What I changed:**
+1. `settings.json:2`: renamed `"rat"` to `"fee_rate"`. This is the actual bug, and it fixes all three paths.
+2. `main.py:10-12`: removed the fallback that set the rate to 0. If the key is missing, the script now exits with `fee_rate is missing`, the same as the other two files, instead of printing a wrong total.
+
+**Result after the fix:**
+```
+python3 main.py                    → Total: 5.0
+python3 -m billing.report          → Report fee: 0.5
+python3 -m billing.export.csv_writer → CSV fee: 0.5
+```
+
+I ran the two billing modules with `-m` from the project root. Running them directly as files (e.g. `python3 billing/report.py`) would fail with an import error for `app`, because of how they import it. That's a separate issue from this bug, and I didn't change it.

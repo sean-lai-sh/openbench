@@ -1,0 +1,19 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass.
+
+The change is all in `miniconf/loader.py`:
+- **Expansion:** before parsing, each `@include <path>` line is replaced by the referenced file's lines. Paths are resolved relative to the directory of the file containing the directive, and nested includes are expanded recursively.
+- **Cycles:** each branch keeps a list of the resolved paths currently being included. If a file comes up again in that list, it raises `ConfigError` and the message shows the whole chain. Including the same file from two separate branches is allowed, since that isn't a cycle.
+- **Errors:** a missing include target, an unreadable one, or `@include` with no path all raise `ConfigError`.
+
+I also ran it by hand against `examples/service.conf` and some throwaway temp files:
+- **Example files:** the `logging` and `http` sections both load correctly.
+- **Override order:** a key before an include is overridden by it, and a key after an include overrides it.
+- **Nesting and relative paths:** an include inside a subdirectory resolves against that subdirectory.
+- **Errors:** both a three-file cycle and a missing nested target raise `ConfigError`.
+
+I didn't add these as tests to the suite.
+
+Three behaviours you might not expect:
+- If the top-level file passed to `load()` doesn't exist, it still raises `FileNotFoundError`, as before. Only include targets raise `ConfigError`.
+- Because expansion is literal, section headers carry across file boundaries. If an included file opens `[logging]`, any keys after the `@include` line in the parent stay in `[logging]` until the parent starts a new section.
+- Since the parser already ignores lines starting with `@`, `loads()` on a string still silently skips `@include` lines.

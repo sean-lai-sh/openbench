@@ -1,0 +1,21 @@
+The total now comes out right, and the two other places that read the setting work too. All three run and print the expected values.
+
+**Files that read the setting:**
+
+| File:line | How it reads it | Before | After |
+|---|---|---|---|
+| `main.py:11` | `cfg["fee_rate"]` | `Total: 0` (missing key quietly became a rate of 0) | `Total: 5.0` |
+| `billing/report.py:7` | `get_setting("fee_rate")` | stopped with `fee_rate is missing` | `Report fee: 0.5` |
+| `billing/export/csv_writer.py:8` | `settings.get("fee_" + "rate")` | stopped with `fee_rate is missing` | `CSV fee: 0.5` |
+
+The CSV writer builds the key name from two pieces, so a plain text search for `fee_rate` doesn't find it. The subagent's report also missed that the report and CSV paths were broken.
+
+These matches don't actually read the setting:
+- `billing/invoice.py:5` is just a column label.
+- `billing/discount.py:5` is an unrelated hard-coded rate of 0.15 in old code.
+- `billing/audit.py:4` builds codes like `fee_code…`, not this key.
+- `billing/tax.py` has its own tax rates.
+
+**Changes:**
+1. **`settings.json:2`**: renamed `"rat"` to `"fee_rate"`. This one change fixes all three paths.
+2. **`main.py:10-12`**: replaced the `except KeyError: rate = 0` fallback with `raise SystemExit("fee_rate is missing")`, matching the other two files. If the setting goes missing again, the program will stop with an error instead of printing a total of 0.

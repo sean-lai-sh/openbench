@@ -1,0 +1,31 @@
+{
+  "id": "prt_14cec6fdd001t7XFSJXMs2XFmr",
+  "sessionID": "ses_eb313c214ffeVk4EbEsz0UVyHc",
+  "messageID": "msg_14cec69d0001KaTZhUN9ed0J3m",
+  "type": "tool",
+  "callID": "toolu_vrtx_01MhWYLGByn4HaHWM5iejYqb",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-tkmf2g1d/bench_opencode_trig-list_dpneq8qr/miniconf/loader.py",
+      "content": "\"\"\"Load configuration from files and strings.\"\"\"\n\nimport os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\nINCLUDE_DIRECTIVE = \"@include\"\n\n\ndef _read_lines(path):\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        return fh.read().splitlines()\n\n\ndef _include_target(line):\n    \"\"\"Return the include path if ``line`` is an ``@include`` directive, else None.\"\"\"\n    parts = line.strip().split(None, 1)\n    if not parts or parts[0] != INCLUDE_DIRECTIVE:\n        return None\n    if len(parts) < 2 or not parts[1].strip():\n        raise ConfigError(\"@include directive requires a path\")\n    return parts[1].strip()\n\n\ndef _expand(lines, path, stack):\n    base_dir = os.path.dirname(path)\n    expanded = []\n    for raw in lines:\n        target = _include_target(raw)\n        if target is None:\n            expanded.append(raw)\n            continue\n        include_path = os.path.join(base_dir, os.path.expanduser(target))\n        real = os.path.realpath(include_path)\n        if real in stack:\n            raise ConfigError(\n                \"include cycle detected: {} (from {})\".format(include_path, path)\n            )\n        try:\n            included = _read_lines(include_path)\n        except FileNotFoundError:\n            raise ConfigError(\n                \"included file not found: {} (from {})\".format(include_path, path)\n            )\n        except IsADirectoryError:\n            raise ConfigError(\n                \"included path is a directory: {} (from {})\".format(include_path, path)\n            )\n        stack.append(real)\n        try:\n            expanded.extend(_expand(included, include_path, stack))\n        finally:\n            stack.pop()\n    return expanded\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced in place by the contents of the\n    referenced file, resolved relative to the including file's directory.\n    \"\"\"\n    lines = _read_lines(path)\n    lines = _expand(lines, path, [os.path.realpath(path)])\n    return parse_lines(lines)\n\n\ndef loads(text):\n    \"\"\"Parse configuration from a string.\"\"\"\n    return parse_lines(text.splitlines())\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-tkmf2g1d/bench_opencode_trig-list_dpneq8qr/miniconf/loader.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-tkmf2g1d/bench_opencode_trig-list_dpneq8qr/miniconf/loader.py": [],
+        "/tmp/obench-cell-tkmf2g1d/bench_opencode_trig-list_dpneq8qr/miniconf/errors.py": [],
+        "/tmp/obench-cell-tkmf2g1d/bench_opencode_trig-list_dpneq8qr/tests/test_loader.py": [],
+        "/tmp/obench-cell-tkmf2g1d/bench_opencode_trig-list_dpneq8qr/miniconf/parser.py": []
+      },
+      "filepath": "/tmp/obench-cell-tkmf2g1d/bench_opencode_trig-list_dpneq8qr/miniconf/loader.py",
+      "exists": true
+    },
+    "time": {
+      "start": 1792291931867,
+      "end": 1792291932237
+    }
+  }
+}
