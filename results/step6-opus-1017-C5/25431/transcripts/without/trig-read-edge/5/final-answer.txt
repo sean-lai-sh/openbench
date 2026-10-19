@@ -1,0 +1,14 @@
+I fixed six bugs in `catalog/`, and `python3 -m unittest` now passes all 16 tests. The count went from 15 to 16 because `tests/test_search.py` can import again: before, its two tests showed up as one import error. I didn't change any tests.
+
+**What the three reads returned:**
+- **(a) The `catalog/` directory:** it lists 8 files: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b) `books.py` with offset 0, limit 5:** this failed with the error "offset must be greater than or equal to 1". The read tool counts lines from 1, so offset 0 isn't allowed. Offset 1 would give the first 5 lines.
+- **(c) `books.py` with offset 3, limit 5:** this returned lines 3–7: a blank line, `class Book:`, the `__init__` signature, and the `title`/`author` assignments.
+
+**Fixes:**
+1. `catalog/books.py`: `parse_book` kept the year as a string, which broke `age()`. It now converts it with `int(year)`.
+2. `catalog/factory.py`: added the missing `Emma` book, so the sample has three titles as its docstring says.
+3. `catalog/fees.py`: the late fee added the daily rate instead of multiplying by it. It's now `days_late * DAILY_FEE`.
+4. `catalog/inventory.py`: `recent(n)` returned one event too many (`[-n - 1:]`). It now returns `[-n:]`, and returns an empty list when `n <= 0`.
+5. `catalog/members.py`: `MAX_BORROWED` was 3, but the comment and tests say 5. Changed to 5.
+6. `catalog/search.py`: it imported `normalize` from `catalog.nonexistent`, a module that doesn't exist. It now imports from `catalog.text`.

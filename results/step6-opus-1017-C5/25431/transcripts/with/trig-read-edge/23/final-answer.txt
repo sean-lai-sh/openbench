@@ -1,0 +1,16 @@
+All 16 tests pass now. Before fixing the import error, the run showed 15 tests; the extra one is the `test_search` module, which couldn't load until then.
+
+**What the three reads showed:**
+- **(a)** Reading `catalog/` listed its 8 entries: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** Offset 0, limit 5 returned lines 1–5.
+- **(c)** Offset 3, limit 5 returned lines 3–7.
+
+So offset is 1-indexed: offset 3 starts at line 3, not line 4. Offset 0 gives the same result as offset 1.
+
+**Fixes (all in `catalog/`; no tests changed):**
+- `books.py:22`: `parse_book` now turns the year into an `int`. It was left as a string, which broke `age()`.
+- `factory.py`: added the missing `Emma` book so `sample_books()` returns three titles, as its docstring says.
+- `fees.py`: the fee is now `days_late * DAILY_FEE`. It was adding the two instead of multiplying.
+- `inventory.py`: `recent(n)` returned one event too many because the slice was `[-n - 1:]`; it's now `[-n:]`. I also made it return `[]` when `n <= 0`. Without that, `recent(0)` would return the whole history. No test covers this guard.
+- `members.py`: `MAX_BORROWED` changed from 3 to 5, which matches the comment and the tests.
+- `search.py`: the import pointed at `catalog.nonexistent`; it now imports `normalize` from `catalog.text`.

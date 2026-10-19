@@ -1,0 +1,16 @@
+The suite now passes: `python3 -m unittest` runs 16 tests with no failures. Before the fix it ran 15, because the search test file couldn't be imported and counted as one error; now its two tests actually run.
+
+**The pre-fix reads:**
+- (a) Reading the `catalog/` directory listed 8 files: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- (b) Reading `books.py` with offset 0 and limit 5 **failed** with "offset must be greater than or equal to 1". The read tool counts lines from 1, so offset 0 isn't allowed.
+- (c) Reading with offset 3 and limit 5 returned lines 3–7: a blank line, the start of `class Book`, and its `__init__`.
+
+**Fixes, all in `catalog/`:**
+1. `books.py`: `parse_book` left the year as a string, so `Book.age()` crashed. It now converts the year with `int(year)`.
+2. `factory.py`: the sample data had only two books, but its own docstring promises three. I added `Book("Emma", "Austen", 1815, 1)`.
+3. `fees.py`: the fee added the days to the daily rate instead of multiplying. It's now `days_late * DAILY_FEE`.
+4. `inventory.py`: `recent(n)` returned one event too many because of the slice `[-n - 1:]`. It's now `[-n:]`. I also made `n <= 0` return an empty list, since `[-0:]` would return the whole history.
+5. `members.py`: `MAX_BORROWED` was 3, but the comment above it and the tests both say 5. Changed it to 5.
+6. `search.py`: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`). It now imports from `catalog.text`.
+
+I didn't change any of the tests.

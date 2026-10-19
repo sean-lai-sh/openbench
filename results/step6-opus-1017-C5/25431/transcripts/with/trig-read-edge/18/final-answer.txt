@@ -1,0 +1,14 @@
+All 16 tests pass now. The first run showed 15 because `test_search` couldn't be imported and was counted as one error; it actually contains 2 tests.
+
+**What the three reads returned:**
+- **(a)** Reading the `catalog/` directory listed its 8 entries: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** Offset 0, limit 5 returned lines 1–5. An offset of 0 is treated as the start of the file.
+- **(c)** Offset 3, limit 5 returned lines 3–7. So the offset is a 1-indexed line number, and the two reads overlapped on lines 3–5.
+
+**Fixes (only files in `catalog/` were changed; the tests are untouched):**
+1. `books.py`: `parse_book` left the year as a string. It now uses `int(year)`, which fixed both `test_year_is_int` and the `TypeError` in `age()`.
+2. `factory.py`: the third sample book, `Book("Emma", "Austen", 1815, 1)`, was missing. I added it, which also matches the docstring.
+3. `fees.py`: the fee was `days_late + DAILY_FEE` and is now `days_late * DAILY_FEE`.
+4. `inventory.py`: `recent(n)` sliced `[-n - 1:]`, which returned one event too many. It now slices `[-n:]`. I also made `n <= 0` return an empty list, because `[-0:]` would return the whole history.
+5. `members.py`: `MAX_BORROWED` was 3, which contradicted the comment about a five-book policy and the tests. It is now 5.
+6. `search.py`: it imported `normalize` from `catalog.nonexistent`, which doesn't exist. It now imports from `catalog.text`.
