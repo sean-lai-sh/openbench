@@ -1,0 +1,17 @@
+{
+  "id": "msg_155f22a19001Ozv7ciNF9FKW4D",
+  "sessionID": "ses_eaa0e1ae1ffeZ5uBBmaE68ishi",
+  "role": "user",
+  "time": {
+    "created": 1792443296281
+  },
+  "summary": {
+    "body": "## Task\nFix failing tests in `taskflow/` (in-memory job-orchestration engine) at `/tmp/obench-cell-w8e1jxv5/bench_opencode_taskflow_cbqk0jbw`. Run `python3 -m unittest` from that directory. **Tests are the spec, so do not modify `tests/`.** Bugs are logic errors where code contradicts its docstrings/comments. Fixing one can unmask another, so re-run after each fix and re-diagnose. Done when all 25 tests pass.\n\n## Fixes applied so far (6)\n1. `taskflow/queue.py` `_Entry.sort_key`: `(self.seq, -self.priority)` → `(-self.priority, self.seq)`\n2. `taskflow/retry.py` `should_retry`: `attempts_made < self.max_attempts - 1` → `attempts_made < self.max_attempts`\n3. `taskflow/resources.py` `ResourcePool.release`: `self.used -= 1` → `self.used -= cost`\n4. `taskflow/statemachine.py` `batch_order_ok`: `current_priority >= prev_priority` → `current_priority <= prev_priority`\n5. `taskflow/events.py` `_prefix_matches`: `prefix.startswith(topic + \".\")` → `topic.startswith(prefix + \".\")`\n6. `taskflow/config.py` `deep_merge`: `deep_merge(value, result[key])` → `deep_merge(result[key], value)` (applied via sed; not yet re-tested)\n\nAfter fixes 1–5, these 10 tests still failed: test_config (deep_merge_direct, task_retry_override_preserved, likely fixed by fix 6), test_pipelines (diamond_transitive_skip, full_pipeline_retry_priority_resources, history_failed_and_skipped_sets, history_outcome_counts_mixed, retry_exhausts_to_permanent_failure, retry_succeeds_on_third_attempt, retry_unblocks_downstream, transitive_skip_chain).\n\n## Next steps\n- **Fix the cascade skip.** In `taskflow/scheduler.py`, `_cascade_skip` iterates `self.dag.dependents(failed_run.id)`, which returns only direct children. The docstring says it should skip all transitive dependents. Change it to `self.dag.transitive_dependents(...)`. That method in `taskflow/dag.py` (lines ~145–168) does a BFS and looks correct.\n- **Investigate the retry failures.** The symptom is that `attempts_of(\"doomed\")` is 1 instead of 3, and the flaky task ends FAILED. Possible causes:\n  - `JobRun.note_attempt` or `attempts` in `taskflow/model.py`.\n  - The `JobContext` attempt number.\n  - `run.available_at` handling.\n  - `_wake_retries`: `RETRYING`→`READY` is legal.\n  - How the test builds the retry policy, perhaps via config, builder, or `runner.py`.\n  \n  Check `taskflow/model.py` (`JobRun`, `Task`, `State.is_terminal`), `taskflow/runner.py`, and `taskflow/history.py`. History tests check `outcome_counts` and the failed/skipped sets via `job.term.*` prefix subscriptions.\n- Read `tests/test_pipelines.py` to see what each failing test asserts.\n- Re-run the suite and iterate until all tests pass.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

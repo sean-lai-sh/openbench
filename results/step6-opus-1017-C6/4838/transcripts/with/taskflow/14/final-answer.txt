@@ -1,0 +1,13 @@
+All 25 tests pass now. I fixed 7 bugs in total and didn't change anything under `tests/`.
+
+| # | File | Bug | Fix |
+|---|------|-----|-----|
+| 1 | `taskflow/queue.py` `_Entry.sort_key` | Jobs were ordered by arrival before priority | Sort by priority (highest first), then arrival order |
+| 2 | `taskflow/retry.py` `should_retry` | Allowed one retry too few | `attempts_made < self.max_attempts` |
+| 3 | `taskflow/resources.py` `release` | Released 1 unit instead of the task's cost | `self.used -= cost` |
+| 4 | `taskflow/statemachine.py` `batch_order_ok` | Priority comparison was backwards | `current_priority <= prev_priority` |
+| 5 | `taskflow/events.py` `_prefix_matches` | Topic and prefix were swapped | `topic.startswith(prefix + ".")` |
+| 6 | `taskflow/config.py` `deep_merge` | Arguments were swapped in the recursive call, so overrides were lost | `deep_merge(result[key], value)` |
+| 7 | `taskflow/scheduler.py` `_cascade_skip` (line 264) | When a task failed, only its direct children were skipped | Use `transitive_dependents` so everything downstream is skipped, as the docstring says |
+
+Fix 6 also cleared the retry test failures I had been planning to investigate, so the files I'd listed for that (`model.py`, `runner.py`) didn't need any changes. Fix 7 fixed the last 4 failures: the transitive-skip tests and the history tests.

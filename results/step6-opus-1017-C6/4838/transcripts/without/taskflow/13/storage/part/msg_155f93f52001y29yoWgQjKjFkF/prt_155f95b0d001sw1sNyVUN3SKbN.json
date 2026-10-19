@@ -1,0 +1,11 @@
+{
+  "id": "prt_155f95b0d001sw1sNyVUN3SKbN",
+  "sessionID": "ses_eaa074a9dffejs6S695vCZAnNS",
+  "messageID": "msg_155f93f52001y29yoWgQjKjFkF",
+  "type": "text",
+  "text": "All 25 tests pass now (`python3 -m unittest` → `OK`).\n\nThe last fix was in `_cascade_skip` in `taskflow/scheduler.py:264`. It was skipping only a failed task's direct children, but its docstring says to skip everything that depends on the failed task, including descendants further down. I changed it to call `self.dag.transitive_dependents()` instead of `self.dag.dependents()`. That one change also fixed the history counts and the retry tests that were still failing. I didn't track down exactly why the retry tests were affected; they just pass now.\n\nAll the bugs fixed, each one a spot where the code contradicted its docstring:\n1. `queue.py` `_Entry.sort_key`: entries now sort by priority first, then by when they were added (it was the other way round).\n2. `retry.py` `should_retry`: an off-by-one meant tasks got one fewer attempt than `max_attempts`.\n3. `statemachine.py` `batch_order_ok`: fixed the priority-order comparison.\n4. `resources.py` `ResourcePool.release`: it now gives back the task's full `cost` instead of always 1.\n5. `events.py` `_prefix_matches`: the topic/prefix check was reversed.\n6. `config.py` `deep_merge`: the arguments in the recursive call were swapped, so the base config overrode the override.\n7. `scheduler.py` `_cascade_skip`: the fix above.\n\nI only edited files under `taskflow/`; the tests are untouched.",
+  "time": {
+    "start": 1792443767587,
+    "end": 1792443767587
+  }
+}

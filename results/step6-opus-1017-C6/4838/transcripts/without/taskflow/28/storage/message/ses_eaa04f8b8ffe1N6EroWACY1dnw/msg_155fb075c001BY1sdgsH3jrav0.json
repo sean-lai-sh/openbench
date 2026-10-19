@@ -1,0 +1,18 @@
+{
+  "id": "msg_155fb075c001BY1sdgsH3jrav0",
+  "sessionID": "ses_eaa04f8b8ffe1N6EroWACY1dnw",
+  "role": "user",
+  "time": {
+    "created": 1792443877212
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "The whole suite passes now: `python3 -m unittest` runs 25 tests with no failures. I changed eight lines across seven files under `taskflow/` and didn't touch the tests.\n\n| # | File | What was wrong | Fix |\n|---|------|----------------|-----|\n| 1 | `taskflow/queue.py`, `_Entry.sort_key` | The ordering key was `(seq, -priority)`, so the queue ran tasks in arrival order and ignored priority. | Changed to `(-priority, seq)`. |\n| 2 | `taskflow/retry.py`, `should_retry` | It compared against `max_attempts - 1`, so tasks got one attempt fewer than their budget. | Changed to `attempts_made < self.max_attempts`. |\n| 3 | `taskflow/config.py`, `deep_merge` | When merging nested settings it swapped the two sides, so the defaults overwrote a task's own `retry.max_attempts`. | Changed to `deep_merge(result[key], value)`. |\n| 4 | `taskflow/statemachine.py`, `batch_order_ok` | The check was backwards: it required each task in a batch to have equal or *higher* priority than the one before. | Changed to `current_priority <= prev_priority`. |\n| 5 | `taskflow/resources.py`, `ResourcePool.release` | It always gave back 1 unit instead of the task's full cost, so later tasks could never get their resources. | Changed to `self.used -= cost`. |\n| 6 | `taskflow/events.py`, `_prefix_matches` | The check was the wrong way round, so a `job.term` prefix subscription never received `job.term.failed` and similar events. | Changed to `topic.startswith(prefix + \".\")`. |\n| 7 | `taskflow/scheduler.py`, `_cascade_skip` | When a task failed for good, only its direct children were skipped, not everything further downstream. | Changed to use `dag.transitive_dependents(...)`. |\n\nSome of these were hiding each other, as you warned:\n- **Retry tests:** these needed both the config merge fix (#3) and the retry fix (#2). With the bad merge, the task's budget of 3 was replaced by the default of 1, so it never retried at all.\n- **Priority tests:** these needed both the queue fix (#1) and the batch-check fix (#4). With the queue fixed alone, the inverted check would have rejected the correct high-to-low order and failed the run.\n- **History tests:** these failed even though the history module itself has no bug. They needed the prefix-match fix (#6) to receive terminal events at all, and the cascade fix (#7) to get the right skip counts.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

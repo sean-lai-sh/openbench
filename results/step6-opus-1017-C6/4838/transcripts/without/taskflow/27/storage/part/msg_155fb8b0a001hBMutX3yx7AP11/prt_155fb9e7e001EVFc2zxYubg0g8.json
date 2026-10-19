@@ -1,0 +1,11 @@
+{
+  "id": "prt_155fb9e7e001EVFc2zxYubg0g8",
+  "sessionID": "ses_eaa0513d7ffe1ooswO9PmRLG0s",
+  "messageID": "msg_155fb8b0a001hBMutX3yx7AP11",
+  "type": "text",
+  "text": "All 25 tests pass now. They started at 18 failing.\n\nThe last fix was in `taskflow/scheduler.py:264`. When a task failed for good, `_cascade_skip` only skipped the tasks directly below it, but its docstring says to skip everything further downstream too. It now uses `self.dag.transitive_dependents(...)`, which walks the whole downstream graph level by level, nearest tasks first. That fixed the chain, diamond and history skip tests and the full pipeline test. The `config.py` change from earlier (fix 6) also turned out to be correct.\n\nAll seven fixes, each a one-line logic error:\n\n| File | Bug |\n|---|---|\n| `queue.py` | The sort key put arrival order ahead of priority, so priority was ignored |\n| `retry.py` | One retry attempt too few (off-by-one) |\n| `resources.py` | `release` freed 1 unit instead of the task's actual cost |\n| `events.py` | The topic-prefix check was reversed |\n| `statemachine.py` | The batch priority-order check was reversed |\n| `config.py` | `deep_merge` swapped the base and override arguments when merging nested settings |\n| `scheduler.py` | Failure skips stopped at direct dependents instead of everything downstream |\n\nI didn't change anything under `tests/`.",
+  "time": {
+    "start": 1792443915925,
+    "end": 1792443915925
+  }
+}

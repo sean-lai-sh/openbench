@@ -1,0 +1,13 @@
+All 25 tests now pass. I fixed seven logic bugs across six files, and I didn't change any tests.
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` (`_Entry.sort_key`) | It sorted by insertion order first and priority second, so a low-priority task queued earlier ran before a high-priority one. | Sort key is now `(-priority, seq)`. |
+| `taskflow/retry.py` (`should_retry`) | It compared against `max_attempts - 1`, so tasks got one attempt fewer than allowed. With `max_attempts=1` they never retried, which is why the retry pipeline tests stopped after 1 attempt. | Now `attempts_made < max_attempts`. |
+| `taskflow/resources.py` (`ResourcePool.release`) | It always gave back 1 unit instead of the task's actual cost, so pools stayed partly occupied and later tasks couldn't get in. | Now subtracts `cost`. |
+| `taskflow/statemachine.py` (`batch_order_ok`) | The check was reversed (`>=`), so the scheduler rejected correctly ordered batches and failed tasks that had done nothing wrong. This only showed up once the queue fix produced correctly ordered batches. | Now `current_priority <= prev_priority`. |
+| `taskflow/events.py` (`_prefix_matches`) | The arguments were swapped (`prefix.startswith(topic + ".")`), so prefix subscribers like `job.term` never received `job.term.failed` and similar events. That's why the history tests were failing. | Now `topic.startswith(prefix + ".")`. |
+| `taskflow/config.py` (`deep_merge`) | The recursive call had its arguments swapped, so default values overwrote a task's own settings in nested blocks (e.g. `retry.max_attempts`). | Now `deep_merge(result[key], value)`. |
+| `taskflow/scheduler.py` (`_cascade_skip`) | When a task failed for good, only its direct dependents were skipped, so tasks further down stayed stuck in `PENDING`. | Now uses `dag.transitive_dependents(...)`, which the DAG's docstring describes as exactly the set to skip on failure. |
+
+As you warned, several test names pointed at the wrong module. The history failures came from the event bus, the resource pipeline failures came from `release()`, and the priority pipeline failures needed both the queue fix and the state-machine fix.

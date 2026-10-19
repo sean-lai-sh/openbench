@@ -1,0 +1,17 @@
+{
+  "id": "msg_155f92ab2001P302YZkv67JuNJ",
+  "sessionID": "ses_eaa071da6ffemnFpfSx4DEGCwV",
+  "role": "user",
+  "time": {
+    "created": 1792443755186
+  },
+  "summary": {
+    "body": "## Task\nFix the code under `taskflow/` (in `/tmp/obench-cell-c0d5wsoo/bench_opencode_taskflow_g09dozsy`) until `python3 -m unittest` passes all 25 tests. The tests in `tests/` are the specification and must not be modified. The bugs are logic errors where the code contradicts its own docstrings or comments. Fixing one bug can expose another, so the plan is to re-run and re-diagnose after each round.\n\n## Fixes applied so far (4 bugs; failures went from 18 to 9)\n1. **`taskflow/config.py`, `deep_merge`:** the recursion had its arguments swapped. It now calls `deep_merge(result[key], value)`.\n2. **`taskflow/retry.py`, `should_retry`:** it now returns `attempts_made < self.max_attempts` (the `- 1` was removed).\n3. **`taskflow/queue.py`, `_Entry.sort_key`:** it now returns `(-self.priority, self.seq)`.\n4. **`taskflow/resources.py`, `ResourcePool.release`:** it now does `self.used -= cost` instead of `self.used -= 1`.\n\n## 9 tests still failing\n- **Transitive skips:** `test_transitive_skip_chain` and `test_diamond_transitive_skip`.\n- **History outcomes:** `test_history_terminal_events_delivered`, `test_history_failed_and_skipped_sets` and `test_history_outcome_counts_mixed`. The history sees nothing at all.\n- **Priority dispatch:** `test_priority_dispatch_order`, `test_priority_four_way_batch` and `test_priority_respected_after_dependency`. In each, `report.ok()` is False.\n- **Combined pipeline:** `test_full_pipeline_retry_priority_resources`.\n\n## Root causes found, not yet fixed\n1. **`taskflow/events.py`, `_prefix_matches`:** the check is reversed. It returns `topic == prefix or prefix.startswith(topic + \".\")` and should use `topic.startswith(prefix + \".\")`. This breaks the `job.term` prefix subscription in History, which explains why the history tests see no outcomes.\n2. **`taskflow/scheduler.py`, `_cascade_skip`:** it iterates `self.dag.dependents(failed_run.id)`, which only covers direct children. The docstring says it should skip everything transitively downstream, so it should use `self.dag.transitive_dependents(...)`, which already exists in `dag.py`, does a BFS and looks correct.\n3. **`taskflow/statemachine.py`, `batch_order_ok`:** it returns `current_priority >= prev_priority`. The docstring requires non-increasing order within a batch, so it should return `current_priority <= prev_priority`. The wrong guard makes the scheduler's `_admit` fail the second task of every batch.\n\n## Next steps\n- Apply the three fixes above and re-run the suite.\n- If anything still fails, inspect `taskflow/history.py`, covering `run_order`, `failed_jobs`, `skipped_jobs`, `succeeded_jobs`, `outcome_counts` and `peak_resource_usage`. Also look at `model.py` (`JobRun`, `State.is_terminal`, `record_state`, `note_attempt`) for further masked bugs.\n- `test_history_failed_and_skipped_sets` expects `skipped_jobs() == [\"mid\", \"leaf\"]`, i.e. event order, which matches the BFS cascade order.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

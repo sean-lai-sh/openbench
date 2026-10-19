@@ -1,0 +1,16 @@
+All 25 tests pass now (`python3 -m unittest` reports OK). I made eight one-line fixes in `taskflow/`, each one to make the code match its own docstring. I didn't touch the tests.
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` (`_Entry.sort_key`) | Ordered by insertion sequence before priority, so the queue was plain first-in-first-out | Sort by `(-priority, seq)` |
+| `retry.py` (`should_retry`) | `attempts_made < max_attempts - 1` stopped one attempt early | `attempts_made < max_attempts` |
+| `config.py` (`deep_merge`) | The recursive call had its arguments swapped, so the defaults overwrote each task's own nested settings (e.g. a task's `retry.max_attempts`) | `deep_merge(result[key], value)` |
+| `statemachine.py` (`batch_order_ok`) | Required priority to go *up* within one round of dispatch, so correctly ordered rounds were rejected and the task was failed | `current_priority <= prev_priority` |
+| `resources.py` (`ResourcePool.release`) | Gave back 1 unit no matter what the task held, so pools leaked capacity | `self.used -= cost` |
+| `events.py` (`_prefix_matches`) | The prefix check was backwards, so `"job.term"` subscribers never got `"job.term.failed"` and similar events | `topic.startswith(prefix + ".")` |
+| `scheduler.py` (`_cascade_skip`) | Only skipped direct dependents when a task failed for good, leaving tasks further down stuck in `PENDING` | Use `dag.transitive_dependents` |
+
+Several of these were hidden by others, as you warned:
+- **Retry tests:** these needed both the `should_retry` fix and the `deep_merge` fix. Without the merge fix, the task's `max_attempts: 3` override was replaced by the default value of 1.
+- **Priority tests:** these needed the queue ordering fix and the dispatch-order fix together.
+- **History tests:** these failed because of the event prefix matching and the missing skips further down the graph, not because of anything in `history.py`.

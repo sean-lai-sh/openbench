@@ -1,0 +1,18 @@
+All 25 tests now pass with `python3 -m unittest`. I found eight bugs, all in code under `taskflow/`, and didn't touch the tests.
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` | The sort key was `(seq, -priority)`, so tasks came out in arrival order and priority was ignored. | Changed it to `(-priority, seq)`. |
+| `retry.py` | `should_retry` compared against `max_attempts - 1`, which allowed one attempt too few. | Changed to `attempts_made < max_attempts`. |
+| `resources.py` | `ResourcePool.release` always took 1 off the usage count instead of the task's actual cost. Usage drifted, so later tasks couldn't get resources. | Subtract `cost`. |
+| `statemachine.py` | The check on the order tasks start within one tick was reversed (`>=`). It rejected the correct order, which is highest priority first. | Changed to `<=`. |
+| `events.py` | The prefix match had its arguments swapped, so subscribers to `job.term` never got `job.term.failed` and similar events. | Changed to `topic.startswith(prefix + ".")`. |
+| `config.py` | `deep_merge` passed its two arguments to the recursive call in the wrong order, so pipeline defaults overwrote nested per-task settings such as `retry.max_attempts`. | Swapped them to `deep_merge(result[key], value)`. |
+| `scheduler.py` | When a task failed for good, `_cascade_skip` only skipped its direct dependents. Tasks further downstream stayed `PENDING`. | Use `dag.transitive_dependents(...)` instead. |
+
+Some failures pointed at the wrong module, as you warned:
+- **Retry tests** were failing because of the off-by-one in `retry.py`.
+- **Resource tests** were failing because of the release bug in `resources.py`.
+- **Priority tests** needed both the queue fix and the start-order fix: once the queue returned tasks in the right order, the reversed check in `statemachine.py` would have rejected them.
+- **History tests** were failing because of the prefix-match bug in `events.py`.
+- **Downstream-skip tests** only showed the scheduler bug after the earlier fixes; they first failed on reason A and then on reason B.

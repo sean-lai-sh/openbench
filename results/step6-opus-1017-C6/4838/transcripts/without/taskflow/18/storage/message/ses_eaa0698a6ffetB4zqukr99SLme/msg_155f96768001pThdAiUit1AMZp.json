@@ -1,0 +1,18 @@
+{
+  "id": "msg_155f96768001pThdAiUit1AMZp",
+  "sessionID": "ses_eaa0698a6ffetB4zqukr99SLme",
+  "role": "user",
+  "time": {
+    "created": 1792443770728
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow engine",
+    "body": "The whole suite now passes: `python3 -m unittest` runs 25 tests with no failures, and no test files were changed. The 18 failures came from 7 logic bugs, each a place where the code did something different from what its own docstring says:\n\n1. **`taskflow/queue.py`, `_Entry.sort_key`**: the sort key was `(seq, -priority)`, so tasks came out in insertion order and priority was ignored. Changed it to `(-priority, seq)`. This was behind all the priority tests, including the ones in the pipeline tests.\n2. **`taskflow/retry.py`, `should_retry`**: it compared against `max_attempts - 1`, so a task got one fewer attempt than allowed. Changed it to `attempts_made < max_attempts`. This fixed the retry tests, which had been showing up as `FAILED` instead of `SUCCEEDED` and as wrong attempt counts.\n3. **`taskflow/statemachine.py`, `batch_order_ok`**: the comparison was the wrong way round (`>=` instead of `<=`). Once the queue started handing out tasks in the right order, this check would have wrongly failed any properly ordered batch. That's one of the masked bugs you warned about.\n4. **`taskflow/resources.py`, `ResourcePool.release`**: it always gave back 1 unit (`self.used -= 1`) instead of the task's actual cost. Usage drifted upward, which broke the two resource-pool pipeline tests.\n5. **`taskflow/events.py`, `_prefix_matches`**: the arguments were swapped (`prefix.startswith(topic + \".\")`), so subscribing to a prefix like `\"job.term\"` never received `\"job.term.failed\"` and similar events. This was behind the history-related pipeline test failures.\n6. **`taskflow/config.py`, `deep_merge`**: the recursive call passed its two arguments in reverse order, so defaults overwrote a task's own nested settings (for example, its `retry.max_attempts`). Fixing this cleared the two config test failures.\n7. **`taskflow/scheduler.py`, `_cascade_skip`**: when a task failed for good, only its direct dependents were skipped (`dag.dependents`). Changed it to `dag.transitive_dependents`, so everything further downstream is skipped too. Before, those tasks were left stuck in `PENDING`.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

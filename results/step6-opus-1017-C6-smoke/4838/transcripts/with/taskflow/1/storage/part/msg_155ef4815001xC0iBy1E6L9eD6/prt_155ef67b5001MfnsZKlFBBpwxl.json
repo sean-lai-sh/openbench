@@ -1,0 +1,11 @@
+{
+  "id": "prt_155ef67b5001MfnsZKlFBBpwxl",
+  "sessionID": "ses_eaa10fa55ffe6ur5btsmNLyX7p",
+  "messageID": "msg_155ef4815001xC0iBy1E6L9eD6",
+  "type": "text",
+  "text": "## Summary\n\n**Task:** Fix the failing tests in `taskflow/` (an in-memory job-orchestration engine) by fixing code under `taskflow/` only. The tests in `tests/` are the specification and must **not** be modified. Done when `python3 -m unittest` (run from `/tmp/obench-cell-hgiexv8y/bench_opencode_taskflow__tuoz22r`) reports all tests passing. The user warned that failures can be misleading (root cause may be in another module), fixes can unmask other bugs, and defects are logic errors where code contradicts its own docstrings/comments.\n\n**Initial state:** 18 of 25 tests failing (config, pipelines, queue, retry tests).\n\n**Fixes applied (7 one-line logic bugs, each contradicting its docstring):**\n1. `taskflow/queue.py` `_Entry.sort_key`: `(self.seq, -self.priority)` → `(-self.priority, self.seq)` (higher priority first, FIFO tiebreak).\n2. `taskflow/retry.py` `should_retry`: `attempts_made < self.max_attempts - 1` → `attempts_made < self.max_attempts`.\n3. `taskflow/resources.py` `ResourcePool.release`: `self.used -= 1` → `self.used -= cost`.\n4. `taskflow/statemachine.py` `batch_order_ok`: `current_priority >= prev_priority` → `current_priority <= prev_priority` (non-increasing priority within a batch).\n5. `taskflow/events.py` `_prefix_matches`: `prefix.startswith(topic + \".\")` → `topic.startswith(prefix + \".\")`.\n6. `taskflow/config.py` `deep_merge`: recursive call `deep_merge(value, result[key])` → `deep_merge(result[key], value)` (override wins at leaves).\n7. `taskflow/scheduler.py` `_cascade_skip`: `self.dag.dependents(...)` → `self.dag.transitive_dependents(...)` (skip all transitive downstream tasks).\n\n**Current status:** `python3 -m unittest` → `Ran 25 tests ... OK`. All tests pass; task is complete. No further steps required beyond optionally re-running the suite to confirm.",
+  "time": {
+    "start": 1792443115482,
+    "end": 1792443115482
+  }
+}

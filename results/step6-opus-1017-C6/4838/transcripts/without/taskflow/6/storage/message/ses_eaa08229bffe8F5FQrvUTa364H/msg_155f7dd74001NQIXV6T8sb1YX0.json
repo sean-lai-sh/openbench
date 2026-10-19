@@ -1,0 +1,18 @@
+{
+  "id": "msg_155f7dd74001NQIXV6T8sb1YX0",
+  "sessionID": "ses_eaa08229bffe8F5FQrvUTa364H",
+  "role": "user",
+  "time": {
+    "created": 1792443669876
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "All 25 tests in `python3 -m unittest` pass now. Earlier, 18 of 25 failed. I found seven logic errors in six files under `taskflow/`. In each case the code did something different from what its docstring says. I didn't modify any tests.\n\n1. **`queue.py` (`_Entry.sort_key`)**: tasks were ordered by when they were added and only then by priority, so a low-priority task could jump ahead of a high-priority one. The fields were in the wrong order; it now sorts by priority first, as the docstring describes.\n2. **`retry.py` (`should_retry`)**: the attempt check was off by one, so a task allowed 3 attempts only got 2. Changed `attempts_made < max_attempts - 1` to `attempts_made < max_attempts`.\n3. **`resources.py` (`ResourcePool.release`)**: a finishing task always gave back 1 unit, whatever it had actually held. That left pools stuck partly in use, so the resource-limited pipelines failed. It now returns the full amount.\n4. **`statemachine.py` (`batch_order_ok`)**: this check was reversed. It rejected starting tasks from highest to lowest priority, which is the correct order, so the priority pipeline tests failed even after the queue was fixed. It now uses `<=`.\n5. **`events.py` (`_prefix_matches`)**: the two arguments were swapped, so subscribing to `\"job.term\"` never received `\"job.term.failed\"` or `\"job.term.skipped\"`. That's why the history tests failed even though they look unrelated to the event bus.\n6. **`config.py` (`deep_merge`)**: the recursive call passed its arguments in the wrong order, so the pipeline-wide defaults overwrote a task's own settings. The retry tests were failing because of this as well as the off-by-one in `retry.py`: a task's `max_attempts: 3` was silently replaced by the default of 1.\n7. **`scheduler.py` (`_cascade_skip`)**: when a task failed for good, only the tasks depending on it directly were skipped. Tasks further down the chain stayed `PENDING`. It now uses `dag.transitive_dependents`, which the DAG module provides for exactly this case.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

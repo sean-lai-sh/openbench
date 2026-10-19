@@ -1,0 +1,18 @@
+{
+  "id": "msg_155f3c719001bY29V5lbKQhxTs",
+  "sessionID": "ses_eaa0c38f5ffejIzR02QPjSccn5",
+  "role": "user",
+  "time": {
+    "created": 1792443402009
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow engine",
+    "body": "All 25 tests now pass with `python3 -m unittest`. I fixed eight logic errors across seven modules and didn't touch the tests.\n\n1. **`taskflow/queue.py`, `_Entry.sort_key`**: the sort key was `(seq, -priority)`, so tasks came out in arrival order and priority was ignored. Changed it to `(-priority, seq)` so the highest priority goes first and arrival order only breaks ties.\n2. **`taskflow/retry.py`, `should_retry`**: it compared against `max_attempts - 1`, so tasks got one attempt fewer than allowed. That's why the pipeline retry tests saw `flaky` end as `FAILED` and `doomed` record 1 attempt instead of 3.\n3. **`taskflow/resources.py`, `ResourcePool.release`**: it gave back 1 unit no matter what the task had taken. Tasks costing more than 1 left units stuck, which broke the resource-limited pipeline tests.\n4. **`taskflow/statemachine.py`, `batch_order_ok`**: the check was backwards (`>=` instead of `<=`). Its docstring says priority must not go up within one batch of dispatched tasks. Once the queue fix put tasks in the right order, this inverted check was what still broke the priority dispatch tests.\n5. **`taskflow/events.py`, `_prefix_matches`**: the check was the wrong way round, so subscribing to `job.term` never received events like `job.term.failed`. That's why the run history wasn't recording terminal events.\n6. **`taskflow/config.py`, `deep_merge`**: the recursive call had its arguments swapped, so pipeline defaults overwrote a task's own nested settings. For example, a task's `retry.max_attempts: 5` was replaced by the default of 1.\n7. **`taskflow/scheduler.py`, `_cascade_skip`**: when a task failed for good, only the tasks depending on it directly were skipped. Tasks further down stayed `PENDING`. It now uses `dag.transitive_dependents`, as its docstring says it should.\n\nThe history tests turned out to have three overlapping causes. Fixing the event matching and the retry count made them run further, and then they failed on the skip problem. That last failure was in the scheduler, not in the history module.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

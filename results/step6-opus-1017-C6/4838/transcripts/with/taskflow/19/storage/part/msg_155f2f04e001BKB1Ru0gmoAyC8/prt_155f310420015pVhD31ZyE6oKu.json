@@ -1,0 +1,11 @@
+{
+  "id": "prt_155f310420015pVhD31ZyE6oKu",
+  "sessionID": "ses_eaa0d57ddffeo2dSX0qgIhDIfJ",
+  "messageID": "msg_155f2f04e001BKB1Ru0gmoAyC8",
+  "type": "text",
+  "text": "## Summary\n\n**Task:** Fix code under `taskflow/` (not tests) so `python3 -m unittest` passes fully. Working dir: `/tmp/obench-cell-rctdx2_8/bench_opencode_taskflow_g7ttuwu2`. Tests are the spec; bugs are logic errors where docstrings describe correct behavior; fixes may unmask further bugs, so re-run after each fix.\n\n**Fixes applied so far (18 failures → 4):**\n1. `taskflow/queue.py` `_Entry.sort_key`: `(self.seq, -self.priority)` → `(-self.priority, self.seq)`.\n2. `taskflow/retry.py` `should_retry`: `attempts_made < self.max_attempts - 1` → `< self.max_attempts`.\n3. `taskflow/resources.py` `ResourcePool.release`: `self.used -= 1` → `self.used -= cost`.\n4. `taskflow/statemachine.py` `batch_order_ok`: `current >= prev` → `current_priority <= prev_priority`.\n5. `taskflow/config.py` `deep_merge`: recursion `deep_merge(value, result[key])` → `deep_merge(result[key], value)`.\n6. `taskflow/events.py` `_prefix_matches`: `prefix.startswith(topic + \".\")` → `topic.startswith(prefix + \".\")`.\n\n**Remaining failures (all transitive-skip related):** `test_diamond_transitive_skip`, `test_history_failed_and_skipped_sets`, `test_history_outcome_counts_mixed`, `test_transitive_skip_chain` — only direct dependents of a failed task get skipped.\n\n**Root cause found:** `taskflow/scheduler.py` `_cascade_skip` (~line 255) iterates `self.dag.dependents(failed_run.id)` (direct only), but its docstring says skip everything transitively downstream. `Dag.transitive_dependents` (dag.py ~145) exists and looks correct (BFS).\n\n**Next steps:**\n- Change `_cascade_skip` loop to `for dep_id in self.dag.transitive_dependents(failed_run.id):`.\n- Re-run `python3 -m unittest`; if new failures appear (possibly masked bugs in scheduler, dag, history, model), diagnose and fix until all 25 tests pass.",
+  "time": {
+    "start": 1792443355265,
+    "end": 1792443355265
+  }
+}

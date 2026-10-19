@@ -1,0 +1,17 @@
+{
+  "id": "msg_155fb6fe0001ptqZZhISJL6Hih",
+  "sessionID": "ses_eaa04ec28ffel3476G5QrtoTDC",
+  "role": "user",
+  "time": {
+    "created": 1792443903968
+  },
+  "summary": {
+    "body": "## Summary\n\n**Task:** Fix the failing tests in the `taskflow/` package (an in-memory job-orchestration engine) without changing `tests/`. The tests are the specification. Run them from the project directory with `python3 -m unittest`.\n\n**Status: Done.** The last run reported `Ran 25 tests ... OK`. At the start, 18 of 25 tests were failing.\n\n### Fixes made (each was a one-line logic error that contradicted its own docstring)\n\n1. **`taskflow/queue.py`, `_Entry.sort_key`**\n   - Was `(self.seq, -self.priority)`, now `(-self.priority, self.seq)`.\n   - Effect: higher priority goes first, with first-in-first-out among equal priorities.\n2. **`taskflow/retry.py`, `RetryPolicy.should_retry`**\n   - Was `attempts_made < self.max_attempts - 1`, now `attempts_made < self.max_attempts`.\n   - Effect: with `max_attempts=3`, `should_retry(2)` is True and `should_retry(3)` is False.\n3. **`taskflow/config.py`, `deep_merge`**\n   - The recursive call had its arguments swapped: `deep_merge(value, result[key])` is now `deep_merge(result[key], value)`.\n   - Effect: overrides win at the leaves, so per-task retry overrides survive the merge with defaults.\n4. **`taskflow/statemachine.py`, `batch_order_ok`**\n   - Was `current_priority >= prev_priority`, now `current_priority <= prev_priority`.\n   - Effect: priority must not increase within one admission batch. The old check wrongly failed lower-priority runs.\n5. **`taskflow/scheduler.py`, `_cascade_skip`**\n   - Was iterating `self.dag.dependents(...)` (direct children only), now uses `self.dag.transitive_dependents(...)`.\n   - Effect: everything downstream of a permanently failed task is marked SKIPPED.\n6. **`taskflow/resources.py`, `ResourcePool.release`**\n   - Was `self.used -= 1`, now `self.used -= cost`.\n   - Effect: a finishing task releases its full cost.\n7. **`taskflow/events.py`, `_prefix_matches`**\n   - Was `prefix.startswith(topic + \".\")`, now `topic.startswith(prefix + \".\")`.\n   - Effect: prefix subscriptions such as `job.term` now receive `job.term.failed` and similar topics, so the History gets its terminal-outcome events.\n\n### Next steps\n\nNone required. Optionally, re-run `python3 -m unittest` to confirm everything still passes.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

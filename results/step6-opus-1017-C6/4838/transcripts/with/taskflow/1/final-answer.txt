@@ -1,0 +1,12 @@
+All 25 tests pass now. I didn't modify any test files.
+
+**Last fix:** `_cascade_skip` in `taskflow/scheduler.py:264` only skipped a failed task's direct children, even though its docstring says to skip everything downstream. It now calls `self.dag.transitive_dependents(...)` instead of `self.dag.dependents(...)`. That fixed the 4 remaining skip-cascade failures.
+
+**All 7 fixes, each where the code did something different from what its docstring or comments said:**
+1. `queue.py` `_Entry.sort_key`: now orders by priority first (`-priority`), then by sequence number.
+2. `retry.py` `should_retry`: it gave one attempt too few; the check is now `attempts_made < max_attempts`.
+3. `resources.py` `ResourcePool.release`: now gives back `cost` units instead of always 1.
+4. `statemachine.py` `batch_order_ok`: the priority comparison was backwards and is now flipped.
+5. `events.py` `_prefix_matches`: the topic and prefix were swapped in the `startswith` check.
+6. `config.py` `deep_merge`: the recursive call passed its arguments in the wrong order, so overrides didn't win.
+7. `scheduler.py` `_cascade_skip`: now skips all downstream tasks, not just direct children.
