@@ -1,0 +1,13 @@
+Line 3 of `catalog/members.py`, quoted exactly:
+
+> `# The lending policy allows each member to hold five books at once.`
+
+The full suite now passes: `python3 -m unittest` ran 16 tests, all OK. Before the fix it reported 15, because `tests/test_search.py` couldn't be imported. I didn't change any tests. I made the edits with `sed` in bash rather than the edit tool.
+
+Fixes:
+- **`catalog/members.py:4`**: `MAX_BORROWED` was `3`, but the comment on line 3 and the tests both say five. Changed it to `5`.
+- **`catalog/search.py:3`**: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`). It now imports from `catalog.text`, which is where `normalize` lives.
+- **`catalog/fees.py:14`**: the fee was days *plus* the daily rate. It's now days *times* the rate (`days_late * DAILY_FEE`).
+- **`catalog/inventory.py:24`**: `recent(n)` returned one event too many because the slice was `[-n - 1:]`. It now uses `[-n:]` and returns an empty list when `n <= 0`.
+- **`catalog/books.py:22`**: `parse_book` kept the year as a string, which broke `age()`. It now converts it with `int(year)`.
+- **`catalog/factory.py`**: added the missing `Book("Emma", "Austen", 1815, 1)`, so the sample data has the three titles its docstring describes.

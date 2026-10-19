@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e4dc51c001WuB64fC1uDdqWe",
+  "sessionID": "ses_eb1b29afeffet7kEZmFrtpemt4",
+  "messageID": "msg_14e4da3e6001ouEOqEB3ksmtjJ",
+  "type": "text",
+  "text": "All 25 tests pass now; at the start, 18 were failing. I traced seven separate logic errors, each a spot where the code did something different from what its own docstring said:\n\n1. **`taskflow/queue.py` – `_Entry.sort_key`**: the sort key was `(seq, -priority)`, so the queue went first-in-first-out and ignored priority. Changed it to `(-priority, seq)`.\n2. **`taskflow/retry.py` – `should_retry`**: it allowed one attempt too few (`attempts_made < max_attempts - 1`). Changed it to `attempts_made < max_attempts`. This was behind the retry tests in `test_pipelines`.\n3. **`taskflow/resources.py` – `ResourcePool.release`**: it always subtracted 1 instead of the task's actual cost, so pools never freed up properly. Changed it to `self.used -= cost`. This was behind the resource tests in `test_pipelines`.\n4. **`taskflow/events.py` – `_prefix_matches`**: the check was backwards (`prefix.startswith(topic + \".\")`), so the run history never saw the `job.term.*` events that record each job's final outcome. Changed it to `topic.startswith(prefix + \".\")`. This fixed the history tests.\n5. **`taskflow/config.py` – `deep_merge`**: the recursive call had its arguments swapped, so pipeline defaults overwrote a task's own nested settings (e.g. its `retry` values). Changed it to `deep_merge(result[key], value)`.\n6. **`taskflow/statemachine.py` – `batch_order_ok`**: this was the hidden bug. The docstring requires priorities within one batch to be non-increasing, but the code checked `>=`. That mistake was covered up while the queue was also wrong. Once the queue was fixed, the check would have rejected correctly ordered batches and failed the jobs. Changed it to `<=`.\n7. **`taskflow/scheduler.py` – `_cascade_skip`**: when a task failed, only its direct dependents were skipped, so tasks further downstream stayed `PENDING`. It now uses `dag.transitive_dependents`, which skips everything that depends on the failed task.\n\nI didn't change any tests.",
+  "time": {
+    "start": 1792315082062,
+    "end": 1792315082062
+  }
+}

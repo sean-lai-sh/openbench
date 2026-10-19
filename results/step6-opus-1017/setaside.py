@@ -12,7 +12,7 @@ for p in sorted(glob.glob(f'{D}/*/cells/*/*/*.json')):
     r=json.load(open(p)); fc=r.get('failure_class')
     if fc in EX or fc=='hang':
         pr,_,side,task,f=p.rsplit('/',5)[-5:]
-        out.append(f"{pr} {side} {task} {f[:-5]} {fc} {r.get('infra_reason') or str(r.get('error'))[:120]} {et(r.get('started_at'))} | {'excluded (infra)' if fc in EX else 'kept as fail (hang)'}")
+        out.append(f"{pr} {side} {task} {f[:-5]} {fc} {r.get('infra_reason') or str(r.get('error')).replace(chr(10),' ')[:120]} {et(r.get('started_at'))} | {'excluded (infra)' if fc in EX else 'kept as fail (hang)'}")
 open(f'{D}/SETASIDE-stalls.txt','w').write('\n'.join(out)+'\n')
 q=["# quarantined cells: path under step6-opus-1017-quarantine/"+L+" (reason in step6-opus-1017-quarantine/README.txt). Re-run in the batch dir; not used."]
 q+= [os.path.relpath(p,Q) for p in sorted(glob.glob(f'{Q}/*/cells/*/*/*.json'))] if os.path.isdir(Q) else []

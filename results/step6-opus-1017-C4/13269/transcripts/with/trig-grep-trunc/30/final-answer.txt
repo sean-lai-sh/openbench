@@ -1,0 +1,18 @@
+All 25 tests now pass with `python3 -m unittest`. I found and fixed 7 logic bugs under `taskflow/` and didn't touch any tests.
+
+About the opening search: grepping for `self` gave 1,325 matches and only the first 100 were shown, so it didn't help find anything. I worked from the test failures instead, comparing what each function's docstring says against what the code actually does.
+
+| # | Location | Bug | Fix |
+|---|----------|-----|-----|
+| 1 | `taskflow/config.py:77` | `deep_merge` swapped its arguments when recursing, so defaults overwrote a task's own nested settings (e.g. `retry.max_attempts` 3 → 1). | `deep_merge(result[key], value)` |
+| 2 | `taskflow/retry.py:100` | `should_retry` allowed one attempt fewer than it should (`< max_attempts - 1`). | `attempts_made < self.max_attempts` |
+| 3 | `taskflow/queue.py:40` | The sort key put insertion order before priority, so the queue was effectively first-in-first-out and ignored priority. | `(-self.priority, self.seq)` |
+| 4 | `taskflow/statemachine.py:76` | The check on dispatch order within one batch was inverted (`>=`). Once the queue was fixed, it rejected the correct high-to-low order and failed those tasks. | `current_priority <= prev_priority` |
+| 5 | `taskflow/resources.py:99` | `ResourcePool.release` gave back 1 unit instead of the full cost, so pools never drained and later tasks couldn't start. | `self.used -= cost` |
+| 6 | `taskflow/events.py:34` | The prefix match was reversed, so the `job.term` subscription never received `job.term.failed` and similar events, and the run history stayed empty. | `topic.startswith(prefix + ".")` |
+| 7 | `taskflow/scheduler.py:264` | When a task failed for good, only its direct dependents were skipped; tasks further downstream stayed `PENDING`. | Use `dag.transitive_dependents(...)` |
+
+Several of these hid each other, which is why the failures pointed to the wrong places:
+- **Retry tests:** these needed both #1 and #2 fixed before they could pass.
+- **Priority tests:** fixing the queue (#3) exposed the reversed batch check (#4).
+- **History tests:** the empty history looked like a history bug, but it came from the event bus (#6) and the skip logic (#7).

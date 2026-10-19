@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e562dc3001d68Q2yXJRK0y70",
+  "sessionID": "ses_eb1aa7dc5ffeF2iTIfJXDKkZ9n",
+  "messageID": "msg_14e560e09001dbJeHqENUti97L",
+  "type": "text",
+  "text": "All 25 tests in `python3 -m unittest` now pass. I didn't change any tests, only code under `taskflow/`. There were eight bugs, each a one-line fix:\n\n1. **`queue.py` `_Entry.sort_key`**: the sort key had its two parts swapped, so tasks went out in the order they arrived instead of highest priority first. Changed it to `(-priority, seq)`.\n2. **`statemachine.py` `batch_order_ok`**: this check is meant to confirm that tasks started together go highest priority first, but its comparison was backwards (`>=` instead of `<=`). This is the hidden one: once the queue was fixed, the check rejected the correct order and marked those tasks failed.\n3. **`retry.py` `should_retry`**: it used `attempts_made < max_attempts - 1`, so tasks got one attempt fewer than their limit. Removed the `- 1`.\n4. **`config.py` `deep_merge`**: the recursive call had its arguments reversed, so pipeline defaults overwrote a task's own nested settings (e.g. `retry.max_attempts: 3` got replaced by the default 1). This is why the retry pipeline tests failed even though they look like retry tests.\n5. **`resources.py` `ResourcePool.release`**: it gave back 1 unit instead of the task's full cost, so later tasks could never get the resource.\n6. **`events.py` `_prefix_matches`**: the check had the topic and prefix the wrong way round, so a subscriber to `job.term` never received `job.term.failed` etc. As a result the history recorded no succeeded, failed or skipped jobs.\n7. **`scheduler.py` `_cascade_skip`**: when a task failed for good, only its direct dependents were skipped. It now uses the existing `dag.transitive_dependents`, so everything further downstream is skipped too.\n\nAs the brief warned, several of the pipeline tests needed more than one of these fixes before they would pass. That's why I re-ran the suite between rounds.",
+  "time": {
+    "start": 1792315633136,
+    "end": 1792315633136
+  }
+}

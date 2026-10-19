@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e356b0c001sgoiUQNRrJ6kjz",
+  "sessionID": "ses_eb1cb36d3ffexPhJmldFGeiqnb",
+  "messageID": "msg_14e354b95001VrB5StQGFBQEnv",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I changed only files under `taskflow/` and left the tests alone.\n\nI started with the `self` grep you asked for. It matched 1,325 lines and the output was cut off after 100, so it didn't point to anything. I worked from the test failures instead.\n\n**First round of fixes (18 failures down to 11):**\n- `taskflow/queue.py:40`: the queue sorted by insertion order before priority, so tasks never came out highest-priority first. The sort key is now `(-priority, seq)`, as its docstring describes.\n- `taskflow/retry.py:100`: `should_retry` allowed one attempt fewer than the limit. It now checks `attempts_made < max_attempts`.\n- `taskflow/config.py:77`: when merging nested settings, the two arguments were swapped, so the pipeline default replaced a task's own value. Now the task's value wins and the defaults only fill in what it leaves out. Because of this, a per-task `retry.max_attempts: 3` was always reset to 1. That made the retry pipeline tests fail, even though they look like retry-logic bugs.\n\n**Second round (the remaining 11, which were hidden or misleading):**\n- `taskflow/statemachine.py:76`: the check on dispatch order within a tick was backwards. It rejected the correct highest-first order and marked those runs as failed. With the queue fixed, this is what caused the priority failures.\n- `taskflow/resources.py:99`: finishing a task returned only 1 unit to its pool instead of its full cost. Tasks waiting on the pool could then never start.\n- `taskflow/events.py:34`: the topic-prefix check was reversed. Listeners subscribed to `job.term` never received `job.term.failed` and similar events, so the history showed no outcomes.\n- `taskflow/scheduler.py:264`: when a task failed for good, only its direct children were marked skipped. It now uses the existing `dag.transitive_dependents`, so the whole downstream chain is skipped.",
+  "time": {
+    "start": 1792313486148,
+    "end": 1792313486148
+  }
+}

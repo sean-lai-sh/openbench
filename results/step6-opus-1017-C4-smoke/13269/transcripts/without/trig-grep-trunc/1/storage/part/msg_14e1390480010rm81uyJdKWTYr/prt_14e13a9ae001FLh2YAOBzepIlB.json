@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e13a9ae001FLh2YAOBzepIlB",
+  "sessionID": "ses_eb1ecd98effeBHcXZF4efklTSL",
+  "messageID": "msg_14e1390480010rm81uyJdKWTYr",
+  "type": "text",
+  "text": "All 25 tests pass now. I made seven one-line fixes under `taskflow/`, and in each case the code now does what its own docstring says it does. No tests were changed.\n\n| File | Problem | Fix |\n|---|---|---|\n| `queue.py` (`_Entry.sort_key`) | Sorted by arrival order first, so priority only broke ties | Sort by `(-priority, seq)`, highest priority first |\n| `retry.py` (`should_retry`) | `attempts_made < max_attempts - 1` allowed one attempt too few | `attempts_made < max_attempts` |\n| `resources.py` (`ResourcePool.release`) | Gave back 1 unit no matter the cost, so the next task waiting on the pool was never let in | Subtract `cost` |\n| `events.py` (`_prefix_matches`) | The check was backwards (`prefix.startswith(topic + \".\")`), so the history's `job.term` subscriber never got any events | `topic.startswith(prefix + \".\")` |\n| `statemachine.py` (`batch_order_ok`) | The guard required priority to go *up* within a batch, which rejected correct ordering | `current_priority <= prev_priority` |\n| `config.py` (`deep_merge`) | The recursive call had its arguments swapped, so defaults overwrote a task's own settings (e.g. `retry.max_attempts`) | `deep_merge(result[key], value)` |\n| `scheduler.py` (`_cascade_skip`) | Only skipped the failed task's direct children, leaving tasks further down stuck in `PENDING` | Use `dag.transitive_dependents(...)`, which already existed in `dag.py` |\n\nSome of these were hiding others. The retry pipeline tests stayed red after the retry fix until the config merge was fixed too. The history tests needed the prefix-match fix and the transitive-skip fix together.",
+  "time": {
+    "start": 1792311273942,
+    "end": 1792311273942
+  }
+}

@@ -1,0 +1,19 @@
+All 25 tests now pass with `python3 -m unittest` (18 were failing at the start). I found eight bugs, each in a single line under `taskflow/`, and didn't touch the tests.
+
+| # | Location | Bug | Fix |
+|---|----------|-----|-----|
+| 1 | `taskflow/queue.py:40` | The sort key was `(seq, -priority)`, so the queue ran in insertion order and ignored priority. | Changed it to `(-priority, seq)`, as the docstring says. |
+| 2 | `taskflow/retry.py:100` | `should_retry` compared against `max_attempts - 1`, so it allowed one attempt too few. | Changed it to `attempts_made < max_attempts`. |
+| 3 | `taskflow/config.py:77` | `deep_merge` called itself with the arguments swapped, so the defaults overwrote what each task set itself. | Swapped them back to `deep_merge(result[key], value)`. |
+| 4 | `taskflow/statemachine.py:76` | `batch_order_ok` checked `>=`, which rejects the correct high-to-low order within a tick. | Changed it to `<=`. |
+| 5 | `taskflow/events.py:34` | `_prefix_matches` had its arguments reversed, so prefix subscribers (like the run history) never got `job.term.*` events. | Changed it to `topic.startswith(prefix + ".")`. |
+| 6 | `taskflow/resources.py:99` | `release` subtracted 1 instead of `cost`, so tasks needing more than 1 unit never gave all of it back. | Changed it to `self.used -= cost`. |
+| 7 | `taskflow/scheduler.py:264` | When a task failed for good, only its direct dependents were skipped. Anything further down stayed `PENDING`. | Switched to `dag.transitive_dependents(...)`. |
+
+As the task warned, several test names pointed at the wrong place:
+- **History tests** (`failed_jobs`, `outcome_counts`) were failing because of the event bus bug (#5), not anything in `history.py`.
+- **Priority tests** depended on two bugs that hid each other. Once the queue order (#1) was fixed, the reversed check in the state machine (#4) would have marked the first lower-priority task in each tick as failed, so both had to be fixed.
+- **Retry tests** in `test_pipelines` came down to the retry count (#2).
+- **Resource tests** came down to the release amount (#6).
+
+I fixed all eight from reading the code and its docstrings, then ran the suite once at the end. I didn't re-run between fixes, so I didn't watch the hidden failures appear one at a time.

@@ -1,0 +1,17 @@
+All 25 tests pass now (`python3 -m unittest` → `OK`; 18 were failing at the start). I found 9 logic errors in 7 files under `taskflow/` and didn't touch the tests. In each case the function's own docstring describes the correct behavior.
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` (`_Entry.sort_key`) | Sorted by insertion order first, so priority only broke ties | `(-priority, seq)` |
+| `retry.py` (`should_retry`) | Off-by-one: `< max_attempts - 1` allowed one attempt too few | `< max_attempts` |
+| `resources.py` (`ResourcePool.release`) | Gave back 1 unit no matter what the task held | `used -= cost` |
+| `config.py` (`deep_merge`) | Recursive call had its arguments swapped, so defaults overwrote a task's own settings | `deep_merge(result[key], value)` |
+| `events.py` (`_prefix_matches`) | Check was reversed (`prefix.startswith(topic + ".")`), so `History` never received `job.term.*` events | `topic.startswith(prefix + ".")` |
+| `statemachine.py` (`batch_order_ok`) | Comparison was inverted, so correctly ordered priority batches were rejected and those tasks marked failed | `current <= prev` |
+| `scheduler.py` (`_cascade_skip`) | Skipped only direct dependents, leaving grandchildren `PENDING` | `dag.transitive_dependents(...)` |
+
+The failures pointed at the wrong places in a few spots:
+- **Priority tests:** These failed in `test_pipelines` with `report.ok()` false. That came from the inverted guard in `statemachine.py` failing tasks during admission, on top of the queue ordering bug.
+- **History tests:** These came from the prefix check in the event bus, not from `history.py`.
+- **Resource tests:** These failed because `release` returned the wrong number of units, not because of anything in the scheduler's admission logic.
+- **Hidden by other bugs:** The retry pipeline tests still failed after I fixed `should_retry`, because of the `deep_merge` bug: a task's `retry.max_attempts` override was replaced by the default of 1. Similarly, the skip tests failed for two reasons at once. Grandchildren weren't skipped at all, and the skips that did happen never reached `History`.

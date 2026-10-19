@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e6f18f8001RV8tYggKyYf3BM",
+  "sessionID": "ses_eb1918696ffeTC4Y2hHffNpXsm",
+  "messageID": "msg_14e6ef2a9001i7WIKGUmld2aDV",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`, and no test files were changed. I fixed 8 logic errors in `taskflow/`, in two rounds.\n\n**First round:**\n1. `queue.py:40` (`_Entry.sort_key`): returned `(seq, -priority)`, so tasks came out in insertion order instead of by priority. Now `(-priority, seq)`, which matches the docstring.\n2. `retry.py:100` (`should_retry`): used `attempts_made < max_attempts - 1`, so tasks got one attempt fewer than allowed. Now `attempts_made < max_attempts`.\n3. `config.py:77` (`deep_merge`): when merging nested blocks it passed the arguments in reverse order, so the defaults overwrote the task's own settings. The arguments are now in the right order.\n4. `resources.py:99` (`ResourcePool.release`): always took back 1 unit instead of the task's actual cost, so pools stayed partly occupied after tasks finished.\n5. `statemachine.py:76` (`batch_order_ok`): the comparison was backwards (`>=`). That made the guard reject correctly ordered batches and fail tasks for no reason, which is why the priority tests failed even though the bug was in the state machine. Now `<=`.\n\n**Second round** (these only showed up after the first fixes):\n\n6. `events.py:34` (`_prefix_matches`): checked whether the prefix started with the topic, the wrong way round. As a result, `History` never received `job.term.*` events, so its failed/skipped/succeeded lists stayed empty.\n7. `scheduler.py:264` (`_cascade_skip`): when a task failed, only its direct dependents were skipped; tasks further downstream stayed `PENDING`. It now uses `dag.transitive_dependents`.",
+  "time": {
+    "start": 1792317266211,
+    "end": 1792317266211
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e354c65001GA7vopPT3GcpLS",
+  "sessionID": "ses_eb1cb5fe7ffewF2RmltILaD023",
+  "messageID": "msg_14e352ddc001yuYYs1aQMaeWyB",
+  "type": "text",
+  "text": "All 25 tests pass now; at the start, 18 of them failed. I found 8 logic bugs across 7 files, and in each case the code did something different from what its docstring says. I didn't touch the tests.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/retry.py:100` | `should_retry` compared against `max_attempts - 1`, so a task got one fewer attempt than allowed | `attempts_made < self.max_attempts` |\n| `taskflow/queue.py:40` | The sort key was `(seq, -priority)`, so the queue ran tasks in arrival order and ignored priority | `(-self.priority, self.seq)` |\n| `taskflow/config.py:77` | `deep_merge` swapped its arguments when merging nested settings, so pipeline defaults overwrote a task's own `retry` settings | `deep_merge(result[key], value)` |\n| `taskflow/statemachine.py:76` | `batch_order_ok` was inverted: it rejected correctly ordered batches and marked those tasks `FAILED` | `current_priority <= prev_priority` |\n| `taskflow/resources.py:99` | `release` gave back 1 unit regardless of the task's actual cost, so pools leaked capacity and later tasks stalled | `self.used -= cost` |\n| `taskflow/scheduler.py:264` | When a task failed for good, only its direct children were skipped, not everything further downstream | Use `dag.transitive_dependents` |\n| `taskflow/events.py:34` | `_prefix_matches` checked the strings the wrong way round, so the run history never received the `job.term.*` success/failure/skip events | `topic.startswith(prefix + \".\")` |\n\nSome of these were hidden behind others, as you warned:\n- **Priority:** fixing the queue's sort order uncovered the inverted check in `statemachine.py`. That check was why the priority tests reported `ok() == False` rather than a wrong order.\n- **Retries:** the retry tests failed partly because of the merge bug in `config.py`. It replaced each task's retry settings with the default of one attempt.\n- **Resources:** both resource tests failed only because of the `release` bug in `resources.py`, not because of anything in the scheduler.",
+  "time": {
+    "start": 1792313478282,
+    "end": 1792313478282
+  }
+}

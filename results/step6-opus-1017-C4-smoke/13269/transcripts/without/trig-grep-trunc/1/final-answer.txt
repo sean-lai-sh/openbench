@@ -1,0 +1,13 @@
+All 25 tests pass now. I made seven one-line fixes under `taskflow/`, and in each case the code now does what its own docstring says it does. No tests were changed.
+
+| File | Problem | Fix |
+|---|---|---|
+| `queue.py` (`_Entry.sort_key`) | Sorted by arrival order first, so priority only broke ties | Sort by `(-priority, seq)`, highest priority first |
+| `retry.py` (`should_retry`) | `attempts_made < max_attempts - 1` allowed one attempt too few | `attempts_made < max_attempts` |
+| `resources.py` (`ResourcePool.release`) | Gave back 1 unit no matter the cost, so the next task waiting on the pool was never let in | Subtract `cost` |
+| `events.py` (`_prefix_matches`) | The check was backwards (`prefix.startswith(topic + ".")`), so the history's `job.term` subscriber never got any events | `topic.startswith(prefix + ".")` |
+| `statemachine.py` (`batch_order_ok`) | The guard required priority to go *up* within a batch, which rejected correct ordering | `current_priority <= prev_priority` |
+| `config.py` (`deep_merge`) | The recursive call had its arguments swapped, so defaults overwrote a task's own settings (e.g. `retry.max_attempts`) | `deep_merge(result[key], value)` |
+| `scheduler.py` (`_cascade_skip`) | Only skipped the failed task's direct children, leaving tasks further down stuck in `PENDING` | Use `dag.transitive_dependents(...)`, which already existed in `dag.py` |
+
+Some of these were hiding others. The retry pipeline tests stayed red after the retry fix until the config merge was fixed too. The history tests needed the prefix-match fix and the transitive-skip fix together.

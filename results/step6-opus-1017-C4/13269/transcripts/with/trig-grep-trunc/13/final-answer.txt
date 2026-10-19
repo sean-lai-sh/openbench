@@ -1,0 +1,22 @@
+All 25 tests pass now. Before my changes, 18 were failing.
+
+The `self` grep you asked for at the start found 1,325 matches but only showed the first 100, so it didn't help much. I found the bugs by running the suite and reading the main modules instead.
+
+I fixed seven logic errors, all under `taskflow/`. In each case the code did something different from what its own docstring says:
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py:40` | Queue order was by insertion sequence before priority, so a low-priority task could run ahead of a high-priority one | Sort by `(-priority, seq)` |
+| `retry.py:100` | `should_retry` used `< max_attempts - 1`, which allowed one attempt too few | `< max_attempts` |
+| `config.py:77` | `deep_merge` passed its arguments in the wrong order when recursing, so defaults overwrote a task's own nested settings (e.g. its `retry.max_attempts`) | `deep_merge(result[key], value)` |
+| `statemachine.py:76` | `batch_order_ok` was inverted, so the check rejected tasks that were in the correct priority order | `current <= prev` |
+| `events.py:34` | `_prefix_matches` checked the prefix against the topic instead of the other way round, so `job.term.*` events never reached history | `topic.startswith(prefix + ".")` |
+| `resources.py:99` | `release` always gave back 1 unit, whatever the task's actual cost | `self.used -= cost` |
+| `scheduler.py:264` | When a task failed for good, only the tasks directly depending on it were skipped, not everything further downstream | Use `dag.transitive_dependents` |
+
+Several of these were hiding behind each other:
+- **Retry pipelines** needed both the config merge fix and the retry-count fix.
+- **Priority pipelines** needed the queue fix, but then the inverted batch-order check would have rejected the newly correct order.
+- **History tests** were failing because of the event-bus bug, not anything in `history.py`.
+
+I didn't change any tests.

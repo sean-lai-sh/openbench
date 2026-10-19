@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e13d165001LEbLlzGoroqXTF",
+  "sessionID": "ses_eb1ecc96cffevwX2NUoGzRu4Ao",
+  "messageID": "msg_14e13b6dd001Ox9uZIhwUcRm1l",
+  "type": "text",
+  "text": "All 25 tests in `python3 -m unittest` now pass. I didn't change any tests. There were seven bugs, each a one-line fix in `taskflow/`:\n\n1. **`queue.py`, `_Entry.sort_key`**: the key put insertion order ahead of priority, so tasks ran first-come-first-served. I swapped it to `(-priority, seq)` so the highest priority goes first, with ties in arrival order.\n2. **`retry.py`, `should_retry`**: it compared against `max_attempts - 1`, so tasks got one attempt fewer than their budget. It now compares against `max_attempts`.\n3. **`config.py`, `deep_merge`**: the nested merge had its arguments reversed, so pipeline defaults overwrote per-task settings. For example, a task's `retry.max_attempts: 3` was replaced by the default of 1. This one made the retry tests look like they were failing because of the retry code.\n4. **`statemachine.py`, `batch_order_ok`**: the check was the wrong way round. It rejected a correctly ordered batch (high priority first) and failed the second task in it. This only showed up once the queue fix produced the correct order.\n5. **`resources.py`, `ResourcePool.release`**: it gave back 1 unit instead of the task's full cost, so the pool stayed full and later tasks were never admitted.\n6. **`scheduler.py`, `_cascade_skip`**: when a task failed, only its direct children were skipped; tasks further down stayed `PENDING`. It now uses `dag.transitive_dependents`.\n7. **`events.py`, `_prefix_matches`**: the two strings were swapped in `startswith`, so a subscription to `job.term` never received `job.term.failed` and similar events. That's why the history tests showed no failed or skipped jobs.",
+  "time": {
+    "start": 1792311284103,
+    "end": 1792311284103
+  }
+}

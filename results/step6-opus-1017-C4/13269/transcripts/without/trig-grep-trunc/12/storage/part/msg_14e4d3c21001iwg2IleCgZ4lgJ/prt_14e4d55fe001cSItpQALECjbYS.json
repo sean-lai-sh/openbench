@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e4d55fe001cSItpQALECjbYS",
+  "sessionID": "ses_eb1b352f6ffeF01wWnwclg1myR",
+  "messageID": "msg_14e4d3c21001iwg2IleCgZ4lgJ",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I fixed seven logic bugs, each a one-line change under `taskflow/`, and didn't touch the tests.\n\nThe first run showed 18 failures. Fixing three unit-level bugs got that down to 11, and those were caused by four more bugs in other modules:\n\n| File | Bug | Fix |\n|---|---|---|\n| `queue.py:40` | The sort key was `(seq, -priority)`, so insertion order came before priority. | `(-priority, seq)` |\n| `retry.py:100` | `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. | `attempts_made < max_attempts` |\n| `config.py:77` | `deep_merge` recursed with its arguments swapped, so the defaults overwrote per-task settings. | `deep_merge(result[key], value)` |\n| `statemachine.py:76` | `batch_order_ok` was inverted: it rejected admissions in descending priority, which is the correct order. | `current_priority <= prev_priority` |\n| `events.py:34` | `_prefix_matches` checked the prefix against the topic instead of the other way round. As a result, `job.term.*` events never reached History. | `topic.startswith(prefix + \".\")` |\n| `resources.py:99` | `ResourcePool.release` always freed 1 unit instead of the task's full cost, so later tasks couldn't get resources. | `self.used -= cost` |\n| `scheduler.py:264` | `_cascade_skip` only skipped direct dependents, not the whole downstream chain. | Use `dag.transitive_dependents(...)` |\n\nSome of these looked like they belonged to other modules. For example, the priority-pipeline tests needed both the queue fix and the state-machine guard fix. The history tests were failing because of the event-prefix bug, not anything in `history.py`.",
+  "time": {
+    "start": 1792315053652,
+    "end": 1792315053652
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e4edf28001AN8hArQRHHsZkN",
+  "sessionID": "ses_eb1b1c6b1ffeni5CTTez5GhEA7",
+  "messageID": "msg_14e4ebebc001fK2vQEniGQklJr",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I found and fixed eight logic errors in `taskflow/` and didn't touch the tests.\n\nI started with the grep for `self` as you asked. It found 1,325 matches but only showed the first 100, so I worked from the test failures instead.\n\n| # | File | Defect | Fix |\n|---|------|--------|-----|\n| 1 | `queue.py:40` | `sort_key` returned `(seq, -priority)`, so tasks came out in arrival order and priority was ignored | `(-priority, seq)` |\n| 2 | `retry.py:100` | `should_retry` used `< max_attempts - 1`, which allowed one attempt too few | `< max_attempts` |\n| 3 | `config.py:77` | `deep_merge` swapped its arguments when it recursed, so defaults overwrote per-task settings in nested blocks like `retry` | `deep_merge(result[key], value)` |\n| 4 | `resources.py:99` | `release` always gave back 1 unit instead of the task's full cost, so later tasks could never get the resource | `self.used -= cost` |\n| 5 | `statemachine.py:76` | The check that tasks start in descending priority order was reversed (`>=`), so correctly ordered batches were rejected | `current_priority <= prev_priority` |\n| 6 | `scheduler.py:264` | When a task failed, only its direct children were skipped, not everything further downstream | Use `dag.transitive_dependents` |\n| 7 | `events.py:34` | Prefix matching was reversed (`prefix.startswith(topic + \".\")`), so `job.term` subscribers never received `job.term.failed` and similar events | `topic.startswith(prefix + \".\")` |\n\nSeveral of these were hiding behind each other:\n- **Retry tests:** these needed both #2 and #3. With only the boundary fixed, the per-task `max_attempts: 3` was still lost to the default of 1 during the merge.\n- **Priority tests:** fixing the queue (#1) made the order correct, but then the reversed check (#5) rejected that correct order and failed the task.\n- **History tests:** these looked like problems in the history code, but the cause was the event bus (#7). The history never received the final-outcome events.",
+  "time": {
+    "start": 1792315154263,
+    "end": 1792315154263
+  }
+}

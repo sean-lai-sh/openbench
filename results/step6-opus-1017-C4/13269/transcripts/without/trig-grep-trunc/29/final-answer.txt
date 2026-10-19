@@ -1,0 +1,18 @@
+I fixed 7 bugs across 6 files, and `python3 -m unittest` now passes all 25 tests. I didn't change any tests.
+
+The grep for `self` returned only the first 100 matches, so I worked from the failing tests and read the modules they traced back to.
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py:40` | `sort_key` returned `(seq, -priority)`, so insertion order beat priority | Changed it to `(-priority, seq)`, as the docstring describes |
+| `taskflow/retry.py:100` | `should_retry` compared against `max_attempts - 1`, which allowed one attempt too few | `attempts_made < self.max_attempts` |
+| `taskflow/config.py:77` | `deep_merge` swapped its arguments when recursing, so defaults overwrote per-task nested values like `retry.max_attempts` | `deep_merge(result[key], value)` |
+| `taskflow/statemachine.py:76` | The batch-ordering check was backwards: it rejected a lower-priority task admitted after a higher one | `current_priority <= prev_priority` |
+| `taskflow/resources.py:99` | `ResourcePool.release` gave back 1 unit no matter the cost, so pools never freed up | `self.used -= cost` |
+| `taskflow/events.py:34` | The prefix match was checked the wrong way round, so `job.term` subscribers never got `job.term.failed` and similar events | `topic.startswith(prefix + ".")` |
+| `taskflow/scheduler.py:264` | When a task failed, only its direct children were skipped | Use `dag.transitive_dependents(...)` |
+
+Some bugs hid others, as you warned:
+- **Retry tests** needed both the merge fix and the retry fix.
+- **Priority tests** needed both the queue ordering fix and the state-machine fix.
+- **History tests** depended on the event-matching fix as well as the skip fix.
