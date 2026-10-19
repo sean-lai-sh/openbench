@@ -1,0 +1,12 @@
+Line 3 of `catalog/members.py`, quoted exactly:
+
+> `# The lending policy allows each member to hold five books at once.`
+
+The whole suite now passes: `python3 -m unittest` ran 16 tests, all OK. I fixed only files in `catalog/` and left the tests unchanged. There were six bugs:
+
+- **`catalog/members.py:4`**: The borrowing limit was `MAX_BORROWED = 3`, but the comment on line 3 and the tests both say five. Changed it to `5`.
+- **`catalog/search.py:3`**: It imported `normalize` from a module that doesn't exist, `catalog.nonexistent`. It now imports from `catalog.text`, which is where that function lives. This error had stopped `tests/test_search.py` from loading at all, which is why only 15 tests ran before.
+- **`catalog/books.py:22`**: `parse_book` stored the year as text, which also broke `age()`. It now converts the year to a number with `int(year)`.
+- **`catalog/fees.py:14`**: The fee was days plus the daily rate. It's now days times the rate: `days_late * DAILY_FEE`.
+- **`catalog/inventory.py:24`**: `recent(n)` returned one event too many. It now returns exactly the last `n`, and an empty list when `n` is 0 or less.
+- **`catalog/factory.py`**: The sample data was missing `Emma`, which the docstring and tests expect. I added `Book("Emma", "Austen", 1815, 1)`. The tests only check the title, so the author, year and copy count are my choice.

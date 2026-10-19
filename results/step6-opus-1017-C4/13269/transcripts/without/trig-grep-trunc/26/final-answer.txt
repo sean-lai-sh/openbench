@@ -1,0 +1,13 @@
+All 25 tests pass now; `python3 -m unittest` reports `OK`. I started with the grep for `self` as you asked. It hit the 100-match limit and its output was cut off, so I used the test failures to find the code to fix.
+
+I changed one line in each of 8 files and didn't touch the tests:
+
+1. **`queue.py`, `_Entry.sort_key`**: the sort key was `(seq, -priority)`, so tasks went out in insertion order and priority was ignored. Changed it to `(-priority, seq)`.
+2. **`retry.py`, `should_retry`**: it checked `attempts_made < max_attempts - 1`, which allowed one attempt fewer than configured. Changed to `< max_attempts`.
+3. **`config.py`, `deep_merge`**: the recursive call had its arguments swapped, so pipeline defaults overwrote each task's own nested settings. For example, a task's `retry.max_attempts: 3` came out as 1. Changed to `deep_merge(result[key], value)`.
+4. **`statemachine.py`, `batch_order_ok`**: the comparison was backwards, so the check rejected exactly the high-to-low priority order the queue is supposed to produce. Changed to `current_priority <= prev_priority`. This bug was hidden until the queue fix: the pipeline priority tests first failed on order, then on `report.ok()`.
+5. **`resources.py`, `ResourcePool.release`**: it released 1 unit instead of the task's full cost. Tasks needing the whole pool could never be admitted after the first one. Changed to `self.used -= cost`.
+6. **`events.py`, `_prefix_matches`**: the check was reversed (`prefix.startswith(topic + ".")`), so a subscription to `job.term` never received `job.term.failed` and similar topics. That's why the history showed no failed or skipped jobs. Changed to `topic.startswith(prefix + ".")`.
+7. **`scheduler.py`, `_cascade_skip`**: when a task failed, only its direct dependents were skipped and anything further downstream stayed `PENDING`. It now uses `dag.transitive_dependents`, which the scheduler's own comment says it should.
+
+Several pipeline tests that looked like scheduler problems were really caused by the config, queue, resource and event bugs above.

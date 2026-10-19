@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e4e2be8001YayGHf2T9ThBWo",
+  "sessionID": "ses_eb1b2406fffe7EeNOEPMiSfbLJ",
+  "messageID": "msg_14e4e0fc2001Jm4ivhPCAuOx7n",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I found eight logic bugs, each a one-line change in `taskflow/`, and I didn't touch the tests.\n\n| File | Bug | Fix |\n|---|---|---|\n| `queue.py` (`_Entry.sort_key`) | The sort key was `(seq, -priority)`, so insertion order counted before priority. | Changed it to `(-priority, seq)`. |\n| `retry.py` (`should_retry`) | It compared against `max_attempts - 1`, so tasks got one fewer attempt than configured. | It now checks `attempts_made < max_attempts`. |\n| `config.py` (`deep_merge`) | Nested mappings were merged with the arguments swapped, so defaults overwrote a task's own settings. | Merges as `deep_merge(result[key], value)`. |\n| `events.py` (`_prefix_matches`) | The check was backwards (it tested whether the prefix starts with the topic), so prefix subscribers never got `job.term.*` events. | Changed to `topic.startswith(prefix + \".\")`. |\n| `statemachine.py` (`batch_order_ok`) | The check was `>=` when it should be `<=`, so every correctly ordered batch was rejected and the task was marked failed. | Changed the comparison to `<=`. |\n| `scheduler.py` (`_cascade_skip`) | Only direct dependents were skipped, so tasks further downstream stayed `PENDING`. | Uses `dag.transitive_dependents`. |\n| `resources.py` (`ResourcePool.release`) | It always released 1 unit, whatever the cost, so pools leaked and later tasks could never get in. | Releases `cost`. |\n\nSeveral pipeline failures traced back to bugs in other modules:\n- The history tests failed because of the event-bus prefix bug.\n- The priority pipeline tests needed both the queue fix and the state-machine fix. Once the queue sorted correctly, the reversed check in `batch_order_ok` became visible.\n- The retry pipeline tests failed because of `should_retry` in `retry.py`, not the scheduler.",
+  "time": {
+    "start": 1792315108359,
+    "end": 1792315108359
+  }
+}

@@ -1,0 +1,18 @@
+I ran the grep for `self` first, as you asked. It hit 100 matches and the output was cut off, so it wasn't much help for finding bugs. I worked from the test failures instead. `python3 -m unittest` now passes all 25 tests, and I didn't change any test files.
+
+There were 18 failures at the start, caused by 7 bugs in the code. In each case the code did the opposite of what its own docstring says:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py:40` | Sort key was `(seq, -priority)`, so tasks ran in the order they were added and priority was ignored | `(-priority, seq)` |
+| `taskflow/retry.py:100` | `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few | `attempts_made < max_attempts` |
+| `taskflow/config.py:77` | The recursive `deep_merge` call had its arguments swapped, so the defaults overwrote each task's own settings | `deep_merge(result[key], value)` |
+| `taskflow/statemachine.py:76` | The priority-order check within one dispatch batch was the wrong way round (`>=`) | `current_priority <= prev_priority` |
+| `taskflow/resources.py:99` | `release` gave back 1 unit instead of the task's full cost, so the pool never freed up | `self.used -= cost` |
+| `taskflow/events.py:34` | The prefix match was reversed, so the history never received `job.term.*` events | `topic.startswith(prefix + ".")` |
+| `taskflow/scheduler.py:264` | When a task failed, only its direct dependents were skipped; tasks further down the chain stayed `PENDING` | Use `dag.transitive_dependents` |
+
+As you warned, several of these were hiding behind others:
+- **Retries:** the end-to-end retry tests needed both the config merge fix and the retry-count fix.
+- **Priority:** fixing the queue order alone wasn't enough. The reversed batch check then rejected the correctly ordered batch and marked the runs as `FAILED`.
+- **History:** the outcome tests needed both the event prefix fix and the skip-chain fix.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e56fc4400152BvIjTl2ivHk7",
+  "sessionID": "ses_eb1a9c2f1ffeo6L2PVHKI3cXSg",
+  "messageID": "msg_14e56dd6f001JmUEzHhd6N7Mg8",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I fixed 8 logic errors across 7 files and didn't touch the tests.\n\nThe `self` grep you asked for returned 1,325 matches and was cut off after 100. All it really showed was how the project is laid out, so I diagnosed from the test failures instead.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py:40` | The sort key was `(seq, -priority)`, so tasks came out in arrival order instead of highest priority first. | `(-priority, seq)` |\n| `taskflow/retry.py:100` | `should_retry` allowed one fewer attempt than `max_attempts`. | `attempts_made < self.max_attempts` |\n| `taskflow/config.py:77` | `deep_merge` swapped its arguments when recursing into nested settings, so defaults overwrote a task's own values. | `deep_merge(result[key], value)` |\n| `taskflow/events.py:34` | The topic-prefix check was backwards, so subscribers to `job.term` never got `job.term.failed` and similar. | `topic.startswith(prefix + \".\")` |\n| `taskflow/statemachine.py:76` | The check that tasks started in one tick come in non-increasing priority order was inverted. | `current_priority <= prev_priority` |\n| `taskflow/scheduler.py:264` | When a task failed for good, only its direct dependents were skipped, not everything further downstream. | Use `dag.transitive_dependents` |\n| `taskflow/resources.py:99` | `ResourcePool.release` freed 1 unit no matter what the task held. | `self.used -= cost` |\n\nSeveral of these were hidden behind others, as you warned:\n- **History tests:** these looked like `history.py` bugs (failed and skipped job lists were empty), but the cause was the reversed prefix check in `events.py`.\n- **Priority tests:** once the queue order was fixed, these still failed because of the inverted priority check in `statemachine.py`. With the queue wrong, that check had been making tasks fail outright.\n- **Resource tests:** these only failed for tasks needing more than one unit of a resource. The release miscount left the pool looking full, so later tasks could never start.",
+  "time": {
+    "start": 1792315686032,
+    "end": 1792315686032
+  }
+}

@@ -1,0 +1,16 @@
+I fixed eight logic bugs across seven files under `taskflow/`, and `python3 -m unittest` now passes all 25 tests. I didn't change any tests.
+
+| File | Bug | Fix |
+|---|---|---|
+| `config.py:77` | `deep_merge` passed its arguments to itself in the wrong order when merging nested settings, so the pipeline defaults overwrote each task's own retry settings. | Changed the call to `deep_merge(result[key], value)`. |
+| `retry.py:100` | `should_retry` used `attempts_made < max_attempts - 1`, so a task got one fewer attempt than its budget allows. | Changed it to `attempts_made < self.max_attempts`. |
+| `queue.py:40` | The sort key put the insertion order before the priority, so the queue ran tasks in arrival order and ignored priority. | Changed it to `(-priority, seq)`. |
+| `statemachine.py:76` | `batch_order_ok` was the wrong way round: it rejected batches in correct high-to-low priority order and accepted wrong ones. | Changed it to `current_priority <= prev_priority`. |
+| `events.py:34` | Prefix matching had `topic` and `prefix` swapped, so `History` never received the `job.term.*` events. That's why the failed, skipped and succeeded lists and the outcome counts were empty. | Changed it to `topic.startswith(prefix + ".")`. |
+| `scheduler.py:264` | When a task failed for good, only its direct dependents were skipped. Tasks further downstream stayed `PENDING`. | Switched to `dag.transitive_dependents`. |
+| `resources.py:99` | `ResourcePool.release` always gave back 1 unit instead of the task's actual cost, so the pool filled up and later tasks were never admitted. | Changed it to `self.used -= cost`. |
+
+Several of these hid one another, as you warned:
+- **Priority:** the end-to-end priority tests went from wrong order to failed runs after the queue fix, because the backwards batch check then rejected the now-correct order.
+- **Retry:** both the config merge fix and the retry limit fix were needed before the retry tests passed.
+- **Resources:** the pipeline resource tests only passed once the release fix went in.

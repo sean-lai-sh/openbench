@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I found and fixed 8 logic errors under `taskflow/`, each one a place where the code did something different from what its own docstring says, and didn't touch the tests.
+
+| File | What was wrong | Fix |
+|---|---|---|
+| `queue.py` (`_Entry.sort_key`) | Sorted by insertion order first and priority second, so priority was mostly ignored. | Sort by priority first, then insertion order: `(-priority, seq)`. |
+| `retry.py` (`should_retry`) | Off by one: with 3 attempts allowed, it stopped retrying after 2. | `attempts_made < max_attempts` |
+| `config.py` (`deep_merge`) | The recursive call had its arguments swapped, so pipeline defaults overwrote per-task settings such as `retry.max_attempts`. | `deep_merge(result[key], value)` |
+| `statemachine.py` (`batch_order_ok`) | The check was reversed, so it rejected tasks dispatched in correct high-to-low priority order and marked them failed. This only showed up once the queue fix above was in. | `current_priority <= prev_priority` |
+| `scheduler.py` (`_cascade_skip`) | When a task failed, only its direct dependents were skipped; tasks further downstream stayed `PENDING`. | Use `dag.transitive_dependents(...)` |
+| `events.py` (`_prefix_matches`) | The prefix check was backwards, so the history never received the `job.term.*` events. That's why the failed, skipped and outcome-count queries came back empty. | `topic.startswith(prefix + ".")` |
+| `resources.py` (`ResourcePool.release`) | Always gave back 1 unit instead of the task's actual cost, so pools filled up and later tasks were never started. | `self.used -= cost` |
+
+The retry tests needed both the config fix and the retry fix before they passed. The pipeline priority tests needed both the queue fix and the state-machine fix.

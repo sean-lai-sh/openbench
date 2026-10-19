@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e29c8d7001Rui29AbX0aS46V",
+  "sessionID": "ses_eb1d6de3fffeqHcZmVPl5hDUQ6",
+  "messageID": "msg_14e29a99a001ElSC8rPEgSxZ6v",
+  "type": "text",
+  "text": "I fixed seven logic bugs under `taskflow/`, and `python3 -m unittest` now passes all 25 tests. I didn't change any tests.\n\nAt the start, 18 tests failed. Most failures showed up in `test_pipelines.py`, but the causes were in other modules:\n\n1. **`queue.py` `_Entry.sort_key`**: the sort key was `(seq, -priority)`, so insertion order beat priority. Changed it to `(-priority, seq)` so higher priority goes first and insertion order only breaks ties.\n2. **`retry.py` `should_retry`**: it checked `attempts_made < max_attempts - 1`, which gave every task one attempt fewer than its budget. Changed it to `attempts_made < max_attempts`.\n3. **`config.py` `deep_merge`**: when recursing into nested dicts, it passed the two arguments in the wrong order, so the defaults overwrote per-task values (e.g. `retry.max_attempts`). It now calls `deep_merge(result[key], value)`. This bug and #2 together broke every retry pipeline.\n\nAfter those three fixes, 11 tests still failed, which exposed four more bugs:\n\n4. **`statemachine.py` `batch_order_ok`**: the check was the wrong way round (`>=` instead of `<=`). Once the queue ordered tasks correctly, this check rejected the correct dispatch order and marked the runs as failed. This is what broke the priority tests and the combined test.\n5. **`resources.py` `ResourcePool.release`**: it freed one unit (`used -= 1`) instead of the task's full cost. Pools never emptied, so tasks waiting on a resource never got admitted.\n6. **`events.py` `_prefix_matches`**: the check was reversed (`prefix.startswith(topic + \".\")`). As a result, the run history's subscription to `job.term` never received `job.term.failed` and similar events. It now checks `topic.startswith(prefix + \".\")`.\n7. **`scheduler.py` `_cascade_skip`**: when a task failed permanently, only its direct children were marked skipped. It now uses `dag.transitive_dependents`, so everything downstream is skipped, as the docstring says.",
+  "time": {
+    "start": 1792312723727,
+    "end": 1792312723727
+  }
+}

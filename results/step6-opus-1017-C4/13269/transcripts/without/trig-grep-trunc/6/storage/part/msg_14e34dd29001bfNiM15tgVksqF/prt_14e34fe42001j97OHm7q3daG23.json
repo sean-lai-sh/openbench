@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e34fe42001j97OHm7q3daG23",
+  "sessionID": "ses_eb1cbab2dffeQrc0myPcqYBBOi",
+  "messageID": "msg_14e34dd29001bfNiM15tgVksqF",
+  "type": "text",
+  "text": "All 25 tests pass now (`python3 -m unittest` reports OK). I didn't touch any test files. There were seven separate bugs, and each fix was a one-line change:\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py:40` | The queue ordered tasks by `(seq, -priority)`, so it ran them first-in-first-out and ignored priority. | Changed to `(-priority, seq)`, as the docstring says. |\n| `taskflow/retry.py:100` | `should_retry` compared against `max_attempts - 1`, so each task got one attempt fewer than allowed (with `max_attempts=3`, the second failure was treated as final). | Compare against `max_attempts`. |\n| `taskflow/config.py:77` | `deep_merge` passed its arguments in the wrong order when merging nested settings, so pipeline defaults overwrote a task's own `retry`/`resources` settings. | Swapped to `deep_merge(result[key], value)`. |\n| `taskflow/events.py:34` | The prefix check was backwards (`prefix.startswith(topic + \".\")`). Listeners on `job.term` never received `job.term.failed` and the like, so the run history's outcome lists were empty. | `topic.startswith(prefix + \".\")`. |\n| `taskflow/resources.py:99` | `ResourcePool.release` always gave back 1 unit, whatever the cost. Tasks costing more than 1 never freed their full share, so later tasks were blocked. | Release the full `cost`. |\n| `taskflow/statemachine.py:76` | `batch_order_ok` checked `>=` where it should check `<=`. Once the queue order was fixed, this check rejected every correctly ordered batch and failed those tasks. | `current_priority <= prev_priority`. |\n| `taskflow/scheduler.py:264` | When a task failed for good, only its direct dependents were skipped. Tasks further downstream stayed `PENDING`. | Use `dag.transitive_dependents(...)`. |\n\nThe two \"masked\" cases were:\n- **Priority order:** fixing the queue order exposed the reversed check in the state machine.\n- **Run history:** the history tests failed because of the event bus's prefix matching, not because of `history.py`.",
+  "time": {
+    "start": 1792313458291,
+    "end": 1792313458291
+  }
+}

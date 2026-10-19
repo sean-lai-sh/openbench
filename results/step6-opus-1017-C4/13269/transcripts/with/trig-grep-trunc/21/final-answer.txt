@@ -1,0 +1,16 @@
+All 25 tests now pass with `python3 -m unittest`. I fixed eight logic bugs, all in `taskflow/`, and didn't touch the tests.
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py:40` | Ready-queue ordering was by insertion order first, then priority, so priority was effectively ignored | Sort by `(-priority, seq)`: higher priority first, then first-in-first-out |
+| `retry.py:100` | `should_retry` used `< max_attempts - 1`, so a task got one attempt fewer than its limit | `attempts_made < self.max_attempts` |
+| `config.py:77` | `deep_merge` swapped the two arguments when merging nested settings, so pipeline defaults overwrote a task's own settings (e.g. its `retry.max_attempts`) | `deep_merge(result[key], value)` |
+| `scheduler.py:264` | When a task failed for good, only its direct children were skipped | Use `dag.transitive_dependents`, so everything downstream is skipped |
+| `statemachine.py:76` | The check that dispatches go in descending priority within a tick was backwards, so a correctly ordered batch was rejected | `current_priority <= prev_priority` |
+| `resources.py:99` | `release` always gave back 1 unit instead of the task's full cost, so pools never freed up | `self.used -= cost` |
+| `events.py:34` | Prefix matching had its arguments reversed, so a subscription to `job.term` never received `job.term.failed` etc. | `topic.startswith(prefix + ".")` |
+
+As the brief warned, several bugs were hidden behind others:
+- **Retries** needed both the merge fix and the retry-limit fix. Until the merge was fixed, every task got the default of one attempt, so the retry-limit bug couldn't show up in the pipeline tests.
+- **Priority** needed both the queue fix and the dispatch-order check fix. Once the queue ordered correctly, the backwards check started failing valid batches.
+- **The history tests** depended on the event-matching fix, because the history is built from `job.term.*` events.

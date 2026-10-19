@@ -1,0 +1,14 @@
+All 25 tests now pass with `python3 -m unittest`. I found and fixed 8 logic errors under `taskflow/` and didn't touch the tests.
+
+**First round** (these explained the failing unit tests for the queue, retry and config):
+1. **`queue.py:40`**: the ready queue sorted by insertion order before priority, so it was effectively first-in-first-out. It now sorts highest priority first and uses insertion order only to break ties, as the docstring says.
+2. **`retry.py:100`**: `should_retry` allowed one attempt too few (`< max_attempts - 1`). It's now `< max_attempts`, so a budget of 3 really gets 3 attempts.
+3. **`config.py:77`**: the recursive `deep_merge` call had its two arguments swapped. Pipeline defaults were overwriting a task's own settings, so a task's `retry.max_attempts` override was lost.
+
+**Second round** (these only showed up after the first fixes):
+4. **`scheduler.py:264`**: when a task failed for good, only its direct children were skipped. It now uses `transitive_dependents`, so everything further downstream is skipped too.
+5. **`statemachine.py:76`**: the check that tasks started together go in priority order was backwards. It rejected the correct order, which is why the priority pipeline tests failed even though they look like queue tests.
+6. **`resources.py:99`**: `release` returned only 1 unit to the pool instead of the task's full cost. The pool never freed up, so later tasks couldn't start.
+7. **`events.py:34`**: the prefix match was reversed (`prefix.startswith(topic + ".")`). A subscription to `job.term` never received `job.term.failed` and the like, so the run history was empty.
+
+The masking worked as the brief warned. The retry pipeline tests needed both the merge fix and the retry fix. The priority pipeline tests needed both the queue fix and the ordering-check fix.

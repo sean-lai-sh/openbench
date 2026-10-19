@@ -1,0 +1,18 @@
+I fixed eight logic bugs under `taskflow/`, and `python3 -m unittest` now passes all 25 tests. I didn't change any tests.
+
+As you asked, I started by grepping for `self`. It matched 1,325 times, so it was too broad to point anywhere; the test failures led me to the bugs instead.
+
+| # | File | Bug | Fix |
+|---|------|-----|-----|
+| 1 | `taskflow/queue.py:40` | The sort key was `(seq, -priority)`, so tasks came out in arrival order and priority was ignored. | `(-priority, seq)` |
+| 2 | `taskflow/retry.py:100` | `should_retry` used `< max_attempts - 1`, so tasks got one attempt fewer than allowed. | `< max_attempts` |
+| 3 | `taskflow/config.py:77` | `deep_merge` recursed with its arguments swapped, so the defaults overwrote per-task settings like `retry.max_attempts`. | `deep_merge(result[key], value)` |
+| 4 | `taskflow/scheduler.py:264` | When a task failed, only its direct children were skipped, not everything downstream. | Use `dag.transitive_dependents` |
+| 5 | `taskflow/statemachine.py:76` | The check on priority order within one dispatch round was reversed (`>=`). It rejected correct high-to-low order and marked those tasks failed. | `current <= prev` |
+| 6 | `taskflow/resources.py:99` | `release` returned 1 unit instead of the task's full cost, so later tasks could never get their resources. | `used -= cost` |
+| 7 | `taskflow/events.py:34` | The prefix match was backwards, so the history never received events under `job.term.*`. | `topic.startswith(prefix + ".")` |
+
+Several tests named for one area were actually failing because of another:
+- **Retry tests** needed both the config merge fix (#3) and the retry limit fix (#2).
+- **Priority tests** were hidden twice over. Fixing the queue (#1) still left them failing until the order check (#5) was fixed too.
+- **History tests** were failing because of the event bus (#7), not the history code.

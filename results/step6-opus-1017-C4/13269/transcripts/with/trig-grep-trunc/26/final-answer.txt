@@ -1,0 +1,16 @@
+All 25 tests now pass under `python3 -m unittest`; 18 were failing at the start. I didn't change any tests. There were eight separate bugs, each a one-line fix:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py:40` | `sort_key` returned `(seq, -priority)`, so the queue ran tasks in arrival order and ignored priority | `(-self.priority, self.seq)` |
+| `taskflow/retry.py:100` | `should_retry` used `attempts_made < max_attempts - 1`, so tasks got one attempt fewer than allowed | `attempts_made < self.max_attempts` |
+| `taskflow/config.py:77` | `deep_merge` passed its two arguments in swapped order when merging nested settings, so the pipeline defaults overwrote a task's own settings (e.g. its `retry.max_attempts`) | `deep_merge(result[key], value)` |
+| `taskflow/statemachine.py:76` | `batch_order_ok` was the wrong way round: it rejected a lower-priority task started after a higher one, which is the correct order | `current_priority <= prev_priority` |
+| `taskflow/resources.py:99` | `ResourcePool.release` gave back 1 unit instead of the task's full cost, so the pool slowly filled up and later tasks could never start | `self.used -= cost` |
+| `taskflow/events.py:34` | `_prefix_matches` checked the prefix against the topic instead of the topic against the prefix, so subscribers to `job.term` never received `job.term.failed` etc. | `topic.startswith(prefix + ".")` |
+| `taskflow/scheduler.py:264` | When a task failed, `_cascade_skip` only skipped its direct dependents (`dag.dependents`), not everything further downstream | `dag.transitive_dependents(...)` |
+
+Several of these were hiding each other, as you warned:
+- **Retry tests:** these needed both the config merge fix and the retry fix before they could pass.
+- **Priority pipeline tests:** these needed both the queue fix and the state-machine fix. Once the queue ordered tasks correctly, the reversed check started marking the correctly ordered tasks as failed.
+- **History tests:** these depended on both the event-matching fix and the downstream-skip fix.

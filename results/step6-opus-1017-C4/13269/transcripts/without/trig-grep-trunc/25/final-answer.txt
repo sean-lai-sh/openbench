@@ -1,0 +1,17 @@
+All 25 tests now pass with `python3 -m unittest`. I found and fixed 8 logic bugs under `taskflow/` and didn't touch the tests. In each case the code had drifted from what its own docstring says.
+
+| # | File | Bug | Fix |
+|---|------|-----|-----|
+| 1 | `queue.py:40` | The sort key was `(seq, -priority)`, so the queue was plain first-in-first-out and ignored priority | `(-priority, seq)` |
+| 2 | `retry.py:100` | `should_retry` allowed one fewer attempt than `max_attempts` | `attempts_made < self.max_attempts` |
+| 3 | `config.py:77` | `deep_merge` swapped its arguments when merging nested settings, so pipeline defaults overwrote a task's own retry settings | `deep_merge(result[key], value)` |
+| 4 | `statemachine.py:76` | The check that tasks start in non-increasing priority order was inverted, so correct ordering was rejected and the task marked failed | `current_priority <= prev_priority` |
+| 5 | `resources.py:99` | `release` gave back 1 unit instead of the task's full cost, so the pool filled up and later tasks couldn't start | `self.used -= cost` |
+| 6 | `events.py:34` | The prefix-subscription check had its arguments reversed, so history never received the "succeeded/failed/skipped" events | `topic.startswith(prefix + ".")` |
+| 7 | `scheduler.py:264` | When a task failed for good, only its direct dependents were skipped, not everything further downstream | Use `dag.transitive_dependents(...)` |
+
+As you warned, some failures pointed at the wrong place:
+- **Retry pipelines** needed both the config merge fix (3) and the retry-count fix (2).
+- **Priority pipelines** needed both the queue fix (1) and the ordering-check fix (4). With the queue fixed alone, the inverted check would have marked those tasks failed.
+- **Resource pipelines** failed because of the release bug (5), not because of anything in the scheduler.
+- **History tests** were caused by the event-matching bug (6) and the skip cascade (7).

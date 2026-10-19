@@ -1,0 +1,12 @@
+All 25 tests now pass (`python3 -m unittest` reports `OK`). I made seven one-line fixes in seven files. In each case the docstring described the right behaviour and the code did something else, and I changed only the code. Fixing the first three uncovered the other four, which were hidden behind them.
+
+**First round** (these tests failed on their own):
+1. **`taskflow/queue.py:40`**: the queue sorted tasks by insertion order before priority, so equal-priority ties decided everything and priority was ignored. It now sorts by priority first: `(-priority, seq)`.
+2. **`taskflow/retry.py:100`**: `should_retry` allowed one attempt fewer than configured (`attempts_made < max_attempts - 1`). With a limit of 3 it stopped after 2, so the retry pipeline tests failed or reported too few attempts.
+3. **`taskflow/config.py:77`**: when merging pipeline defaults into a task, the arguments were swapped, so the defaults overwrote the task's own settings (e.g. a task's `max_attempts: 5` came out as `1`).
+
+**Second round** (these showed up in pipeline tests once the first three were fixed):
+4. **`taskflow/statemachine.py:76`**: a safety check is meant to reject starting a higher-priority task after a lower one in the same batch, but it was backwards. Once the queue ordered tasks correctly, the check rejected every correct batch and failed the task, which is why the priority tests reported `report.ok()` as False.
+5. **`taskflow/resources.py:99`**: `ResourcePool.release` always gave back 1 unit instead of the task's actual cost. Usage leaked, so later tasks could never get their resources and the resource tests never finished.
+6. **`taskflow/events.py:34`**: in the topic-matching function, the topic and the prefix were swapped. History's subscription to `job.term` never matched `job.term.failed` and the like, so the failed/skipped/succeeded lists were empty even though the pipeline itself worked.
+7. **`taskflow/scheduler.py:264`**: when a task failed for good, only its direct dependents were skipped. Its docstring says everything downstream should be skipped, so it now uses `dag.transitive_dependents`. This fixes the chain and diamond skip tests.

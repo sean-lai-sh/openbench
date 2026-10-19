@@ -1,0 +1,11 @@
+All 25 tests now pass with `python3 -m unittest`. I found eight logic bugs, each a case where the code did something different from what its docstring says:
+
+1. **`taskflow/queue.py` – `_Entry.sort_key`**: the sort key was `(seq, -priority)`, so the queue ran tasks in insertion order and ignored priority. Changed it to `(-priority, seq)`.
+2. **`taskflow/retry.py` – `should_retry`**: the check `attempts_made < max_attempts - 1` gave up one attempt too early. Changed it to `< max_attempts`.
+3. **`taskflow/resources.py` – `ResourcePool.release`**: it always subtracted 1 instead of `cost`. A task costing 2 units left 1 unit stuck as "used", so later tasks couldn't get the resource.
+4. **`taskflow/config.py` – `deep_merge`**: the recursive call had its arguments swapped, so pipeline defaults overwrote a task's own nested settings (e.g. `retry.max_attempts`).
+5. **`taskflow/statemachine.py` – `batch_order_ok`**: the comparison was backwards (`>=` instead of `<=`). Once the queue was fixed, correctly ordered batches were rejected and the task failed. Fixing #1 is what exposed this one.
+6. **`taskflow/scheduler.py` – `_cascade_skip`**: it used `dag.dependents` (direct children only) instead of `dag.transitive_dependents`. When a task failed, tasks further downstream were left `PENDING` instead of being marked `SKIPPED`.
+7. **`taskflow/events.py` – `_prefix_matches`**: the check was reversed (`prefix.startswith(topic + ".")`). Subscribers to `job.term` never received `job.term.failed` and the other outcome events, so the run history's failed/skipped lists and outcome counts came out empty.
+
+The tests in `tests/` are unchanged.

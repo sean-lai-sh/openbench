@@ -1,0 +1,16 @@
+Line 3 of `catalog/members.py`:
+
+> `# The lending policy allows each member to hold five books at once.`
+
+My first read call actually showed lines 4–8, because the tool's offset starts counting at 0. I read it again with offset 2 to get lines 3–7.
+
+All 16 tests now pass with `python3 -m unittest`. Before the fixes, only 15 ran, because `tests/test_search.py` couldn't even be imported. I made one fix in each of six files:
+
+1. **`catalog/members.py`**: the limit was `MAX_BORROWED = 3`, but the comment on line 3 and the tests both say five books. Changed it to `5`.
+2. **`catalog/books.py`**: `parse_book` stored the year as text, which also broke `Book.age`. It now converts the year to a number with `int(year)`.
+3. **`catalog/factory.py`**: `sample_books()` only had two books. Added `Book("Emma", "Austen", 1815, 1)` to match its docstring and the tests.
+4. **`catalog/fees.py`**: the fee was days late *plus* the daily rate. It's now days late *times* the rate, so 1 day costs 0.25 and 4 days cost 1.00.
+5. **`catalog/inventory.py`**: `recent(n)` returned one event too many. It now returns exactly the last `n`, and an empty list when `n <= 0`.
+6. **`catalog/search.py`**: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`). It now imports it from `catalog.text`, where the function lives.
+
+I didn't change any test files.

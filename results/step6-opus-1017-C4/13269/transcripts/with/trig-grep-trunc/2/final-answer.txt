@@ -1,0 +1,16 @@
+I fixed 8 bugs across 7 files under `taskflow/`, and `python3 -m unittest` now passes all 25 tests. I didn't change any tests.
+
+I started with the `self` grep as you asked. It found 1,325 matches and only showed the first 100, so it wasn't much use for finding bugs. I worked from the test failures instead.
+
+**First round** (these were behind the queue, retry and config unit test failures and most of the retry pipeline failures):
+1. **`queue.py:40`**: the queue ordered tasks by insertion order before priority. The docstring says priority comes first, with insertion order only breaking ties, so I swapped them.
+2. **`retry.py:100`**: `should_retry` allowed one attempt fewer than the limit. With a limit of 3 it now retries after attempts 1 and 2 and stops after 3.
+3. **`config.py:77`**: when merging nested settings, the pipeline defaults overwrote a task's own values. A task's `retry: {"max_attempts": 3}` was being replaced by the default of 1. The override now wins.
+
+**Second round** (once those were fixed, the remaining pipeline tests showed these):
+4. **`events.py:34`**: the topic-prefix check was written backwards, so subscribers to `job.term` never received `job.term.failed` and similar events. That left the run history with no finished jobs recorded.
+5. **`resources.py:99`**: a finished task gave back 1 unit of a resource instead of everything it held. The pool stayed partly full and later tasks were never started.
+6. **`statemachine.py:76`**: the check on the order tasks start in was inverted. It rejected the correct order (highest priority first), so every priority test failed even after the queue fix.
+7. **`scheduler.py:264`**: when a task failed permanently, only the tasks directly depending on it were skipped. Tasks further down the chain stayed pending. It now uses the existing `dag.transitive_dependents`, which skips everything downstream.
+
+The second round is where your warning about misleading failures applied. The priority pipeline tests were named for queue ordering but were also failing because of the check in `statemachine.py`. The history tests were failing because of the event-bus prefix bug, not anything in the history code.

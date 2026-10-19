@@ -1,0 +1,11 @@
+All 25 tests pass now with `python3 -m unittest`. At the start, 18 were failing. I fixed seven logic errors in `taskflow/` and didn't change any tests:
+
+1. **`queue.py` `_Entry.sort_key`**: it sorted by `(seq, -priority)`, so tasks came out in insertion order. It now sorts by `(-priority, seq)`: highest priority first, ties first-in-first-out, as the docstring says.
+2. **`retry.py` `should_retry`**: it compared against `max_attempts - 1`, so tasks got one attempt fewer than allowed. It's now `attempts_made < max_attempts`.
+3. **`resources.py` `ResourcePool.release`**: it always gave back 1 unit instead of the task's actual cost. This broke the resource-pipeline tests.
+4. **`statemachine.py` `batch_order_ok`**: the comparison was backwards (`>=`), so it rejected batches that were correctly ordered by priority. Masked by bug 1: once the queue fixes were in, this check made the scheduler fail tasks outright.
+5. **`events.py` `_prefix_matches`**: the check was reversed (`prefix.startswith(topic + ".")`), so prefix subscribers like History never got `job.term.*` events. That's why the history tests failed even though the code in `history.py` was fine.
+6. **`config.py` `deep_merge`**: the recursive call had its arguments swapped, so pipeline defaults overwrote a task's own nested settings (e.g. its `retry` block).
+7. **`scheduler.py` `_cascade_skip`**: when a task failed for good, only its direct dependents were skipped. Anything further downstream stayed `PENDING`. It now uses `dag.transitive_dependents` (`scheduler.py:265`).
+
+The pipeline-level failures were mostly knock-on effects of bugs in other modules (queue, retry, resources, events, config). Only the last bug was in the scheduler itself, and it only showed up after the others were fixed.

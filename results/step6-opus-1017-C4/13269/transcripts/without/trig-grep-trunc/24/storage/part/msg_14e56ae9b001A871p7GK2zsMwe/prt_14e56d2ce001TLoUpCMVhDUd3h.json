@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e56d2ce001TLoUpCMVhDUd3h",
+  "sessionID": "ses_eb1a9ea4dffexjDyPctK12NmkR",
+  "messageID": "msg_14e56ae9b001A871p7GK2zsMwe",
+  "type": "text",
+  "text": "The whole suite passes now: `python3 -m unittest` runs 25 tests and reports `OK`. I changed seven lines in seven files, each a one-line logic fix, and didn't touch any tests.\n\n| File | Problem | Fix |\n|---|---|---|\n| `taskflow/queue.py:40` | Ready-queue ordering compared insertion order before priority, so tasks came out first-in-first-out regardless of priority | Compare priority first (highest wins), then insertion order |\n| `taskflow/retry.py:100` | `should_retry` stopped one attempt early (`< max_attempts - 1`) | Changed to `< max_attempts` |\n| `taskflow/config.py:77` | Nested config merges had their arguments swapped, so the pipeline defaults overwrote a task's own settings (e.g. `retry.max_attempts`) | Swapped them back |\n| `taskflow/statemachine.py:76` | The check on dispatch order within a tick was inverted, so a correctly ordered batch (highest priority first) was rejected | Changed to `current_priority <= prev_priority` |\n| `taskflow/resources.py:99` | Releasing a resource pool freed 1 unit instead of the task's actual cost, so later tasks could never get in | Changed to `self.used -= cost` |\n| `taskflow/events.py:34` | Prefix matching was backwards, so subscribers to `job.term` never received events like `job.term.failed` | Changed to `topic.startswith(prefix + \".\")` |\n| `taskflow/scheduler.py:264` | When a task failed for good, only its direct children were skipped, not everything further downstream | Used the existing `dag.transitive_dependents` |\n\n**How they were hiding each other:**\n- The priority pipeline tests needed both the queue fix and the dispatch-order fix. With the queue ordering correct, the inverted check started rejecting valid batches.\n- The retry pipeline tests needed both the config merge fix and the retry limit fix.\n- The empty run history came from the event prefix bug, not from the history code itself.",
+  "time": {
+    "start": 1792315675387,
+    "end": 1792315675387
+  }
+}

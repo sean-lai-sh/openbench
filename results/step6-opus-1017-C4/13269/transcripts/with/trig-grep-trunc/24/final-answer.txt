@@ -1,0 +1,18 @@
+All 25 tests now pass with `python3 -m unittest`. I fixed 8 logic errors across 7 files and didn't touch the tests.
+
+The `self` grep you asked for returned 1,325 matches and was cut off after 100. All it really showed was how the project is laid out, so I diagnosed from the test failures instead.
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py:40` | The sort key was `(seq, -priority)`, so tasks came out in arrival order instead of highest priority first. | `(-priority, seq)` |
+| `taskflow/retry.py:100` | `should_retry` allowed one fewer attempt than `max_attempts`. | `attempts_made < self.max_attempts` |
+| `taskflow/config.py:77` | `deep_merge` swapped its arguments when recursing into nested settings, so defaults overwrote a task's own values. | `deep_merge(result[key], value)` |
+| `taskflow/events.py:34` | The topic-prefix check was backwards, so subscribers to `job.term` never got `job.term.failed` and similar. | `topic.startswith(prefix + ".")` |
+| `taskflow/statemachine.py:76` | The check that tasks started in one tick come in non-increasing priority order was inverted. | `current_priority <= prev_priority` |
+| `taskflow/scheduler.py:264` | When a task failed for good, only its direct dependents were skipped, not everything further downstream. | Use `dag.transitive_dependents` |
+| `taskflow/resources.py:99` | `ResourcePool.release` freed 1 unit no matter what the task held. | `self.used -= cost` |
+
+Several of these were hidden behind others, as you warned:
+- **History tests:** these looked like `history.py` bugs (failed and skipped job lists were empty), but the cause was the reversed prefix check in `events.py`.
+- **Priority tests:** once the queue order was fixed, these still failed because of the inverted priority check in `statemachine.py`. With the queue wrong, that check had been making tasks fail outright.
+- **Resource tests:** these only failed for tasks needing more than one unit of a resource. The release miscount left the pool looking full, so later tasks could never start.

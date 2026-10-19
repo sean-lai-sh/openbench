@@ -1,0 +1,11 @@
+{
+  "id": "prt_14e4ebd11001TWOBsiEVM4wCPq",
+  "sessionID": "ses_eb1b1b799ffe2F0UADc3v4zreS",
+  "messageID": "msg_14e4e9995001OgYwuc8bW4Fsjb",
+  "type": "text",
+  "text": "All 25 tests pass now (`python3 -m unittest` reports OK). I found 8 bugs across 7 files, and in each case the code did something different from what its own docstring describes.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` `_Entry.sort_key` | Sorted on `(seq, -priority)`, so the order tasks were added beat their priority | `(-priority, seq)` |\n| `taskflow/retry.py` `should_retry` | `attempts_made < max_attempts - 1` gave one retry too few | `attempts_made < max_attempts` |\n| `taskflow/config.py` `deep_merge` | The recursive call had its arguments swapped, so defaults overwrote a task's own settings | `deep_merge(result[key], value)` |\n| `taskflow/events.py` `_prefix_matches` | Checked whether the prefix started with the topic, which is backwards | `topic.startswith(prefix + \".\")` |\n| `taskflow/statemachine.py` `batch_order_ok` | Required priority to go *up* within a batch; it should never go up | `current_priority <= prev_priority` |\n| `taskflow/resources.py` `ResourcePool.release` | Gave back 1 unit no matter what the cost was, so resources leaked | `self.used -= cost` |\n| `taskflow/scheduler.py` `_cascade_skip` | Skipped only the direct dependents of a failed task, not everything further downstream | Uses `dag.transitive_dependents(...)` |\n\nAs you warned, several failures came from a different module than the one the test is named for:\n- **Priority tests in `test_pipelines`:** fixing the queue order wasn't enough. The state machine's check that priority never rises within a batch was inverted, so it rejected every correct batch and marked those runs FAILED.\n- **History tests:** these failed because the event bus's prefix matching was backwards, so the history's `job.term` subscription never received the success, failure or skip events.\n- **Resource tests:** these failed because of the 1-unit leak in `release`. Pools filled up and later tasks were never admitted.\n\nThe scheduler code also mostly calls `dag.dependents` where it means its direct dependents. That's correct for those uses, so the only call that needed changing was in `_cascade_skip`.",
+  "time": {
+    "start": 1792315145756,
+    "end": 1792315145756
+  }
+}
