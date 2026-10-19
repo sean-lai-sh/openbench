@@ -1,0 +1,18 @@
+All 25 tests pass now. I fixed 7 logic errors under `taskflow/` and didn't touch any tests.
+
+| File | Problem | Fix |
+|---|---|---|
+| `queue.py` (`_Entry.sort_key`) | The key was `(seq, -priority)`, so tasks came out in arrival order and priority was ignored. | `(-priority, seq)`: higher priority first, then first-in-first-out. |
+| `retry.py` (`should_retry`) | `attempts_made < max_attempts - 1` allowed one attempt too few, so retries stopped early. | `attempts_made < max_attempts` |
+| `resources.py` (`ResourcePool.release`) | It always gave back 1 unit, whatever the task's cost was. | `self.used -= cost` |
+| `statemachine.py` (`batch_order_ok`) | The comparison was backwards, so it rejected batches that were correctly ordered highest-priority first. | `current_priority <= prev_priority` |
+| `events.py` (`_prefix_matches`) | The check was reversed (it asked whether the prefix starts with the topic), so prefix subscribers never received `job.term.*` events. | `topic.startswith(prefix + ".")` |
+| `config.py` (`deep_merge`) | The recursive call had its arguments swapped, so defaults overwrote task settings like `retry.max_attempts`. | `deep_merge(result[key], value)` |
+| `scheduler.py` (`_cascade_skip`) | When a task failed for good, only its direct dependents were skipped; tasks further downstream stayed `PENDING`. | Use `dag.transitive_dependents(...)`, as the docstring says. |
+
+Several pipeline tests only failed because of bugs in other modules:
+- **Retry tests:** caused by the off-by-one in `retry.py`.
+- **Priority tests:** caused by the queue's sort key. Fixing that exposed the reversed check in `statemachine.py`.
+- **Resource tests:** caused by the release bug.
+- **History terminal-event test:** caused by the event-bus prefix matching.
+- **Skip and history-count tests:** these were the last ones failing, and the cause was the one-level-only skip in the scheduler.

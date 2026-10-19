@@ -1,0 +1,11 @@
+{
+  "id": "prt_155f2c11b001OF8u6y2P3rZFc1",
+  "sessionID": "ses_eaa0da91affej5dMfe6QcgDWh3",
+  "messageID": "msg_155f2a1210015fbvDlfdi8Ki7W",
+  "type": "text",
+  "text": "## Summary\n\n**Task:** Fix the failing tests in `taskflow/` (an in-memory job-orchestration engine) so that `python3 -m unittest` passes when run from `/tmp/obench-cell-3vv0v94b/bench_opencode_taskflow_pstme9r9`. The tests are the specification and must not be modified. Only code under `taskflow/` may change.\n\n**Status: complete.** All 25 tests now pass.\n\n### Fixes applied (7 logic bugs, each a one-line change)\n\n1. **`taskflow/queue.py`**: `_Entry.sort_key` returned `(self.seq, -self.priority)`. Changed to `(-self.priority, self.seq)` so higher priority wins and FIFO only breaks ties.\n2. **`taskflow/retry.py`**: `should_retry` used `attempts_made < self.max_attempts - 1`. Changed to `attempts_made < self.max_attempts`, matching the docstring (with max 3, attempts 1 and 2 retry, attempt 3 does not).\n3. **`taskflow/statemachine.py`**: `batch_order_ok` returned `current_priority >= prev_priority`. Changed to `<=`, since priorities within a batch must not increase.\n4. **`taskflow/resources.py`**: `ResourcePool.release` did `self.used -= 1`. Changed to `self.used -= cost`.\n5. **`taskflow/events.py`**: `_prefix_matches` had its arguments inverted (`prefix.startswith(topic + \".\")`). Changed to `topic.startswith(prefix + \".\")`.\n6. **`taskflow/config.py`**: `deep_merge` recursed with `deep_merge(value, result[key])`, so the base won over the override. Changed to `deep_merge(result[key], value)`. This bug also caused the pipeline retry failures, because per-task retry overrides set in config were being lost.\n7. **`taskflow/scheduler.py`**: `_cascade_skip` used `self.dag.dependents(...)`, which only covers direct children. Changed to `self.dag.transitive_dependents(...)` so skips propagate through the whole downstream chain.\n\n### Next steps\nNone required. Optionally, re-run `python3 -m unittest` to confirm.",
+  "time": {
+    "start": 1792443334974,
+    "end": 1792443334974
+  }
+}

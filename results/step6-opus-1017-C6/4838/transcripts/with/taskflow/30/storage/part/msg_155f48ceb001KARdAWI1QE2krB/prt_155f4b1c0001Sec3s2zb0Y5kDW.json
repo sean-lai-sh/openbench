@@ -1,0 +1,11 @@
+{
+  "id": "prt_155f4b1c0001Sec3s2zb0Y5kDW",
+  "sessionID": "ses_eaa0bb95cffeRgQTelkfmvz2r0",
+  "messageID": "msg_155f48ceb001KARdAWI1QE2krB",
+  "type": "text",
+  "text": "## Task\nFix failing tests in `taskflow/` (working dir `/tmp/obench-cell-3z3r22i9/bench_opencode_taskflow_u0_h6jy7`). Run `python3 -m unittest`. Tests are the spec — **do not modify tests**. Bugs are genuine logic errors where code contradicts its docstrings/comments; fixing one may unmask another, so re-run and re-diagnose after each fix. Done when all 25 tests pass.\n\n## Fixes applied so far (all confirmed by re-running)\n1. `taskflow/queue.py` `_Entry.sort_key`: `(self.seq, -self.priority)` → `(-self.priority, self.seq)`.\n2. `taskflow/retry.py` `should_retry`: `attempts_made < self.max_attempts - 1` → `attempts_made < self.max_attempts`.\n3. `taskflow/resources.py` `ResourcePool.release`: `self.used -= 1` → `self.used -= cost`.\n4. `taskflow/statemachine.py` `batch_order_ok`: `current_priority >= prev_priority` → `current_priority <= prev_priority`.\n5. `taskflow/config.py` `deep_merge`: recursion `deep_merge(value, result[key])` → `deep_merge(result[key], value)`.\n\n## Remaining failures (5), all in tests/test_pipelines.py\n- test_transitive_skip_chain, test_diamond_transitive_skip, test_history_failed_and_skipped_sets, test_history_outcome_counts_mixed, test_history_terminal_events_delivered\n\n## Identified but not yet applied\n- `taskflow/events.py` `_prefix_matches`: `return topic == prefix or prefix.startswith(topic + \".\")` should be `topic == prefix or topic.startswith(prefix + \".\")`.\n- `taskflow/scheduler.py` `_cascade_skip`: iterates `self.dag.dependents(failed_run.id)` (direct only); should use `self.dag.transitive_dependents(failed_run.id)` (exists in dag.py, BFS, correct-looking).\n\n## Next steps\nApply the two fixes above, re-run tests. If history tests still fail, inspect `taskflow/history.py` (failed_jobs/skipped_jobs/succeeded_jobs/outcome_counts/peak_resource_usage, subscribed via prefix `job.term`) and `taskflow/runner.py` (wires History onto bus, builds report with ok()/run_order()/skipped()). Expected order e.g. skipped_jobs == [\"mid\",\"leaf\"]. Repeat until all pass.",
+  "time": {
+    "start": 1792443462135,
+    "end": 1792443462135
+  }
+}

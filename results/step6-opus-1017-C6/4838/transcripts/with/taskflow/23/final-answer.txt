@@ -1,0 +1,11 @@
+All 25 tests in `python3 -m unittest` now pass. I didn't touch the tests. There were eight separate bugs, all in `taskflow/`, and each was a line whose behaviour didn't match its own docstring:
+
+1. **`queue.py` – `_Entry.sort_key`**: it returned `(seq, -priority)`, so the queue was first-in-first-out and ignored priority. It now returns `(-priority, seq)`: higher priority first, insertion order to break ties.
+2. **`retry.py` – `should_retry`**: it checked `attempts_made < max_attempts - 1`, which allowed one attempt fewer than configured. It now checks `attempts_made < max_attempts`, so with 3 attempts allowed, it retries after attempts 1 and 2 but not 3.
+3. **`statemachine.py` – `batch_order_ok`**: the check was backwards (`>=`). Once the queue was fixed, it rejected every correctly ordered batch and failed the job. It now uses `<=`, so within one batch priorities must not go up.
+4. **`resources.py` – `ResourcePool.release`**: it always subtracted 1 instead of `cost`, so tasks costing more than one unit never fully gave their resources back. It now subtracts `cost`.
+5. **`config.py` – `deep_merge`**: it called itself with the arguments swapped, so pipeline defaults overwrote a task's own nested settings. It now calls `deep_merge(result[key], value)`.
+6. **`events.py` – `_prefix_matches`**: the comparison was inverted (`prefix.startswith(topic + ".")`), so subscribing to the prefix `job.term` received none of the `job.term.*` events. That's why the history's failed/skipped lists and outcome counts were empty. It now checks `topic.startswith(prefix + ".")`.
+7. **`scheduler.py` – `_cascade_skip`**: when a task failed, only its direct dependents were skipped, as the "transitive skip" tests showed. It now uses `dag.transitive_dependents()`, as its docstring says, so everything downstream is skipped.
+
+Several failures were knock-on effects of other bugs. The pipeline retry tests failed because of the retry check, not the scheduler. The priority tests failed because of the queue order, and fixing that exposed the backwards guard. The history tests failed because of the event bus, not `history.py`.

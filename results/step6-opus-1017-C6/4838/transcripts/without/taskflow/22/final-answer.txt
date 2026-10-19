@@ -1,0 +1,17 @@
+All 25 tests pass now.
+
+The last fix was in `taskflow/resources.py:99`. `ResourcePool.release` was doing `self.used -= 1` and now does `self.used -= cost`, so a finished task frees everything it reserved. Before, the pools never fully emptied, so later tasks couldn't be admitted. That's why the three resource and pipeline tests were failing.
+
+That makes 7 logic bugs fixed in total:
+
+| File | Fix |
+|---|---|
+| `queue.py` | Higher priority runs first; equal priorities run in arrival order |
+| `retry.py` | Off-by-one in `should_retry` fixed |
+| `scheduler.py` | When a task is skipped, everything downstream of it is now skipped, not just its direct children |
+| `config.py` | In `deep_merge`, values from the override now win over the base |
+| `events.py` | Topic prefix matching was reversed; now it isn't |
+| `statemachine.py` | Priorities within a batch must now go down or stay the same, not up |
+| `resources.py` | Release subtracts the task's actual cost, not 1 |
+
+I didn't change any test files.

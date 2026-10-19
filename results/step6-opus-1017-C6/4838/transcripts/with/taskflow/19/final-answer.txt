@@ -1,0 +1,13 @@
+All 25 tests pass now.
+
+The last fix was in `taskflow/scheduler.py:264`. When a task failed, `_cascade_skip` only skipped the tasks that depend on it directly. I changed it to use `dag.transitive_dependents`, so it now skips everything further downstream too, as its docstring says it should. This one change fixed all four remaining failures, and no new ones came up.
+
+All 7 fixes, each a one-line logic error in `taskflow/` (no test files changed):
+
+1. **`queue.py`**: the sort key was ordering by sequence number first; it now orders by highest priority first, then sequence.
+2. **`retry.py`**: `should_retry` was off by one and gave one attempt fewer than `max_attempts`.
+3. **`resources.py`**: `release` always gave back 1 unit instead of the actual `cost`.
+4. **`statemachine.py`**: the priority comparison in `batch_order_ok` was reversed.
+5. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the base values won over the overrides.
+6. **`events.py`**: the `_prefix_matches` check was backwards (it tested whether the prefix starts with the topic).
+7. **`scheduler.py`**: failed tasks now skip all downstream tasks, not just direct dependents.

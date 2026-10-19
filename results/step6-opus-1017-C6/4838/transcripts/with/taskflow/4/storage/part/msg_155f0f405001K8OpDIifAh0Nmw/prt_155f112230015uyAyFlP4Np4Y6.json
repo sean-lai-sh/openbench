@@ -1,0 +1,11 @@
+{
+  "id": "prt_155f112230015uyAyFlP4Np4Y6",
+  "sessionID": "ses_eaa0f5f5effeFlS6Lj4Wba6eeS",
+  "messageID": "msg_155f0f405001K8OpDIifAh0Nmw",
+  "type": "text",
+  "text": "## Summary\n\n**Task:** Fix failing tests in `taskflow/` (in-memory job-orchestration engine) so `python3 -m unittest` passes. The tests are the spec and must not be modified; only code under `taskflow/` may change. The bugs were genuine logic errors where code contradicted its own docstrings/comments, and some were masked by others.\n\n**Status: complete.** The full suite now passes: 25 tests, OK. It started with 18 failures.\n\n**Fixes applied (7 bugs, each a one-line change):**\n\n1. **`taskflow/queue.py`, `_Entry.sort_key`:** changed `(self.seq, -self.priority)` to `(-self.priority, self.seq)`, so the highest priority is dispatched first and FIFO breaks ties.\n2. **`taskflow/retry.py`, `should_retry`:** changed `attempts_made < self.max_attempts - 1` to `attempts_made < self.max_attempts`. This was an off-by-one; with `max_attempts=3`, a retry is now allowed after attempts 1 and 2.\n3. **`taskflow/statemachine.py`, `batch_order_ok`:** changed `current_priority >= prev_priority` to `<=`. Batches must be non-increasing in priority. The old check caused spurious `IllegalTransition` errors that failed runs during admission.\n4. **`taskflow/resources.py`, `ResourcePool.release`:** changed `self.used -= 1` to `self.used -= cost`, so a pool releases exactly what was acquired.\n5. **`taskflow/events.py`, `_prefix_matches`:** changed `prefix.startswith(topic + \".\")` to `topic.startswith(prefix + \".\")`. This fixed `job.term.*` delivery to History.\n6. **`taskflow/config.py`, `deep_merge`:** the recursion had its arguments swapped. Changed `deep_merge(value, result[key])` to `deep_merge(result[key], value)`, so the override wins at the leaves.\n7. **`taskflow/scheduler.py`, `_cascade_skip`:** changed `self.dag.dependents(...)` (direct children only) to `self.dag.transitive_dependents(...)`, so all downstream tasks are skipped after a permanent failure.\n\n**Next steps:** None required.",
+  "time": {
+    "start": 1792443224653,
+    "end": 1792443224653
+  }
+}

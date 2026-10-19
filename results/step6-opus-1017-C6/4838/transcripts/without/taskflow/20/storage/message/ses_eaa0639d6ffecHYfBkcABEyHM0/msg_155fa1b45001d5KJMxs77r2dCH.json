@@ -1,0 +1,17 @@
+{
+  "id": "msg_155fa1b45001d5KJMxs77r2dCH",
+  "sessionID": "ses_eaa0639d6ffecHYfBkcABEyHM0",
+  "role": "user",
+  "time": {
+    "created": 1792443816773
+  },
+  "summary": {
+    "body": "## Summary\n\n**Task:** Fix failing tests in `taskflow/`, an in-memory job-orchestration engine, by correcting logic errors in the code under `taskflow/`. The tests in `tests/` were the spec and were not modified. Work dir: `/tmp/obench-cell-w2o0sytf/bench_opencode_taskflow_n5yk4cg1`. Test command: `python3 -m unittest`.\n\n**Status: complete.** All 25 tests pass (`Ran 25 tests ... OK`). Initially 18 failed.\n\n**Fixes applied (7 bugs, each a one-line logic error that contradicted its docstring):**\n\n1. **`taskflow/queue.py`**, `_Entry.sort_key`: changed `(self.seq, -self.priority)` to `(-self.priority, self.seq)`. The queue now pops by higher priority first, with FIFO order breaking ties.\n2. **`taskflow/retry.py`**, `RetryPolicy.should_retry`: changed `attempts_made < self.max_attempts - 1` to `attempts_made < self.max_attempts`. This removes an off-by-one that cost every task one retry.\n3. **`taskflow/resources.py`**, `ResourcePool.release`: changed `self.used -= 1` to `self.used -= cost`, so a pool gives back exactly what it lent.\n4. **`taskflow/statemachine.py`**, `batch_order_ok`: changed `current >= prev` to `current <= prev`. The guard now enforces non-increasing priority within a batch; before, it rejected correct dispatch orders.\n5. **`taskflow/events.py`**, `_prefix_matches`: changed `prefix.startswith(topic + \".\")` to `topic.startswith(prefix + \".\")`. The arguments were reversed, so a prefix subscription like `job.term` missed events like `job.term.failed`.\n6. **`taskflow/config.py`**, `deep_merge`: changed the recursive call from `deep_merge(value, result[key])` to `deep_merge(result[key], value)`. The arguments were swapped, so defaults overwrote task-level overrides.\n7. **`taskflow/scheduler.py`**, `_cascade_skip`: changed `self.dag.dependents(...)` to `self.dag.transitive_dependents(...)`. A permanent failure now skips every downstream task, not just its direct children.\n\n**Masked bugs found along the way:** Several pipeline test failures (retry, history and priority) only went away after fixes 1–5. The skip-cascade bug (fix 7) only showed up once retries and resource release were working.\n\n**Next steps:** None required. Optionally re-run `python3 -m unittest` to confirm.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

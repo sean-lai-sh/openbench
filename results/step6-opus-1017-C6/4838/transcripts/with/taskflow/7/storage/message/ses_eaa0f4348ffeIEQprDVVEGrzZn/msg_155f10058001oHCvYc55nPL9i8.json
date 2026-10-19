@@ -1,0 +1,17 @@
+{
+  "id": "msg_155f10058001oHCvYc55nPL9i8",
+  "sessionID": "ses_eaa0f4348ffeIEQprDVVEGrzZn",
+  "role": "user",
+  "time": {
+    "created": 1792443220057
+  },
+  "summary": {
+    "body": "## Task\nFix failing tests in `taskflow/` (in-memory job orchestration engine) located at `/tmp/obench-cell-tnqeobw1/bench_opencode_taskflow_eqme7vz6`. Run `python3 -m unittest` from that directory. **Tests are the spec — do not modify `tests/`.** Bugs are genuine logic errors where code contradicts its docstrings/comments; failures may originate in other modules, and fixing one bug may unmask another. Done when all 25 tests pass.\n\n## Fixes applied so far\n1. `taskflow/queue.py` `_Entry.sort_key`: `(self.seq, -self.priority)` → `(-self.priority, self.seq)`.\n2. `taskflow/retry.py` `should_retry`: `attempts_made < self.max_attempts - 1` → `attempts_made < self.max_attempts`.\n3. `taskflow/resources.py` `ResourcePool.release`: `self.used -= 1` → `self.used -= cost`.\n4. `taskflow/statemachine.py` `batch_order_ok`: `current_priority >= prev_priority` → `current_priority <= prev_priority`.\n5. `taskflow/events.py` `_prefix_matches`: `prefix.startswith(topic + \".\")` → `topic.startswith(prefix + \".\")`.\n6. `taskflow/config.py` `deep_merge`: recursion `deep_merge(value, result[key])` → `deep_merge(result[key], value)` (not yet re-tested).\n\n## Identified but not yet applied\n- `taskflow/scheduler.py` `_cascade_skip` iterates `self.dag.dependents(failed_run.id)` (direct only); docstring says transitive. Change to `self.dag.transitive_dependents(failed_run.id)` (exists in `dag.py`, BFS, looks correct). This should fix `test_transitive_skip_chain`, `test_diamond_transitive_skip`, and likely history skip tests.\n\n## Remaining failures before fix #6 / cascade fix\ntest_config (deep_merge_direct, task_retry_override_preserved), pipeline tests: diamond_transitive_skip, full_pipeline_retry_priority_resources, history_failed_and_skipped_sets, history_outcome_counts_mixed, retry_exhausts/succeeds_on_third/unblocks_downstream, transitive_skip_chain.\n\n## Next steps\n- Apply cascade fix, rerun tests, re-diagnose any remaining failures (likely candidates to inspect: `taskflow/history.py`, `taskflow/runner.py`, `taskflow/model.py` (JobRun.note_attempt/record_state, State.is_terminal), scheduler retry/backoff wiring). Repeat until all pass.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

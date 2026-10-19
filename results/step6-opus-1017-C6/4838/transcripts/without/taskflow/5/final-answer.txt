@@ -1,0 +1,14 @@
+All 25 tests now pass when I run `python3 -m unittest`. We started with 18 failing.
+
+**The last fix (7th):** in `taskflow/events.py:34`, `_prefix_matches` had its prefix check backwards. It tested `prefix.startswith(topic + ".")` when it should test `topic.startswith(prefix + ".")`. As a result, the history's subscription to `job.term` never received `job.term.succeeded`, `job.term.failed` or `job.term.skipped`. Fixing that one line cleared all three remaining history failures; `history.py` needed no changes.
+
+**All seven fixes:**
+1. `queue.py`: the sort order is now `(-priority, seq)`, so higher priority runs first and equal priorities stay first-in, first-out.
+2. `retry.py`: `should_retry` now compares against `max_attempts`, not `max_attempts - 1`.
+3. `config.py`: `deep_merge` now passes its arguments in the right order, so override values win.
+4. `scheduler.py`: when a job fails, skipping now reaches every job downstream of it, not just its direct dependents.
+5. `resources.py`: `release` now gives back the full `cost` instead of always 1.
+6. `statemachine.py`: `batch_order_ok` now requires priority to stay the same or drop within a batch.
+7. `events.py`: prefix subscriptions now match topics underneath the prefix (this fix).
+
+I didn't modify any test files.

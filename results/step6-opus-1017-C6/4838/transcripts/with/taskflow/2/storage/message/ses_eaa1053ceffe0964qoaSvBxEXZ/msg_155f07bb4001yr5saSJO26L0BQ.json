@@ -1,0 +1,17 @@
+{
+  "id": "msg_155f07bb4001yr5saSJO26L0BQ",
+  "sessionID": "ses_eaa1053ceffe0964qoaSvBxEXZ",
+  "role": "user",
+  "time": {
+    "created": 1792443186100
+  },
+  "summary": {
+    "body": "## Summary\n\n**Task:** Fix the code under `taskflow/` (an in-memory job-orchestration engine) so that `python3 -m unittest`, run from `/tmp/obench-cell-kn94wg4r/bench_opencode_taskflow_vz9_vnms`, passes completely. The tests are the specification and must not be modified. The defects are logic errors where the code contradicts its own docstrings and comments, and some bugs were hidden behind others.\n\n**Status: Complete.** All 25 tests now pass. The suite started with 18 failures across the config, pipeline, queue and retry tests.\n\n**Fixes applied (7 bugs in 6 files):**\n\n1. **`taskflow/queue.py`**: In `_Entry.sort_key`, the key was `(self.seq, -self.priority)`. It is now `(-self.priority, self.seq)`, so higher priority comes first and insertion order breaks ties.\n2. **`taskflow/retry.py`**: In `should_retry`, the check was `attempts_made < self.max_attempts - 1`. It is now `attempts_made < self.max_attempts`.\n3. **`taskflow/statemachine.py`**: In `batch_order_ok`, the check was `current_priority >= prev_priority`. It is now `<=`, enforcing non-increasing priority within a batch.\n4. **`taskflow/resources.py`**: `ResourcePool.release` did `self.used -= 1`. It now does `self.used -= cost`.\n5. **`taskflow/events.py`**: In `_prefix_matches`, the arguments were reversed. It now checks `topic.startswith(prefix + \".\")`.\n6. **`taskflow/config.py`**: `deep_merge` recursed with the base and override swapped. It now calls `deep_merge(result[key], value)`. This was the hidden cause of the retry pipeline tests failing, because the per-task `retry.max_attempts` override was being lost.\n7. **`taskflow/scheduler.py`**: `_cascade_skip` iterated only over direct dependents, via `self.dag.dependents(...)`. It now uses `self.dag.transitive_dependents(...)`, so everything downstream of a failed task is skipped.\n\n**Next steps:** None required. Optionally re-run `python3 -m unittest` to confirm the suite still passes.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

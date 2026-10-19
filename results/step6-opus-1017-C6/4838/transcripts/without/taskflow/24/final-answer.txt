@@ -1,0 +1,12 @@
+All 25 tests pass now (`python3 -m unittest` → `OK`). I didn't modify any tests.
+
+**Last fix:** In `taskflow/scheduler.py:264`, `_cascade_skip` only skipped the failed task's direct children, using `dag.dependents()`. Its docstring says everything downstream should be skipped, so I switched it to `dag.transitive_dependents()`. That fixed the last 4 failing tests, which were all about skips cascading past the first level. `Dag.transitive_dependents` in `taskflow/dag.py` had no hidden bug: it walks breadth-first and handles the diamond case without listing a task twice.
+
+**All 7 fixes this session:**
+1. `queue.py`: the priority queue now orders by highest priority first, then by insertion order.
+2. `retry.py`: retries now allow the full `max_attempts`; it was stopping one short.
+3. `resources.py`: `release` now gives back the actual `cost` instead of always 1.
+4. `statemachine.py`: priorities within a batch must now not increase, matching the comment.
+5. `config.py`: `deep_merge` now passes its arguments in the right order when it recurses, so overriding values win.
+6. `events.py`: topic prefix matching was checking in the wrong direction.
+7. `scheduler.py`: when a task fails, every task downstream of it is now skipped, not just the next level.

@@ -1,0 +1,17 @@
+{
+  "id": "msg_155f7a4d9001gg5IBE6oRnK6GY",
+  "sessionID": "ses_eaa08a988ffe3AYPSdbiEE645g",
+  "role": "user",
+  "time": {
+    "created": 1792443655385
+  },
+  "summary": {
+    "body": "## Summary\n\n**Task:** Fix the code under `taskflow/` (an in-memory job-orchestration engine) so that `python3 -m unittest` passes. The working directory is `/tmp/obench-cell-pz665a_d/bench_opencode_taskflow_fgb7hjm7`. The tests are the spec and must not be modified.\n\n**Starting point:** 18 of 25 tests were failing across `test_config`, `test_pipelines`, `test_queue` and `test_retry`.\n\n### Fixes applied (8 logic bugs, each a one-line change via `sed`)\n\n1. **`taskflow/queue.py`**: `_Entry.sort_key` returned `(self.seq, -self.priority)`.\n   - Changed it to `(-self.priority, self.seq)`, so higher priority sorts first and FIFO breaks ties.\n2. **`taskflow/retry.py`**: `should_retry` used `attempts_made < self.max_attempts - 1`.\n   - Changed it to `attempts_made < self.max_attempts`.\n3. **`taskflow/config.py`**: `deep_merge` recursed as `deep_merge(value, result[key])`, which let the base win at the leaves.\n   - Changed it to `deep_merge(result[key], value)`.\n4. **`taskflow/resources.py`**: `ResourcePool.release` did `self.used -= 1`.\n   - Changed it to `self.used -= cost`.\n5. **`taskflow/events.py`**: `_prefix_matches` checked `prefix.startswith(topic + \".\")`.\n   - Changed it to `topic.startswith(prefix + \".\")`. This fixes the History's `job.term` prefix subscription.\n6. **`taskflow/statemachine.py`**: `batch_order_ok` returned `current_priority >= prev_priority`.\n   - Changed it to `current_priority <= prev_priority`, which enforces non-increasing priority within an admission batch.\n   - This bug was masked until the queue fix: the guard then rejected correctly ordered batches and failed the runs.\n7. **`taskflow/scheduler.py`**: `_cascade_skip` iterated `self.dag.dependents(...)`, which only covers direct children.\n   - Changed it to `self.dag.transitive_dependents(...)`, which is an existing BFS method in `dag.py`.\n\n### Current status\n\nThe final run of `python3 -m unittest` reported **Ran 25 tests, OK**, so the task is complete.\n\nNo further work is required. An optional next step would be a final full test run or reviewing the diff for confirmation.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

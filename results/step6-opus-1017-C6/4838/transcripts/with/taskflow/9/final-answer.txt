@@ -1,0 +1,16 @@
+All 25 tests pass now.
+
+**This session:**
+- Re-ran the tests after fix #6 (`config.py` `deep_merge` had its arguments the wrong way round). The config tests passed, and so did all the retry tests. The retry failures were probably knock-on effects of the merge bug: the merge got the per-task retry setting wrong.
+- **Fix #7:** in `taskflow/scheduler.py`, `_cascade_skip` only skipped the tasks directly downstream of a failed task. Its docstring says it should skip everything further downstream too. I changed it to use `self.dag.transitive_dependents(failed_run.id)`, a method that already existed in `dag.py` and walks the whole downstream chain. That fixed the last 4 pipeline tests.
+
+**Bugs fixed overall:**
+1. `queue.py`: the sort key put insertion order ahead of priority, so priority was effectively ignored.
+2. `retry.py`: an off-by-one in `should_retry` allowed one retry too few.
+3. `statemachine.py`: the batch-order check used the wrong comparison.
+4. `resources.py`: `release` always freed 1 unit instead of the task's actual cost.
+5. `events.py`: topic prefix matching also matched topics that only share the first few characters (e.g. "job" matching "jobs").
+6. `config.py`: `deep_merge` had its arguments swapped, so defaults overwrote the per-task settings.
+7. `scheduler.py`: a failed task's downstream tasks were only skipped one level deep.
+
+I didn't change any tests.

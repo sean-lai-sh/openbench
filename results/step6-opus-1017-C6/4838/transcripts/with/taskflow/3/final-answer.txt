@@ -1,0 +1,15 @@
+The full suite now passes: `python3 -m unittest` ran all 25 tests and reported `OK`, down from 18 failing at the start. No test files were changed.
+
+It took seven one-line fixes:
+
+| # | File | Fix |
+|---|------|-----|
+| 1 | `taskflow/queue.py` (`_Entry.sort_key`) | Sort by highest priority first, then by sequence number (it was sorting by sequence first) |
+| 2 | `taskflow/retry.py` (`should_retry`) | Fixed an off-by-one so a job can use its last allowed attempt |
+| 3 | `taskflow/resources.py` (`ResourcePool.release`) | Release the full cost (`used -= cost`) instead of always 1 |
+| 4 | `taskflow/statemachine.py` (`batch_order_ok`) | Flipped the comparison so batches must run in descending priority order |
+| 5 | `taskflow/events.py` (`_prefix_matches`) | Swapped the arguments so the topic is checked against the prefix, not the other way round |
+| 6 | `taskflow/config.py` (`deep_merge`) | Swapped the argument order in the recursive call so override values win over base values |
+| 7 | `taskflow/scheduler.py` (`_cascade_skip`) | When a job fails, skip everything downstream of it, not just the jobs that depend on it directly |
+
+Some failures came from a different module than the test name suggested, and some bugs only showed up after others were fixed.

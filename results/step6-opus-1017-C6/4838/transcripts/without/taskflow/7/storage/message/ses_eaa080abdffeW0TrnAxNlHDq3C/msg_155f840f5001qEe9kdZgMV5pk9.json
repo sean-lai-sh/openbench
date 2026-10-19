@@ -1,0 +1,17 @@
+{
+  "id": "msg_155f840f5001qEe9kdZgMV5pk9",
+  "sessionID": "ses_eaa080abdffeW0TrnAxNlHDq3C",
+  "role": "user",
+  "time": {
+    "created": 1792443695349
+  },
+  "summary": {
+    "body": "## Summary\n\n**Task:** Fix logic bugs in `taskflow/` (an in-memory job-orchestration engine) so that `python3 -m unittest` passes. The tests in `tests/` are the spec and must not be modified. The working directory is `/tmp/obench-cell-mwr8c6u_/bench_opencode_taskflow_u8mfhdgs`.\n\n**Initial state:** 18 of 25 tests failed, across `test_config`, `test_pipelines`, `test_queue`, and `test_retry`.\n\n**Fixes applied.** In each case the code contradicted its own docstring or comments.\n\n1. **`taskflow/queue.py`** – `_Entry.sort_key` returned `(self.seq, -self.priority)`. It now returns `(-self.priority, self.seq)`, so higher priority comes first and insertion order (FIFO) breaks ties.\n2. **`taskflow/retry.py`** – `should_retry` used `attempts_made < self.max_attempts - 1`. It is now `attempts_made < self.max_attempts`. This was an off-by-one: with `max_attempts=3`, `should_retry(2)` must be True.\n3. **`taskflow/resources.py`** – `ResourcePool.release` did `self.used -= 1`. It now does `self.used -= cost`, so it releases exactly what was acquired.\n4. **`taskflow/statemachine.py`** – `batch_order_ok` returned `current_priority >= prev_priority`. It now returns `current_priority <= prev_priority`, enforcing non-increasing priority within an admission batch.\n5. **`taskflow/events.py`** – `_prefix_matches` checked `prefix.startswith(topic + \".\")`. It now checks `topic.startswith(prefix + \".\")`. This fixes prefix subscriptions such as `\"job.term\"`, which feed the history's terminal events.\n6. **`taskflow/config.py`** – `deep_merge` recursed as `deep_merge(value, result[key])`, which let the base win at the leaves. It now recurses as `deep_merge(result[key], value)`.\n7. **`taskflow/scheduler.py`** – `_cascade_skip` iterated over `self.dag.dependents(...)`, which only reaches direct children. It now uses `self.dag.transitive_dependents(...)`, so all downstream tasks are skipped.\n\n**Current status:** `python3 -m unittest` reports **25 tests, OK**, so the task is complete.\n\n**Possible next steps (optional):** Re-run the suite to confirm the result. No further work is required.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

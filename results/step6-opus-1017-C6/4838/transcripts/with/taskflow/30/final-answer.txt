@@ -1,0 +1,18 @@
+All 25 tests pass now, and I didn't change any test files.
+
+I applied the last two fixes:
+
+6. **`taskflow/events.py` `_prefix_matches`:** the check was reversed. It tested whether the prefix started with the topic instead of the other way round. It now reads `topic == prefix or topic.startswith(prefix + ".")`, so a subscription to `"job.term"` receives `"job.term.failed"` and `"job.term.skipped"`. Because of this bug, `History` never received those terminal events, which is why the history tests were failing.
+7. **`taskflow/scheduler.py:264` `_cascade_skip`:** it only skipped the direct dependents of a failed task. It now uses `self.dag.transitive_dependents(...)`, so everything downstream gets skipped, as the docstring says it should. This fixed the transitive-skip and diamond tests.
+
+Together with the five earlier fixes, that's seven bugs fixed across seven files:
+
+| File | Fix |
+|---|---|
+| `queue.py` | Sort by priority first (highest first), then insertion order |
+| `retry.py` | Off-by-one in `should_retry` |
+| `resources.py` | `release` gives back the full cost, not just 1 |
+| `statemachine.py` | Priority comparison in `batch_order_ok` was the wrong way round |
+| `config.py` | `deep_merge` recursed with its arguments swapped |
+| `events.py` | Prefix matching was reversed |
+| `scheduler.py` | Failures now skip all downstream tasks, not just direct children |

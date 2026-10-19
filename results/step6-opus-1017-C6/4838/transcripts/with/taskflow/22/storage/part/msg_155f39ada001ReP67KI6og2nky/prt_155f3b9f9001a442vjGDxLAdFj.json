@@ -1,0 +1,11 @@
+{
+  "id": "prt_155f3b9f9001a442vjGDxLAdFj",
+  "sessionID": "ses_eaa0cbd87ffeI8Qn7VIR3g8xkd",
+  "messageID": "msg_155f39ada001ReP67KI6og2nky",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I found seven bugs, each a one-line change in `taskflow/`, and didn't touch the tests.\n\n| File | Bug | Fix |\n|---|---|---|\n| `queue.py` (`_Entry.sort_key`) | Sorted by insertion order first, priority second, so tasks came out first-in-first-out regardless of priority | Changed the key to `(-priority, seq)` |\n| `retry.py` (`should_retry`) | `attempts_made < max_attempts - 1` stopped one attempt early: with 3 allowed, it gave up after 2 | Changed to `attempts_made < max_attempts` |\n| `statemachine.py` (`batch_order_ok`) | The check was backwards: it only allowed each task in a batch to have priority equal to or higher than the one before, and the docstring says equal or lower | Changed to `current_priority <= prev_priority` |\n| `resources.py` (`ResourcePool.release`) | Always gave back 1 unit instead of the task's cost, so pools filled up and later tasks were never started | Changed to `self.used -= cost` |\n| `events.py` (`_prefix_matches`) | The arguments were swapped, so subscribing to `\"job.term\"` never received `\"job.term.failed\"` and the like | Changed to `topic.startswith(prefix + \".\")` |\n| `config.py` (`deep_merge`) | When recursing into nested blocks, the defaults overwrote the task's own settings (e.g. a task's `retry.max_attempts=5` was lost) | Changed the call to `deep_merge(result[key], value)` |\n| `scheduler.py` (`_cascade_skip`) | When a task failed for good, only its direct children were skipped, so tasks further downstream were left in `PENDING` | Now uses `dag.transitive_dependents(...)` |\n\nSome of these were hidden behind others, as you warned. The pipeline tests named for retries, priority, resources and history were really caused by the queue, retry, state-machine, resource and event-bus bugs above. The transitive-skip failure only became clear once those were fixed.",
+  "time": {
+    "start": 1792443398694,
+    "end": 1792443398694
+  }
+}

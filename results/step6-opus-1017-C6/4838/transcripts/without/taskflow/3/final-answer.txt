@@ -1,0 +1,16 @@
+All 25 tests in `python3 -m unittest` now pass. I found eight logic errors under `taskflow/`, each a one-line fix, and didn't touch the tests.
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` (`_Entry.sort_key`) | Returned `(seq, -priority)`, so tasks came out in arrival order and priority was effectively ignored | Changed to `(-priority, seq)`: highest priority first, ties first-in-first-out |
+| `retry.py` (`should_retry`) | `attempts_made < max_attempts - 1` stopped one attempt short | Changed to `attempts_made < max_attempts` |
+| `scheduler.py` (`_cascade_skip`) | Only skipped the failed task's direct dependents, so tasks further downstream stayed `PENDING` | Now uses `dag.transitive_dependents` |
+| `config.py` (`deep_merge`) | The nested recursion had its arguments swapped, so defaults overwrote task settings (e.g. `max_attempts` reset to 1) | Now calls `deep_merge(result[key], value)` |
+| `statemachine.py` (`batch_order_ok`) | Check was `>=`, the opposite of the documented rule that priority must not increase within a dispatch batch | Changed to `<=` |
+| `events.py` (`_prefix_matches`) | Tested `prefix.startswith(topic + ".")`, which is backwards, so `History` never received the `job.term.*` (finished/failed/skipped) events | Changed to `topic.startswith(prefix + ".")` |
+| `resources.py` (`ResourcePool.release`) | Gave back 1 unit instead of the task's full cost, so pools filled up and later tasks were never admitted | Changed to `self.used -= cost` |
+
+Several of these were hidden behind others, as you warned:
+- The retry tests looked like a retry problem, but they also needed the `deep_merge` fix, because the task's `max_attempts` was being reset to 1.
+- Once the queue order was fixed, the backwards batch-order check started rejecting correct dispatches and failing tasks outright.
+- The history tests failed because of the event-bus prefix matching, not anything in `history.py`.

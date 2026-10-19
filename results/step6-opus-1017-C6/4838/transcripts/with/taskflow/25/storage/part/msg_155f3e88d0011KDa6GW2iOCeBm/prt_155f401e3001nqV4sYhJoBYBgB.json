@@ -1,0 +1,11 @@
+{
+  "id": "prt_155f401e3001nqV4sYhJoBYBgB",
+  "sessionID": "ses_eaa0c910dffefIoeTN33Vu5Mg6",
+  "messageID": "msg_155f3e88d0011KDa6GW2iOCeBm",
+  "type": "text",
+  "text": "All 25 tests pass now.\n\nThat took two more fixes on top of the five from earlier:\n\n6. **`taskflow/config.py` `deep_merge`:** the arguments in the recursive call were swapped, so nested overrides (such as a task's own retry settings) were overwritten by the defaults instead of replacing them. I changed it to `deep_merge(result[key], value)`. This fix is what made the retry tests pass: tasks were getting the default retry limit instead of their own, which is why attempts stayed at 1 even after the `should_retry` fix.\n7. **`taskflow/scheduler.py` `_cascade_skip`:** when a task failed for good, only the tasks depending on it directly were marked skipped. The docstring says everything downstream should be skipped, so it now uses `self.dag.transitive_dependents(...)` instead of `dependents(...)`. This fixed the diamond and chain skip tests and the history skipped counts.\n\nThe full list of fixes:\n1. `queue.py`: higher priority now comes first, with ties going to whichever was queued first.\n2. `retry.py`: a task was getting one attempt fewer than its `max_attempts`.\n3. `resources.py`: releasing resources gave back 1 unit instead of the task's actual cost.\n4. `statemachine.py`: the check on dispatch order within a batch had its priority comparison backwards.\n5. `events.py`: the topic prefix match was the wrong way round.\n6. `config.py`: nested merge arguments swapped (above).\n7. `scheduler.py`: failure skip only reached direct dependents (above).\n\nI didn't change anything in `tests/`.",
+  "time": {
+    "start": 1792443417102,
+    "end": 1792443417102
+  }
+}

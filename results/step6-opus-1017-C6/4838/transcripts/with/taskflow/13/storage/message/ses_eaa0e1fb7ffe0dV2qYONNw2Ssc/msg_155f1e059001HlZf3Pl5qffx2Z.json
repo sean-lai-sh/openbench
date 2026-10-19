@@ -1,0 +1,18 @@
+{
+  "id": "msg_155f1e059001HlZf3Pl5qffx2Z",
+  "sessionID": "ses_eaa0e1fb7ffe0dV2qYONNw2Ssc",
+  "role": "user",
+  "time": {
+    "created": 1792443277401
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow engine",
+    "body": "All 25 tests now pass. I fixed seven logic bugs across six files, and I didn't change any tests.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` (`_Entry.sort_key`) | It sorted by insertion order first and priority second, so a low-priority task queued earlier ran before a high-priority one. | Sort key is now `(-priority, seq)`. |\n| `taskflow/retry.py` (`should_retry`) | It compared against `max_attempts - 1`, so tasks got one attempt fewer than allowed. With `max_attempts=1` they never retried, which is why the retry pipeline tests stopped after 1 attempt. | Now `attempts_made < max_attempts`. |\n| `taskflow/resources.py` (`ResourcePool.release`) | It always gave back 1 unit instead of the task's actual cost, so pools stayed partly occupied and later tasks couldn't get in. | Now subtracts `cost`. |\n| `taskflow/statemachine.py` (`batch_order_ok`) | The check was reversed (`>=`), so the scheduler rejected correctly ordered batches and failed tasks that had done nothing wrong. This only showed up once the queue fix produced correctly ordered batches. | Now `current_priority <= prev_priority`. |\n| `taskflow/events.py` (`_prefix_matches`) | The arguments were swapped (`prefix.startswith(topic + \".\")`), so prefix subscribers like `job.term` never received `job.term.failed` and similar events. That's why the history tests were failing. | Now `topic.startswith(prefix + \".\")`. |\n| `taskflow/config.py` (`deep_merge`) | The recursive call had its arguments swapped, so default values overwrote a task's own settings in nested blocks (e.g. `retry.max_attempts`). | Now `deep_merge(result[key], value)`. |\n| `taskflow/scheduler.py` (`_cascade_skip`) | When a task failed for good, only its direct dependents were skipped, so tasks further down stayed stuck in `PENDING`. | Now uses `dag.transitive_dependents(...)`, which the DAG's docstring describes as exactly the set to skip on failure. |\n\nAs you warned, several test names pointed at the wrong module. The history failures came from the event bus, the resource pipeline failures came from `release()`, and the priority pipeline failures needed both the queue fix and the state-machine fix.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

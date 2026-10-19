@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I fixed 7 logic bugs across 7 files and didn't touch the tests.
+
+1. **`taskflow/queue.py`** (`_Entry.sort_key`): the sort key had its two parts in the wrong order, `(seq, -priority)`, so tasks came out first-in-first-out and priority was ignored. Changed it to `(-priority, seq)`, which also fixed every priority-dispatch pipeline test.
+2. **`taskflow/retry.py`** (`should_retry`): it compared against `max_attempts - 1`, which allowed one attempt too few. It now uses `attempts_made < max_attempts`, which makes the retry pipeline tests pass.
+3. **`taskflow/resources.py`** (`ResourcePool.release`): it subtracted 1 instead of `cost`. A task holding more than one unit left usage stuck high, and later tasks couldn't get admitted, which is why the resource tests showed `ok() == False`.
+4. **`taskflow/events.py`** (`_prefix_matches`): the check was backwards (`prefix.startswith(topic + ".")`). As a result, subscribing to `"job.term"` never received `job.term.failed` or `job.term.skipped`, which broke the history tests.
+5. **`taskflow/config.py`** (`deep_merge`): the recursive call had its arguments swapped, so pipeline defaults overwrote a task's own nested settings (for example, `retry.max_attempts`).
+6. **`taskflow/statemachine.py`** (`batch_order_ok`): the comparison was inverted (`>=` instead of `<=`). Once the queue ordered tasks correctly, this guard rejected the valid high-to-low dispatch order and marked those tasks as failed. The queue bug had been hiding this one.
+7. **`taskflow/scheduler.py`** (`_cascade_skip`): it used `dag.dependents()`, which only covers direct children. Tasks further down stayed `PENDING` when an upstream task failed. It now uses `dag.transitive_dependents()`, as the method's own docstring says it should.
