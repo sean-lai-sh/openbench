@@ -1,0 +1,16 @@
+All 16 tests pass now. Before the fix, 15 ran because `test_search` couldn't be imported.
+
+**The three reads you asked for first:**
+- **(a)** Reading `catalog/` returned the directory listing: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** The read with offset 0 and limit 5 failed with `offset must be greater than or equal to 1`. Line numbers start at 1, so offset 0 isn't accepted.
+- **(c)** The read with offset 3 and limit 5 returned lines 3–7 of `books.py`.
+
+**Fixes, all in `catalog/`:**
+1. `books.py`: `parse_book` left the year as a string; it now converts it with `int(year)`. This fixed both `test_year_is_int` and `test_age`.
+2. `factory.py`: added the missing `Book("Emma", "Austen", 1815, 1)`, which the docstring says should be there.
+3. `fees.py`: the fee was `days_late + DAILY_FEE`; it's now `days_late * DAILY_FEE`.
+4. `inventory.py`: `recent(n)` returned one event too many (`[-n - 1:]`); it's now `[-n:]`. I also made `n <= 0` return an empty list, because `[-0:]` would return the whole history.
+5. `members.py`: `MAX_BORROWED` was 3; I set it to 5 to match the comment and the tests.
+6. `search.py`: it imported `normalize` from a module that doesn't exist (`catalog.nonexistent`); it now imports from `catalog.text`.
+
+I didn't change any tests.

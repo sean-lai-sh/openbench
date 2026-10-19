@@ -1,0 +1,14 @@
+All 16 tests now pass. Before the fix, 15 ran with 10 failing; `tests/test_search.py` couldn't be imported at all, which is why one test didn't show up in the count.
+
+**The three reads you asked for:**
+- **(a)** Reading `catalog/` worked and listed 8 files: `__init__.py`, `books.py`, `factory.py`, `fees.py`, `inventory.py`, `members.py`, `search.py`, `text.py`.
+- **(b)** Reading `books.py` with offset 0 and limit 5 **failed**: "offset must be greater than or equal to 1". The read tool counts lines from 1, so 0 isn't accepted. I didn't retry with offset 1; I printed the whole file in the shell instead.
+- **(c)** Reading with offset 3 and limit 5 worked and returned lines 3–7 of 22 (the start of the `Book` class).
+
+**Fixes, all in `catalog/` (tests unchanged):**
+1. `books.py`: `parse_book` now turns the year into a number (`int(year)`) instead of keeping it as text. That fixes both `test_year_is_int` and `test_age`.
+2. `factory.py`: added the missing `Book("Emma", "Austen", 1815, 1)`, which the docstring and tests expect.
+3. `fees.py`: the fee was the number of days *plus* 0.25; it's now days *times* `DAILY_FEE`.
+4. `inventory.py`: `recent(n)` was off by one and returned `n+1` events; it now returns the last `n`. I also made `n <= 0` return an empty list, because `[-0:]` would have returned the whole history.
+5. `members.py`: `MAX_BORROWED` changed from 3 to 5, matching the comment and the tests.
+6. `search.py`: the import pointed to `catalog.nonexistent`; it now uses `catalog.text`, where `normalize` actually lives.
