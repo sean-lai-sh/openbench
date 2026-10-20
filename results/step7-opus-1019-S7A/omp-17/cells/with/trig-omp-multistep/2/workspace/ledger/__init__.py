@@ -1,0 +1,1 @@
+"""Tiny invoice ledger."""
