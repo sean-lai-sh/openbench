@@ -1,0 +1,11 @@
+{
+  "id": "prt_1580387ba00157gvcLXsHVqMAC",
+  "messageID": "msg_1580375cf0019yRJBW24PmVwqg",
+  "sessionID": "ses_ea7fccb67ffehOs1pqJ9ztRBon",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. There were six separate bugs:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** the recursive call in `deep_merge` had its arguments swapped, so defaults overrode task settings. It's now `deep_merge(result[key], value)`.\n- **`statemachine.py`:** `batch_order_ok` checked `current >= prev`, but priorities within a batch should be non-increasing. It now checks `current <= prev`.\n- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity and stalled resource-limited pipelines.\n- **`events.py`:** `_prefix_matches` had the prefix check backwards, so prefix subscribers never received `job.term.*` events. That left the history empty.\n\nI fixed the first few, re-ran, and found the rest as each fix exposed the next failure.",
+  "time": {
+    "start": 1792477988820,
+    "end": 1792477988820
+  }
+}

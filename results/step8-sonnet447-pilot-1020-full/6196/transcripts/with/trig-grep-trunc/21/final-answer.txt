@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.
+
+I found seven bugs. Each one contradicted the docstring or comment next to it:
+
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in insertion order and ignored priority. It now returns `(-priority, seq)`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now recurses as `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resources were never fully released and later tasks stalled.
+- **`statemachine.py`:** `batch_order_ok` checked `current >= prev`. The docstring says priorities within a batch must be non-increasing, so it is now `current <= prev`. With the broken queue ordering, this guard was marking admitted runs as FAILED.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so skips reach the whole downstream chain.
+- **`events.py`:** `_prefix_matches` had the prefix/topic test reversed. It checked `prefix.startswith(topic + ".")` instead of `topic.startswith(prefix + ".")`. The history's `job.term` subscription therefore never received `job.term.failed`, `.skipped` or `.succeeded`.
+
+Several of these hid each other. The history failures only showed up once the scheduler's own state handling was fixed. The priority and resource failures both partly came from the queue ordering and the batch guard.

@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests, and I didn't modify any tests. There were seven separate bugs, and each fix is a one-line change.
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. It now uses `attempts_made < max_attempts`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own settings. It now calls `deep_merge(result[key], value)`.
+- **`statemachine.py`**: `batch_order_ok` required each task in a batch to have equal or higher priority than the previous one. The docstring says non-increasing, so it now checks `current <= prev`.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`, so every downstream task is skipped.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never emptied, so later tasks were never admitted.
+- **`events.py`**: `_prefix_matches` had the arguments reversed. It now checks `topic.startswith(prefix + ".")`. Before that, `History` never received the `job.term.*` events.
+
+Your first instruction was to start with a grep for `self`. I ran it, but it returned 100 truncated matches that didn't help, so I switched to running the suite and reading the failing modules.

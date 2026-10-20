@@ -1,0 +1,30 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+sed -i 's/prefix.startswith(topic + ".")/topic.startswith(prefix + ".")/' taskflow/events.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"; grep -n "def dependents" -A25 taskflow/dag.py
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self.dag.transitive_dependents(failed_run.id):/' taskflow/scheduler.py
+sed -n 140,190p taskflow/dag.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+
+All 25 tests now pass. I ran `python3 -m unittest` after the last change and it reported `OK`. I fixed seven defects and didn't touch the tests:
+
+- **`queue.py`**: the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` compared priorities the wrong way round. It now returns `current_priority <= prev_priority`, which matches the non-increasing-priority rule.
+- **`resources.py`**: `ResourcePool.release` always subtracted 1 instead of `cost`, so multi-unit resources were never fully released. It now subtracts `cost`.
+- **`events.py`**: `_prefix_matches` had its arguments swapped. It now uses `topic.startswith(prefix + ".")`.
+- **`config.py`**: `deep_merge` recursed with the base and override swapped, so defaults overwrote task overrides. It now calls `deep_merge(result[key], value)`.
+- **`scheduler.py`**: `_cascade_skip` used the direct `dependents` only. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+
+All 25 tests now pass. I ran `python3 -m unittest` after the last change and it reported `OK`. I fixed seven defects and didn't touch the tests:
+
+- **`queue.py`**: the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` compared priorities the wrong way round. It now returns `current_priority <= prev_priority`, which matches the non-increasing-priority rule.
+- **`resources.py`**: `ResourcePool.release` always subtracted 1 instead of `cost`, so multi-unit resources were never fully released. It now subtracts `cost`.
+- **`events.py`**: `_prefix_matches` had its arguments swapped. It now uses `topic.startswith(prefix + ".")`.
+- **`config.py`**: `deep_merge` recursed with the base and override swapped, so defaults overwrote task overrides. It now calls `deep_merge(result[key], value)`.
+- **`scheduler.py`**: `_cascade_skip` used the direct `dependents` only. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.

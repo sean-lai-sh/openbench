@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes: all 25 tests, with the tests untouched. I found eight root-cause bugs:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. | Changed it to `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which allowed one retry too few. | Changed it to `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the base overrode the override. | Recurse as `deep_merge(result[key], value)`. |
+| `taskflow/statemachine.py` | `batch_order_ok` required non-decreasing priority, the opposite of what its docstring says. | Changed it to `current <= prev`. |
+| `taskflow/scheduler.py` | `_cascade_skip` skipped only direct dependents, not the whole downstream chain. | It now uses `dag.transitive_dependents`. |
+| `taskflow/events.py` | `_prefix_matches` had its arguments reversed, so prefix subscribers such as `job.term` never received events. That is why the history's failed and skipped sets were empty. | Changed it to `topic.startswith(prefix + ".")`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity for multi-unit tasks and stalled resource-limited runs. | Changed it to `used -= cost`. |
+
+The queue, retry and batch-order bugs were hiding the later failures: the priority and retry tests only exposed the cascade, event and resource bugs once those were fixed.

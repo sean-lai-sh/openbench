@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests. I fixed seven bugs in the code under `taskflow/` and didn't touch the tests.
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, which ignored priority. It now returns `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, one attempt short. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`, so `history` actually receives `job.term.*` events.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch. The docstring says non-increasing, so it now checks `current_priority <= prev_priority`.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`, which let the defaults override a task's own values. It now recurses as `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of `-= cost`. That leaked resource units and stalled any pipeline that used resources.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.

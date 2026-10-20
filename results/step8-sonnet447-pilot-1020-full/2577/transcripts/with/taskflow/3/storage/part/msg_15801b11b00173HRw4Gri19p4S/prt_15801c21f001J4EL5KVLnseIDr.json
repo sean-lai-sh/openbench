@@ -1,0 +1,11 @@
+{
+  "id": "prt_15801c21f001J4EL5KVLnseIDr",
+  "messageID": "msg_15801b11b00173HRw4Gri19p4S",
+  "sessionID": "ses_ea7fe8ba9ffe3DIbzyzR7QDY1O",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify the tests. There were seven root causes:\n\n- **`queue.py`**: the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which stopped one retry early. It now uses `attempts_made < max_attempts`.\n- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. It now subtracts `cost`.\n- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, which allows a batch to be admitted in non-increasing priority order.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. It now recurses with `deep_merge(result[key], value)`.\n- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It now tests `topic.startswith(prefix + \".\")`. This had stopped the history from recording terminal events such as `job.term.failed`.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.",
+  "time": {
+    "start": 1792477872692,
+    "end": 1792477872692
+  }
+}

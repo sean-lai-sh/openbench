@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: all 25 tests. I didn't modify any tests. There were six defects:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and equal priorities stay FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. It now requires `current <= prev`, matching its docstring. After the queue fix, the old check would have made the scheduler fail runs in the admission batch.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs were never fully released, so resource-limited pipelines stalled.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents` (direct children only). It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`, which made the base win over the override at nested keys. It now calls `deep_merge(result[key], value)`, so a task's `retry` override beats the defaults.
+
+That is seven edits across six modules (`config.py` is the seventh edit, in a seventh file; the list above has seven entries).

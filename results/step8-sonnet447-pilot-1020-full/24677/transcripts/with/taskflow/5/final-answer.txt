@@ -1,0 +1,9 @@
+All 25 tests now pass. I fixed seven bugs, and I didn't touch the tests.
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It's now `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` was `current >= prev`, which is the wrong direction. A batch must be non-increasing in priority, so it's now `current <= prev`. Once the queue ordering was fixed, the old check wrongly failed tasks in a batch.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents()`, which only returns direct children. It now uses `transitive_dependents()`, so a permanent failure skips everything downstream.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. A task's `retry.max_attempts` was lost. It's now `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, so resource-limited tasks stalled.
+- **`events.py`**: `_prefix_matches` had the `startswith` check reversed. Prefix subscriptions like `job.term` never matched `job.term.failed`, which broke the history's failed, skipped and succeeded sets.

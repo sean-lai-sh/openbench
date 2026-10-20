@@ -1,0 +1,45 @@
+Start with the small modules.
+
+import re
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b))
+sub('taskflow/queue.py','return (self.seq, -self.priority)','return (-self.priority, self.seq)')
+sub('taskflow/retry.py','return attempts_made < self.max_attempts - 1','return attempts_made < self.max_attempts')
+sub('taskflow/events.py','prefix.startswith(topic + ".")','topic.startswith(prefix + ".")')
+sub('taskflow/statemachine.py','return current_priority >= prev_priority','return current_priority <= prev_priority')
+E
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b))
+sub('taskflow/config.py','deep_merge(value, result[key])','deep_merge(result[key], value)')
+sub('taskflow/resources.py','self.used -= 1','self.used -= cost')
+E
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"; grep -n "def dependents\|def dependencies\|def descendants\|def ancestors" -A25 taskflow/dag.py | head -120
+
+Scheduler's cascade uses only direct dependents; use transitive.
+
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b))
+sub('taskflow/scheduler.py','for dep_id in self.dag.dependents(failed_run.id):','for dep_id in self.dag.transitive_dependents(failed_run.id):')
+E
+python3 -m unittest 2>&1 | tail -30
+
+`python3 -m unittest` now passes all 25 tests. I fixed seven defects, and I didn't touch the tests.
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority runs first and ties go in insertion order.
+- **`retry.py`:** `should_retry` had an off-by-one, `attempts_made < max_attempts - 1`. It is now `attempts_made < max_attempts`, which gives the full attempt budget.
+- **`events.py`:** the prefix match was backwards. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. It now checks `current <= prev`. This one was hidden behind the queue bug: once the queue ordered correctly, the guard would have rejected valid batches.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity. It now subtracts `cost`.
+- **`scheduler.py`:** `_cascade_skip` walked only the direct dependents of a failed task. It now uses `transitive_dependents`, so everything downstream is skipped.
+
+`python3 -m unittest` now passes all 25 tests. I fixed seven defects, and I didn't touch the tests.
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority runs first and ties go in insertion order.
+- **`retry.py`:** `should_retry` had an off-by-one, `attempts_made < max_attempts - 1`. It is now `attempts_made < max_attempts`, which gives the full attempt budget.
+- **`events.py`:** the prefix match was backwards. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. It now checks `current <= prev`. This one was hidden behind the queue bug: once the queue ordered correctly, the guard would have rejected valid batches.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity. It now subtracts `cost`.
+- **`scheduler.py`:** `_cascade_skip` walked only the direct dependents of a failed task. It now uses `transitive_dependents`, so everything downstream is skipped.

@@ -1,0 +1,35 @@
+import re
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b,1))
+sub('taskflow/queue.py','return (self.seq, -self.priority)','return (-self.priority, self.seq)')
+sub('taskflow/retry.py','attempts_made < self.max_attempts - 1','attempts_made < self.max_attempts')
+sub('taskflow/events.py','prefix.startswith(topic + ".")','topic.startswith(prefix + ".")')
+sub('taskflow/statemachine.py','return current_priority >= prev_priority','return current_priority <= prev_priority')
+E
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"; sed -n 100,213p taskflow/resources.py; cat taskflow/scheduler.py
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b,1))
+sub('taskflow/config.py','deep_merge(value, result[key])','deep_merge(result[key], value)')
+sub('taskflow/scheduler.py','for dep_id in self.dag.dependents(failed_run.id):','for dep_id in self.dag.transitive_dependents(failed_run.id):')
+E
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR|Ran)"
+
+All 25 tests now pass. I fixed these defects without touching the tests:
+
+- `queue.py`: `sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority dispatches first and ties go in insertion order.
+- `retry.py`: `should_retry` had an off-by-one. It's now `attempts_made < max_attempts`.
+- `events.py`: `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + ".")`.
+- `statemachine.py`: `batch_order_ok` required priority to be non-decreasing. It now requires non-increasing (`current <= prev`).
+- `config.py`: `deep_merge` recursed with the base and override swapped, so the defaults overrode per-task values. It now calls `deep_merge(result[key], value)`.
+- `scheduler.py`: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`.
+- `resources.py`: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which left pools permanently occupied.
+
+All 25 tests now pass. I fixed these defects without touching the tests:
+
+- `queue.py`: `sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority dispatches first and ties go in insertion order.
+- `retry.py`: `should_retry` had an off-by-one. It's now `attempts_made < max_attempts`.
+- `events.py`: `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + ".")`.
+- `statemachine.py`: `batch_order_ok` required priority to be non-decreasing. It now requires non-increasing (`current <= prev`).
+- `config.py`: `deep_merge` recursed with the base and override swapped, so the defaults overrode per-task values. It now calls `deep_merge(result[key], value)`.
+- `scheduler.py`: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`.
+- `resources.py`: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which left pools permanently occupied.

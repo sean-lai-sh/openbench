@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were eight separate defects:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget by one. It now uses `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked capacity, which is why the resource tests never finished.
+- **`statemachine.py`:** `batch_order_ok` checked `current >= prev`. The docstring requires non-increasing priority within a batch, so it is now `current <= prev`. Once the queue ordering was fixed, the old check made the scheduler fail tasks outright.
+- **`scheduler.py`:** `_cascade_skip` walked only `dag.dependents()`, the direct children. It now uses `transitive_dependents()`, so a permanent failure skips every downstream task.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(override_child, base_child)`, so defaults overrode the task's own values. The recursion now passes the arguments in the right order.
+- **`events.py`:** `_prefix_matches` had the arguments of `startswith` swapped. Prefix subscribers such as `job.term` never received `job.term.failed` or `job.term.skipped`, so the history's failed, skipped and outcome-count queries came back empty.
+
+Some failures only showed up after earlier ones were fixed. The priority and retry fixes uncovered the batch-order guard bug, and the resource fix cleared the pipeline-level failures.

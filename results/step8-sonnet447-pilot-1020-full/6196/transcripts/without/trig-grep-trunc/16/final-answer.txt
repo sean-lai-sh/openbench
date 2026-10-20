@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven bugs, all small logic errors:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. | Changed to `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. | Changed to `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. | Now `deep_merge(result[key], value)`. |
+| `taskflow/resources.py` | `ResourcePool.release` subtracted 1 instead of `cost`, so resources leaked and tasks that needed more than one unit stalled. | Now `self.used -= cost`. |
+| `taskflow/statemachine.py` | `batch_order_ok` had its comparison inverted (`>=`), which rejected valid non-increasing priority batches. | Now `current_priority <= prev_priority`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children, so skips didn't reach grandchildren. | Now uses `dag.transitive_dependents`. |
+| `taskflow/events.py` | `_prefix_matches` had its arguments reversed. `History` never saw `job.term.*` events, so its failed, skipped and succeeded sets and outcome counts were empty. | Now `topic.startswith(prefix + ".")`. |
+
+The failures did hide each other, as you warned. After the first four fixes, three history tests were still failing, and the event-bus prefix bug was behind them.

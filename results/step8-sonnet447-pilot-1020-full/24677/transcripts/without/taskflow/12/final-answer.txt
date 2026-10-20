@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests. There were seven separate defects:
+
+1. **`taskflow/queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+2. **`taskflow/retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+3. **`taskflow/config.py`**: `deep_merge` recursed with its arguments swapped, so the base value overrode the task's value. It now recurses as `deep_merge(result[key], value)`.
+4. **`taskflow/statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within a batch, which is the opposite of what its docstring says. It now requires non-increasing.
+5. **`taskflow/scheduler.py`**: `_cascade_skip` skipped only direct dependents. It now skips everything downstream, using `dag.transitive_dependents`.
+6. **`taskflow/events.py`**: `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). `job.term.*` events therefore never reached `History`. It now checks `topic.startswith(prefix + ".")`.
+7. **`taskflow/resources.py`**: `ResourcePool.release` always decremented usage by 1 instead of by `cost`, so multi-unit resources leaked.

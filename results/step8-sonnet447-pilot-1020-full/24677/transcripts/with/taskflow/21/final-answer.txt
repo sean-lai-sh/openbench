@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven bugs, each a one-line logic error.
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `sort_key` returned `(seq, -priority)`, so ordering was by insertion rather than priority. | Changed it to `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. | Changed it to `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the base overrode the override. | Changed the recursion to `deep_merge(result[key], value)`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used the direct `dependents`, so only immediate children were skipped. | It now uses `transitive_dependents`. |
+| `taskflow/statemachine.py` | `batch_order_ok` required priority to be non-decreasing within an admission batch, but the docstring says non-increasing. | Changed `>=` to `<=`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so multi-unit resources leaked and later tasks stalled. | Changed it to `used -= cost`. |
+| `taskflow/events.py` | `_prefix_matches` had the prefix and topic reversed, so prefix subscribers such as the history's `job.term` never received events. | Changed it to `topic.startswith(prefix + ".")`. |
+
+The queue ordering bug and the `batch_order_ok` bug masked each other. With the queue fixed but `batch_order_ok` still wrong, the priority tests failed for a different reason. The prefix-matching bug was the root cause of the `History` failures, even though those tests are named for history.

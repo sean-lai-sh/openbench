@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, with the test files unchanged. I made seven one-line fixes across six modules.
+
+- **`queue.py`:** `sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order only breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base value won over the override. It now calls `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents of a failed task. It now uses `transitive_dependents`, so everything downstream is skipped.
+- **`resources.py`:** `ResourcePool.release` always did `used -= 1`. It now subtracts `cost`, which was leaking resource capacity and stalling pipelines.
+- **`events.py`:** `_prefix_matches` had its arguments reversed. Prefix subscriptions such as `job.term` never received `job.term.failed`, which left the history's failed, skipped and outcome-count queries empty. It now checks `topic.startswith(prefix + ".")`.

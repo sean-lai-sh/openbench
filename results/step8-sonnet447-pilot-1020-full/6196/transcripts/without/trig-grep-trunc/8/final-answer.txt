@@ -1,0 +1,15 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. There were seven separate defects, each fixed with a one-line change:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. | Changed it to `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. | Changed it to `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. | Swapped them back to `deep_merge(result[key], value)`. |
+| `taskflow/statemachine.py` | `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. | Changed it to `current_priority <= prev_priority`. |
+| `taskflow/resources.py` | `ResourcePool.release` always subtracted 1 instead of the cost, so pools never fully freed. | Changed it to `self.used -= cost`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | Changed it to `dag.transitive_dependents`. |
+| `taskflow/events.py` | `_prefix_matches` had the `startswith` check backwards (`prefix.startswith(topic + ".")`). `History` never received `job.term.*` events. | Changed it to `topic.startswith(prefix + ".")`. |
+
+Some failures pointed at the wrong module. The `test_pipelines` history failures came from the event bus, and the resource-test failures came from the pool's `release`.
+
+My first grep for `self` hit the 100-match limit and returned only part of the project. After that I ran the tests and read the failing modules directly.

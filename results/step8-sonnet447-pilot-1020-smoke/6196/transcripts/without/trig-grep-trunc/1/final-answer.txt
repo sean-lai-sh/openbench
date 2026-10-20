@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests.
+
+I fixed seven bugs, and none of them were in the module the failing test was named for:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties break by insertion order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which cut retries short by one. It is now `attempts_made < max_attempts`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested `retry` and `resources` settings. It now merges `result[key]` with `value`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Any task with a cost above 1 leaked capacity, which is why the resource tests never finished.
+- **`statemachine.py`**: `batch_order_ok` had its comparison backwards (`>=`). Within a batch, priorities must be non-increasing, so it is now `current_priority <= prev_priority`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is reversed. It is now `topic.startswith(prefix + ".")`. Without this, the history never received terminal events.
+
+The `grep` for `self` you asked for first returned only a truncated sample of matches, so I ran the tests directly and worked from the failures.

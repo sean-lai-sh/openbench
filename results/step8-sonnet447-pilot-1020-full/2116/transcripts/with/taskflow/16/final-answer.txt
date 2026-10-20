@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests. There were six root-cause bugs:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`. This one fixed all the retry pipeline failures.
+- **`events.py`:** `_prefix_matches` had the `startswith` arguments reversed. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`. The queue fix exposed this one.
+- **`resources.py`:** `ResourcePool.release` always did `used -= 1`. It now does `used -= cost`, which fixed the resource-limited pipeline failures.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base values overrode the task's own. That is why a task's `retry.max_attempts` was lost. It now recurses with `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used the direct dependents only. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream. That fixed the skip-chain, diamond-skip and history skipped-set failures.
+
+I only changed code the failing tests pointed to. I didn't audit the modules the tests don't cover, so they could still contain similar bugs.

@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't modify any tests. I started with the grep for `self` as asked, but it only returned test boilerplate and was truncated at 100 matches, so it didn't help. I worked from the failure output instead.
+
+There were eight separate bugs, all in `taskflow/`:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It should be `(-priority, seq)`, so higher priority is dispatched first and ties go in insertion order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, so the last permitted attempt never ran. It is now `attempts_made < max_attempts`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so pipeline defaults overrode a task's own settings. It now merges `(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity and later tasks never got admitted.
+- **`statemachine.py`**: `batch_order_ok` used `>=`. It should be `<=`, since priorities must not increase within an admission batch. The wrong sort order in `queue.py` had hidden this one.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents()`, which returns only direct children. It now uses `transitive_dependents()`, so a whole downstream chain is skipped.
+- **`events.py`**: `_prefix_matches` had its arguments reversed, using `prefix.startswith(topic + ".")`. It is now `topic.startswith(prefix + ".")`. Because of this, `History` never received `job.term.*` events, and the history tests failed.

@@ -1,0 +1,17 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.
+
+I started with the `self` grep you asked for. It returned 100 matches and was truncated, so I ran the suite and read the failing modules instead.
+
+There were seven separate bugs, each with a different root cause:
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue was FIFO and ignored priority. | Return `(-priority, seq)`. |
+| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so the last permitted attempt was never made. | Use `attempts_made < max_attempts`. |
+| `config.py` | `deep_merge` recursed with its arguments swapped, so the base values overrode the task's own overrides. | Recurse with `deep_merge(result[key], value)`. |
+| `resources.py` | `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resources leaked and later tasks stalled. | Subtract `cost`. |
+| `statemachine.py` | `batch_order_ok` required priority to be non-decreasing, which is the opposite of what its docstring says. | Require `current <= prev`. |
+| `scheduler.py` | `_cascade_skip` used the direct `dag.dependents`, so only immediate children were skipped. | Use `dag.transitive_dependents`. |
+| `events.py` | `_prefix_matches` had the prefix and topic reversed, so `job.term.*` events never reached `History`. | Use `topic.startswith(prefix + ".")`. |
+
+Some bugs hid others. The priority fix is what exposed the reversed batch-order guard in the state machine. That guard had been failing runs outright once the queue started ordering correctly.

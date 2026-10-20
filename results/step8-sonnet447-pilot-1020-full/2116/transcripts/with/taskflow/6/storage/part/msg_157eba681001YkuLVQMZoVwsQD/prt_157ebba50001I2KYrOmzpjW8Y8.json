@@ -1,0 +1,11 @@
+{
+  "id": "prt_157ebba50001I2KYrOmzpjW8Y8",
+  "sessionID": "ses_ea814954effecRNAyGInqEwTt3",
+  "messageID": "msg_157eba681001YkuLVQMZoVwsQD",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I edited only files under `taskflow/` and left the tests alone.\n\nI found seven bugs. In each case the code did something different from what its own docstring said:\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. It now uses `attempts_made < max_attempts`.\n3. **`statemachine.py`:** `batch_order_ok` had its comparison backwards. Within an admission batch, priority must be non-increasing, so it now checks `current <= prev`.\n4. **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. This leaked capacity and stalled any task with a cost above 1.\n5. **`config.py`:** `deep_merge` swapped its arguments when it recursed into nested dicts. The defaults then overrode the task's own `retry` settings, so I swapped them back.\n6. **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so grandchildren and diamond-shaped graphs are skipped too.\n7. **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")` the wrong way round. It now tests `topic.startswith(prefix + \".\")`. This is why `History` never saw the terminal `job.term.*` events.\n\nSeveral failures hid others. The priority-order failure was only visible once the sort key was right. The history failures were only visible once the prefix match worked.",
+  "time": {
+    "start": 1792476428926,
+    "end": 1792476428926
+  }
+}

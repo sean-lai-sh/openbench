@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files changed. There were seven separate defects, spread across six modules.
+
+1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the order is `(-priority, seq)`, so I swapped them. Before the fix, dispatch was FIFO regardless of priority.
+2. **`retry.py`:** `should_retry` was off by one. It used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+3. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `result[key]` with `value`.
+4. **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked, and later tasks were never admitted.
+5. **`statemachine.py`:** `batch_order_ok` was inverted. It required priority to be non-decreasing within an admission batch, but the docstring says non-increasing. This made correctly ordered batches fail.
+6. **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+7. **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). The `job.term` prefix subscription never matched `job.term.failed` and similar topics, so `History` recorded no terminal outcomes. It now checks `topic.startswith(prefix + ".")`.

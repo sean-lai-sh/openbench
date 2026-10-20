@@ -1,0 +1,11 @@
+{
+  "id": "prt_157eb35fa001jtMkTIPSVT56Rn",
+  "sessionID": "ses_ea815115effe1z5dtVAE5lKDij",
+  "messageID": "msg_157eb21650011w2IqlhsjkfrOb",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify the tests. There were six root causes, and several of the 18 failures traced back to the same one.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. It now returns `(-priority, seq)`, which gives highest priority first and FIFO among equals.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`, matching the docstring's `max_attempts == 3` example.\n- **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + \".\")`). Prefix subscribers such as the history's `job.term` therefore missed events like `job.term.failed`. It is now `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested settings. A task's `retry.max_attempts` was being lost. It now merges `(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. Multi-unit resource costs leaked capacity and left later tasks stuck.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n\nI only ran the test suite. I didn't audit the other modules (stats, metrics, planner and so on) for similar bugs.",
+  "time": {
+    "start": 1792476395037,
+    "end": 1792476395037
+  }
+}

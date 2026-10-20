@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c70bcd001wdy0mTRyvl2Pil",
+  "sessionID": "ses_ea8398502ffewqch53RuLcOkRa",
+  "messageID": "msg_157c6f740001huemkRAFGya98k",
+  "type": "text",
+  "text": "`python3 -m unittest` now reports all 25 tests passing. I didn't modify any tests, and I made no changes outside `taskflow/`.\n\nI started with a `grep` for `self`, as you asked. It matched too many lines to be useful, so I diagnosed from the failing tests instead. Seven defects turned out to be behind the 18 failures:\n\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which stopped retries one attempt early. It is now `attempts_made < max_attempts`.\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and ran in insertion order. It is now `(-priority, seq)`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own values. It now merges `result[key]` with `value`.\n- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so I changed `>=` to `<=`.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n- **`events.py`**: `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). `History` never received `job.term.*` events, so its failed, skipped and succeeded lists stayed empty. It is now `topic.startswith(prefix + \".\")`.\n- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit resource tasks leaked capacity and later tasks were never admitted.",
+  "time": {
+    "start": 1792474024927,
+    "end": 1792474024927
+  }
+}

@@ -1,0 +1,31 @@
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/prefix.startswith(topic + ".")/topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"; rg -n "def dependents|def dependencies|def descendants|def ancestors" -A25 taskflow/dag.py | head -120
+cat taskflow/config.py; sed -n 1,61p tests/test_config.py
+python3 -m unittest 2>&1 | tail -40
+
+All 25 tests now pass with `python3 -m unittest`. I didn't modify the tests.
+
+Seven bugs were behind the failures:
+
+- **`queue.py`**: the sort key was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It's now `attempts_made < max_attempts`.
+- **`events.py`**: the prefix match had its operands swapped, so `job.term` subscribers never received `job.term.failed` and similar topics. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`**: `batch_order_ok` required priority to rise within a batch. It now requires non-increasing priority, as its docstring says.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 unit instead of `cost`, so multi-unit tasks leaked capacity.
+- **`scheduler.py`**: `_cascade_skip` used the direct dependents only. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+- **`config.py`**: `deep_merge` recursed with its arguments reversed, so the defaults overrode a task's own `retry` settings. It now recurses with `(base_child, override_child)`.
+
+All 25 tests now pass with `python3 -m unittest`. I didn't modify the tests.
+
+Seven bugs were behind the failures:
+
+- **`queue.py`**: the sort key was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It's now `attempts_made < max_attempts`.
+- **`events.py`**: the prefix match had its operands swapped, so `job.term` subscribers never received `job.term.failed` and similar topics. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`**: `batch_order_ok` required priority to rise within a batch. It now requires non-increasing priority, as its docstring says.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 unit instead of `cost`, so multi-unit tasks leaked capacity.
+- **`scheduler.py`**: `_cascade_skip` used the direct dependents only. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+- **`config.py`**: `deep_merge` recursed with its arguments reversed, so the defaults overrode a task's own `retry` settings. It now recurses with `(base_child, override_child)`.

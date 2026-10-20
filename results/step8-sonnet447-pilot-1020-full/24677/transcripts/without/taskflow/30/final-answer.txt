@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven separate defects, and none of them was in the module the failing test was named for.
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the order is `(-priority, seq)`, so I swapped them. Before the fix, the queue ignored priority and returned items in insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which stopped one attempt early. It is now `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity, so later tasks never got admitted.
+- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + ".")`). Prefix subscribers never saw `job.term.failed` or `job.term.skipped`, so the history missed those events.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing (`>=`). Its docstring says non-increasing, so it is now `<=`. Once the queue was fixed, the old check would have wrongly failed jobs during admission.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`, which let the defaults override the task's own values. It is now `deep_merge(result[key], value)`. This is why per-task `retry.max_attempts` was ignored.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents()`, which returns only direct children. It now uses `transitive_dependents()`, so a permanent failure skips everything downstream.

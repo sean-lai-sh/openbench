@@ -1,0 +1,11 @@
+{
+  "id": "prt_157ecde64001Scp39prOI2gTEL",
+  "sessionID": "ses_ea81376a0ffefSSe1UrKoSKJiY",
+  "messageID": "msg_157eccb06001UHMm5FEiXeSf2N",
+  "type": "text",
+  "text": "`python3 -m unittest` now reports all 25 tests passing. I didn't modify the tests.\n\nThere were seven root causes, each fixed in the module that caused it:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in insertion order and ignored priority. It now returns `(-priority, seq)`.\n- **`retry.py`**: `should_retry` had an off-by-one, `attempts_made < max_attempts - 1`, so the last permitted attempt was never made. It is now `attempts_made < max_attempts`. This was behind the retry tests failing, and it hid other bugs until it was fixed.\n- **`events.py`**: `_prefix_matches` had its arguments swapped. It checked `prefix.startswith(topic + \".\")` and now checks `topic.startswith(prefix + \".\")`. The wrong check broke subtree subscriptions such as `job.term`.\n- **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing within an admission batch. It now requires non-increasing, as its docstring says. The reversed check made the scheduler fail correctly ordered high-priority jobs when they were admitted.\n- **`resources.py`**: `ResourcePool.release` subtracted `1` instead of `cost`. That leaked capacity whenever a task held more than one unit, which stalled the resource-limited pipelines.\n- **`config.py`**: `deep_merge` recursed with its arguments reversed, so the defaults overrode a task's own nested settings. For example, a task's `retry.max_attempts` was replaced by the default.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.",
+  "time": {
+    "start": 1792476503675,
+    "end": 1792476503675
+  }
+}

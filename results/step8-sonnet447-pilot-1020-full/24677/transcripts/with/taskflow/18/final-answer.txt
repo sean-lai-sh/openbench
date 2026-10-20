@@ -1,0 +1,9 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't touch the tests. There were eight separate bugs, each a one-line logic error:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, which caused the resource-related pipeline failures.
+- **`statemachine.py`**: `batch_order_ok` had its comparison inverted. It now requires non-increasing priority within an admission batch, as its docstring says. This bug only showed up once the queue ordering was fixed.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so a permanent failure skips the whole downstream chain.
+- **`events.py`**: `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + ".")`. Before the fix, `History` never saw the `job.term.*` events, so its outcome sets and counts came out empty.
+- **`config.py`**: `deep_merge` recursed with `(override, base)` swapped, so the defaults overwrote a task's own values. It now recurses with `(base, override)`. This is why retry overrides in a task's config were lost.

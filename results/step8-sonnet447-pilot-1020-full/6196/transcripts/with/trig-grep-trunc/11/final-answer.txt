@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. Your suggested first step, grepping for `self`, returned about 100 matches before it was cut off and didn't help find any of these bugs. I found them by running the suite and reading the failing modules.
+
+There were eight bugs in total, all in `taskflow/`:
+
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. It is now `(-priority, seq)`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested `retry` and `resources` settings. It now recurses as `(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity whenever a task's cost was greater than 1.
+- **`statemachine.py`:** `batch_order_ok` required priorities within an admission batch to be non-decreasing, but the docs say non-increasing. The check is now `current <= prev`. Once the queue ordering was fixed, this would have failed every multi-priority batch.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+- **`events.py`:** `_prefix_matches` had the prefix and topic reversed. The `job.term` subscription therefore never matched `job.term.failed` or `job.term.skipped`, and `History` recorded no terminal outcomes.

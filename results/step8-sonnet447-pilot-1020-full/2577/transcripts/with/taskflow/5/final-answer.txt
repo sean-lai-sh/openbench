@@ -1,0 +1,38 @@
+Start with the small core modules.
+
+def sub(f,a,b):
+    f='taskflow/'+f
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b,1))
+sub('queue.py','return (self.seq, -self.priority)','return (-self.priority, self.seq)')
+sub('retry.py','return attempts_made < self.max_attempts - 1','return attempts_made < self.max_attempts')
+sub('resources.py','self.used -= 1','self.used -= cost')
+sub('events.py','prefix.startswith(topic + ".")','topic.startswith(prefix + ".")')
+E
+sed -n 120,172p taskflow/events.py; python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+
+Fine; the scheduler should use the transitive version.
+
+
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. I found and fixed six defects:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and ties go FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and the pool deadlocked.
+- **`events.py`:** `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` was inverted. It now allows only non-increasing priority within a batch.
+- **`config.py`:** `deep_merge` recursed as `(override, base)`, so defaults overrode the task's own values. It now recurses as `(base, override)`.
+- **`scheduler.py`:** `_cascade_skip` used `dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips reach the whole downstream chain.
+
+The fixes uncovered each other. The inverted `batch_order_ok` guard was failing priority-ordered runs outright, which hid the queue-ordering problems.
+
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. I found and fixed six defects:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and ties go FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and the pool deadlocked.
+- **`events.py`:** `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` was inverted. It now allows only non-increasing priority within a batch.
+- **`config.py`:** `deep_merge` recursed as `(override, base)`, so defaults overrode the task's own values. It now recurses as `(base, override)`.
+- **`scheduler.py`:** `_cascade_skip` used `dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips reach the whole downstream chain.
+
+The fixes uncovered each other. The inverted `batch_order_ok` guard was failing priority-ordered runs outright, which hid the queue-ordering problems.

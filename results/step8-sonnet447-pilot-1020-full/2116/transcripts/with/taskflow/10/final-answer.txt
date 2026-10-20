@@ -1,0 +1,10 @@
+`python3 -m unittest` now passes all 25 tests. I didn't edit the tests. There were six root causes, in six modules:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. It now returns `(-priority, seq)`.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which was off by one and stopped retries one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so I flipped the comparison to `current <= prev`. The old check made the scheduler fail a legitimately ordered batch outright.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, so tasks with a cost above 1 blocked later admissions.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. Task-level `retry.max_attempts` was being lost.
+- **`events.py`**: `_prefix_matches` had the `startswith` check reversed. `job.term` subscribers therefore never received `job.term.failed` and similar events, which left the history's failed, skipped and outcome-count queries empty.
+
+I also changed `scheduler.py`. `_cascade_skip` used `dag.dependents`, which returns only direct children, so skipping stopped one level down. It now uses `dag.transitive_dependents`.

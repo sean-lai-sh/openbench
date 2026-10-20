@@ -1,0 +1,11 @@
+{
+  "id": "prt_15798fa5d001mZWuWLLp8e36Ea",
+  "messageID": "msg_15798e961001MtILRm4c1P7Md5",
+  "sessionID": "ses_ea86761dfffeuINo4W1fFzro67",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.\n\nThere were six root causes:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and equal priorities are FIFO.\n- **`retry.py`:** `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now uses `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing. It now requires non-increasing, as its docstring says.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own values. That made per-task `retry` settings lose to the defaults. It now recurses as `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only immediate children were skipped. It now uses `transitive_dependents`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and later tasks never got admitted.\n\nThe state-machine, event-bus and history failures all came from these same defects. The `state_machine` guard and the event-bus prefix match are not covered by a direct test, so their fixes rest on the docstrings. I didn't change any other code.",
+  "time": {
+    "start": 1792471005810,
+    "end": 1792471005810
+  }
+}

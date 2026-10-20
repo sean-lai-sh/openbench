@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c68c88001EVvwhPZyn2Gsbz",
+  "sessionID": "ses_ea83a006dffe6bThs0fmceS6ex",
+  "messageID": "msg_157c677bb001FxhbcSEdT2iAM0",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. I did the initial `self` grep, but it hit the 100-match cap and mostly returned test files, so I ran the suite and read the source instead.\n\nI fixed seven logic bugs:\n\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and ran in insertion order. It is now `(-priority, seq)`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own settings. It now passes the base value first and the override second.\n- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so it is now `current <= prev`. The old check made the scheduler fail any lower-priority task that was dispatched after a higher-priority one.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children, so skipping did not reach grandchildren. It now uses `transitive_dependents`.\n- **`events.py`**: `_prefix_matches` had the prefix and topic reversed, so prefix subscribers never received `job.term.*` events. That left `History` with no failed or skipped jobs. It now checks `topic.startswith(prefix + \".\")`.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resources leaked capacity and later tasks stalled.",
+  "time": {
+    "start": 1792473992362,
+    "end": 1792473992362
+  }
+}

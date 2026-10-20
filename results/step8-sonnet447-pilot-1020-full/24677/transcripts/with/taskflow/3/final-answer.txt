@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven separate defects:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`, which ignores priority. It now sorts by `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never drained, so tasks that needed resources stalled.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so I flipped the comparison to `<=`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so a permanent failure skips the whole downstream chain.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. A task's `retry: {max_attempts: 3}` was being replaced by the default of 1.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`. Before the fix, `History` never received `job.term.*` events, so its failed, skipped and outcome-count queries came back empty.

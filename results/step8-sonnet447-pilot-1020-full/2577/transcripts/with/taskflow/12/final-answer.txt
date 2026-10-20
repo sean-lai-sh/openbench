@@ -1,0 +1,35 @@
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR)"
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR)"; cat taskflow/scheduler.py
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self.dag.transitive_dependents(failed_run.id):/' taskflow/scheduler.py
+rg -n "def transitive_dependents" -B2 -A30 taskflow/dag.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR)"
+
+Two bugs: `self.used -= 1` and `_prefix_matches` reversed.
+
+sed -i 's/return topic == prefix or prefix.startswith(topic + ".")/return topic == prefix or topic.startswith(prefix + ".")/' taskflow/events.py
+python3 -m unittest 2>&1 | tail -30
+
+`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. There were six separate bugs:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** the recursive call in `deep_merge` had its arguments swapped, so defaults overrode task settings. It's now `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` checked `current >= prev`, but priorities within a batch should be non-increasing. It now checks `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity and stalled resource-limited pipelines.
+- **`events.py`:** `_prefix_matches` had the prefix check backwards, so prefix subscribers never received `job.term.*` events. That left the history empty.
+
+I fixed the first few, re-ran, and found the rest as each fix exposed the next failure.
+
+`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. There were six separate bugs:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** the recursive call in `deep_merge` had its arguments swapped, so defaults overrode task settings. It's now `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` checked `current >= prev`, but priorities within a batch should be non-increasing. It now checks `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity and stalled resource-limited pipelines.
+- **`events.py`:** `_prefix_matches` had the prefix check backwards, so prefix subscribers never received `job.term.*` events. That left the history empty.
+
+I fixed the first few, re-ran, and found the rest as each fix exposed the next failure.

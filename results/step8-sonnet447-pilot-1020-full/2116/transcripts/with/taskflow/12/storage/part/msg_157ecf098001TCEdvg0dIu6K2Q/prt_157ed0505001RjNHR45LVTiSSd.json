@@ -1,0 +1,11 @@
+{
+  "id": "prt_157ed0505001RjNHR45LVTiSSd",
+  "sessionID": "ses_ea8134230ffeg4VqUYqrDvNVy3",
+  "messageID": "msg_157ecf098001TCEdvg0dIu6K2Q",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests. There were seven root-cause defects:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. Dispatch order was therefore pure FIFO and ignored priority. It now returns `(-priority, seq)`.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which is off by one. It now uses `attempts_made < max_attempts`, so `max_attempts=3` allows retries after attempts 1 and 2.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so I flipped it to `current <= prev`.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. Multi-unit resources leaked capacity, and later tasks were never admitted.\n- **`events.py`:** `_prefix_matches` had the arguments swapped. A prefix subscription such as `job.term` never received `job.term.failed`, so history never recorded failed or skipped jobs.\n- **`config.py`:** `deep_merge` recursed with the base and override swapped. Task-level `retry` overrides lost to the defaults.\n- **`scheduler.py`:** `_cascade_skip` used the direct dependents. It now uses `dag.transitive_dependents`, so a failure skips everything downstream and not just the direct children.\n\nThe retry bugs hid each other. `should_retry` and the `deep_merge` swap together made every task fail on its first attempt.\n\nI only ran the test suite. I didn't review the other modules for defects the tests don't cover.",
+  "time": {
+    "start": 1792476513571,
+    "end": 1792476513571
+  }
+}

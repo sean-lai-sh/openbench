@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, none edited. I fixed seven bugs under `taskflow/`:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so it ordered by insertion first. It now returns `(-priority, seq)`, which gives highest priority first with FIFO tie-breaks.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which stopped one attempt too early. It now uses `attempts_made < max_attempts`, matching the docstring.
+- **`config.py`**: `deep_merge` recursed with the arguments swapped, so defaults overrode the task's own settings. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. A task holding more than one unit leaked capacity, which is why the resource tests couldn't finish.
+- **`events.py`**: `_prefix_matches` had the prefix test backwards. It now checks `topic.startswith(prefix + ".")`, so prefix subscribers get terminal events like `job.term.failed`. The history tests depended on this.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-increasing but compared with `>=`. It now uses `<=`. The old comparison made the scheduler fail the second job in a batch outright.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream chain and the diamond case get skipped.
+
+I didn't make any of these fixes until after the first test run, when the tests pointed to them. The retry, pipeline and history failures traced back to the queue, resource, event and state-machine bugs. They surfaced one after another as I fixed the earlier ones.

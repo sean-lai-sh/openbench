@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files changed. I found seven defects, each where the code did something different from what its docstring says:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties go in FIFO order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt too early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the prefix and topic the wrong way round. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. It now requires non-increasing order (`current <= prev`), as the docstring describes.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully drained, which stalled the resource tests.
+
+I did not check whether the same defects exist elsewhere in `taskflow/`. The tests don't cover every module, so other mistakes of this kind could remain in code they don't reach.

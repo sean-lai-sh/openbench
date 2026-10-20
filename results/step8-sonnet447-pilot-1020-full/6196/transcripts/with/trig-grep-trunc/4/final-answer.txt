@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files changed. Some failures had a different root cause than the test name suggested, and fixing one bug exposed others, as the task warned. I fixed seven bugs, one per file:
+
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`. This fixed the retry-related pipeline tests.
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. It now returns `(-priority, seq)`.
+- **`config.py`**: `deep_merge` recursed as `deep_merge(value, result[key])`, which let the defaults override the task's own values. The arguments are now in the right order.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, so resource-limited tasks stalled.
+- **`statemachine.py`**: `batch_order_ok` had its comparison backwards (`>=`). It rejected the normal non-increasing priority order, so some dispatches were wrongly failed. It now checks `current_priority <= prev_priority`.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips every downstream task.
+- **`events.py`**: `_prefix_matches` had the prefix and topic swapped (`prefix.startswith(topic + ".")`). `job.term.*` events never reached `History`, so its failed, skipped and outcome-count queries came back empty.

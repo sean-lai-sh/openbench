@@ -1,0 +1,11 @@
+{
+  "id": "prt_157d0e579001g5icWg7LZS53cp",
+  "sessionID": "ses_ea82f8705ffesiFcXDkX7donXa",
+  "messageID": "msg_157d0d295001Y0IzkGIor64ioi",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.\n\nI fixed seven defects, all in code under `taskflow/`:\n\n1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the key is `(-priority, seq)`, so I swapped the order.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n3. **`config.py`**: `deep_merge` recursed with its arguments reversed (`deep_merge(value, result[key])`). That let the defaults override a task's own retry settings. The call is now `deep_merge(result[key], value)`.\n4. **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + \".\")`, which is backwards. It now checks `topic.startswith(prefix + \".\")`. Prefix subscribers never received `job.term.*` events, so `History` never recorded failed or skipped jobs.\n5. **`statemachine.py`**: `batch_order_ok` used `current >= prev`. Its docstring says priorities within an admission batch must not increase, so it is now `current <= prev`.\n6. **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so every downstream task is skipped.\n7. **`resources.py`**: `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost. Pools never freed fully, so resource-limited tasks stalled. It now does `self.used -= cost`.\n\nSome of these only showed up after others were fixed. The priority-dispatch tests, for example, hit the batch-guard bug only once the queue ordering was right.",
+  "time": {
+    "start": 1792474670488,
+    "end": 1792474670488
+  }
+}

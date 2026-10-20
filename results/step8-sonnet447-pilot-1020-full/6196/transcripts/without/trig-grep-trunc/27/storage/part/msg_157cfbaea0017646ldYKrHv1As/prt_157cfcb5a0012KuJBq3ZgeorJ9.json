@@ -1,0 +1,11 @@
+{
+  "id": "prt_157cfcb5a0012KuJBq3ZgeorJ9",
+  "sessionID": "ses_ea830bb7affeIBxlZvcUF5B5oE",
+  "messageID": "msg_157cfbaea0017646ldYKrHv1As",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests.\n\nThe grep for `self` you asked me to start with was truncated at 100 matches, so I ran the suite and read the source instead. The failures traced back to seven defects in the code:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue was plain FIFO. It now returns `(-priority, seq)`, as the docstring says.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overrode the override. It now calls `deep_merge(result[key], value)`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison backwards, so it rejected the non-increasing priority order it is meant to enforce. It is now `current <= prev`. This was masked by the queue bug until that was fixed.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips reach every descendant.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity for any multi-unit cost. It now subtracts `cost`.\n- **`events.py`:** `_prefix_matches` had the prefix and topic reversed, so prefix subscribers, including history's terminal-event tracking, never received events. It now checks `topic.startswith(prefix + \".\")`.",
+  "time": {
+    "start": 1792474598259,
+    "end": 1792474598259
+  }
+}

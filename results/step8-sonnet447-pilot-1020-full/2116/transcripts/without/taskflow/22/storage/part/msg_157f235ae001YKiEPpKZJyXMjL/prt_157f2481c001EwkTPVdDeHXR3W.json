@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f2481c001EwkTPVdDeHXR3W",
+  "sessionID": "ses_ea80e0273ffeFdT3plwpg2z3G8",
+  "messageID": "msg_157f235ae001YKiEPpKZJyXMjL",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I fixed six defects, and I didn't modify the tests.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties go in FIFO order.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`. This fixed the retry failures in the pipeline tests.\n- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but its docstring says non-increasing. It now returns `current_priority <= prev_priority`. It was never rejecting a dispatch, because the queue was ordering badly in the same way.\n- **`config.py`:** `deep_merge` recursed with the base and override swapped, so defaults overrode per-task settings. It now recurses with the base first.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n- **`resources.py`:** `ResourcePool.release` always did `used -= 1` instead of subtracting `cost`. Pools never fully freed, so resource-limited pipelines stalled. It now does `used -= cost`.\n\nI only checked the code against the failing tests. I didn't audit the other modules (`history.py`, `stats.py` and so on) for further bugs the suite doesn't exercise.",
+  "time": {
+    "start": 1792476858426,
+    "end": 1792476858426
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_157ecba4d001uXOBcy9ycBnTyt",
+  "sessionID": "ses_ea813e3bcffeyStC87W8w2i2Q5",
+  "messageID": "msg_157eca654001ylm4uOIrBju5h0",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests, only code under `taskflow/`.\n\nThere were seven root causes. Several failures traced back to a different module than the one the test was named for.\n\n| File | Bug | Fix |\n|---|---|---|\n| `queue.py` | `_Entry.sort_key` sorted by `(seq, -priority)`, so insertion order beat priority. | Changed to `(-priority, seq)`. |\n| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so the last permitted attempt was never given. | Changed to `attempts_made < max_attempts`. |\n| `events.py` | `_prefix_matches` checked `prefix.startswith(topic + \".\")`, which is backwards. | Changed to `topic.startswith(prefix + \".\")`. |\n| `statemachine.py` | `batch_order_ok` required priorities to be non-decreasing, but its docstring says non-increasing. | Changed to `current_priority <= prev_priority`. |\n| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. Pools leaked capacity, which stalled the resource-limited pipelines. | Changed to `used -= cost`. |\n| `config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. | Swapped them back. |\n| `scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | Switched to `dag.transitive_dependents`. |\n\nI ran the suite after each fix, as you expected. The retry and history failures disappeared only once the retry, queue, state-machine and resource fixes were all in.",
+  "time": {
+    "start": 1792476494439,
+    "end": 1792476494439
+  }
+}

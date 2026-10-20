@@ -1,0 +1,9 @@
+`python3 -m unittest` now reports all 25 tests passing. I fixed seven defects, and I didn't touch the tests.
+
+- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says `(-priority, seq)`, so I swapped them. Before the fix, ordering was effectively FIFO and ignored priority.
+- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`, so `max_attempts=3` allows retries after attempts 1 and 2.
+- **`taskflow/config.py`:** `deep_merge` recursed with its arguments reversed. The base overrode the override, so a task's own `retry` settings lost to the defaults. It now merges the nested dict as `deep_merge(result[key], value)`.
+- **`taskflow/statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`. With the old check, a normal priority-ordered batch was rejected and the task was marked `FAILED`.
+- **`taskflow/scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so every downstream task is skipped.
+- **`taskflow/events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). `History`'s `job.term` prefix subscription therefore never received the `job.term.*` events. It now checks `topic.startswith(prefix + ".")`.
+- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools leaked capacity, which stalled resource-limited runs.

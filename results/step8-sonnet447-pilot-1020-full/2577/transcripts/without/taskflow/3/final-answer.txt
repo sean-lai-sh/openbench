@@ -1,0 +1,38 @@
+Start with the small modules.
+
+import re
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b))
+sub('taskflow/queue.py','return (self.seq, -self.priority)','return (-self.priority, self.seq)')
+sub('taskflow/retry.py','return attempts_made < self.max_attempts - 1','return attempts_made < self.max_attempts')
+sub('taskflow/events.py','prefix.startswith(topic + ".")','topic.startswith(prefix + ".")')
+sub('taskflow/statemachine.py','return current_priority >= prev_priority','return current_priority <= prev_priority')
+E
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+
+Cascade: use transitive_dependents. Now config.
+
+
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. There were seven bugs:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and ties keep insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which stopped one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + ".")`, which is backwards. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 from `used`. It now subtracts `cost`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overrode the task's own values. It now merges the override on top of the base.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.
+
+I only re-ran the suite. I didn't audit the modules the tests don't cover for similar bugs.
+
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. There were seven bugs:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and ties keep insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which stopped one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + ".")`, which is backwards. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 from `used`. It now subtracts `cost`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overrode the task's own values. It now merges the override on top of the base.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.
+
+I only re-ran the suite. I didn't audit the modules the tests don't cover for similar bugs.

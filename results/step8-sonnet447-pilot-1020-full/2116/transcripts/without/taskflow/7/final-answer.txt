@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven root-cause bugs, and fixing some of them exposed others, as you warned:
+
+- **`queue.py`:** `_Entry.sort_key` was `(seq, -priority)`. It now sorts on `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`, so three attempts means retry after attempts 1 and 2 only.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. Its docstring says they must be non-increasing, so it now checks `current <= prev`. The wrong check made the admission guard fail jobs outright, which looked like retry and resource failures.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, and later tasks never got admitted.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It is now `topic.startswith(prefix + ".")`. Before the fix, history never received the `job.term.*` events, so `failed_jobs()` and `outcome_counts()` came back empty.
+- **`config.py`:** `deep_merge` recursed with the base and override swapped, so defaults overrode the task's own values. It now recurses with the base first, so the task's own `retry` settings win.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.

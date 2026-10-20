@@ -1,0 +1,38 @@
+Start with the small modules.
+
+import re
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b))
+sub('taskflow/queue.py','return (self.seq, -self.priority)','return (-self.priority, self.seq)')
+sub('taskflow/retry.py','return attempts_made < self.max_attempts - 1','return attempts_made < self.max_attempts')
+sub('taskflow/events.py','prefix.startswith(topic + ".")','topic.startswith(prefix + ".")')
+sub('taskflow/statemachine.py','return current_priority >= prev_priority','return current_priority <= prev_priority')
+E
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+
+Cascade should use transitive_dependents.
+
+
+`python3 -m unittest` now passes all 25 tests. I fixed six defects:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and ties are FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + ".")`, which is backwards. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says.
+- **`config.py`:** `deep_merge` swapped its arguments when recursing, so base values overrode task values in nested dicts such as `retry`. The order is now fixed.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity and stalled resource-limited runs.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+
+I didn't touch the tests. I stopped once the suite passed, so I didn't review the other modules for bugs the tests don't exercise.
+
+`python3 -m unittest` now passes all 25 tests. I fixed six defects:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and ties are FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + ".")`, which is backwards. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says.
+- **`config.py`:** `deep_merge` swapped its arguments when recursing, so base values overrode task values in nested dicts such as `retry`. The order is now fixed.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity and stalled resource-limited runs.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+
+I didn't touch the tests. I stopped once the suite passed, so I didn't review the other modules for bugs the tests don't exercise.

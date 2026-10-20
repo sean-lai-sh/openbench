@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+I found eight bugs in `taskflow/`:
+
+- **`retry.py`:** `should_retry` stopped one attempt early because it compared against `max_attempts - 1`. It now compares against `max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` was `(seq, -priority)`, which gave plain FIFO order and ignored priority. It is now `(-priority, seq)`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit resources therefore leaked and later tasks were blocked.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base value overrode the task's own value. It now calls `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. I flipped the comparison to `<=`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so the whole downstream chain is skipped.
+- **`events.py`:** `_prefix_matches` had the prefix and topic reversed. Subscribers to `job.term` never saw `job.term.failed` or `job.term.skipped`, so `History` recorded no failed or skipped jobs and `outcome_counts` was all zeros. It now checks `topic.startswith(prefix + ".")`.
+
+Some failures only showed up after earlier fixes. The retry and queue fixes came first, then the resources fix, which cleared the pipeline tests that depended on them. The prefix-matching bug in `events.py` surfaced last, through the history tests.

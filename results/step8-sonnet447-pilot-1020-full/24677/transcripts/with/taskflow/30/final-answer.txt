@@ -1,0 +1,11 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+There were seven root causes, across six modules:
+
+- **`queue.py`:** `_Entry.sort_key` was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut retries one short. It is now `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped. Defaults overrode the task's own nested values, such as `retry.max_attempts`. It now recurses with `(base, override)`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Pools never fully freed, which stalled resource-limited runs.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but its docstring says non-increasing. It now checks `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so the whole downstream chain is skipped.
+- **`events.py`:** `_prefix_matches` had the prefix check backwards (`prefix.startswith(topic + ".")`). It is now `topic.startswith(prefix + ".")`. Before the fix, `History` never received `job.term.*` events, which broke its failed, skipped and outcome-count queries.

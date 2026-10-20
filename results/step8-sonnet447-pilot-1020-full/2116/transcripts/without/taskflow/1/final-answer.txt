@@ -1,0 +1,14 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were six root causes:
+
+| File | Defect | Fix |
+|---|---|---|
+| `queue.py` | `sort_key` was `(seq, -priority)`, so insertion order beat priority. | Changed to `(-priority, seq)`. |
+| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so it stopped one attempt early. | Changed to `attempts_made < max_attempts`. |
+| `events.py` | `_prefix_matches` had the arguments swapped, so prefix subscribers never saw descendant topics. That left the history's skipped and failed sets incomplete. | Changed to `topic.startswith(prefix + ".")`. |
+| `statemachine.py` | `batch_order_ok` required priority to be non-decreasing, but its docstring says non-increasing. | Changed to `current_priority <= prev_priority`. |
+| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. Multi-unit resource costs leaked capacity and stalled the pipelines. | Changed to `used -= cost`. |
+| `config.py` | `deep_merge` recursed with its arguments reversed, so defaults overrode the task's own values (for example `retry.max_attempts`). | Changed to `deep_merge(result[key], value)`. |
+
+The cascade-skip failures had a seventh cause, in `scheduler.py`. `_cascade_skip` called `dag.dependents()`, which returns only direct children, instead of `transitive_dependents()`. Downstream tasks past the first level stayed `PENDING`. I changed it to `transitive_dependents()`.
+
+The retry and pipeline failures were masked: the retry and resource bugs sat behind the queue and event bugs, so I had to re-run and re-diagnose a few times.

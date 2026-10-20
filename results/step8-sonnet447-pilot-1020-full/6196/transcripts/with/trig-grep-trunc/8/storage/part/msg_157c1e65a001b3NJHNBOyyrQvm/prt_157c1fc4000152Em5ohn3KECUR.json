@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c1fc4000152Em5ohn3KECUR",
+  "sessionID": "ses_ea83e669cffeWY848ZeebImQAS",
+  "messageID": "msg_157c1e65a001b3NJHNBOyyrQvm",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, no failures. I didn't modify any tests. I fixed seven defects in six files:\n\n| File | Defect | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `sort_key` was `(seq, -priority)`, so insertion order beat priority. | Changed it to `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. | Changed it to `attempts_made < max_attempts`. |\n| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. | Now recurses as `deep_merge(result[key], value)`. |\n| `taskflow/events.py` | `_prefix_matches` checked `prefix.startswith(topic + \".\")`, so `job.term.*` events never reached `History`. | Now checks `topic.startswith(prefix + \".\")`. |\n| `taskflow/resources.py` | `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity. | Now subtracts `cost`. |\n| `taskflow/statemachine.py` | `batch_order_ok` required priority to be non-decreasing, but its docstring says non-increasing. | Now returns `current_priority <= prev_priority`. |\n| `taskflow/scheduler.py` | `_cascade_skip` used the direct dependents only, so only the failed task's children were skipped. | Now uses `dag.transitive_dependents`. |\n\nSeveral of these were masked by others. The priority-order bug in the queue hid the inverted batch guard in the state machine. The `History` events bug only showed once the prefix matching worked.\n\nYour instruction was to start with a grep for `self`. I did, but it matched 100 lines of boilerplate and was truncated. I got more from running the suite and reading the small core modules directly.",
+  "time": {
+    "start": 1792473693292,
+    "end": 1792473693292
+  }
+}

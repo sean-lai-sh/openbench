@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c1d5f4001sCHMP31v8JBt4p",
+  "sessionID": "ses_ea83eb668ffeLFidYN2Sz1Rzn9",
+  "messageID": "msg_157c1c39e001cfkEuj0t9IOq3f",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. I didn't check that each fix matches the intent beyond what the tests cover.\n\nMy first grep for `self` hit the 100-match cap and only showed test files and `runner.py`. It was no use for finding bugs, so I ran the suite and read the failing modules directly.\n\nI fixed eight bugs, one per spot. Five of them were root causes that showed up as failures in other tests:\n\n- **`retry.py`:** `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now returns `attempts_made < max_attempts`.\n- **`queue.py`:** the sort key was `(seq, -priority)`, so the queue ignored priority. It is now `(-priority, seq)`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed, so a batch had to run in rising priority order. It now requires non-increasing priority, i.e. `current <= prev`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overrode the override. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` subtracted `1` instead of `cost`, which left resources held and blocked later tasks.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It now tests `topic.startswith(prefix + \".\")`. This is why the history never saw the `job.term.*` events.",
+  "time": {
+    "start": 1792473683480,
+    "end": 1792473683480
+  }
+}

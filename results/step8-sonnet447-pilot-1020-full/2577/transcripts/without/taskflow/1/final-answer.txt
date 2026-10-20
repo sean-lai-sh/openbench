@@ -1,0 +1,29 @@
+Start with small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"; cat taskflow/statemachine.py; grep -n "def dependents" -A25 taskflow/dag.py
+grep -n "    def " taskflow/dag.py | sed -n 1,60p
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)" ; python3 -m unittest 2>&1 | head -60
+sed -i 's/return topic == prefix or prefix.startswith(topic + ".")/return topic == prefix or topic.startswith(prefix + ".")/' taskflow/events.py
+python3 -m unittest 2>&1 | tail -30
+
+`python3 -m unittest` now passes all 25 tests. I didn't change any tests. There were seven root-cause bugs:
+
+- **`queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority goes first and ties go in FIFO order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. The recursive call is now `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` allowed priority to increase within an admission batch. It now requires `current_priority <= prev_priority`.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` had the prefix check backwards. It now checks `topic.startswith(prefix + ".")`. The history's failed, skipped and outcome-count queries were empty because they depend on this.
+
+`python3 -m unittest` now passes all 25 tests. I didn't change any tests. There were seven root-cause bugs:
+
+- **`queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority goes first and ties go in FIFO order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. The recursive call is now `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` allowed priority to increase within an admission batch. It now requires `current_priority <= prev_priority`.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` had the prefix check backwards. It now checks `topic.startswith(prefix + ".")`. The history's failed, skipped and outcome-count queries were empty because they depend on this.

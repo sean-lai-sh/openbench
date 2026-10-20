@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.
+
+There were seven root causes, in six files:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the arguments swapped (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch. The docstring says non-increasing, so I flipped the comparison to `<=`.
+- **`config.py`:** `deep_merge` recursed with the arguments reversed, so the base value overrode the task's own. It now recurses as `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Resources leaked, and tasks that needed them never got admitted.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only the immediate children were skipped. It now uses `transitive_dependents`.

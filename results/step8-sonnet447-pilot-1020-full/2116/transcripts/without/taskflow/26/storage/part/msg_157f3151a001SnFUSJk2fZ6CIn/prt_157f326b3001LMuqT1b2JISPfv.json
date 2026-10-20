@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f326b3001LMuqT1b2JISPfv",
+  "sessionID": "ses_ea80d26c6ffehA8NsiKxw70rjn",
+  "messageID": "msg_157f3151a001SnFUSJk2fZ6CIn",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files changed. I found seven bugs in the code under `taskflow/`:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It should be `(-priority, seq)`, so priority orders first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which is off by one. It now uses `attempts_made < max_attempts`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity, which stalled the resource tests.\n- **`events.py`:** `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + \".\")`, so a prefix subscriber receives every topic under it.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring and queue ordering say non-increasing, so it now checks `current <= prev`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. It now calls `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.\n\nSeveral of these were masked by others. The resource and retry failures only showed their real causes once the queue ordering and retry boundary were fixed.",
+  "time": {
+    "start": 1792476915403,
+    "end": 1792476915403
+  }
+}

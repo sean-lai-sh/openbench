@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f0832b001Qol0PapeyaTsgv",
+  "sessionID": "ses_ea80fd239ffendwsSXt4oNPuys",
+  "messageID": "msg_157f0716d001qAAhs9sIrJ1SPH",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I changed only code under `taskflow/`, not the tests.\n\nThere were seven bugs, and each one was in a different module from the test that exposed it:\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the ordering is `(-priority, seq)`, so I swapped the two.\n2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`, which matches the docstring's example for `max_attempts == 3`.\n3. **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. The docstring says non-increasing, so I flipped the comparison. The old check was marking correctly ordered runs as failed.\n4. **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity, which blocked later tasks on the same resource.\n5. **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own values. A task's `retry.max_attempts` was being replaced by the default.\n6. **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`. It now uses `transitive_dependents`, so a permanent failure skips every downstream task, not just the direct children.\n7. **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, the wrong way round. The `job.term` prefix subscription therefore never matched `job.term.failed` and similar topics, so `History` never recorded terminal outcomes.",
+  "time": {
+    "start": 1792476742473,
+    "end": 1792476742473
+  }
+}

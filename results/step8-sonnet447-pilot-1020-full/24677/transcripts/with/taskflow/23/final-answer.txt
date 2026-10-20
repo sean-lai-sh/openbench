@@ -1,0 +1,17 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files modified. I found eight defects, and each fix is a one-line change.
+
+| File | Defect | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and ran in insertion order. | Return `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, one retry short. | Use `attempts_made < max_attempts`. |
+| `taskflow/statemachine.py` | `batch_order_ok` had its comparison reversed. | Use `current_priority <= prev_priority`. |
+| `taskflow/config.py` | `deep_merge` recursed as `deep_merge(value, result[key])`, so the defaults overrode a task's own values. | Recurse as `deep_merge(result[key], value)`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used `dependents()`, which returns only direct children, so skips didn't reach grandchildren. | Use `transitive_dependents()`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost, so multi-unit tasks leaked capacity and later tasks never ran. | Use `self.used -= cost`. |
+| `taskflow/events.py` | `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`), so `job.term` subscribers never received `job.term.failed` and similar events. | Use `topic.startswith(prefix + ".")`. |
+
+The task asks about reversed or masked failures, and that's what happened here:
+
+- **Reversed batch guard:** the reversed `batch_order_ok` stayed hidden until the queue ordering was fixed. Before that, the queue handed out tasks in the wrong order.
+- **History failures:** the failing history tests (`failed_jobs` and `outcome_counts`) came from the event-bus prefix matching, not from `history.py`.
+- **Resource tests:** the "run all finish" and "peak" tests failed because of the release bug in `resources.py`, not the scheduler.

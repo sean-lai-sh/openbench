@@ -1,0 +1,34 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR)"; cat taskflow/scheduler.py
+sed -i 's/return topic == prefix or prefix.startswith(topic + ".")/return topic == prefix or topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/self.used -= 1/self.used -= cost/' taskflow/resources.py
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self.dag.transitive_dependents(failed_run.id):/' taskflow/scheduler.py
+sed -n 143,175p taskflow/dag.py
+python3 -m unittest 2>&1 | tail -40
+
+All 25 tests pass now. I fixed eight bugs in `taskflow/` and didn't touch the tests:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now requires non-increasing priority within a batch.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. It now merges in the order `(base, override)`.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, so prefix subscriptions never matched subtopics. It now tests `topic.startswith(prefix + ".")`. This is why the history had no failed or skipped jobs.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resources leaked and later tasks never started.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`.
+
+The `should_retry` fix also changed the retry tests, which were failing for that reason.
+
+All 25 tests pass now. I fixed eight bugs in `taskflow/` and didn't touch the tests:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now requires non-increasing priority within a batch.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. It now merges in the order `(base, override)`.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, so prefix subscriptions never matched subtopics. It now tests `topic.startswith(prefix + ".")`. This is why the history had no failed or skipped jobs.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resources leaked and later tasks never started.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`.
+
+The `should_retry` fix also changed the retry tests, which were failing for that reason.

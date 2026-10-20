@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+I did not start with a useful grep. `self` matches nearly every method, so the search was truncated at 100 results and told me nothing. I ran the suite and read the failing modules instead.
+
+I fixed seven defects, and several of them hid others:
+
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. It is now `< max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` sorted by sequence first. It is now `(-priority, seq)`, so higher priority comes first and ties go in FIFO order.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so base values overrode task overrides. It now calls `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch, which is the opposite of its docstring. It now requires `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity on multi-unit tasks.
+- **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). It now uses `topic.startswith(prefix + ".")`.

@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were six root causes, and each one produced failures in tests named for other modules.
+
+- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in insertion order and ignored priority. It now returns `(-priority, seq)`.
+- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`taskflow/events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + ".")`), so prefix subscribers never matched subtopics. It now checks `topic.startswith(prefix + ".")`.
+- **`taskflow/statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. The old check made the scheduler fail any second admission in a batch if it had a lower priority than the first. It now returns `current <= prev`.
+- **`taskflow/resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of `-= cost`. That leaked capacity and stalled resource-limited runs.
+- **`taskflow/config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`, which swapped base and override, so defaults overrode a task's own `retry` settings. It now recurses as `deep_merge(result[key], value)`.
+- **`taskflow/scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.

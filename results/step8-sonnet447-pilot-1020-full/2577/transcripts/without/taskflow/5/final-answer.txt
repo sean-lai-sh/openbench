@@ -1,0 +1,30 @@
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+sed -n 143,175p taskflow/dag.py
+
+Cascade should use transitive_dependents.
+
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+sed -i 's/self.used -= 1/self.used -= cost/' taskflow/resources.py
+python3 -m unittest 2>&1 | tail -30
+
+`python3 -m unittest` now passes: all 25 tests, with no test files modified. There were seven defects, each a one-line logic error:
+
+- **`queue.py`**: the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and ties go in insertion order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`. It now uses `attempts_made < max_attempts`, which gives `max_attempts` total attempts.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says. The old check made the scheduler fail any task admitted after a lower-priority one in the same batch.
+- **`config.py`**: `deep_merge` swapped its arguments when recursing, so base values overrode the overrides in nested dicts. The arguments are now in the right order.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`events.py`**: `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). It is now `topic.startswith(prefix + ".")`, so the `job.term` prefix subscription receives `job.term.failed` and the other terminal events. This is why the history outcome sets were empty.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit resource holds were never fully released, which stalled the pipelines that use resource pools.
+
+`python3 -m unittest` now passes: all 25 tests, with no test files modified. There were seven defects, each a one-line logic error:
+
+- **`queue.py`**: the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and ties go in insertion order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`. It now uses `attempts_made < max_attempts`, which gives `max_attempts` total attempts.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says. The old check made the scheduler fail any task admitted after a lower-priority one in the same batch.
+- **`config.py`**: `deep_merge` swapped its arguments when recursing, so base values overrode the overrides in nested dicts. The arguments are now in the right order.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`events.py`**: `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). It is now `topic.startswith(prefix + ".")`, so the `job.term` prefix subscription receives `job.term.failed` and the other terminal events. This is why the history outcome sets were empty.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit resource holds were never fully released, which stalled the pipelines that use resource pools.

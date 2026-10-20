@@ -1,0 +1,25 @@
+Start with the small modules.
+
+
+Prefix match is reversed.
+
+
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests. There were seven logic bugs, in six files:
+
+- **`queue.py`:** `_Entry.sort_key` had its fields reversed. It now returns `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`:** `should_retry` was off by one. It now returns `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of the cost. It now subtracts `cost`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison inverted. It now checks `current_priority <= prev_priority`, matching the non-increasing priority rule.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overwrote the override. A task's `retry.max_attempts` was being replaced by the default.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`events.py`:** `_prefix_matches` had the `startswith` check backwards. It now checks `topic.startswith(prefix + ".")`. This is why the history's `job.term` prefix subscription never received any events, and `failed_jobs`, `skipped_jobs` and `outcome_counts` stayed empty.
+
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests. There were seven logic bugs, in six files:
+
+- **`queue.py`:** `_Entry.sort_key` had its fields reversed. It now returns `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`:** `should_retry` was off by one. It now returns `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of the cost. It now subtracts `cost`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison inverted. It now checks `current_priority <= prev_priority`, matching the non-increasing priority rule.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overwrote the override. A task's `retry.max_attempts` was being replaced by the default.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`events.py`:** `_prefix_matches` had the `startswith` check backwards. It now checks `topic.startswith(prefix + ".")`. This is why the history's `job.term` prefix subscription never received any events, and `failed_jobs`, `skipped_jobs` and `outcome_counts` stayed empty.

@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. There were seven separate bugs in `taskflow/`:
+
+1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order only breaks ties.
+2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+3. **`statemachine.py`**: `batch_order_ok` had its comparison reversed (`>=`). It now returns `current <= prev`, so priority has to be non-increasing within a batch. This guard was the reason the old queue ordering made runs fail outright.
+4. **`config.py`**: `deep_merge` recursed as `deep_merge(value, result[key])`, which let the defaults override the task's own settings. The arguments are now in the order `(base, override)`.
+5. **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + ".")`, the wrong way round. It now checks `topic.startswith(prefix + ".")`, so `job.term` subscriptions receive `job.term.failed` and the other outcomes. That fixed the history tests.
+6. **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `dag.transitive_dependents`, so every downstream task is skipped.
+7. **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, so later tasks were never admitted.

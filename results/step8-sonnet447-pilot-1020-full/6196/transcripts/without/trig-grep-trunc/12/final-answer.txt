@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests.
+
+I made eight fixes, each a one-line change:
+
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt too early. It's now `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority comes first and insertion order breaks ties.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own settings. It now merges the override on top of the base.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch. The docstring says non-increasing, so it now checks `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct dependents. It now uses `transitive_dependents`, so a failure skips everything downstream.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resources leaked. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` had the prefix and topic reversed. It now checks `topic.startswith(prefix + ".")`.
+
+The `test_pipelines` retry, priority, resource, skip and history failures all traced back to these same bugs, not to their own modules. Fixing the first few exposed the later ones.

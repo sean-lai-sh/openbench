@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f3c34d001C0n2pmuqP5yHhv",
+  "sessionID": "ses_ea80c7f5dffe0zLgYq42vDD4Zh",
+  "messageID": "msg_157f3af0d0012PaI2NWx7OxQQV",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. The suite started at 18 failures, and I found six root causes:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and popped in insertion order. It now returns `(-priority, seq)`.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`. This was behind the retry failures and the \"flaky\"/\"doomed\" pipeline tests.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but its docstring says non-increasing. It now returns `current_priority <= prev_priority`. Once the queue was fixed, the old check would have failed any batch that admitted tasks in priority order.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools leaked capacity, so resource-limited pipelines stalled.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task settings instead of the reverse. It now recurses as `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`. This fixed the skip-chain, diamond and history skip-count failures.",
+  "time": {
+    "start": 1792476955489,
+    "end": 1792476955489
+  }
+}

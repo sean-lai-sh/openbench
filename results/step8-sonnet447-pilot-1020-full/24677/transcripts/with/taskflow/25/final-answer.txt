@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify the tests. There were seven separate bugs:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ordered by insertion first and priority never mattered. | Changed it to `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. | Changed it to `attempts_made < max_attempts`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost, so multi-unit costs leaked capacity and resource-limited runs stalled. | Changed it to `used -= cost`. |
+| `taskflow/events.py` | `_prefix_matches` checked `prefix.startswith(topic + ".")`, which is backwards. `job.term.failed` never matched the `job.term` subscription, so the history never recorded terminal outcomes. | Changed it to `topic.startswith(prefix + ".")`. |
+| `taskflow/statemachine.py` | `batch_order_ok` required `current >= prev`, the opposite of its documented non-increasing priority rule. Once the queue was fixed, this guard marked higher-priority-first batches as FAILED. | Changed it to `current <= prev`. |
+| `taskflow/config.py` | `deep_merge` recursed as `deep_merge(value, result[key])`, so the defaults overrode the task's own `retry` settings. | Changed it to `deep_merge(result[key], value)`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents` (direct children only), so grandchildren stayed PENDING. | Switched it to `dag.transitive_dependents`. |
+
+The `retry.py` and `statemachine.py` bugs only showed up after the queue fix, as the task description warned.

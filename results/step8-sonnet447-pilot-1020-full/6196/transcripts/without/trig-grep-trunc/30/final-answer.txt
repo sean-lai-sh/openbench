@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify the tests.
+
+My first grep for `self` was truncated at 100 matches, so I ran the suite and fixed failures from there. These were the defects, each in a different module from the test that exposed it:
+
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It is now `attempts_made < max_attempts`.
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties are FIFO.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. It now recurses as `deep_merge(result[key], value)`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison inverted. It now requires `current_priority <= prev_priority`, matching the docstring's non-increasing order.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a failure skips the whole downstream chain.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity and stalled resource-limited runs.
+- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`, so prefix subscribers receive their subtree.
+
+The inverted batch-order guard in `statemachine.py` was hidden by the queue ordering bug. Fixing the queue exposed it as a new failure.

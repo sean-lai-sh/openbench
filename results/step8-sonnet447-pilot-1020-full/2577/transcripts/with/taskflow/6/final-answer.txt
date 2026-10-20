@@ -1,0 +1,31 @@
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/prefix.startswith(topic + ".")/topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"; cat tests/test_config.py taskflow/config.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"; cat taskflow/scheduler.py taskflow/runner.py
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self._cascade_order(failed_run.id):/' taskflow/scheduler.py
+rg -n "def transitive_dependents" -A25 taskflow/dag.py
+
+That looks right; use it directly.
+
+python3 -m unittest 2>&1 | tail -40
+
+All 25 tests pass now. I made seven fixes:
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `max_attempts - 1`, which was off by one. It now returns `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, so priorities within a batch are non-increasing.
+- **`config.py`**: `deep_merge` swapped base and override when recursing, so defaults overrode a task's own nested values. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity. It now subtracts `cost`.
+- **`scheduler.py`**: `_cascade_skip` iterated over direct dependents only. It now uses `dag.transitive_dependents`, so everything downstream of a failed task is skipped.
+
+All 25 tests pass now. I made seven fixes:
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `max_attempts - 1`, which was off by one. It now returns `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, so priorities within a batch are non-increasing.
+- **`config.py`**: `deep_merge` swapped base and override when recursing, so defaults overrode a task's own nested values. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity. It now subtracts `cost`.
+- **`scheduler.py`**: `_cascade_skip` iterated over direct dependents only. It now uses `dag.transitive_dependents`, so everything downstream of a failed task is skipped.

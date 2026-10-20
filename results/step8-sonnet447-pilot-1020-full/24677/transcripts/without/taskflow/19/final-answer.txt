@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.
+
+There were seven defects across seven files:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which lost the last permitted attempt. It now uses `< max_attempts`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. That leaked capacity for any task costing more than 1, which is why the resource tests failed.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`, so `job.term` subscribers receive `job.term.failed` and `job.term.skipped`. This fixed the history failed/skipped set and outcome-count failures.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing (`>=`). The docstring says non-increasing, so it is now `<=`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. This broke the task retry override tests.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+
+Several failures were masked by others. The retry tests, for example, failed at first because of the `should_retry` and `deep_merge` bugs. The skip tests showed up as failures only after the earlier fixes.

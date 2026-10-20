@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests. There were seven separate defects:
+
+1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+3. **`statemachine.py`:** `batch_order_ok` checked `current >= prev`, which allowed rising priorities and rejected the valid non-increasing order. It now checks `current <= prev`. This was masked by the queue ordering bug.
+4. **`scheduler.py`:** `_cascade_skip` iterated over `dag.dependents()`, which returns only direct children. It now uses `transitive_dependents()`, so a permanent failure skips every downstream task.
+5. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own `retry` values. It now calls `deep_merge(result[key], value)`.
+6. **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`. The `job.term.*` events had been silently dropped, which left the history's failed, skipped and succeeded sets empty.
+7. **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resources leaked, so later tasks were never admitted.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_158016da40013a5j0cmsfPhHC8",
+  "messageID": "msg_158015c5e0010QGTDXV7Ioh8yZ",
+  "sessionID": "ses_ea7feee37ffeeXzkrU4ojspWlE",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't edit any tests.\n\nThere were seven defects across six modules, all in `taskflow/`:\n\n- **`queue.py`:** `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It's now `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` used `>=`, which required priorities to be non-decreasing within a batch. It's now `<=`, matching the documented non-increasing order. Admission would otherwise have failed any lower-priority task started after a higher-priority one in the same batch.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity and stalled resource-limited runs.\n- **`events.py`:** `_prefix_matches` had its arguments reversed, so the `job.term` prefix subscription never matched `job.term.failed` and similar topics. History never recorded any outcomes. It now checks `topic.startswith(prefix + \".\")`.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dependents` instead of `transitive_dependents`, so only direct children were skipped.",
+  "time": {
+    "start": 1792477851071,
+    "end": 1792477851071
+  }
+}

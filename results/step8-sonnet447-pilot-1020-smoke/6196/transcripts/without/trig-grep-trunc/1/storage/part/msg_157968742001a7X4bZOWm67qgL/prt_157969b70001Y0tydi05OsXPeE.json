@@ -1,0 +1,11 @@
+{
+  "id": "prt_157969b70001Y0tydi05OsXPeE",
+  "sessionID": "ses_ea86a0165ffe9mLpBHezfYuEuk",
+  "messageID": "msg_157968742001a7X4bZOWm67qgL",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests.\n\nI fixed seven bugs, and none of them were in the module the failing test was named for:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties break by insertion order.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which cut retries short by one. It is now `attempts_made < max_attempts`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested `retry` and `resources` settings. It now merges `result[key]` with `value`.\n- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Any task with a cost above 1 leaked capacity, which is why the resource tests never finished.\n- **`statemachine.py`**: `batch_order_ok` had its comparison backwards (`>=`). Within a batch, priorities must be non-increasing, so it is now `current_priority <= prev_priority`.\n- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is reversed. It is now `topic.startswith(prefix + \".\")`. Without this, the history never received terminal events.\n\nThe `grep` for `self` you asked for first returned only a truncated sample of matches, so I ran the tests directly and worked from the failures.",
+  "time": {
+    "start": 1792470850457,
+    "end": 1792470850457
+  }
+}

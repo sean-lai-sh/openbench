@@ -1,0 +1,11 @@
+{
+  "id": "prt_1580ee7cc001YvwPRJQ521lszj",
+  "messageID": "msg_1580ed8a7001IDBUOE8xIJBv4x",
+  "sessionID": "ses_ea7f172bdffe1G7E0cMCH5o5kj",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. There were six root causes, and each fix was a single line:\n\n- **`queue.py`**: the sort key was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It's now `attempts_made < max_attempts`.\n- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`, so pools leaked capacity.\n- **`events.py`**: `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + \".\")`.\n- **`config.py`**: `deep_merge` recursed as `deep_merge(override_child, base_child)`, so the defaults overrode the task's own values. The arguments are now in the right order.\n- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`.\n\nI also changed `batch_order_ok` in `statemachine.py` from `>=` to `<=`, so a batch only admits priorities in non-increasing order, as its docstring says. No test failed because of it, so I haven't seen it exercised. With the old `>=` it would have rejected any batch that ran in correct priority order.",
+  "time": {
+    "start": 1792478734303,
+    "end": 1792478734303
+  }
+}
