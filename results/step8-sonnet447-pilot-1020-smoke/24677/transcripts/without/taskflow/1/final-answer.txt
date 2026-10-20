@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files modified.
+
+There were seven separate bugs, in these files:
+
+- **`taskflow/queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`taskflow/retry.py`:** `should_retry` had an off-by-one (`attempts_made < max_attempts - 1`). It now compares against `max_attempts`, so a task gets its full attempt budget.
+- **`taskflow/statemachine.py`:** `batch_order_ok` checked `>=` where the invariant is non-increasing priority within a batch. It now checks `<=`. With the queue fixed, the old check wrongly failed runs at admission.
+- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now merges `(base_child, override_child)`.
+- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Any task with a cost above 1 leaked capacity.
+- **`taskflow/scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only direct children were skipped. It now uses `transitive_dependents`, so every downstream task is skipped.
+- **`taskflow/events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). It is now `topic.startswith(prefix + ".")`, so the history sees `job.term.*` events. That fixed the `failed_jobs`, `skipped_jobs` and `outcome_counts` results.

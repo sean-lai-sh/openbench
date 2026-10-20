@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests. The suite had 18 failures at the start. They traced back to seven bugs, all in the code under `taskflow/`:
+
+1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+3. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.
+4. **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current <= prev`, which is the non-increasing priority rule its docstring describes. The reversed check had been masked by the queue ordering bug.
+5. **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+6. **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Resources leaked, so later tasks were never admitted.
+7. **`events.py`:** `_prefix_matches` had `topic` and `prefix` swapped in the `startswith` check. Prefix subscriptions such as `job.term` never matched `job.term.failed`, which left the history's terminal-outcome sets empty.

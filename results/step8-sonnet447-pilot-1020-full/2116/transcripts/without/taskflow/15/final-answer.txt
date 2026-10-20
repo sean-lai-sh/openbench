@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I changed only code under `taskflow/`, not the tests.
+
+There were seven bugs, and each one was in a different module from the test that exposed it:
+
+1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the ordering is `(-priority, seq)`, so I swapped the two.
+2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`, which matches the docstring's example for `max_attempts == 3`.
+3. **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. The docstring says non-increasing, so I flipped the comparison. The old check was marking correctly ordered runs as failed.
+4. **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity, which blocked later tasks on the same resource.
+5. **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own values. A task's `retry.max_attempts` was being replaced by the default.
+6. **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`. It now uses `transitive_dependents`, so a permanent failure skips every downstream task, not just the direct children.
+7. **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, the wrong way round. The `job.term` prefix subscription therefore never matched `job.term.failed` and similar topics, so `History` never recorded terminal outcomes.

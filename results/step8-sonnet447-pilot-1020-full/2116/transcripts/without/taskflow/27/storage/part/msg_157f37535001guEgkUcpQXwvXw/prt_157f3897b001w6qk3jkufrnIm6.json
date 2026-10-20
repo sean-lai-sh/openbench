@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f3897b001w6qk3jkufrnIm6",
+  "sessionID": "ses_ea80cd20dffeFV2XfAV0PWY9yq",
+  "messageID": "msg_157f37535001guEgkUcpQXwvXw",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests, and I didn't read or change the modules the failing tests don't exercise (planner, stats, metrics and the rest), so any bugs there are unchecked.\n\nThere were six root causes. Several of the 18 failures shared one:\n\n1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ordered by insertion first and ignored priority. It now returns `(-priority, seq)`.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`. This fixed the retry tests.\n3. **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within an admission batch, but the docstring says non-increasing. It now checks `current <= prev`.\n4. **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so resources leaked and later tasks never got admitted. Fixing it cleared the resource tests.\n5. **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n6. **Two more, in `config.py` and `events.py`**:\n   - `config.py`: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. This is why `retry.max_attempts` came out as 1 instead of 3 or 5.\n   - `events.py`: `_prefix_matches` had the `startswith` check backwards, so `job.term` subscribers never received `job.term.failed` and similar events. The history tests were failing because of this.",
+  "time": {
+    "start": 1792476940692,
+    "end": 1792476940692
+  }
+}

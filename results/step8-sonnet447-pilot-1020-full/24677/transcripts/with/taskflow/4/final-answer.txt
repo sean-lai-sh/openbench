@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files modified. I fixed seven bugs, each a one-line logic error:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and equal priorities stay first-in-first-out.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`, so `max_attempts=3` allows retries after attempts 1 and 2.
+- **`config.py`**: `deep_merge` recursed as `deep_merge(value, result[key])`, so the base overrode the override. It now recurses as `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never freed their full cost, which stalled resource-limited runs.
+- **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing, which is the opposite of its docstring. It now requires `current <= prev`. This guard was marking correctly ordered dispatches as FAILED.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents` (direct children only). It now uses `dag.transitive_dependents`, so grandchildren are skipped too.
+- **`events.py`**: `_prefix_matches` had the prefix test reversed. It now checks `topic.startswith(prefix + ".")`, so `History` receives the `job.term.*` events. That fixed the failed, skipped and outcome-count history tests.

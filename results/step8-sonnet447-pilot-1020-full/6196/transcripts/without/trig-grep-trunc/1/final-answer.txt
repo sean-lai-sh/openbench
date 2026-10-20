@@ -1,0 +1,9 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify any tests. Each defect was a logic error where the code did the opposite of what its comment or docstring said:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It should be `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `< max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested settings. It now recurses with the base first and the override second.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Pools never fully freed, so tasks that needed those resources stalled.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so a normal batch was rejected and the run marked FAILED. It now checks `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`, so only immediate children were skipped. It now uses `transitive_dependents`.
+- **`events.py`:** `_prefix_matches` had `topic` and `prefix` swapped. The `job.term` prefix subscription therefore never received `job.term.failed` and similar events, so `History` recorded no outcomes.

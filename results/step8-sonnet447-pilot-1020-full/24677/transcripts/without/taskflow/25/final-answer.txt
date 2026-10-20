@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files modified. There were seven defects, and each one contradicted its own docstring or comment:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so priority was ignored. | It now returns `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, one attempt short. | It now uses `attempts_made < max_attempts`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. | It now does `used -= cost`. |
+| `taskflow/events.py` | `_prefix_matches` had the arguments of `startswith` reversed. | It now checks `topic.startswith(prefix + ".")`. |
+| `taskflow/statemachine.py` | `batch_order_ok` required priority to be non-decreasing, but the docstring says non-increasing. | It now checks `current <= prev`. |
+| `taskflow/scheduler.py` | `_cascade_skip` only skipped direct dependents. | It now uses `transitive_dependents`. |
+| `taskflow/config.py` | `deep_merge` recursed with the base and override swapped, so defaults beat per-task overrides. | The recursion is now `deep_merge(result[key], value)`. |
+
+I fixed them in the order the tests exposed them. The retry pipeline tests failed on two causes at once: the `deep_merge` bug and the `should_retry` off-by-one.

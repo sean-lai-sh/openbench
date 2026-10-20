@@ -1,0 +1,11 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.
+
+The first grep for `self` was truncated at 100 matches and didn't help, so I ran the suite and read the code instead. These were the root causes, each a small logic error:
+
+- **`queue.py`:** The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `(base, override)`.
+- **`statemachine.py`:** `batch_order_ok` required priority to rise within an admission batch. It now requires it to be non-increasing (`current <= prev`), as the docstring says. This one only showed up once the queue ordering was fixed.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity and left resource-limited tasks stuck.
+- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`, which fixes the history and terminal-event tests.

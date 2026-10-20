@@ -1,0 +1,29 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -A8 -E "^(FAIL|ERROR)"; cat taskflow/scheduler.py
+sed -i 's/result\[key\] = deep_merge(value, result\[key\])/result[key] = deep_merge(result[key], value)/' taskflow/config.py
+sed -i 's/return topic == prefix or prefix.startswith(topic + ".")/return topic == prefix or topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/self.used -= 1/self.used -= cost/' taskflow/resources.py
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR)|^Ran|^OK"
+
+All 25 tests now pass. I found seven bugs and fixed each at its root cause:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, so priority must not increase within a batch. The old check was hidden until the queue ordering was fixed.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own values. It now calls `deep_merge(result[key], value)`.
+- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + ".")` instead of `topic.startswith(prefix + ".")`. As a result, `job.term` subscribers never received `job.term.failed` or `job.term.skipped` events.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Resources leaked, which stalled the resource-limited runs.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream set is skipped.
+
+All 25 tests now pass. I found seven bugs and fixed each at its root cause:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, so priority must not increase within a batch. The old check was hidden until the queue ordering was fixed.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own values. It now calls `deep_merge(result[key], value)`.
+- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + ".")` instead of `topic.startswith(prefix + ".")`. As a result, `job.term` subscribers never received `job.term.failed` or `job.term.skipped` events.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Resources leaked, which stalled the resource-limited runs.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream set is skipped.

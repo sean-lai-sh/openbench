@@ -1,0 +1,16 @@
+Start with the small modules.
+
+import re
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b))
+sub('taskflow/queue.py','return (self.seq, -self.priority)','return (-self.priority, self.seq)')
+sub('taskflow/retry.py','return attempts_made < self.max_attempts - 1','return attempts_made < self.max_attempts')
+sub('taskflow/events.py','prefix.startswith(topic + ".")','topic.startswith(prefix + ".")')
+sub('taskflow/statemachine.py','return current_priority >= prev_priority','return current_priority <= prev_priority')
+E
+python3 -m unittest 2>&1 | grep -A8 -E "^(FAIL|ERROR)"
+python3 -m unittest 2>&1 | grep -A8 -E "^(FAIL|ERROR)"; grep -n "def dependents" -B2 -A30 taskflow/dag.py
+
+Scheduler should use transitive_dependents.
+
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR)"

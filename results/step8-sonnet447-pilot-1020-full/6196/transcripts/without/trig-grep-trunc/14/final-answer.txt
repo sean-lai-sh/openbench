@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests. I fixed seven defects, each in a different module from the one the failing test was named for.
+
+- **`retry.py`:** `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now returns true while `attempts_made < max_attempts`.
+- **`queue.py`:** the sort key was `(seq, -priority)`, which ordered purely by insertion. It is now `(-priority, seq)`, so higher priority goes first and ties are FIFO.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. It is now `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. It now requires non-increasing, as the docstring says.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so grandchildren are skipped as well.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). `History` never received `job.term.*` events, so its failed, skipped and succeeded lists were empty.
+- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Any task costing more than 1 unit leaked capacity and blocked later tasks.
+
+The first grep for `self` was truncated at 100 matches and mostly hit test files, so I ran the suite and read the source modules directly.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_157d30f32001yYmyGr06Qdsov2",
+  "sessionID": "ses_ea82d4a14ffe8HCeAnAZWSk7hI",
+  "messageID": "msg_157d2fd23001jf0c7VbzKpJ253",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. I fixed seven defects, all in `taskflow/`:\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority pops first and ties go in insertion order.\n2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, an off-by-one that cut retries short. It now uses `attempts_made < max_attempts`.\n3. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base defaults overrode a task's own values. It now merges `(result[key], value)`.\n4. **`events.py`:** `_prefix_matches` had its operands reversed. A `job.term` subscription never saw `job.term.failed`, `job.term.skipped` or `job.term.succeeded`, so the history's outcome lists stayed empty. It now checks `topic.startswith(prefix + \".\")`.\n5. **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch. Its docstring says non-increasing, so it now checks `current <= prev`. With the old check, admitting a lower-priority task after a higher one failed the run.\n6. **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so grandchildren are skipped too.\n7. **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost. Pools never fully freed, so tasks costing more than one unit stalled.\n\nThe failures were chained, as warned. For example, the priority, retry and resource tests only exposed the batch-order and release bugs after the queue and retry fixes went in.",
+  "time": {
+    "start": 1792474812238,
+    "end": 1792474812238
+  }
+}

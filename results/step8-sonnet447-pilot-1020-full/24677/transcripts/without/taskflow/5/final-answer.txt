@@ -1,0 +1,9 @@
+All 25 tests now pass. There were seven separate bugs, and several of them were hiding others:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in insertion order and ignored priority. It now returns `(-priority, seq)`.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so multi-unit resources leaked and later tasks were never admitted.
+- **`statemachine.py`**: `batch_order_ok` had the comparison backwards (`>=`). It now requires non-increasing priority (`<=`), as its docstring says. Once the queue ordered by priority, the old check wrongly failed jobs in a batch.
+- **`scheduler.py`**: `_cascade_skip` used direct `dependents`, so only immediate children were skipped. It now uses `transitive_dependents`.
+- **`config.py`**: in `deep_merge`, the recursive call had its arguments swapped, so the defaults overrode the task's own `retry` settings. It now calls `deep_merge(result[key], value)`.
+- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + ".")`, the wrong way round. Prefix subscribers such as `History` therefore never received `job.term.*` events. It now tests `topic.startswith(prefix + ".")`.

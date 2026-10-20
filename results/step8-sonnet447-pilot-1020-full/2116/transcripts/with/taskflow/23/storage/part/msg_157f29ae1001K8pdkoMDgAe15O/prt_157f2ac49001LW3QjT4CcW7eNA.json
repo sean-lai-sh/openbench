@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f2ac49001LW3QjT4CcW7eNA",
+  "sessionID": "ses_ea80da64fffe2y036jD5sPeeHn",
+  "messageID": "msg_157f29ae1001K8pdkoMDgAe15O",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files changed. There were seven separate defects, spread across six modules.\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the order is `(-priority, seq)`, so I swapped them. Before the fix, dispatch was FIFO regardless of priority.\n2. **`retry.py`:** `should_retry` was off by one. It used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n3. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `result[key]` with `value`.\n4. **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked, and later tasks were never admitted.\n5. **`statemachine.py`:** `batch_order_ok` was inverted. It required priority to be non-decreasing within an admission batch, but the docstring says non-increasing. This made correctly ordered batches fail.\n6. **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.\n7. **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + \".\")`). The `job.term` prefix subscription never matched `job.term.failed` and similar topics, so `History` recorded no terminal outcomes. It now checks `topic.startswith(prefix + \".\")`.",
+  "time": {
+    "start": 1792476884070,
+    "end": 1792476884070
+  }
+}

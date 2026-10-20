@@ -1,0 +1,11 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify the tests.
+
+I found seven bugs. Each one was a logic error where the code did something different from what its docstring said:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and popped in insertion order. It now returns `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the arguments of `startswith` swapped, so prefix subscriptions never matched subtopics. It now checks `topic.startswith(prefix + ".")`. This is why `History` missed the `job.term.*` outcomes (skipped, failed, succeeded).
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It required priority to be non-decreasing within a batch, but the docstring says non-increasing. It now uses `current_priority <= prev_priority`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of subtracting `cost`. Pools leaked capacity and later tasks were never admitted.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task-level settings such as `retry.max_attempts`. It now merges the existing value with the override.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so everything downstream of a failed task is skipped.

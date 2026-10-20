@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. I fixed seven bugs, each in the module that caused it:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so it ordered by insertion first. It now returns `(-priority, seq)`, which gives highest priority first and FIFO for ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now recurses with `(result[key], value)`.
+- **`statemachine.py`**: `batch_order_ok` required each dispatch to have priority greater than or equal to the previous one. The docstring says non-increasing, so it now checks `current <= prev`. The scheduler had been failing jobs outright on this check.
+- **`scheduler.py`**: `_cascade_skip` skipped only direct dependents. It now skips everything downstream via `dag.transitive_dependents`.
+- **`events.py`**: `_prefix_matches` had its arguments reversed, so no `job.term.*` events reached `History`. It now checks `topic.startswith(prefix + ".")`.
+- **`resources.py`**: `ResourcePool.release` always subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and later tasks were never admitted. It now subtracts `cost`.

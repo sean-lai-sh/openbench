@@ -1,0 +1,15 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.
+
+I found seven bugs, spread across several modules:
+
+- **`retry.py`:** `should_retry` stopped one attempt early (`max_attempts - 1`). It now allows a retry while `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, which ignored priority. It now returns `(-priority, seq)`.
+- **`config.py`:** `deep_merge` swapped its arguments when recursing, so the base overrode the task's own nested values. A task's `retry` override was lost this way.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity, which blocked later tasks and made the resource tests fail.
+- **`statemachine.py`:** `batch_order_ok` compared the wrong way (`>=` instead of `<=`). Once the queue was fixed, it rejected valid descending-priority batches and failed those jobs.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so a failure skips everything downstream.
+- **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). `job.term.*` events never reached `History`, so `failed_jobs`, `skipped_jobs` and `outcome_counts` came back empty.
+
+Several of these hid each other. For example, the history failures only showed up after the cascade and retry fixes.
+
+Your first instruction was to grep for `self` across the project. That search was too broad to be useful, because it matched thousands of lines and the output was truncated at 100. I ran the suite and read the failing modules instead.

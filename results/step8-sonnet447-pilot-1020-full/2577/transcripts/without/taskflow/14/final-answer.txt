@@ -1,0 +1,35 @@
+Start with the small modules.
+
+import re
+def sub(f,a,b):
+    s=open(f).read(); assert a in s; open(f,'w').write(s.replace(a,b))
+sub('taskflow/queue.py','return (self.seq, -self.priority)','return (-self.priority, self.seq)')
+sub('taskflow/retry.py','return attempts_made < self.max_attempts - 1','return attempts_made < self.max_attempts')
+sub('taskflow/events.py','prefix.startswith(topic + ".")','topic.startswith(prefix + ".")')
+sub('taskflow/statemachine.py','return current_priority >= prev_priority','return current_priority <= prev_priority')
+E
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR)"; python3 -m unittest 2>&1 | tail -3
+
+`python3 -m unittest` now passes: all 25 tests, with no test changes. I made these seven fixes, all in `taskflow/`:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + ".")`, so prefix subscriptions like `job.term` receive `job.term.failed`.
+- **`statemachine.py`:** `batch_order_ok` accepted priorities in ascending order. It now requires non-increasing priority (`current <= prev`), as the docstring says.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own settings. It now merges `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so every downstream task is skipped.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never freed fully, so resource-limited tasks stalled.
+
+I fixed them in rounds. After the first four, the config tests, transitive-skip tests and resource tests still failed, so I traced those to the `config.py`, `scheduler.py` and `resources.py` bugs.
+
+`python3 -m unittest` now passes: all 25 tests, with no test changes. I made these seven fixes, all in `taskflow/`:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + ".")`, so prefix subscriptions like `job.term` receive `job.term.failed`.
+- **`statemachine.py`:** `batch_order_ok` accepted priorities in ascending order. It now requires non-increasing priority (`current <= prev`), as the docstring says.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own settings. It now merges `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so every downstream task is skipped.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never freed fully, so resource-limited tasks stalled.
+
+I fixed them in rounds. After the first four, the config tests, transitive-skip tests and resource tests still failed, so I traced those to the `config.py`, `scheduler.py` and `resources.py` bugs.

@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were six root causes, fixed one after another:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had its arguments the wrong way round (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`, so prefix subscriptions like `job.term` receive `job.term.failed`.
+- **`statemachine.py`:** `batch_order_ok` required priorities within a batch to be non-decreasing. It now requires non-increasing, as its docstring says.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own settings. It now recurses as `deep_merge(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. A task holding the whole pool never freed it, so later tasks never ran.

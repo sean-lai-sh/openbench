@@ -1,0 +1,11 @@
+{
+  "id": "prt_157e94369001LoTKRXXQtv7nD2",
+  "sessionID": "ses_ea81713b4ffeuBEhrGoBi4YKd4",
+  "messageID": "msg_157e9304f001r9Zznf575vhM2Z",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were six root causes:\n\n| File | Defect | Fix |\n|---|---|---|\n| `queue.py` | `sort_key` was `(seq, -priority)`, so insertion order beat priority. | Changed to `(-priority, seq)`. |\n| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so it stopped one attempt early. | Changed to `attempts_made < max_attempts`. |\n| `events.py` | `_prefix_matches` had the arguments swapped, so prefix subscribers never saw descendant topics. That left the history's skipped and failed sets incomplete. | Changed to `topic.startswith(prefix + \".\")`. |\n| `statemachine.py` | `batch_order_ok` required priority to be non-decreasing, but its docstring says non-increasing. | Changed to `current_priority <= prev_priority`. |\n| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. Multi-unit resource costs leaked capacity and stalled the pipelines. | Changed to `used -= cost`. |\n| `config.py` | `deep_merge` recursed with its arguments reversed, so defaults overrode the task's own values (for example `retry.max_attempts`). | Changed to `deep_merge(result[key], value)`. |\n\nThe cascade-skip failures had a seventh cause, in `scheduler.py`. `_cascade_skip` called `dag.dependents()`, which returns only direct children, instead of `transitive_dependents()`. Downstream tasks past the first level stayed `PENDING`. I changed it to `transitive_dependents()`.\n\nThe retry and pipeline failures were masked: the retry and resource bugs sat behind the queue and event bugs, so I had to re-run and re-diagnose a few times.",
+  "time": {
+    "start": 1792476267403,
+    "end": 1792476267403
+  }
+}

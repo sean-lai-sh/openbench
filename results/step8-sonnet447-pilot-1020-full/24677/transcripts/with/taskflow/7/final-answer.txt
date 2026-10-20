@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven separate defects:
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. | Changed it to `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. | Changed it to `attempts_made < max_attempts`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped (`deep_merge(value, result[key])`), so the base overrode the task's own settings. | Swapped them back to `deep_merge(result[key], value)`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so pools leaked capacity. Tasks that needed a resource blocked and never finished. | Changed it to `used -= cost`. |
+| `taskflow/statemachine.py` | `batch_order_ok` had its comparison reversed (`>=`), which rejected the correct non-increasing priority order. | Changed it to `<=`. |
+| `taskflow/scheduler.py` | `_cascade_skip` used the direct `dependents`, so only immediate children were skipped. | Changed it to `transitive_dependents`. |
+| `taskflow/events.py` | `_prefix_matches` tested `prefix.startswith(topic + ".")`, the wrong way round, so prefix subscribers like `job.term` never received events. As a result `History` never recorded failed or skipped jobs. | Changed it to `topic.startswith(prefix + ".")`. |

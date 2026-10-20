@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f20948001EDYS5ICS22HFl2",
+  "sessionID": "ses_ea80e44d8ffez9ZJgVuxOn2TYn",
+  "messageID": "msg_157f1f61d001JK0IZck6mlresA",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. I fixed seven defects, each a wrong comparison, wrong operand or wrong method:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order only breaks ties.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current <= prev`, which is the non-increasing priority order the docstring describes.\n- **`resources.py`**: `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Pools never freed fully, so resource-limited pipelines stalled.\n- **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + \".\")`, which is backwards. It now checks `topic.startswith(prefix + \".\")`. Before this, the `job.term` subscription in `History` never received events, so the history tests failed.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. A task's `retry.max_attempts` was being lost.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so skips reach the whole downstream chain, including the diamond case.\n\nSeveral of these hid each other. For example, the retry and resource failures looked like scheduler problems but came from `retry.py` and `resources.py`.",
+  "time": {
+    "start": 1792476842337,
+    "end": 1792476842337
+  }
+}

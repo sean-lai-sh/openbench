@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c5f23d001k2nDdNBPXK8LMp",
+  "sessionID": "ses_ea83aa102ffeoHlDuQnC2065fV",
+  "messageID": "msg_157c5e03f001G3mXmTTcFVR2M8",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. I started with the `self` grep you asked for, but it hit the 100-match limit and was too broad to help. After that I worked from the test failures.\n\nI fixed seven defects, each of which contradicted its own docstring:\n\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `< max_attempts`.\n- **`queue.py`:** `_Entry.sort_key` was `(seq, -priority)`, so the queue ignored priority. It is now `(-priority, seq)`.\n- **`config.py`:** `deep_merge` swapped its arguments when recursing, so base values overrode task values in nested blocks like `retry`. The recursion is now `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so multi-unit resources leaked.\n- **`statemachine.py`:** `batch_order_ok` was inverted (`>=`). It now returns `current_priority <= prev_priority`, matching the non-increasing priority rule.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.\n- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). Prefix subscriptions like `job.term` never received `job.term.failed`, which left `History` empty. It is now `topic.startswith(prefix + \".\")`.",
+  "time": {
+    "start": 1792473952853,
+    "end": 1792473952853
+  }
+}

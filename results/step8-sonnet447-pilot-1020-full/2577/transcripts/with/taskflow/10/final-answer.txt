@@ -1,0 +1,35 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"; grep -n "def dependents" -B2 -A25 taskflow/dag.py
+
+Fix the cascade to use transitive dependents.
+
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"; python3 -m unittest 2>&1 | head -60
+
+Two bugs: `used -= 1` in resources, and `_prefix_matches` reversed.
+
+sed -i 's/return topic == prefix or prefix.startswith(topic + ".")/return topic == prefix or topic.startswith(prefix + ".")/' taskflow/events.py
+python3 -m unittest 2>&1 | tail -30
+
+`python3 -m unittest` now passes all 25 tests. I fixed six defects and didn't touch the tests.
+
+- **`queue.py`:** The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It is now `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. A batch must dispatch in non-increasing priority, so it now checks `current <= prev`.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(override_child, base_child)`, so the defaults overwrote a task's own nested values. The arguments are now in the right order.
+- **`scheduler.py`:** `_cascade_skip` only skipped a failed task's direct dependents. It now uses `transitive_dependents`, so everything downstream is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity and blocked later tasks.
+- **`events.py`:** `_prefix_matches` had its arguments swapped. A `job.term` subscription never received `job.term.failed` or the other terminal events, which left `History`'s failed, skipped and outcome-count queries empty.
+
+`python3 -m unittest` now passes all 25 tests. I fixed six defects and didn't touch the tests.
+
+- **`queue.py`:** The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It is now `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. A batch must dispatch in non-increasing priority, so it now checks `current <= prev`.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(override_child, base_child)`, so the defaults overwrote a task's own nested values. The arguments are now in the right order.
+- **`scheduler.py`:** `_cascade_skip` only skipped a failed task's direct dependents. It now uses `transitive_dependents`, so everything downstream is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity and blocked later tasks.
+- **`events.py`:** `_prefix_matches` had its arguments swapped. A `job.term` subscription never received `job.term.failed` or the other terminal events, which left `History`'s failed, skipped and outcome-count queries empty.

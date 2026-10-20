@@ -1,0 +1,37 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR)"|head -120
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR)"|head -100; grep -n "def dependents" -B3 -A30 taskflow/dag.py
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self.dag.transitive_dependents(failed_run.id):/' taskflow/scheduler.py
+cat taskflow/resources.py
+python3 -m unittest 2>&1 | tail -40
+
+`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests.
+
+I fixed seven bugs, one line each:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It now sorts on priority first, then insertion order.
+- **`retry.py`:** `should_retry` stopped one attempt early. A task with `max_attempts=3` could only run twice. It now allows a retry while `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now accepts non-increasing priority within an admission batch, as its docstring says.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overwrote a task's own settings. A task's `retry.max_attempts` was being lost. It now merges `(base, override)`.
+- **`events.py`:** `_prefix_matches` had the prefix check reversed. Prefix subscribers such as `job.term` never received `job.term.failed` and similar events, which is why the history's terminal-outcome lists were empty. It now checks that the topic starts with `prefix + "."`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of the task's cost. Multi-unit tasks leaked capacity and blocked later tasks. It now subtracts `cost`.
+
+I didn't run any lint or typecheck, because I didn't find a configured command for either.
+
+`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests.
+
+I fixed seven bugs, one line each:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It now sorts on priority first, then insertion order.
+- **`retry.py`:** `should_retry` stopped one attempt early. A task with `max_attempts=3` could only run twice. It now allows a retry while `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now accepts non-increasing priority within an admission batch, as its docstring says.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overwrote a task's own settings. A task's `retry.max_attempts` was being lost. It now merges `(base, override)`.
+- **`events.py`:** `_prefix_matches` had the prefix check reversed. Prefix subscribers such as `job.term` never received `job.term.failed` and similar events, which is why the history's terminal-outcome lists were empty. It now checks that the topic starts with `prefix + "."`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of the task's cost. Multi-unit tasks leaked capacity and blocked later tasks. It now subtracts `cost`.
+
+I didn't run any lint or typecheck, because I didn't find a configured command for either.

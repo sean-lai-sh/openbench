@@ -1,0 +1,11 @@
+{
+  "id": "prt_1580df9fd001BMrNvGepE9LU2f",
+  "messageID": "msg_1580db5da001QCoazt3PbI7E98",
+  "sessionID": "ses_ea7f24b6effeUMxBP6gaV3ICnJ",
+  "type": "text",
+  "text": "All 25 tests now pass. I found seven bugs and fixed each at its root cause:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, so priority must not increase within a batch. The old check was hidden until the queue ordering was fixed.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own values. It now calls `deep_merge(result[key], value)`.\n- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + \".\")` instead of `topic.startswith(prefix + \".\")`. As a result, `job.term` subscribers never received `job.term.failed` or `job.term.skipped` events.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Resources leaked, which stalled the resource-limited runs.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream set is skipped.",
+  "time": {
+    "start": 1792478673431,
+    "end": 1792478673431
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_1579808ee001jGMAZr8NCoCIrs",
+  "sessionID": "ses_ea8684337ffekZR6naicTzTqF0",
+  "messageID": "msg_15797f3ba001empS0tjukEWDN4",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't edit the tests. There were seven defects, and several tests were failing because of a bug in a different module.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the order is `(-priority, seq)`, so I swapped them. Before the fix, priority was effectively ignored.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`, matching the docstring example for `max_attempts == 3`.\n- **`events.py`:** `_prefix_matches` had its arguments reversed, so prefix subscriptions matched the wrong topics. It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so the check is now `current <= prev`. Once the queue ordering was fixed, the old check would have marked correctly ordered runs as failed.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, which stalled resource-limited runs.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. A task's `retry` override was lost.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`, so only direct children were skipped. It now uses `transitive_dependents`, so the whole downstream chain is skipped.\n\nI stopped once the suite passed. I didn't audit the other modules, which the tests barely touch.",
+  "time": {
+    "start": 1792470944135,
+    "end": 1792470944135
+  }
+}

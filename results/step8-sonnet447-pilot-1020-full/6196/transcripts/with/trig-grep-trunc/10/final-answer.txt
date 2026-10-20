@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. All the fixes were one-line logic changes in `taskflow/`:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority pops first and FIFO breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so base values overrode the task's own settings. It is now `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully drained, which stalled the resource tests.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed (`>=`). It now returns `current <= prev`, matching the "non-increasing priority within a batch" rule. With the old check, the scheduler failed any task admitted after a lower-priority one in the same batch.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips the whole downstream chain.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`. This broke `History`'s `job.term` subscription, so failed, skipped and succeeded jobs and the outcome counts were never recorded.

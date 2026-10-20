@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven defects, in six modules:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which is off by one. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. It now subtracts `cost`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. It now requires non-increasing, as its docstring says.
+- **`config.py`:** `deep_merge` recursed with the arguments swapped, so the defaults overrode the task's own values. It now recurses with `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so every downstream task is skipped.
+
+Several failures had the same root cause. The retry and resource-pipeline tests failed because of the `should_retry` and `release` bugs, and the history skip-count tests failed because of the cascade bug.

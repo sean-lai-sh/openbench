@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f1b60d001E0vERXekJ0NX85",
+  "sessionID": "ses_ea80e9457ffeX0SRAufKtiqjif",
+  "messageID": "msg_157f1a1af001qcF681BzZohv2x",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests are green. I made six one-line fixes, and I didn't touch the tests.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` had an off-by-one (`attempts_made < max_attempts - 1`). It is now `attempts_made < max_attempts`, so `max_attempts=3` allows retries after attempts 1 and 2 and treats the third failure as permanent.\n- **`events.py`:** `_prefix_matches` had its arguments reversed, so prefix subscriptions matched the wrong topics. It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch. The docs say non-increasing, so it now checks `current <= prev`.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`, which leaked capacity and stalled the resource-limited pipelines.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode task settings. A task's `retry.max_attempts` was being lost. It now merges `(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.\n\nSeveral of the pipeline failures were side effects of these bugs, which is why fixing them took more than one pass. I stopped once the suite was green and didn't audit the rest of the package for defects the tests don't cover.",
+  "time": {
+    "start": 1792476821032,
+    "end": 1792476821032
+  }
+}

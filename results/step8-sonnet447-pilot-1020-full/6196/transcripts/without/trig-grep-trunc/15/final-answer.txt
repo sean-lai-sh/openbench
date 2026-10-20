@@ -1,0 +1,13 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify any tests. The grep for `self` was truncated at 100 matches, so I ran the suite directly instead.
+
+I fixed seven bugs:
+
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, so the last permitted attempt never happened. It now uses `attempts_made < max_attempts`.
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, which ignored priority. It now returns `(-priority, seq)`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. It now calls `deep_merge(result[key], value)`.
+- **`statemachine.py`**: `batch_order_ok` checked `current >= prev`, but a batch must dispatch in non-increasing priority order. It now checks `current <= prev`.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of subtracting `cost`, so multi-unit costs were never fully released.
+- **`events.py`**: `_prefix_matches` had its arguments reversed, so prefix subscribers like `job.term` never received `job.term.failed`. It now checks `topic.startswith(prefix + ".")`.
+
+The retry and queue fixes together cleared about half the failures. The last few, in the history, resource and full-pipeline tests, showed up once the resource and event-bus bugs were fixed.

@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests, and I didn't scan the modules the suite doesn't exercise (`stats`, `planner`, `metrics` and others) for similar bugs.
+
+I fixed seven defects. Each was a one-line change:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`, so tasks came out in insertion order and priority was ignored. It's now `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It's now `attempts_made < max_attempts`.
+- **`config.py`:** in `deep_merge`, the recursive call had its arguments swapped, so the base defaults overrode a task's own nested values (for example `retry.max_attempts`). The call is now `deep_merge(result[key], value)`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing, but the docstring says non-increasing. I flipped the comparison to `current <= prev`. This was masked until the queue ordering was fixed.
+- **`scheduler.py`:** `_cascade_skip` walked only direct dependents. It now uses `dag.transitive_dependents`, so tasks further downstream are skipped too.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity on multi-unit tasks.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). The `job.term` prefix subscription therefore never matched `job.term.failed` or `job.term.skipped`, and the history's outcome sets stayed empty. It now checks `topic.startswith(prefix + ".")`.

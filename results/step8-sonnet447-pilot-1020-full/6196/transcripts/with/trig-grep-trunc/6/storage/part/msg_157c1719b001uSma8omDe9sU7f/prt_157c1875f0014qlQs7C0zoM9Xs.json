@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c1875f0014qlQs7C0zoM9Xs",
+  "sessionID": "ses_ea83f3576ffeq3Qx4laqWrApgn",
+  "messageID": "msg_157c1719b001uSma8omDe9sU7f",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests.\n\nMy first `grep` for `self` was a poor start. It hit the 100-match cap and matched ordinary method signatures, so it told me nothing. I got the real picture by running the suite and reading the failing modules.\n\nI fixed seven bugs, each where the code disagreed with its own docstring:\n\n- **`queue.py`:** `sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one and gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, which blocked later tasks.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `(base_child, override_child)`.\n- **`statemachine.py`:** `batch_order_ok` checked `current >= prev`, but a batch is supposed to be non-increasing in priority. It now checks `current <= prev`. Once the queue ordering was fixed, this bug made valid dispatches fail.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n- **`events.py`:** `_prefix_matches` had the operands reversed (`prefix.startswith(topic + \".\")`). Prefix subscribers like `History`'s `job.term` never received `job.term.failed` or `job.term.skipped`. It now checks `topic.startswith(prefix + \".\")`.\n\nThe last two failure groups only showed up after the earlier fixes. The priority-order failures were first caused by the queue sort and then by the batch guard. The `History` failures traced back to the event bus, not to `history.py`.",
+  "time": {
+    "start": 1792473663368,
+    "end": 1792473663368
+  }
+}

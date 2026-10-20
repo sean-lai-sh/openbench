@@ -1,0 +1,32 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/prefix.startswith(topic + ".")/topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/self.used -= 1$/self.used -= cost/' taskflow/resources.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+sed -n 150,215p taskflow/resources.py; python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"; grep -n "def dependents\|def dependencies\|def descendants\|def ancestors" -A22 taskflow/dag.py | head -120
+
+The scheduler uses direct dependents; it should use transitive ones.
+
+python3 -m unittest 2>&1 | tail -30
+
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. I fixed seven bugs, most of them one-line changes:
+
+- **`queue.py`**: The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority runs first and ties go in FIFO order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + ".")`, which had the arguments reversed. It now checks `topic.startswith(prefix + ".")`.
+- **`resources.py`**: `ResourcePool.release` always subtracted 1 from `used`. It now subtracts `cost`.
+- **`statemachine.py`**: `batch_order_ok` used `>=` and allowed priority to rise within a batch. The docstring says priority must not increase, so it is now `<=`.
+- **`config.py`**: `deep_merge` recursed with the arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. I fixed seven bugs, most of them one-line changes:
+
+- **`queue.py`**: The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority runs first and ties go in FIFO order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + ".")`, which had the arguments reversed. It now checks `topic.startswith(prefix + ".")`.
+- **`resources.py`**: `ResourcePool.release` always subtracted 1 from `used`. It now subtracts `cost`.
+- **`statemachine.py`**: `batch_order_ok` used `>=` and allowed priority to rise within a batch. The docstring says priority must not increase, so it is now `<=`.
+- **`config.py`**: `deep_merge` recursed with the arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.

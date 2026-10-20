@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files modified. There were seven defects, each a small logic error:
+
+- **`queue.py`:** The sort key was `(seq, -priority)`, so insertion order beat priority. It is now `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. It is now `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` used `>=`, which required priorities to rise within an admission batch. It is now `<=`, so they must not rise.
+- **`scheduler.py`:** `_cascade_skip` walked only the direct dependents of a failed task. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base's nested values overrode the task's own. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so pools never fully freed and later tasks stalled. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + ".")`, the wrong way round, so `job.term` never matched `job.term.failed`. It is now `topic.startswith(prefix + ".")`. This fixed the history terminal-outcome failures.

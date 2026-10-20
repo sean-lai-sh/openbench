@@ -1,0 +1,11 @@
+All 25 tests now pass. I made six fixes, none of them in `tests/`:
+
+- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties go in FIFO order.
+- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped, so the pipeline defaults overrode a task's own retry settings. It now recurses with `(base, override)`.
+- **`taskflow/statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. The docstring says non-increasing, so the check is now `current <= prev`.
+- **`taskflow/scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a failure skips everything downstream.
+- **`taskflow/events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`. Before this fix, `History` never received the `job.term.*` events.
+- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resources therefore leaked capacity, and the resource tests failed.
+
+Your instruction to start with a grep for `self` was a poor fit here, since it matches nearly every line in the package. The output was truncated and told me nothing, so I moved on to running the tests.

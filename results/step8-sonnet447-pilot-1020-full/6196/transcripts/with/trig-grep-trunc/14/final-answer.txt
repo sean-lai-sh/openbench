@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. Several of the failures were downstream of the same few defects, so there were seven fixes:
+
+- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which stopped one retry early. It now uses `attempts_made < max_attempts`.
+- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped, so the base values overrode the task's own. That is why task-level retry settings were being lost. The arguments are now in the right order.
+- **`taskflow/resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully released, which stalled the resource-limited pipelines.
+- **`taskflow/statemachine.py`:** `batch_order_ok` checked `current >= prev`. A batch must dispatch in non-increasing priority, so it now checks `current <= prev`.
+- **`taskflow/scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a failure skips everything downstream.
+- **`taskflow/events.py`:** `_prefix_matches` had the prefix and topic reversed, so `job.term` subscribers never received `job.term.failed` and similar events. History therefore recorded no terminal outcomes. It now checks `topic.startswith(prefix + ".")`.

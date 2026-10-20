@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f20eaa001rnoSLA4ZIDHcPM",
+  "sessionID": "ses_ea80e3a85ffeeINjpyU3Fjg3no",
+  "messageID": "msg_157f1fd1c001Cyt1CTSztklVHS",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. I found seven root causes, and several of them were behind failures that looked unrelated:\n\n- **`queue.py`**: the sort key was `(seq, -priority)`, so insertion order beat priority. It is now `(-priority, seq)`.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It is now `attempts_made < max_attempts`. This was behind the retry failures in the pipeline tests.\n- **`events.py`**: `_prefix_matches` had the `startswith` arguments reversed. It now checks `topic.startswith(prefix + \".\")`. This was behind the `history` outcome sets missing skipped jobs.\n- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within a batch. The docstring says non-increasing, so it now checks `current <= prev`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. This is why a task's `retry` override was ignored.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resource costs leaked capacity, so later tasks never got admitted.\n- **`scheduler.py`**: `_cascade_skip` used the direct `dag.dependents`. It now uses `transitive_dependents`, so a permanent failure skips everything downstream, not just the direct children.",
+  "time": {
+    "start": 1792476843710,
+    "end": 1792476843710
+  }
+}

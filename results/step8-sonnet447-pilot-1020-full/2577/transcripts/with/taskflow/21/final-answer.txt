@@ -1,0 +1,32 @@
+Start with the small core modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/self.used -= 1$/self.used -= cost/' taskflow/resources.py
+sed -i 's/prefix.startswith(topic + ".")/topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+sed -n 120,175p taskflow/events.py; python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+grep -n "def " taskflow/dag.py | head -60; python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+
+The scheduler's cascade uses direct dependents only; it should use transitive.
+
+python3 -m unittest 2>&1 | tail -30
+
+`python3 -m unittest` now passes all 25 tests. I fixed seven bugs and didn't touch the tests.
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order only breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of the task's cost. It now subtracts `cost`.
+- **`events.py`:** the prefix match had its arguments reversed. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says.
+- **`config.py`:** `deep_merge` swapped base and override when recursing into nested dicts, so defaults overwrote task values. It now recurses with the arguments in the right order.
+- **`scheduler.py`:** the cascade skip only reached direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.
+
+`python3 -m unittest` now passes all 25 tests. I fixed seven bugs and didn't touch the tests.
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order only breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of the task's cost. It now subtracts `cost`.
+- **`events.py`:** the prefix match had its arguments reversed. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as the docstring says.
+- **`config.py`:** `deep_merge` swapped base and override when recursing into nested dicts, so defaults overwrote task values. It now recurses with the arguments in the right order.
+- **`scheduler.py`:** the cascade skip only reached direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.

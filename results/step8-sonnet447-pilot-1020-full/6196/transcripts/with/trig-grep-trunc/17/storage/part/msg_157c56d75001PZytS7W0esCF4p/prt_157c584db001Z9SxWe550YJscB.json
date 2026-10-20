@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c584db001Z9SxWe550YJscB",
+  "sessionID": "ses_ea83b0e28ffeQa6T9grKko4bjT",
+  "messageID": "msg_157c56d75001PZytS7W0esCF4p",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. The initial grep for `self` was truncated at 100 matches and didn't help, so I worked from the test failures instead.\n\nI fixed seven defects across seven files, all under `taskflow/`:\n\n- **`queue.py`:** The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It is now `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, which matches its docstring and the queue's output order.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested `retry` and `resources` values. It now passes `(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, which stalled the resource tests.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents` (direct children only). It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.\n- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). `History` never received `job.term.*` events, which broke the failed, skipped and outcome-count queries. It is now `topic.startswith(prefix + \".\")`.\n\nSome of these were masked by others, as the task warned. For example, the retry-count failures only got past the `should_retry` fix once the queue and resource bugs were fixed.",
+  "time": {
+    "start": 1792473924854,
+    "end": 1792473924854
+  }
+}

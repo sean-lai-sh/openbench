@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, with the test files unchanged. There were seven separate defects, each fixed at its root cause:
+
+1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order only breaks ties.
+2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. It now uses `attempts_made < max_attempts`.
+3. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the pipeline defaults overrode a task's own nested values. It now merges `(result[key], value)`, so a task's `retry.max_attempts` wins and still inherits the default `backoff`.
+4. **`resources.py`:** `ResourcePool.release` subtracted `1` instead of `cost`, so multi-unit tasks leaked capacity. It now subtracts `cost`.
+5. **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch, which is the opposite of its docstring. It now checks `current <= prev`, and the admission guard no longer wrongly fails jobs.
+6. **`scheduler.py`:** `_cascade_skip` iterated the direct `dependents`, so only immediate children were skipped. It now uses `transitive_dependents`, so everything downstream of a failed task is skipped.
+7. **`events.py`:** `_prefix_matches` had its operands reversed (`prefix.startswith(topic + ".")`). It now uses `topic.startswith(prefix + ".")`, so `job.term.*` events reach `History` and the failed, skipped and outcome-count queries work.

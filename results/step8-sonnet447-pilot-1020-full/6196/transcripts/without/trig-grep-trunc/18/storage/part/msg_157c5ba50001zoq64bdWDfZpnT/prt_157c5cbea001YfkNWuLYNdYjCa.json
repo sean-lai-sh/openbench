@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c5cbea001YfkNWuLYNdYjCa",
+  "sessionID": "ses_ea83ad9feffeYVNocphOTsyGt6",
+  "messageID": "msg_157c5ba50001zoq64bdWDfZpnT",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.\n\nI started with the `self` grep you asked for. It only matched method bodies and test assertions, and the output was truncated at 100 matches, so it didn't help locate the bugs. I found them by running the suite and tracing each failure.\n\nI fixed seven defects:\n\n- **`retry.py`:** `should_retry` stopped one attempt early because it compared against `max_attempts - 1`. It now compares against `max_attempts`.\n- **`queue.py`:** The sort key was `(seq, -priority)`, so the queue ignored priority. It is now `(-priority, seq)`.\n- **`config.py`:** `deep_merge` swapped its arguments when recursing, so defaults overrode task-level values. The base now goes first.\n- **`events.py`:** The prefix match was reversed, so `job.term` subscribers never saw `job.term.failed`. That left history empty.\n- **`statemachine.py`:** The batch-order guard required priority to be non-decreasing. It should be non-increasing, so valid dispatches were being failed.\n- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now skips all transitive ones.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity and stalled resource-limited runs.",
+  "time": {
+    "start": 1792473943048,
+    "end": 1792473943048
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_157bd06a40012u1ONok7I9MAq3",
+  "sessionID": "ses_ea843af88ffeRtRYQCoQdXkOpW",
+  "messageID": "msg_157bcf3d6001hyOC582NubVaPL",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests.\n\nMy first `grep` for `self` returned 100 matches, truncated, and none of them helped. I got the failures from running the suite instead.\n\nI fixed seven bugs, one per file:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. Insertion order was winning over priority. It's now `(-priority, seq)`.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. It's now `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` swapped its arguments when recursing into nested dicts, so the defaults overrode the task's own values. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools leaked capacity, which stalled the resource and priority tests.\n- **`statemachine.py`:** `batch_order_ok` compared with `>=` where it should use `<=`. Dispatching in non-increasing priority order was being rejected, and those runs were failed outright.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents` (direct children only). It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.\n- **`events.py`:** `_prefix_matches` had its arguments reversed, so `job.term.*` events never reached `History`. It now checks `topic.startswith(prefix + \".\")`. This was the cause of the `history` test failures.",
+  "time": {
+    "start": 1792473368278,
+    "end": 1792473368278
+  }
+}

@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes: 25 tests, no failures. I didn't modify any tests.
+
+I found nine defects across eight files and fixed each at its root cause:
+
+- **`retry.py`:** `should_retry` was off by one. It used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`queue.py`:** the sort key was `(seq, -priority)`. That made the queue pure FIFO and ignored priority. It is now `(-priority, seq)`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses with `(result[key], value)`.
+- **`statemachine.py`:** the `batch_order_ok` guard was inverted. It required priority to be non-decreasing within a batch, when the docstring says non-increasing. It now checks `current <= prev`. With the queue fixed, the inverted guard made the scheduler fail jobs outright during admission.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Any task costing more than 1 leaked capacity.
+- **`events.py`:** `_prefix_matches` had its operands reversed, so prefix subscriptions never matched subtopics. `History` therefore recorded none of the `job.term.*` outcomes.
+
+The `grep` for `self` you asked me to start with was truncated at 100 matches and was mostly test boilerplate. I ran the suite and read the failing modules instead.

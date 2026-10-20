@@ -1,0 +1,39 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/self.used -= 1/self.used -= cost/' taskflow/resources.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+
+Fix cascade to be transitive; look at config and history.
+
+
+Fixes: deep_merge arg order, prefix matching, transitive cascade.
+
+sed -i 's/return topic == prefix or prefix.startswith(topic + ".")/return topic == prefix or topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self.dag.transitive_dependents(failed_run.id):/' taskflow/scheduler.py
+python3 -m unittest 2>&1 | head -60
+
+`python3 -m unittest` now passes all 25 tests. I fixed seven defects in `taskflow/`:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`, so pools leaked capacity. It now subtracts `cost`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison backwards. Within a batch, priority must be non-increasing, so it now checks `current <= prev`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `(base_child, override_child)`.
+- **`events.py`**: `_prefix_matches` had its arguments reversed in the `startswith` check. It now uses `topic.startswith(prefix + ".")`, which fixes the history terminal-event subscription.
+- **`scheduler.py`**: the failure cascade only skipped direct dependents. It now uses `dag.transitive_dependents`, so downstream tasks like `d` in the diamond case are skipped too.
+
+I didn't change any tests.
+
+`python3 -m unittest` now passes all 25 tests. I fixed seven defects in `taskflow/`:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`, so pools leaked capacity. It now subtracts `cost`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison backwards. Within a batch, priority must be non-increasing, so it now checks `current <= prev`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `(base_child, override_child)`.
+- **`events.py`**: `_prefix_matches` had its arguments reversed in the `startswith` check. It now uses `topic.startswith(prefix + ".")`, which fixes the history terminal-event subscription.
+- **`scheduler.py`**: the failure cascade only skipped direct dependents. It now uses `dag.transitive_dependents`, so downstream tasks like `d` in the diamond case are skipped too.
+
+I didn't change any tests.

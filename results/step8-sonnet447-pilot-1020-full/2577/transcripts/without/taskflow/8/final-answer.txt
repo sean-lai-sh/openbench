@@ -1,0 +1,36 @@
+Start with the small modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/self.used -= 1/self.used -= cost/' taskflow/resources.py
+sed -i 's/return topic == prefix or prefix.startswith(topic + ".")/return topic == prefix or topic.startswith(prefix + ".")/' taskflow/events.py
+sed -n 130,172p taskflow/events.py; python3 -m unittest 2>&1 | grep -A8 -E "^(FAIL|ERROR)"
+cat taskflow/config.py taskflow/scheduler.py; cat tests/test_config.py
+python3 -m unittest 2>&1 | grep -A8 -E "^(FAIL|ERROR)"; grep -n "def dependents\|def dependencies\|def descendants\|def ancestors" -A25 taskflow/dag.py | head -120
+
+DAG is fine; the scheduler cascade uses direct dependents only. Fix to transitive.
+
+python3 -m unittest 2>&1 | grep -A12 -E "^(FAIL|ERROR)|^Ran|^OK"
+
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.
+
+There were seven defects. Some were hiding others, for example the scheduler's priority ordering depended on both the queue and the state machine.
+
+- **`queue.py`:** `sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut off the last allowed attempt. It now uses `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1, so a multi-unit cost was never fully returned. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch, which is the opposite of what its docstring says. It now requires non-increasing. This had been failing higher-priority tasks in a batch.
+- **`config.py`:** `deep_merge` recursed with the base and override swapped, so defaults overwrote task-level overrides such as `retry.max_attempts`. The arguments are now in the right order.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.
+
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.
+
+There were seven defects. Some were hiding others, for example the scheduler's priority ordering depended on both the queue and the state machine.
+
+- **`queue.py`:** `sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut off the last allowed attempt. It now uses `attempts_made < max_attempts`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1, so a multi-unit cost was never fully returned. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch, which is the opposite of what its docstring says. It now requires non-increasing. This had been failing higher-priority tasks in a batch.
+- **`config.py`:** `deep_merge` recursed with the base and override swapped, so defaults overwrote task-level overrides such as `retry.max_attempts`. The arguments are now in the right order.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.

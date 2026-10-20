@@ -1,0 +1,9 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify the tests. There were seven separate defects, all in `taskflow/`:
+
+- **`queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** In `deep_merge`, the recursive call had its arguments swapped, so the defaults overrode the task's own values. It now merges the task's values on top of the defaults.
+- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of `-= cost`. Multi-unit costs were never fully released, which stalled resource-limited runs.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed (`>=`). It rejected the non-increasing priority order the docstring requires, so correctly ordered dispatches were failed outright. It now uses `<=`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so skips cascade through the whole downstream chain.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")` instead of `topic.startswith(prefix + ".")`. The `job.term` subscription never received `job.term.failed`, `job.term.skipped` or `job.term.succeeded`, which left `History`'s outcome sets empty.

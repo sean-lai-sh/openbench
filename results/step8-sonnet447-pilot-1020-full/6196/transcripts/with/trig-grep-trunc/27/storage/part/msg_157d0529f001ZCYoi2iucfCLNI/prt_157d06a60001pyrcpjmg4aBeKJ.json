@@ -1,0 +1,11 @@
+{
+  "id": "prt_157d06a60001pyrcpjmg4aBeKJ",
+  "sessionID": "ses_ea8302505ffe7nVRj3hIVvDAtB",
+  "messageID": "msg_157d0529f001ZCYoi2iucfCLNI",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. The grep for `self` you asked me to start with was truncated at 100 matches and showed nothing useful, so I ran the suite and read the failures instead.\n\nI found seven bugs and fixed each one:\n\n1. **`retry.py`, `should_retry`:** it used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n2. **`queue.py`, `_Entry.sort_key`:** the key was `(seq, -priority)`, so it ignored priority and ran in plain insertion order. It is now `(-priority, seq)`.\n3. **`config.py`, `deep_merge`:** the recursive call had its arguments swapped, so defaults overrode the task's own values. It is now `deep_merge(result[key], value)`.\n4. **`statemachine.py`, `batch_order_ok`:** the comparison was backwards. It rejected the normal non-increasing priority order and failed those runs. It now checks `current <= prev`.\n5. **`scheduler.py`, `_cascade_skip`:** it skipped only the direct dependents of a failed task. It now uses `dag.transitive_dependents`, which matches the docstring.\n6. **`events.py`, `_prefix_matches`:** the check was reversed (`prefix.startswith(topic + \".\")`). `History` therefore never received `job.term.*` events. It is now `topic.startswith(prefix + \".\")`.\n7. **`resources.py`, `ResourcePool.release`:** it did `used -= 1` instead of `used -= cost`. Multi-unit resources were never fully released, which stalled the resource tests.\n\nSome failures only showed up after earlier fixes. For example, the priority-order bug in the queue hid the inverted guard in the state machine, and the leaked resource units kept the resource tests failing until the last fix.",
+  "time": {
+    "start": 1792474638975,
+    "end": 1792474638975
+  }
+}

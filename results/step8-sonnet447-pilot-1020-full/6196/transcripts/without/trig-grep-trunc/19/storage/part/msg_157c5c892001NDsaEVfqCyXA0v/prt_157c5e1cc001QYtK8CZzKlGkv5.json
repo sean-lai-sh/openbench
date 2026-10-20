@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c5e1cc001QYtK8CZzKlGkv5",
+  "sessionID": "ses_ea83a9c1affeMvB5boUOnt0zTg",
+  "messageID": "msg_157c5c892001NDsaEVfqCyXA0v",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't edit any tests.\n\nI fixed seven defects. The comments and docstrings described the right behavior in each case, and the code didn't match them.\n\n- **`queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority comes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` had an off-by-one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. The task's values now win.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. That left capacity stuck for any task costing more than 1, which stalled the resource-limited pipelines.\n- **`statemachine.py`:** `batch_order_ok` checked `current >= prev`, which is the reverse of the non-increasing-priority rule in its docstring. It now checks `current <= prev`.\n- **`scheduler.py`:** the failure cascade used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a failed task is skipped.\n- **`events.py`:** `_prefix_matches` had `prefix.startswith(topic + \".\")` backwards. It now checks `topic.startswith(prefix + \".\")`. Before the fix, `History` never received the `job.term.*` events, so the failed, skipped and outcome-count queries came back empty.\n\nThe bugs hid each other, as the task warned. Fixing the queue and retry bugs exposed the config one. Fixing the config bug exposed the pool-release, batch-guard and cascade bugs. The prefix-matching bug only showed up last.\n\nI did start with the grep for `self` you asked for. The output was capped at 100 matches, which gave me no useful signal, so I diagnosed from the test failures instead.",
+  "time": {
+    "start": 1792473948656,
+    "end": 1792473948656
+  }
+}

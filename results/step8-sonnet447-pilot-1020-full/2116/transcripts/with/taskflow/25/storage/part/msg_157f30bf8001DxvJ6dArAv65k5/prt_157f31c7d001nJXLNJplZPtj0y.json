@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f31c7d001nJXLNJplZPtj0y",
+  "sessionID": "ses_ea80d2d7affe84Cp2CpbNLPYpW",
+  "messageID": "msg_157f30bf8001DxvJ6dArAv65k5",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.\n\nThere were six root causes:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing. After the queue fix, that guard would have failed the second task in any batch with mixed priorities. It now requires non-increasing priority, as its docstring says.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` values. It now recurses as `deep_merge(base_child, override_child)`.\n- **`scheduler.py`:** `_cascade_skip` walked only the direct dependents of a failed task. It now uses `dag.transitive_dependents`, so everything downstream is skipped.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity and later tasks never ran.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). `History` therefore never received the `job.term.*` events, which left `failed_jobs()` and `outcome_counts()` empty.",
+  "time": {
+    "start": 1792476912806,
+    "end": 1792476912806
+  }
+}

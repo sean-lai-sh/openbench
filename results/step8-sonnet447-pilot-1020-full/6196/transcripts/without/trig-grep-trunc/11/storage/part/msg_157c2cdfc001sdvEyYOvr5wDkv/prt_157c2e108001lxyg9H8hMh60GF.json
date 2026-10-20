@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c2e108001lxyg9H8hMh60GF",
+  "sessionID": "ses_ea83d88b3ffexC1RsVROM04pOv",
+  "messageID": "msg_157c2cdfc001sdvEyYOvr5wDkv",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I fixed seven logic bugs and didn't touch the tests.\n\n- **`taskflow/queue.py`:** `_Entry.sort_key` now returns `(-priority, seq)`. It had the fields swapped, so the queue ran in insertion order and ignored priority.\n- **`taskflow/retry.py`:** `should_retry` now returns `attempts_made < max_attempts`. It had an off-by-one that gave up one attempt early.\n- **`taskflow/config.py`:** `deep_merge` now recurses as `deep_merge(result[key], value)`. The arguments were swapped, so the defaults overrode the task's own settings.\n- **`taskflow/resources.py`:** `ResourcePool.release` now does `used -= cost`. It was decrementing by 1, so multi-unit costs were never fully returned and later tasks were blocked.\n- **`taskflow/statemachine.py`:** `batch_order_ok` now requires `current <= prev`. The comparison was inverted, so the scheduler's guard rejected a normal batch and failed the run.\n- **`taskflow/scheduler.py`:** `_cascade_skip` now uses `dag.transitive_dependents`. It used direct dependents only, so grandchildren stayed `PENDING` instead of being skipped.\n- **`taskflow/events.py`:** `_prefix_matches` now uses `topic.startswith(prefix + \".\")`. The operands were reversed, so `job.term` prefix subscribers never received `job.term.failed` and similar. This left the history's failed, skipped and succeeded sets empty.\n\nThe failures were mostly in `test_pipelines.py`, but the causes were in the lower-level modules. Fixing them in order exposed the later ones. The last three failing tests were all the `events.py` bug.",
+  "time": {
+    "start": 1792473751843,
+    "end": 1792473751843
+  }
+}

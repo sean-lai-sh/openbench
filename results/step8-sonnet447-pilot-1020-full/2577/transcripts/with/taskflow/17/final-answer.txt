@@ -1,0 +1,33 @@
+Start with the small core modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+sed -i 's/prefix.startswith(topic + ".")/topic.startswith(prefix + ".")/' taskflow/events.py
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+python3 -m unittest 2>&1 | tail -80
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"; grep -n "def dependents" -A25 taskflow/dag.py
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self.dag.transitive_dependents(failed_run.id):/' taskflow/scheduler.py
+python3 -m unittest 2>&1 | tail -60
+
+`python3 -m unittest` now passes all 25 tests. I found and fixed these defects:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and equal priorities go in FIFO order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` had the arguments reversed, so prefix subscribers never matched descendant topics. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing within a batch. The docstring says non-increasing, so it now requires `current <= prev`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity, which blocked later tasks.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses with `(base, override)`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so downstream tasks are skipped all the way down the chain.
+
+I didn't look for bugs in modules the tests don't exercise, such as `stats` or `planner`.
+
+`python3 -m unittest` now passes all 25 tests. I found and fixed these defects:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and equal priorities go in FIFO order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` had the arguments reversed, so prefix subscribers never matched descendant topics. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing within a batch. The docstring says non-increasing, so it now requires `current <= prev`.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity, which blocked later tasks.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses with `(base, override)`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so downstream tasks are skipped all the way down the chain.
+
+I didn't look for bugs in modules the tests don't exercise, such as `stats` or `planner`.

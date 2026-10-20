@@ -1,0 +1,11 @@
+{
+  "id": "prt_157943da30016erCSXZC1wZH02",
+  "sessionID": "ses_ea86c1f0effevXnlxFgKUY5wlC",
+  "messageID": "msg_157942ba1001HqbVuMz9o1TfU9",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files changed. There were seven separate defects, spread across six modules:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and FIFO breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which stopped one attempt short. It now uses `attempts_made < max_attempts`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, which stalled the resource pipelines.\n- **`statemachine.py`:** `batch_order_ok` had its comparison inverted (`>=`). The batch guard needs non-increasing priority, so it is now `current <= prev`.\n- **`scheduler.py`:** `_cascade_skip` iterated over `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips the whole downstream chain.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own nested values. A task's `retry.max_attempts` was being lost.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")` instead of `topic.startswith(prefix + \".\")`. The `job.term` prefix subscription never fired, which left the history's failed, skipped and outcome-count queries empty.\n\nAs the task warned, some of these masked others. For example, the retry and queue fixes exposed the resource-release bug, and the batch-guard bug only showed once queue ordering was right.",
+  "time": {
+    "start": 1792470695361,
+    "end": 1792470695361
+  }
+}

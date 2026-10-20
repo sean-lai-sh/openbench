@@ -1,0 +1,11 @@
+{
+  "id": "prt_157eb9289001FpK5R9k2P7G55F",
+  "sessionID": "ses_ea814caf8ffe5Q10dylMY6SL4i",
+  "messageID": "msg_157eb8311001NahXgA2tu0M2UA",
+  "type": "text",
+  "text": "All 25 tests now pass with `python3 -m unittest`. I didn't modify any tests. There were seven separate defects:\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.\n2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.\n3. **`statemachine.py`:** `batch_order_ok` checked `current >= prev`, which allowed rising priorities and rejected the valid non-increasing order. It now checks `current <= prev`. This was masked by the queue ordering bug.\n4. **`scheduler.py`:** `_cascade_skip` iterated over `dag.dependents()`, which returns only direct children. It now uses `transitive_dependents()`, so a permanent failure skips every downstream task.\n5. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own `retry` values. It now calls `deep_merge(result[key], value)`.\n6. **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It now tests `topic.startswith(prefix + \".\")`. The `job.term.*` events had been silently dropped, which left the history's failed, skipped and succeeded sets empty.\n7. **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resources leaked, so later tasks were never admitted.",
+  "time": {
+    "start": 1792476418718,
+    "end": 1792476418718
+  }
+}

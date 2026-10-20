@@ -1,0 +1,11 @@
+{
+  "id": "prt_157c4af25001fzrG29hMNSppgs",
+  "sessionID": "ses_ea83bdf52ffed24Z5BmdSw0GvV",
+  "messageID": "msg_157c49792001QEsOYf1Y4PRPft",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files changed. Your suggested first grep for `self` was truncated at 100 matches and showed nothing useful, so I ran the suite and read the failing modules directly.\n\nThere were seven bugs, and some hid others (retries, priority dispatch and skipping were each affected by more than one):\n\n- **`retry.py`:** `should_retry` was off by one (`max_attempts - 1`), so retries ended one attempt early. It now uses `attempts_made < max_attempts`.\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. Priority was effectively ignored, and the queue ran in plain insertion order. It now returns `(-priority, seq)`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and later tasks were blocked.\n- **`config.py`:** `deep_merge` swapped its arguments when recursing, so base defaults overrode task settings. A task's own `retry.max_attempts` was lost.\n- **`statemachine.py`:** `batch_order_ok` had the comparison inverted. It required priorities to increase within an admission batch, which wrongly failed correctly ordered runs.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so a failure skips all downstream tasks.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. Subscribers to a prefix like `job.term` never received `job.term.failed` or `job.term.skipped`, which left the history's failed, skipped and outcome-count queries empty. It now tests `topic.startswith(prefix + \".\")`.",
+  "time": {
+    "start": 1792473870153,
+    "end": 1792473870153
+  }
+}

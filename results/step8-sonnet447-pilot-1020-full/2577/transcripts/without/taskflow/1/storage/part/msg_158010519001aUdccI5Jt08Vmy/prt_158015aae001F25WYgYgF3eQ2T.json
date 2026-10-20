@@ -1,0 +1,11 @@
+{
+  "id": "prt_158015aae001F25WYgYgF3eQ2T",
+  "messageID": "msg_158010519001aUdccI5Jt08Vmy",
+  "sessionID": "ses_ea7fefbd8ffe5z6VoQjOc1zHnT",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't change any tests. There were seven root-cause bugs:\n\n- **`queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority goes first and ties go in FIFO order.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. The recursive call is now `deep_merge(result[key], value)`.\n- **`statemachine.py`:** `batch_order_ok` allowed priority to increase within an admission batch. It now requires `current_priority <= prev_priority`.\n- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity. It now subtracts `cost`.\n- **`events.py`:** `_prefix_matches` had the prefix check backwards. It now checks `topic.startswith(prefix + \".\")`. The history's failed, skipped and outcome-count queries were empty because they depend on this.",
+  "time": {
+    "start": 1792477846213,
+    "end": 1792477846213
+  }
+}

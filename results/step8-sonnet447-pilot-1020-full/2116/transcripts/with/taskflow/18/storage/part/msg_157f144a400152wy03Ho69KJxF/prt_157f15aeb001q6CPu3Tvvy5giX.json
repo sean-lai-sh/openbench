@@ -1,0 +1,11 @@
+{
+  "id": "prt_157f15aeb001q6CPu3Tvvy5giX",
+  "sessionID": "ses_ea80eefa8ffeJYxzI2F1pNnqen",
+  "messageID": "msg_157f144a400152wy03Ho69KJxF",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven separate bugs, each in a different module:\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ordered by insertion first and ignored priority. | It now returns `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. | It now uses `attempts_made < max_attempts`. |\n| `taskflow/statemachine.py` | `batch_order_ok` required priorities to rise within a batch, the opposite of its docstring. | It now returns `current <= prev`. |\n| `taskflow/resources.py` | `ResourcePool.release` always subtracted 1 instead of `cost`, so multi-unit resources were never fully released and runs stalled. | It now subtracts `cost`. |\n| `taskflow/events.py` | `_prefix_matches` had its arguments swapped (`prefix.startswith(topic + \".\")`), so prefix subscriptions never matched. That left the history empty. | It now checks `topic.startswith(prefix + \".\")`. |\n| `taskflow/config.py` | `deep_merge` recursed as `deep_merge(override, base)`, so the defaults overrode the task's own settings. | It now recurses as `deep_merge(base, override)`. |\n| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children, so skips didn't reach deeper tasks. | It now uses `dag.transitive_dependents`. |\n\nSome of these hid each other. The queue, retry and resource bugs together made the pipeline tests fail with retry and resource symptoms. The event-prefix bug sat behind them and surfaced in the history tests. The shallow cascade skip only showed up after the others were fixed.\n\nI only looked at the code paths the failing tests exercised. The other modules (`stats`, `planner` and so on) have no tests and I didn't review them.",
+  "time": {
+    "start": 1792476797708,
+    "end": 1792476797708
+  }
+}

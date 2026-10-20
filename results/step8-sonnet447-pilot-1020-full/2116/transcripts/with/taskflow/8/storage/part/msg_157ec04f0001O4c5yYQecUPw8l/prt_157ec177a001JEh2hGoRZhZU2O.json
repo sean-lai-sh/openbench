@@ -1,0 +1,11 @@
+{
+  "id": "prt_157ec177a001JEh2hGoRZhZU2O",
+  "sessionID": "ses_ea81433e5ffecSmy6rzR4YlcHv",
+  "messageID": "msg_157ec04f0001O4c5yYQecUPw8l",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with the tests left unmodified. I found seven logic bugs and fixed them. Each fix is below, with the symptom it caused.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)` instead of `(-priority, seq)`, so the queue ran in insertion order and ignored priority.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which is off by one. A task allowed 3 attempts only ran once. This also made the retry and resource-pipeline tests fail.\n- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). `job.term.*` events never reached `History`, so skipped and failed jobs were never recorded.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing, but the docstring says non-increasing. The scheduler's admission guard then rejected valid batches and marked those tasks `FAILED`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked capacity, which blocked later tasks and left runs unfinished.\n- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`, so the defaults overrode the task's own settings. It is now `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now walks the whole downstream graph breadth-first, so transitive dependents are skipped as well.",
+  "time": {
+    "start": 1792476452752,
+    "end": 1792476452752
+  }
+}

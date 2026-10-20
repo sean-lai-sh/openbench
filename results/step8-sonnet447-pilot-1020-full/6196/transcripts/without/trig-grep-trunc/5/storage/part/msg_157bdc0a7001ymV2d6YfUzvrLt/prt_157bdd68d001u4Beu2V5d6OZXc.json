@@ -1,0 +1,11 @@
+{
+  "id": "prt_157bdd68d001u4Beu2V5d6OZXc",
+  "sessionID": "ses_ea8428f80ffepid5wXPm3Z3mdj",
+  "messageID": "msg_157bdc0a7001ymV2d6YfUzvrLt",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files modified. My first grep for `self` hit the 100-match cap and told me nothing about the failures, so I worked from the test output instead.\n\nThere were seven root causes, each fixed with a one-line change:\n\n- **`taskflow/queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties are FIFO.\n- **`taskflow/retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt too early. It now uses `attempts_made < max_attempts`.\n- **`taskflow/config.py`:** `deep_merge` recursed with its arguments swapped. Because of that, the pipeline defaults overrode a task's own `retry` settings. It now recurses with `(result[key], value)`.\n- **`taskflow/statemachine.py`:** `batch_order_ok` was `current >= prev`, which is backwards for a non-increasing priority order. It is now `current <= prev`.\n- **`taskflow/resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`, so multi-unit resource costs leaked.\n- **`taskflow/events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, so subtree subscriptions like `job.term` never received `job.term.failed`. That is why the history tests came back empty. It now tests `topic.startswith(prefix + \".\")`.\n- **`taskflow/scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.\n\nSeveral defects masked each other. The queue ordering bug, the batch-order guard and the resource release bug all showed up as pipeline failures, so I re-ran the suite after each fix.",
+  "time": {
+    "start": 1792473421505,
+    "end": 1792473421505
+  }
+}

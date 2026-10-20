@@ -1,0 +1,9 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven defects in total:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says `(-priority, seq)`, so the queue ignored priority and popped in FIFO order. I swapped the order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which made it one attempt short. Retries were cut off early. It is now `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + ".")`). The `job.term` subscription therefore never saw `job.term.*` events, and the history's succeeded, failed and skipped sets stayed empty. It is now `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so a normally ordered batch was rejected and the run was failed outright. The comparison is now `current <= prev`.
+- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Multi-unit tasks leaked capacity and blocked later tasks. It now subtracts `cost`.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`. The defaults overrode the task's own nested values, for example `retry.max_attempts`. The arguments are now `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` iterated `dag.dependents`, which returns only direct children. It now iterates `transitive_dependents`, so everything downstream of a failed task is skipped.

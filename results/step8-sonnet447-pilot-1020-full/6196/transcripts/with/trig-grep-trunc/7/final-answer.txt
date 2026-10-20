@@ -1,0 +1,13 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. I didn't check that each fix matches the intent beyond what the tests cover.
+
+My first grep for `self` hit the 100-match cap and only showed test files and `runner.py`. It was no use for finding bugs, so I ran the suite and read the failing modules directly.
+
+I fixed eight bugs, one per spot. Five of them were root causes that showed up as failures in other tests:
+
+- **`retry.py`:** `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now returns `attempts_made < max_attempts`.
+- **`queue.py`:** the sort key was `(seq, -priority)`, so the queue ignored priority. It is now `(-priority, seq)`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed, so a batch had to run in rising priority order. It now requires non-increasing priority, i.e. `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overrode the override. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` subtracted `1` instead of `cost`, which left resources held and blocked later tasks.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`. This is why the history never saw the `job.term.*` events.

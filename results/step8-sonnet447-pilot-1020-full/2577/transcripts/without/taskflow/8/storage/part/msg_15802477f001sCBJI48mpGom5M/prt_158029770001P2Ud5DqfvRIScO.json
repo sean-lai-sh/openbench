@@ -1,0 +1,11 @@
+{
+  "id": "prt_158029770001P2Ud5DqfvRIScO",
+  "messageID": "msg_15802477f001sCBJI48mpGom5M",
+  "sessionID": "ses_ea7fdb96cffeiTyztKtwm1W6Bd",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.\n\nThere were seven defects. Some were hiding others, for example the scheduler's priority ordering depended on both the queue and the state machine.\n\n- **`queue.py`:** `sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut off the last allowed attempt. It now uses `attempts_made < max_attempts`.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1, so a multi-unit cost was never fully returned. It now subtracts `cost`.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch, which is the opposite of what its docstring says. It now requires non-increasing. This had been failing higher-priority tasks in a batch.\n- **`config.py`:** `deep_merge` recursed with the base and override swapped, so defaults overwrote task-level overrides such as `retry.max_attempts`. The arguments are now in the right order.\n- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.",
+  "time": {
+    "start": 1792477927304,
+    "end": 1792477927304
+  }
+}

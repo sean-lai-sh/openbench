@@ -1,0 +1,39 @@
+Start with the small, direct modules.
+
+sed -i 's/return attempts_made < self.max_attempts - 1/return attempts_made < self.max_attempts/' taskflow/retry.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran)"; grep -n "def dependents" -A25 taskflow/dag.py; grep -n "def note_attempt\|def record_state\|priority" -B2 -A12 taskflow/model.py | sed -n 1,200p
+
+Cascade uses direct dependents only; use transitive. Then config.
+
+sed -i 's/for dep_id in self.dag.dependents(failed_run.id):/for dep_id in self.dag.transitive_dependents(failed_run.id):/' taskflow/scheduler.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR|Ran|OK)"
+
+Two more bugs: `release` (`-= 1`) and `_prefix_matches` (reversed).
+
+sed -i 's/prefix.startswith(topic + ".")/topic.startswith(prefix + ".")/' taskflow/events.py
+python3 -m unittest 2>&1 | tail -40
+
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests.
+
+I found seven bugs, each a one-line logic error:
+
+- **`queue.py`:** `_Entry.sort_key` ordered entries by `(seq, -priority)`. It now uses `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now checks `current_priority <= prev_priority`, so priorities are non-increasing within a batch.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own values. It now merges `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` skipped only the direct dependents of a failed task. It now iterates `transitive_dependents`, so everything downstream is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of the task's cost. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` tested the prefix and topic the wrong way round. It now checks `topic.startswith(prefix + ".")`.
+
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests.
+
+I found seven bugs, each a one-line logic error:
+
+- **`queue.py`:** `_Entry.sort_key` ordered entries by `(seq, -priority)`. It now uses `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now checks `current_priority <= prev_priority`, so priorities are non-increasing within a batch.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own values. It now merges `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` skipped only the direct dependents of a failed task. It now iterates `transitive_dependents`, so everything downstream is skipped.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of the task's cost. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` tested the prefix and topic the wrong way round. It now checks `topic.startswith(prefix + ".")`.

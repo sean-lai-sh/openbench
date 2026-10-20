@@ -1,0 +1,11 @@
+{
+  "id": "prt_157ea10d4001t1FPgdy99kQcWn",
+  "sessionID": "ses_ea816367bffezKTdRtwwNvSZnq",
+  "messageID": "msg_157ea01030014dw0XlSDv0m0C3",
+  "type": "text",
+  "text": "All 25 tests now pass. I fixed seven bugs, each in the module whose docstring described the behavior the code didn't have:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.\n- **`retry.py`**: `should_retry` had an off-by-one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing, but its docstring says non-increasing. I flipped the comparison to `current <= prev`. This guard would have started failing runs once the queue order was fixed.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity for any task costing more than 1.\n- **`events.py`**: `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips the whole downstream chain.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the base overrode the task's own values. For example, a task's `retry.max_attempts` was lost. It now recurses with the base first and the override second.",
+  "time": {
+    "start": 1792476319993,
+    "end": 1792476319993
+  }
+}

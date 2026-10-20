@@ -1,0 +1,11 @@
+{
+  "id": "prt_1579408580010KSh8pNNytjPeL",
+  "sessionID": "ses_ea86c552effeRUuT3Jm74EEc8G",
+  "messageID": "msg_15793f4fc001huz4Rae2he9MvL",
+  "type": "text",
+  "text": "All 25 tests now pass under `python3 -m unittest`. I didn't modify any tests.\n\nI found seven logic bugs, in six modules:\n\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. That made the queue first-in-first-out and ignored priority. It is now `(-priority, seq)`.\n- **`statemachine.py`**: `batch_order_ok` required each admitted task to have priority at least as high as the one before it. The docstring says non-increasing, so it now checks `current <= prev`. The old check made the guard fail tasks once the queue ordering was fixed.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `dag.transitive_dependents`, so a permanent failure skips every downstream task.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`**: `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Pools never fully freed, which stalled the resource-limited pipelines.\n- **`events.py`**: `_prefix_matches` had the prefix test reversed. It now uses `topic.startswith(prefix + \".\")`. `History`'s `job.term` prefix subscription never fired before this, so failed, skipped and outcome-count queries came back empty.\n\nSeveral of these hid one another. For example, the retry tests needed both the `deep_merge` and `should_retry` fixes, and the priority tests needed both the queue and batch-guard fixes.",
+  "time": {
+    "start": 1792470681896,
+    "end": 1792470681896
+  }
+}

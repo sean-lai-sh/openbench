@@ -1,0 +1,33 @@
+Start with the small modules.
+
+sed -i 's/return current_priority >= prev_priority/return current_priority <= prev_priority/' taskflow/statemachine.py
+rg -n "def transitive_dependents" -B2 -A30 taskflow/dag.py
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR)"
+
+Now config (deep merge).
+
+python3 -m unittest 2>&1 | grep -E "^(FAIL|ERROR)"
+
+Prefix match is reversed.
+
+python3 -m unittest 2>&1 | tail -5
+
+All 25 tests now pass. I found seven root-cause bugs, none of them in the tests:
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+- **`config.py`**: in `deep_merge`, the recursive call had its arguments swapped, so defaults overrode per-task values. It's now `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of subtracting `cost`, so multi-unit resources leaked and later tasks were blocked.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing. Its docstring says non-increasing, so it now checks `current <= prev`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`.
+- **`events.py`**: `_prefix_matches` had the prefix and topic the wrong way round, so `History` never saw the `job.term.*` events. It now checks `topic.startswith(prefix + ".")`.
+
+All 25 tests now pass. I found seven root-cause bugs, none of them in the tests:
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+- **`config.py`**: in `deep_merge`, the recursive call had its arguments swapped, so defaults overrode per-task values. It's now `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of subtracting `cost`, so multi-unit resources leaked and later tasks were blocked.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing. Its docstring says non-increasing, so it now checks `current <= prev`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`.
+- **`events.py`**: `_prefix_matches` had the prefix and topic the wrong way round, so `History` never saw the `job.term.*` events. It now checks `topic.startswith(prefix + ".")`.

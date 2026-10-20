@@ -1,0 +1,11 @@
+{
+  "id": "prt_1580223cd001lfVnfoOljCFkVV",
+  "messageID": "msg_15802146d001R6OoQx350VSca9",
+  "sessionID": "ses_ea7fe35acffe5VG6sFyk3HECAX",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. I found and fixed six defects:\n\n- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and ties go FIFO.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and the pool deadlocked.\n- **`events.py`:** `_prefix_matches` had its arguments swapped. It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` was inverted. It now allows only non-increasing priority within a batch.\n- **`config.py`:** `deep_merge` recursed as `(override, base)`, so defaults overrode the task's own values. It now recurses as `(base, override)`.\n- **`scheduler.py`:** `_cascade_skip` used `dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips reach the whole downstream chain.\n\nThe fixes uncovered each other. The inverted `batch_order_ok` guard was failing priority-ordered runs outright, which hid the queue-ordering problems.",
+  "time": {
+    "start": 1792477897701,
+    "end": 1792477897701
+  }
+}

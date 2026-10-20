@@ -1,0 +1,11 @@
+{
+  "id": "prt_157ec0ca4001YCKT7FsIEShWnC",
+  "sessionID": "ses_ea814406dffeq9LEM35aw6761l",
+  "messageID": "msg_157ebf875001oC9ZiyxpBLtlIG",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, no test files touched. There were seven separate defects, all of them logic errors where the code did something different from what its docstring said.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in insertion order and ignored priority. | It now returns `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` compared against `max_attempts - 1`, so the last allowed attempt never happened. | It now checks `attempts_made < max_attempts`. |\n| `taskflow/events.py` | `_prefix_matches` had its arguments the wrong way round, so `job.term` subscribers never saw `job.term.failed` or `job.term.skipped`. | It now checks `topic.startswith(prefix + \".\")`. |\n| `taskflow/statemachine.py` | `batch_order_ok` used `>=`, but a batch must dispatch in non-increasing priority order. | It now uses `<=`. |\n| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity on multi-unit costs. | It now subtracts `cost`. |\n| `taskflow/scheduler.py` | `_cascade_skip` only skipped direct dependents, not everything downstream. | It now iterates `dag.transitive_dependents`. |\n| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the pipeline defaults overrode a task's own `retry` settings. | It now merges the task's values over the defaults. |\n\nThe retry and queue bugs were hiding each other. Several pipeline tests failed because of the config merge, the retry boundary and the skip cascade together.",
+  "time": {
+    "start": 1792476449984,
+    "end": 1792476449984
+  }
+}
