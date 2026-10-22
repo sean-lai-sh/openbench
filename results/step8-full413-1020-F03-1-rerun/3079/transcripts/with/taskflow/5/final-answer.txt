@@ -1,0 +1,10 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were six root causes:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and ties go in insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had its arguments backwards (`prefix.startswith(topic + ".")`). It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` returned `current >= prev`, which allowed a higher priority after a lower one. It now returns `current <= prev`, matching the non-increasing priority rule.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task values. It now merges `(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. It now subtracts `cost`.
+
+There was also a bug in `scheduler.py`: `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.

@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes all 25 tests. I changed no test files. There were seven separate defects:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties are FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current <= prev`, i.e. non-increasing priority within a batch. With the old queue ordering and this inverted guard, the scheduler failed higher-priority jobs when it admitted them.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so resources leaked and later jobs were never admitted.
+- **`events.py`:** `_prefix_matches` had the `startswith` check backwards. The `job.term` prefix subscription therefore never matched `job.term.failed` and the like, which left `History`'s failed, skipped and succeeded sets empty.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.

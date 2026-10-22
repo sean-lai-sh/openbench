@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I made seven fixes, each a one-line logic error:
+
+- **`queue.py`**: `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority comes first and ties go to insertion order.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing within a batch. The docstring says non-increasing, so I flipped the comparison to `<=`.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own `retry` settings. It now recurses with `(result[key], value)`.
+- **`scheduler.py`**: `_cascade_skip` skipped only the direct dependents of a failed task. It now uses `dag.transitive_dependents`, so everything downstream is skipped.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resources leaked capacity and later tasks never got admitted.
+- **`events.py`**: `_prefix_matches` had its arguments reversed, so prefix subscriptions like `job.term` never matched `job.term.failed`. That left the history's failed, skipped and succeeded sets empty.
+
+I didn't modify any tests.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_165691c9b001SwQYkDTyVGWoYw",
+  "sessionID": "ses_e9a972aa6ffeuV3fpx3xNjZ6Bx",
+  "messageID": "msg_165690b54001Kp777E4p3R3d3z",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.\n\nThere were eight bugs in total:\n\n- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` was off by one (`< max_attempts - 1`). It is now `< max_attempts`.\n- **`events.py`:** `_prefix_matches` had its operands reversed. It now checks `topic.startswith(prefix + \".\")`, so a prefix subscription receives its dotted subtree.\n- **`statemachine.py`:** `batch_order_ok` had its comparison inverted. It now requires non-increasing priority within an admission batch (`current <= prev`).\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity and blocked later tasks.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overrode the task's own values. It now merges the override on top of the base.\n- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.\n\nThe retry, resource-limit and pipeline tests were failing mainly because of the `should_retry`, `release` and cascade bugs. Fixing the first ones exposed the others.",
+  "time": {
+    "start": 1792702749884,
+    "end": 1792702749884
+  }
+}

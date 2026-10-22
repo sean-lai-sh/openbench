@@ -1,0 +1,9 @@
+All 25 tests now pass. I found seven bugs and fixed each at its source:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, an off-by-one that cut retries short. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the arguments swapped. A prefix subscription like `job.term` never received `job.term.failed` or `job.term.skipped`. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` regardless of cost. It now does `used -= cost`.
+- **`config.py`:** `deep_merge` swapped base and override when recursing into nested dicts. Defaults then overrode task-level `retry` settings. It now calls `deep_merge(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`, so only immediate children were skipped. It now uses `dag.transitive_dependents`.

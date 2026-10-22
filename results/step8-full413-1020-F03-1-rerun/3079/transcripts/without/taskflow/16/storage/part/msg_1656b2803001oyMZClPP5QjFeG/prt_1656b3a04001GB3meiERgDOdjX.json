@@ -1,0 +1,11 @@
+{
+  "id": "prt_1656b3a04001GB3meiERgDOdjX",
+  "sessionID": "ses_e9a951042ffeZpM5PDJ6BK6GvX",
+  "messageID": "msg_1656b2803001oyMZClPP5QjFeG",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I changed no test files. There were seven separate defects:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties are FIFO.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current <= prev`, i.e. non-increasing priority within a batch. With the old queue ordering and this inverted guard, the scheduler failed higher-priority jobs when it admitted them.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so resources leaked and later jobs were never admitted.\n- **`events.py`:** `_prefix_matches` had the `startswith` check backwards. The `job.term` prefix subscription therefore never matched `job.term.failed` and the like, which left `History`'s failed, skipped and succeeded sets empty.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.",
+  "time": {
+    "start": 1792702888489,
+    "end": 1792702888489
+  }
+}

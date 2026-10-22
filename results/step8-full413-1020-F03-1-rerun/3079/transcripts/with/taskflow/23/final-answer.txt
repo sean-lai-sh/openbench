@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't modify any tests. There were seven root causes:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority dispatches first and FIFO breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the arguments reversed. It's now `topic.startswith(prefix + ".")`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity.
+- **`statemachine.py`:** `batch_order_ok` compared priorities the wrong way. It now requires `current_priority <= prev_priority`, which matches the "non-increasing" rule in its docstring.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. It now recurses with `(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`, so only immediate children were skipped. It now uses `transitive_dependents`.
