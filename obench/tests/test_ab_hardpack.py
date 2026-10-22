@@ -54,3 +54,11 @@ def test_main_dry_run_hard_pack(tmp_path, monkeypatch):
         run_ab.CELL_TIMEOUT_CAP_S = 840
         run_ab.EXEC_MODE = "local"
         run_ab.CELL_META = None
+
+
+def test_harbor_app_rewrite_regex_matches_checker():
+    import re
+    pat = r"(?<![A-Za-z0-9_])/app(?=/|[\"'`]|$|\s|[.,;:)])"
+    text = "Write /app/polyglot/main.rs then `cd /app` and keep /apple and x/app/y."
+    out = re.sub(pat, "/w", text)
+    assert out == "Write /w/polyglot/main.rs then `cd /w` and keep /apple and x/app/y."

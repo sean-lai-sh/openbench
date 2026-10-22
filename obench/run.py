@@ -2118,6 +2118,14 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         initial_workspace_files = capture_workspace_files(workdir)
 
         instruction = read_instruction(task_dir)
+        if exec_mode == "local" and os.environ.get("OBENCH_HARBOR_APP_REWRITE") == "1":
+            # Opt-in for Harbor imports run locally: point the agent at its workspace,
+            # the same /app -> cwd rewrite the generated checker.sh applies to tests.
+            rewritten = re.sub(r"(?<![A-Za-z0-9_])/app(?=/|[\"'`]|$|\s|[.,;:)])",
+                               os.path.abspath(workdir), instruction)
+            if rewritten != instruction:
+                row["instruction_app_rewrite"] = True
+                instruction = rewritten
         row["t_env_setup_s"] = round(time.monotonic() - env_setup_start, 3)
 
         start = time.monotonic()
