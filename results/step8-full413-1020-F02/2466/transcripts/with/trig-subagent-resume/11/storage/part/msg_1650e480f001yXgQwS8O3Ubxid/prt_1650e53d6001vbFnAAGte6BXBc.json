@@ -1,0 +1,11 @@
+{
+  "id": "prt_1650e53d6001vbFnAAGte6BXBc",
+  "messageID": "msg_1650e480f001yXgQwS8O3Ubxid",
+  "sessionID": "ses_e9af2b61bffePnB9xLjBQSChD1",
+  "type": "text",
+  "text": "`rate` becomes None at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n**Root cause:** `settings.json:2` has a typo. The key is `\"rat\"`, not `\"rate\"`:\n\n```json\n\"rat\": 0.5,\n```\n\n`app/config.py:10` loads that file into `SETTINGS` unchanged. `SETTINGS.get(\"rate\")` then finds no such key and returns `None` instead of raising `KeyError`.\n\n**Call chain:**\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py:8` calls `pricing.get_rate()` and gets `None`.\n3. `app/report.py:9` evaluates `rate * count` and raises the `TypeError`.\n\n**Fix (not applied):** rename `\"rat\"` to `\"rate\"` in `settings.json`. You could also change `.get(\"rate\")` to `[\"rate\"]` in `app/pricing.py:8`, so a missing key fails with a clear `KeyError`.",
+  "time": {
+    "start": 1792696800226,
+    "end": 1792696800226
+  }
+}

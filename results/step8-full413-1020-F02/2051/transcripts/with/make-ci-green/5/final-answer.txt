@@ -1,0 +1,24 @@
+sed -i 's/year.strip(), int(copies)/int(year), int(copies)/' catalog/books.py
+sed -i 's/MAX_BORROWED = 3/MAX_BORROWED = 5/' catalog/members.py
+sed -i 's/days_late + DAILY_FEE/days_late * DAILY_FEE/' catalog/fees.py
+sed -i 's/\[-n - 1:\]/[-n:]/' catalog/inventory.py
+sed -i 's/        Book("1984", "Orwell", 1949, 2),/&\n        Book("Emma", "Austen", 1815, 1),/' catalog/factory.py
+python3 -m unittest 2>&1 | tail -15
+
+`python3 -m unittest` now passes: 16 tests, all OK. I didn't modify the tests. The fixes in `catalog/`:
+
+- **`search.py`:** it imported `normalize` from `catalog.nonexistent`, so I pointed the import at `catalog.text`.
+- **`books.py`:** `parse_book` left the year as a string. It now converts it with `int`.
+- **`members.py`:** `MAX_BORROWED` was 3, but the policy comment and tests say 5, so I set it to 5.
+- **`fees.py`:** the late fee added the daily rate (`+`) instead of multiplying (`*`).
+- **`inventory.py`:** `recent(n)` returned `n+1` events because of an off-by-one slice. I also made `recent(0)` return an empty list. That edge case wasn't in the tests, and without the guard `[-0:]` would return the whole history.
+- **`factory.py`:** `sample_books` was missing the `Emma` book, so I added `Book("Emma", "Austen", 1815, 1)`.
+
+`python3 -m unittest` now passes: 16 tests, all OK. I didn't modify the tests. The fixes in `catalog/`:
+
+- **`search.py`:** it imported `normalize` from `catalog.nonexistent`, so I pointed the import at `catalog.text`.
+- **`books.py`:** `parse_book` left the year as a string. It now converts it with `int`.
+- **`members.py`:** `MAX_BORROWED` was 3, but the policy comment and tests say 5, so I set it to 5.
+- **`fees.py`:** the late fee added the daily rate (`+`) instead of multiplying (`*`).
+- **`inventory.py`:** `recent(n)` returned `n+1` events because of an off-by-one slice. I also made `recent(0)` return an empty list. That edge case wasn't in the tests, and without the guard `[-0:]` would return the whole history.
+- **`factory.py`:** `sample_books` was missing the `Emma` book, so I added `Book("Emma", "Austen", 1815, 1)`.
