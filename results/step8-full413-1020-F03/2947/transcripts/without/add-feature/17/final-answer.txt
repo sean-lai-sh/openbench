@@ -1,0 +1,12 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. The change is in `miniconf/loader.py`.
+
+- **Expansion:** An `@include <path>` line is replaced in place by the included file's lines, including inside nested includes. Parsing then runs over the expanded text as before.
+- **Paths:** Relative paths resolve against the directory of the file that contains the directive.
+- **Overrides:** Later assignments win, so a key set after an include overrides the included value, and the reverse.
+- **Errors:** A missing or unreadable include target raises `ConfigError`. So does an `@include` with no path. A cycle, direct or transitive, also raises `ConfigError`.
+- **Unchanged:** A missing top-level file still raises `FileNotFoundError`, as it did before. `loads` and the parser are untouched.
+
+I checked it by hand. `examples/service.conf` loads with `logging.level` as `info` and `http.port` as `8080`. A cycle, a missing include and override ordering behaved as described. I didn't add tests to `tests/`.
+
+- **Diamond includes:** A file included twice by different parents is allowed. Only a file that includes itself, directly or through other files, counts as a cycle.
+- **Active section:** Expansion is literal, so a section header inside an included file stays active for the lines after the `@include`. In the example, `[http]` follows the include, so it's fine there.

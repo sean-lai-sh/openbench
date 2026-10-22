@@ -1,0 +1,14 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests still pass. The change is in `miniconf/loader.py`. I didn't add new tests for includes.
+
+I tried it by hand:
+- **Example files:** `examples/service.conf` loads with the `logging.conf` values, `level` is `info` and `port` is `8080`.
+- **Override order:** a key set after an include wins over the included value, and an include overrides a key set before it.
+- **Relative paths:** includes resolve against the including file's directory, including from a `sub/` directory.
+- **Errors:** a missing include target and a cycle (`a.conf` → `b.conf` → `a.conf`) both raise `ConfigError`.
+
+I also made these choices, which the spec didn't settle:
+- An `@include` with no path raises `ConfigError`.
+- An unreadable or undecodable *included* file raises `ConfigError`. The top-level file still raises the same errors as before (for example `OSError` if it's missing).
+- Including the same file twice without a cycle, such as a diamond, is allowed. Only a file that is currently being expanded counts as a cycle.
+- Because expansion is purely textual, an included file's last `[section]` stays active after the include. A key placed after the include without its own section header lands in that section.
+- Line numbers in parse errors refer to the expanded text, not the original file.

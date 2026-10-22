@@ -1,0 +1,11 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the change is in `miniconf/loader.py`. The existing 13 tests still pass. I tried it on `examples/service.conf` and on a cycle and a missing-file case I made up. I didn't add tests for `@include` to the suite.
+
+- **Inline expansion:** an `@include` line is replaced by the included file's lines before parsing. Because of that, a section header inside an included file stays active after the include, as if the lines had been written in place. In the example, `[logging]` opens inside `logging.conf`, and then `[http]` follows in `service.conf`. Loading `examples/service.conf` gives `level` = `info` in `[logging]` and `port` = `8080` in `[http]`.
+- **Relative paths:** each include is resolved against the directory of the file that contains it, not the working directory.
+- **Nesting:** includes are expanded recursively. The same file can be included twice from different places (for example in a diamond layout) without error.
+- **Missing or unreadable file:** raises `ConfigError`, and so does a file that isn't valid UTF-8.
+- **Cycles:** raises `ConfigError`, whether the file includes itself directly or through other files.
+- **Beyond the spec:** a bare `@include` with no path also raises `ConfigError`.
+- **Unchanged:** files without `@include` parse as before, and `loads()` and the parser are untouched. `loads()` therefore still ignores `@include` lines.
+
+One behaviour to know about: the line numbers in parse errors count lines after expansion, so for a file with includes they won't match the original file.

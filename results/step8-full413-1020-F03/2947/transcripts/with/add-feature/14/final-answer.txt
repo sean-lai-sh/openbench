@@ -1,0 +1,10 @@
+`miniconf.loader.load(path)` now expands `@include` directives, and the change is in `miniconf/loader.py`.
+
+I checked it by hand and ran the existing suite. It passes (13 tests). `examples/service.conf` loads with `logging.level` = `info` and `http.port` = 8080. A two-file cycle and a missing include target each raise `ConfigError`. I didn't add new test files for the include cases, and I didn't try nested includes or override ordering.
+
+- **Directive:** a line counts as an include only if its first token is exactly `@include`. The path is the rest of the line, so paths with spaces work. An `@include` with no path raises `ConfigError`.
+- **Paths:** each include is resolved relative to the directory of the file that contains it.
+- **Cycles:** I track the real path of every file in the current include chain, so symlinked paths count too. A file that includes itself, directly or through other files, raises `ConfigError`.
+- **Unchanged behavior:** `loads()` and `parse_lines` are untouched. If the top-level file itself is missing, `load` still raises `FileNotFoundError` as before. An included file that exists but can't be read, for example because of an encoding error, is turned into a `ConfigError`.
+
+Because expansion is purely textual, a section header inside an included file stays in effect after the include. In the example, `[logging]` carries on until `[http]`. Keys placed after an `@include` and before the next section header land in the included file's last section. I kept this because you asked for "as if those lines had been written where the directive appears".

@@ -1,0 +1,15 @@
+`miniconf.loader.load(path)` now expands `@include` lines inline, and the existing 13 tests still pass. I didn't add new tests for includes. I checked the behaviour by hand with the example files and a few throwaway files.
+
+- **Example:** loading `examples/service.conf` gives `logging.level` as `info`, `http.port` as `8080` and `name` as `billing`.
+- **Cycles:** two files that include each other raise `ConfigError`. A file that includes itself goes through the same check, but I didn't try that case separately.
+- **Missing target:** an include of a file that doesn't exist raises `ConfigError`.
+- **Not exercised:** nested includes (beyond the cycle case), relative-path resolution from a subdirectory, and the override ordering. They follow from how the code expands the file.
+
+A few choices the spec didn't cover:
+- **Other include errors:** an `@include` with no path, or a target that can't be opened (for example a directory), also raises `ConfigError`.
+- **Top-level file:** a missing top-level file passed to `load` still raises the original `OSError`, as before.
+- **Repeated includes:** including the same file twice, without a cycle, is allowed.
+- **Section carry-over:** the expansion is plain text substitution, so a section header inside an included file stays active for the lines after the `@include`. In the example, `[logging]` ends where `[http]` starts.
+- **Line numbers:** parse-error line numbers refer to the expanded text, so they can differ from the line numbers in the original file.
+
+The change is in `miniconf/loader.py`. `loads()` and the parser are unchanged.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_16542d2d00018z1FIjC69h145W",
+  "messageID": "msg_16542c22f001fnHQ6Fr1VEJ3rg",
+  "sessionID": "ses_e9abd85a9ffee1YMCH21fLGral",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests.\n\nI found six root-cause bugs, and most of the 18 failures came from them:\n\n- **`queue.py`**: The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and ties break by insertion order.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`events.py`**: The prefix match checked `prefix.startswith(topic + \".\")`, which is backwards. It is now `topic.startswith(prefix + \".\")`, so `job.term` receives `job.term.failed` and the other `job.term.*` topics.\n- **`statemachine.py`**: `batch_order_ok` required `current >= prev`, which is increasing priority. The docstring says non-increasing, so it is now `current <= prev`.\n- **`config.py`**: `deep_merge` recursed with `(value, result[key])`, so the defaults overrode the task's own values. It now recurses with `(result[key], value)`.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, so resource-limited tasks never finished.\n\nI also fixed a seventh bug in `scheduler.py`. `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.",
+  "time": {
+    "start": 1792700240614,
+    "end": 1792700240614
+  }
+}

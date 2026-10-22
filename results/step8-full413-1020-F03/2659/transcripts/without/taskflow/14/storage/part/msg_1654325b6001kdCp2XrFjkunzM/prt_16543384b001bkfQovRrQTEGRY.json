@@ -1,0 +1,11 @@
+{
+  "id": "prt_16543384b001bkfQovRrQTEGRY",
+  "messageID": "msg_1654325b6001kdCp2XrFjkunzM",
+  "sessionID": "ses_e9abd2600ffeZfiu4GTyrWIlj9",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I fixed six defects and didn't touch the tests.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority dispatches first and ties go in insertion order.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`events.py`:** `_prefix_matches` had its arguments swapped (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`, so `job.term` receives `job.term.failed` as the docstring says.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch. The docstring says non-increasing, so it now requires `current <= prev`.\n- **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`, which let the defaults override the task's own values. The arguments are now in the right order, so a task's `retry.max_attempts` survives the merge.\n- **`scheduler.py`:** `_cascade_skip` used only direct dependents. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.\n- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost. Multi-unit tasks leaked capacity and the pipelines stalled, so it now releases the full cost.\n\nI didn't read the rest of the package, such as `history.py`, so any defect the tests don't cover is still there.",
+  "time": {
+    "start": 1792700266597,
+    "end": 1792700266597
+  }
+}

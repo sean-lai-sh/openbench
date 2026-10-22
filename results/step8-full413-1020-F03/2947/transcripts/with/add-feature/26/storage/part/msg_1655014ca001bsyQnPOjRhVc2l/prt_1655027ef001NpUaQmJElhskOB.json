@@ -1,0 +1,11 @@
+{
+  "id": "prt_1655027ef001NpUaQmJElhskOB",
+  "sessionID": "ses_e9ab06a71ffek9zAZIHh9ReOlc",
+  "messageID": "msg_1655014ca001bsyQnPOjRhVc2l",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the 13 existing tests pass. They ran under `unittest` because pytest isn't installed. I didn't add new tests to the suite.\n\nI checked it by hand:\n- `examples/service.conf` loads with the `[logging]` section from `logging.conf` pulled in.\n- A two-file cycle (`a.conf` includes `b.conf`, which includes `a.conf`) raises `ConfigError`.\n- An include of a file that doesn't exist raises `ConfigError`.\n\nI didn't test nested includes, override ordering or a bare `@include` line, though the code handles them.\n\nThe change is in `miniconf/loader.py`. A few behaviours to know about:\n- **Paths:** the include path is everything after `@include`, stripped, and resolved against the directory of the file containing the directive.\n- **Cycles:** cycles are detected on resolved real paths, so symlinks can't hide one. The same file included twice without a cycle is allowed.\n- **Bare `@include`:** a line with no path raises `ConfigError`.\n- **Unreadable includes:** an included file that exists but can't be read or decoded also raises `ConfigError`.\n- **Top-level file:** a missing or unreadable top-level file still raises the same `OSError` as before.\n- **Sections:** since expansion is purely textual, a section header inside an included file stays active for the lines after the `@include`. That follows from the \"as if written inline\" rule.",
+  "time": {
+    "start": 1792701114380,
+    "end": 1792701114380
+  }
+}

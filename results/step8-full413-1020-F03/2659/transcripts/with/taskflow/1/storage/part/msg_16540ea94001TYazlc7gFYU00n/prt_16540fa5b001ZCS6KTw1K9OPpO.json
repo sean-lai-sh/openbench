@@ -1,0 +1,11 @@
+{
+  "id": "prt_16540fa5b001ZCS6KTw1K9OPpO",
+  "messageID": "msg_16540ea94001TYazlc7gFYU00n",
+  "sessionID": "ses_e9abf5c56ffebRB6JVe670cbOi",
+  "type": "text",
+  "text": "All 25 tests now pass. I found six root-cause bugs and fixed each one:\n\n- **`queue.py`**: `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`events.py`**: `_prefix_matches` had its arguments backwards (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within a batch. It now requires non-increasing, as its docstring says.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. This leaked capacity and made resource-limited runs stall.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so the whole downstream chain is skipped.\n- **`config.py`**: `deep_merge` recursed as `deep_merge(override_child, base_child)`, so defaults overwrote task overrides. It now recurses as `deep_merge(base_child, override_child)`.\n\nI didn't modify any tests.",
+  "time": {
+    "start": 1792700119678,
+    "end": 1792700119678
+  }
+}

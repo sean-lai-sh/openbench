@@ -1,0 +1,16 @@
+`miniconf.loader.load()` now expands `@include` directives. The change is in `miniconf/loader.py`.
+
+I ran the 13 existing tests and they pass. I also checked the behaviour by hand:
+- **Example files:** `examples/service.conf` loads with the `[logging]` section from `logging.conf` pulled in.
+- **Ordering:** a key set before an include is overridden by the include, and a key set after it overrides the include.
+- **Cycles:** an include that loops back through a parent file raises `ConfigError`.
+- **Missing target:** an include of a file that doesn't exist raises `ConfigError`.
+
+I didn't hand-test nested includes beyond the cycle case, and I didn't add new test files.
+
+Behaviours the spec didn't spell out:
+- **Section carry-over:** expansion is purely textual, so an included file's last `[section]` stays active for lines after the `@include`, as if they had been written inline.
+- **Path with spaces:** everything after `@include` on the line is taken as the path, so paths containing spaces work.
+- **Repeated includes:** the same file can be included twice without error, since only cycles are rejected.
+- **Extra errors:** an `@include` with no path, or a target that is unreadable or not a file, also raises `ConfigError`.
+- **Unchanged paths:** a missing top-level file still raises the same error as before. `loads()` is unchanged and still ignores `@` lines.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_16551a57b001KcPIHUF28oCkpn",
+  "sessionID": "ses_e9aaef709ffeh8OiznElxJIDon",
+  "messageID": "msg_1655190b5001EV2ncE366EJRrS",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the 13 existing tests still pass. The change is in `miniconf/loader.py`.\n\nI ran `examples/service.conf` and got `[logging] level = info` and `[http] port = 8080`. I also checked the error cases by hand. A two-file cycle (`a.conf` ↔ `b.conf`) and an include of a missing file both raise `ConfigError`. I didn't add new test cases to the suite.\n\n- **Expansion:** an `@include <path>` line is replaced in place by the included file's lines before parsing. Included files can include other files, so nesting works. The path is everything after `@include`, so it can contain spaces.\n- **Relative paths:** each include is resolved against the directory of the file that contains the directive.\n- **Ordering:** because expansion is positional, a key set after an include overrides the included value, and the reverse also holds.\n- **Cycles:** I track the chain of files currently being expanded, using real paths, so symlinks are caught too. Including the same file twice without a cycle is allowed.\n- **Errors:**\n  - An included file that is missing or unreadable raises `ConfigError`.\n  - An `@include` with no path also raises `ConfigError`.\n  - A missing top-level file passed to `load()` still raises `FileNotFoundError` as before.\n\nIf an included file has no section header of its own, its keys go into whichever section is open at the include line. If it ends inside a section, the lines after the directive stay in that section until the next header, as the spec's \"as if written there\" implies.\n\nLine numbers in parse errors now count lines in the expanded text, so they can differ from the original file's line numbers when includes are used.",
+  "time": {
+    "start": 1792701212064,
+    "end": 1792701212064
+  }
+}
