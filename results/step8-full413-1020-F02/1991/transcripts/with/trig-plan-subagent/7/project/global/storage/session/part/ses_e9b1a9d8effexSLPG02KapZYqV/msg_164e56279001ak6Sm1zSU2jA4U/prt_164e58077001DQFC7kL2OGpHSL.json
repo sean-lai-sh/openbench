@@ -1,0 +1,11 @@
+{
+  "id": "prt_164e58077001DQFC7kL2OGpHSL",
+  "messageID": "msg_164e56279001ak6Sm1zSU2jA4U",
+  "sessionID": "ses_e9b1a9d8effexSLPG02KapZYqV",
+  "type": "text",
+  "text": "**Where `rate` comes from:** `rate` in `compute_total` doesn't read a settings key itself. It calls a helper that does.\n- `app/report.py:8`: `rate = pricing.get_rate()`\n- `app/pricing.py:8`: `return SETTINGS.get(\"rate\")` is the actual key lookup. It asks for `\"rate\"`.\n- `app/config.py:9-10`: `SETTINGS = json.load(...)` loads `settings.json` unchanged, with no key renaming.\n- `settings.json:2`: `\"rat\": 0.5` is where the rate value is defined. The key is misspelled and missing the \"e\".\n\n**Bug:** The key names don't match. `settings.json` defines `\"rat\"`, but `pricing.get_rate()` looks up `\"rate\"`. `SETTINGS.get(\"rate\")` therefore returns `None`. `compute_total` then evaluates `None * count` and raises `TypeError` (`main.py:7` triggers it).\n\n**Correct key:** `\"rate\"`. The fix is to rename `\"rat\"` to `\"rate\"` at `settings.json:2`. Changing the lookup to `\"rat\"` would also work, but it would keep the typo.",
+  "time": {
+    "start": 1792694124704,
+    "end": 1792694124704
+  }
+}

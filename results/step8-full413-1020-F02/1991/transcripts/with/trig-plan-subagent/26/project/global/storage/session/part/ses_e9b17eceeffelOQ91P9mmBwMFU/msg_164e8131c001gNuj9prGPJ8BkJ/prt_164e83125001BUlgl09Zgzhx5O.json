@@ -1,0 +1,11 @@
+{
+  "id": "prt_164e83125001BUlgl09Zgzhx5O",
+  "messageID": "msg_164e8131c001gNuj9prGPJ8BkJ",
+  "sessionID": "ses_e9b17eceeffelOQ91P9mmBwMFU",
+  "type": "text",
+  "text": "**Where the key is defined:** `settings.json:2` has `\"rat\": 0.5`. The key is misspelled. It should be `rate`.\n\n**How it's loaded:**\n- `app/config.py:9-10` reads `settings.json` at import time into `SETTINGS` with `json.load`.\n- `app/pricing.py:8` runs `SETTINGS.get(\"rate\")` inside `get_rate()`.\n\n**Where `rate` is obtained:** `app/report.py:8` has `rate = pricing.get_rate()`. `compute_total` then does `rate * count` at line 9.\n\n**Why it ends up None:** `get_rate()` looks up `\"rate\"`, but `settings.json` only has `\"rat\"`. `dict.get` returns `None` for the missing key. `None * 10` would then raise a `TypeError`.\n\n**COUNT:** `main.py:3` has `COUNT = 10`.\n\n**Rate for \"Total: 5.0\":** 5.0 / 10 = 0.5. That is the value already stored under `\"rat\"`. The fix is to rename the key in `settings.json:2` to `\"rate\"`. Changing the lookup in `pricing.py:8` to `\"rat\"` would also work, but fixing the typo in the settings file is the better choice.",
+  "time": {
+    "start": 1792694301013,
+    "end": 1792694301013
+  }
+}

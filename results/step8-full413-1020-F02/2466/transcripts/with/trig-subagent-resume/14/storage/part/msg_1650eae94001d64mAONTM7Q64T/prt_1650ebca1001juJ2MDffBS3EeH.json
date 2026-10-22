@@ -1,0 +1,11 @@
+{
+  "id": "prt_1650ebca1001juJ2MDffBS3EeH",
+  "messageID": "msg_1650eae94001d64mAONTM7Q64T",
+  "sessionID": "ses_e9af15dcdffei1lDMGE0c8uUVh",
+  "type": "text",
+  "text": "`rate` becomes None at **app/pricing.py:8**. `return SETTINGS.get(\"rate\")` returns None because the key `\"rate\"` doesn't exist in the settings.\n\n**Cause:** `settings.json:2` has a typo. The key is `\"rat\"` (value 0.5), not `\"rate\"`.\n\n**Call chain:**\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py:8` calls `pricing.get_rate()`.\n3. `app/pricing.py:8` calls `SETTINGS.get(\"rate\")`, which returns None because the key is missing.\n4. `app/report.py:9` evaluates `rate * count`, which raises the TypeError.\n\n**Related files:**\n- `settings.json` holds `rat`, `currency` and `label`. It is the file with the typo.\n- `app/config.py:7-10` loads `settings.json` once at import time into `SETTINGS`. It does no validation, so a missing key passes through silently.\n- `app/pricing.py` is where `.get()` hides the missing key.\n\nThe fix would be to rename `\"rat\"` to `\"rate\"` in `settings.json`. Making `get_rate` use `SETTINGS[\"rate\"]` would also make this kind of typo fail loudly. I haven't changed any files.",
+  "time": {
+    "start": 1792696827354,
+    "end": 1792696827354
+  }
+}
