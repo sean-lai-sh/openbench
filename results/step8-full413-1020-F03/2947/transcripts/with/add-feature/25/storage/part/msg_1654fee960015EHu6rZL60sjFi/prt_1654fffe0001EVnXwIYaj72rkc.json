@@ -1,0 +1,11 @@
+{
+  "id": "prt_1654fffe0001EVnXwIYaj72rkc",
+  "sessionID": "ses_e9ab0a5d2ffeygKyQmRwrkpCMf",
+  "messageID": "msg_1654fee960015EHu6rZL60sjFi",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The change is in `miniconf/loader.py`, and I didn't touch `parser.py`.\n\nI checked it with the existing suite, which still passes (13 tests), and with throwaway files:\n- `examples/service.conf` loads with the included `[logging]` section, giving `level = info`.\n- A file that includes a file in a subdirectory, which in turn includes another file, expands correctly. Relative paths resolve against the including file's directory.\n- A cycle (`a` includes `b`, `b` includes `a`) raises `ConfigError`.\n- A missing include target raises `ConfigError`.\n\nI didn't add tests for the new behavior to `tests/`.\n\n- **Sections:** Expansion is literal, so a `[section]` header inside an included file stays in effect for the lines after the `@include` in the parent. A parent key after an include lands in whatever section the include ended in.\n- **Missing top-level file:** `load()` on a missing top-level file still raises `FileNotFoundError`, as it did before. Only missing include targets become `ConfigError`.\n- **Diamond includes:** If two files both include the same third file, that is allowed. Only real cycles are rejected.\n- **Empty `@include`:** An `@include` line with no path raises `ConfigError`.\n- **Error line numbers:** Parse errors report line numbers in the expanded text, not in the original file.",
+  "time": {
+    "start": 1792701104112,
+    "end": 1792701104112
+  }
+}

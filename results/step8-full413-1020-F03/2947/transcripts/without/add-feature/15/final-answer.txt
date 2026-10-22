@@ -1,0 +1,19 @@
+`miniconf.loader.load(path)` now expands `@include` directives. The change is in `miniconf/loader.py`.
+
+The existing suite (13 tests) still passes. I didn't add new tests. I ran the cases below by hand:
+
+- **Example files:** loading `examples/service.conf` pulls in the logging section (`level` is `info`) and the rest parses as before.
+- **Nesting and ordering:** a three-level chain with a relative `../` path and an override worked. A key set after the include won over the included value, and nested values came through.
+- **Cycles:** a transitive cycle raised `ConfigError` instead of looping.
+- **Missing file:** a missing include target raised `ConfigError`.
+
+- **Syntax:** a directive is a line whose first token is `@include`. The path is everything after it, so paths with spaces work. `@include` with no path raises `ConfigError`.
+- **Paths:** each include is resolved against the directory of the file that contains it.
+- **Same file twice:** including the same file twice, with no cycle, is allowed.
+- **Unreadable includes:** an include that exists but can't be read, such as a directory or bad UTF-8, also raises `ConfigError`.
+- **Top-level file:** a missing top-level file still raises `FileNotFoundError`, as before.
+- **`loads()`:** it is unchanged and still ignores `@` lines.
+
+Expansion is purely textual, as you specified. If an included file ends inside a section, such as `[logging]`, the lines after the `@include` in the parent file belong to that section. In `service.conf` this doesn't matter because `[http]` follows the include. In files where it would matter, put the `@include` before any section header or at the end of the file.
+
+Parse errors report line numbers within the expanded text, not within the original file.

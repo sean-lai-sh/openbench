@@ -1,0 +1,31 @@
+{
+  "id": "prt_16550f1e4001H9y2W4MKG2lEf2",
+  "sessionID": "ses_e9aaf725bffeGLIMmRNfvVSLwZ",
+  "messageID": "msg_16550deab001PjHltfGlqsha6v",
+  "type": "tool",
+  "callID": "toolu_vrtx_01MgeW8PhzM8AkmGSs9GhaRJ",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-5tnpp_29/bench_opencode_add-feature_905tmzau/tests/test_include.py",
+      "content": "import os\nimport tempfile\nimport unittest\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.loader import load\n\n\ndef _write(d, name, text):\n    path = os.path.join(d, name)\n    os.makedirs(os.path.dirname(path), exist_ok=True)\n    with open(path, \"w\", encoding=\"utf-8\") as fh:\n        fh.write(text)\n    return path\n\n\nclass IncludeTest(unittest.TestCase):\n    def test_inline_and_override_order(self):\n        with tempfile.TemporaryDirectory() as d:\n            _write(d, \"inc.conf\", \"a = 2\\nb = 2\\n\")\n            main = _write(d, \"main.conf\", \"a = 1\\n@include inc.conf\\nb = 3\\n\")\n            cfg = load(main)\n            self.assertEqual(cfg.get(\"a\"), 2)\n            self.assertEqual(cfg.get(\"b\"), 3)\n\n    def test_relative_to_including_file_and_nested(self):\n        with tempfile.TemporaryDirectory() as d:\n            _write(d, \"sub/leaf.conf\", \"x = 1\\n\")\n            _write(d, \"sub/mid.conf\", \"@include leaf.conf\\n\")\n            main = _write(d, \"main.conf\", \"@include sub/mid.conf\\n\")\n            cwd = os.getcwd()\n            try:\n                os.chdir(tempfile.gettempdir())\n                self.assertEqual(load(main).get(\"x\"), 1)\n            finally:\n                os.chdir(cwd)\n\n    def test_missing(self):\n        with tempfile.TemporaryDirectory() as d:\n            main = _write(d, \"main.conf\", \"@include nope.conf\\n\")\n            with self.assertRaises(ConfigError):\n                load(main)\n\n    def test_cycles(self):\n        with tempfile.TemporaryDirectory() as d:\n            a = _write(d, \"a.conf\", \"@include b.conf\\n\")\n            _write(d, \"b.conf\", \"@include a.conf\\n\")\n            with self.assertRaises(ConfigError):\n                load(a)\n            s = _write(d, \"s.conf\", \"@include s.conf\\n\")\n            with self.assertRaises(ConfigError):\n                load(s)\n\n    def test_diamond_is_not_a_cycle(self):\n        with tempfile.TemporaryDirectory() as d:\n            _write(d, \"shared.conf\", \"k = 1\\n\")\n            _write(d, \"l.conf\", \"@include shared.conf\\n\")\n            _write(d, \"r.conf\", \"@include shared.conf\\n\")\n            main = _write(d, \"main.conf\", \"@include l.conf\\n@include r.conf\\n\")\n            self.assertEqual(load(main).get(\"k\"), 1)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-5tnpp_29/bench_opencode_add-feature_905tmzau/tests/test_include.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-5tnpp_29/bench_opencode_add-feature_905tmzau/miniconf/loader.py": [],
+        "/tmp/obench-cell-5tnpp_29/bench_opencode_add-feature_905tmzau/tests/test_include.py": [],
+        "/tmp/obench-cell-5tnpp_29/bench_opencode_add-feature_905tmzau/miniconf/errors.py": [],
+        "/tmp/obench-cell-5tnpp_29/bench_opencode_add-feature_905tmzau/miniconf/parser.py": []
+      },
+      "filepath": "/tmp/obench-cell-5tnpp_29/bench_opencode_add-feature_905tmzau/tests/test_include.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1792701170826,
+      "end": 1792701171324
+    }
+  }
+}

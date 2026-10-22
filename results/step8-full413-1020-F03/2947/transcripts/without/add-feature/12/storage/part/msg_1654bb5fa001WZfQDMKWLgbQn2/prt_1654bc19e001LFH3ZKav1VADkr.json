@@ -1,0 +1,20 @@
+{
+  "id": "prt_1654bc19e001LFH3ZKav1VADkr",
+  "sessionID": "ses_e9ab45853ffeFH6gjQxeXpyH54",
+  "messageID": "msg_1654bb5fa001WZfQDMKWLgbQn2",
+  "type": "tool",
+  "callID": "toolu_vrtx_013cpVzmpj1QGo6oy943dNrU",
+  "tool": "bash",
+  "state": {
+    "status": "error",
+    "input": {
+      "command": "cd /tmp/obench-cell-56yiyyzn/bench_opencode_add-feature_nia_8gw9 && python - <<'EOF'\np='miniconf/loader.py'\ns=open(p).read()\ns=s.replace('''from miniconf.parser import parse_lines\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as fh:\n        lines = fh.read().splitlines()\n    return parse_lines(lines)\n''','''import os\n\nfrom miniconf.errors import ConfigError\nfrom miniconf.parser import parse_lines\n\n\ndef _read_lines(path):\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as fh:\n            return fh.read().splitlines()\n    except FileNotFoundError:\n        raise ConfigError(\"file not found: {}\".format(path))\n    except (IsADirectoryError, NotADirectoryError, PermissionError) as exc:\n        raise ConfigError(\"cannot read {}: {}\".format(path, exc))\n\n\ndef _expand(path, stack):\n    real = os.path.realpath(path)\n    if real in stack:\n        raise ConfigError(\"include cycle detected at {}\".format(path))\n    lines = _read_lines(path)\n    stack = stack + (real,)\n    base = os.path.dirname(real)\n    out = []\n    for raw in lines:\n        parts = raw.split(None, 1)\n        if parts and parts[0] == \"@include\":\n            if len(parts) < 2 or not parts[1].strip():\n                raise ConfigError(\"{}: @include requires a path\".format(path))\n            target = os.path.join(base, parts[1].strip())\n            out.extend(_expand(target, stack))\n        else:\n            out.append(raw)\n    return out\n\n\ndef load(path):\n    \"\"\"Read and parse the configuration file at ``path``.\n\n    ``@include <path>`` lines are replaced inline by the contents of the\n    referenced file, resolved relative to the including file.\n    \"\"\"\n    return parse_lines(_expand(path, ()))\n''')\nopen(p,'w').write(s)\nEOF\npython -c \"\nfrom miniconf.loader import load\nc=load('examples/service.conf');print(c.get('level',section='logging'),c.get('port',section='http'),c.get('name'))\"\ncd /tmp && mkdir -p t && cd t && printf 'a=1\\n@include b\\n' > a && printf '@include a\\n' > b && printf '@include nope\\n' > m\ncd /tmp/obench-cell-56yiyyzn/bench_opencode_add-feature_nia_8gw9 && python -c \"\nfrom miniconf.loader import load\nfor f in 'ab','m':\n    try: load('/tmp/t/'+f)\n    except Exception as e: print(type(e).__name__,e)\"\npython -m unittest discover 2>&1 | tail -3",
+      "description": "Implement include, test"
+    },
+    "error": "Error: This command references paths outside of /tmp/obench-cell-56yiyyzn/bench_opencode_add-feature_nia_8gw9 so it is not allowed to be executed.",
+    "time": {
+      "start": 1792700831043,
+      "end": 1792700831046
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_16541cb53001IZ5U3ooBfcmlvQ",
+  "messageID": "msg_16541ba26001CL3P3wqr4LeNbM",
+  "sessionID": "ses_e9abe94bdffe8XGuMrrKf91WgH",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, and I didn't touch the tests. I fixed seven bugs in six files:\n\n- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resources leaked and later tasks were never admitted. It now subtracts `cost`.\n- **`events.py`:** `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as its docstring says.\n- **`config.py`:** `deep_merge` recursed with the base and override swapped, so a task's `retry` override lost to the defaults. It now recurses as `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.\n\nSeveral pipeline tests were failing only because of the queue, retry and resource bugs. I fixed those first, then re-ran the suite to find the rest.",
+  "time": {
+    "start": 1792700173155,
+    "end": 1792700173155
+  }
+}

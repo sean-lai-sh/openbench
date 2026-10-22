@@ -1,0 +1,11 @@
+{
+  "id": "prt_1654fc64e001QtQYb3zioq4Azv",
+  "sessionID": "ses_e9ab0c6a8ffeEtN35KqyB4fr6g",
+  "messageID": "msg_1654fb2db0011w15Gi5zRW9Dnm",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the full suite passes (17 tests, including 4 new ones for includes). I also ran it on `examples/service.conf`. It reads `level = info` from the included `logging.conf`, and `name` and `port` still come through.\n\nThe change is in `miniconf/loader.py`, and the new tests are in `tests/test_loader.py`.\n\n- **Expansion:** The loader replaces each `@include` line with the included file's text before parsing. Nested includes expand recursively.\n- **Relative paths:** Each include path is resolved against the directory of the file containing the directive, not the working directory.\n- **Missing or unreadable target:** An include that can't be read raises `ConfigError`. That covers a missing file, a directory, a permissions problem and a decoding error. A missing top-level file still raises `FileNotFoundError`, as before.\n- **Cycles:** An include chain that revisits a file raises `ConfigError`. That covers a file including itself and longer loops, and symlinks are resolved first. The same file included twice by different parents (not a cycle) is allowed.\n- **No path:** A bare `@include` with no path raises `ConfigError`. I added that case; the spec didn't cover it.\n- **Unchanged paths:** `loads()` and `parse_lines` are untouched, so a string passed to `loads()` still ignores `@include`.\n\nBecause expansion is purely textual, a `[section]` header inside an included file stays active for the lines after the `@include`. This follows from \"as if written there\". Line numbers in parse errors also refer to the expanded text, not the original file.",
+  "time": {
+    "start": 1792701089395,
+    "end": 1792701089395
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_1655020630018JD8ZBcHqPiWES",
+  "sessionID": "ses_e9ab07bf3ffeHOp16oBpIXpZf4",
+  "messageID": "msg_165500cce001CcMkJ46OH3WDDJ",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The 13 existing tests still pass.\n\nI also ran the example and two error cases by hand:\n- **Example:** `examples/service.conf` loads with `[logging] level` equal to `info` and `[http] port` equal to `8080`.\n- **Cycle:** two files that include each other raise `ConfigError`.\n- **Missing file:** an include of a file that doesn't exist raises `ConfigError`.\n\nI did not add any new test files.\n\nHow it behaves, in `miniconf/loader.py`:\n- **Expansion:** `@include` lines are replaced inline with the target file's lines before parsing, recursively for nested includes. The directive is matched on its first whitespace-separated token being exactly `@include`.\n- **Paths:** the include path is resolved against the directory of the file that contains the directive.\n- **Errors:** an `@include` with no path, or a target that can't be read or decoded, also raises `ConfigError`.\n- **Repeated files:** the same file can be included more than once, as long as it isn't an ancestor of itself. A cycle is detected through symlinks too.\n- **Unchanged paths:** `loads()` and the parser are untouched.\n\nBecause expansion is purely positional, a `[section]` header inside an included file stays in effect for the lines after the `@include`. That follows the \"as if written inline\" rule, but it means keys placed after an include can land in the included file's last section. Error line numbers for files that use includes refer to the expanded text, not the original file.",
+  "time": {
+    "start": 1792701112451,
+    "end": 1792701112451
+  }
+}

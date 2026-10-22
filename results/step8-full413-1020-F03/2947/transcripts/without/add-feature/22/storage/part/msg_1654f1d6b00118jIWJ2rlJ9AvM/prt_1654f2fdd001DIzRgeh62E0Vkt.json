@@ -1,0 +1,11 @@
+{
+  "id": "prt_1654f2fdd001DIzRgeh62E0Vkt",
+  "sessionID": "ses_e9ab1444dffeS8MPrQdNxvO3Je",
+  "messageID": "msg_1654f1d6b00118jIWJ2rlJ9AvM",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and the existing 13 tests pass (run with `unittest`, since pytest isn't installed). The change is in `miniconf/loader.py`.\n\n- **Example files:** loading `examples/service.conf` pulls in `logging.conf` correctly. The result has `name` and `workers` at the top level, then the `logging` and `http` sections.\n- **Cycles and missing files:** both raise `ConfigError`. I checked a two-file cycle and a nonexistent path by hand.\n- **Other semantics:** I didn't test relative-path resolution, nesting or the before/after override order. They follow from how the expansion is written. I also didn't add test cases for any of this.\n\nDetails beyond the spec:\n- **Section leaking:** a section header inside an included file stays active after the include, because the expansion is purely textual. In the example, any key placed right after `@include logging.conf` would land in `[logging]`.\n- **Diamond includes:** the same file included from two different places is allowed. Only a file that includes itself, directly or through other files, counts as a cycle.\n- **Empty path:** an `@include` line with no path raises `ConfigError`.\n- **Unreadable targets:** any file that can't be read, such as a directory, also raises `ConfigError`.\n- **Error line numbers:** line numbers in parse errors now count lines of the expanded text, so they can differ from the original file's numbering when includes are used.\n\n`loads()` is unchanged and still ignores `@include` lines.",
+  "time": {
+    "start": 1792701050879,
+    "end": 1792701050879
+  }
+}

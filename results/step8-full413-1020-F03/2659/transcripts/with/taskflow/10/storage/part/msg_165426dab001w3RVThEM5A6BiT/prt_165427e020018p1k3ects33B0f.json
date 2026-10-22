@@ -1,0 +1,11 @@
+{
+  "id": "prt_165427e020018p1k3ects33B0f",
+  "messageID": "msg_165426dab001w3RVThEM5A6BiT",
+  "sessionID": "ses_e9abdd6bfffeCiBP59DxbDCBxB",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests.\n\nThe root causes were in seven places:\n- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` had an off-by-one and now returns `attempts_made < max_attempts`. That was why retries never happened.\n- **`events.py`:** `_prefix_matches` had its arguments reversed. It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required non-decreasing priority. It now requires non-increasing, matching its docstring. Once the queue was fixed, the old check would have failed higher-priority jobs in a batch.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity and stalled resource-limited runs.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. It now merges `(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.\n\nI didn't run any lint or typecheck, since the task didn't mention one.",
+  "time": {
+    "start": 1792700218914,
+    "end": 1792700218914
+  }
+}

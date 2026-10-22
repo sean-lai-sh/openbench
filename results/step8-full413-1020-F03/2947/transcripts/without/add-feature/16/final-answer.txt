@@ -1,0 +1,12 @@
+`miniconf.loader.load` now expands `@include` directives. The existing 13 tests still pass. I also ran `examples/service.conf` and it loads with the `[logging]` section from `logging.conf`. I didn't add new tests for the include behaviour. The edge cases below I checked by hand in a scratch directory, which I deleted afterwards.
+
+- **Expansion:** Each `@include` line is replaced in place by the included file's lines, recursively, before parsing. Later assignments override earlier ones, as they do today.
+- **Paths:** The include path is resolved against the directory of the file containing the directive. The path is everything after `@include`, so it can contain spaces.
+- **Cycles:** A file that includes itself, directly or through other files, raises `ConfigError`. I checked a two-file cycle and a self-include. Cycles are detected by following the include chain with symlinks resolved. A file included twice from different places, such as a diamond, is allowed.
+- **Missing or unreadable target:** A missing include target raises `ConfigError`. So does a target that is a directory, can't be read, or isn't valid UTF-8.
+- **No path:** A bare `@include` with no path raises `ConfigError`.
+- **Unchanged behaviour:** `loads()` and `parse_lines` are untouched. A missing top-level file still raises `FileNotFoundError`, as before.
+
+Because expansion is textual, an included file's `[section]` header stays in effect for the lines after the `@include` line. Put a section header after the include if you want the rest of the file to go back to a different section.
+
+The change is in `miniconf/loader.py`.

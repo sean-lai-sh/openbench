@@ -1,0 +1,11 @@
+{
+  "id": "prt_1654aa11d001KKpyVSULQegj34",
+  "sessionID": "ses_e9ab5b3d0ffecLFzKvFgb3kF8z",
+  "messageID": "msg_1654a8f9b001mqZxtKQOnh4gOn",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives. The change is in `miniconf/loader.py`.\n\nI ran the existing 13 tests and they pass. A quick script also checked these cases:\n- **Example files:** `examples/service.conf` loads and picks up the values from `logging.conf`.\n- **Nesting:** includes in subdirectories resolve relative to the including file, so a chain of three files worked.\n- **Errors:** a missing include target, a transitive cycle and a file that includes itself all raise `ConfigError`.\n\nI didn't add new tests to `tests/` for any of this.\n\n- **Sections carry over:** expansion is purely textual, so a `[section]` header inside an included file stays active for the lines after the `@include` in the parent. In `examples/service.conf` this is harmless because `[http]` follows the include. In a file where plain keys come after an include that ends inside a section, those keys would land in that section.\n- **Cycle detection:** only a file that includes one of its own ancestors is an error. Including the same file twice from different places is allowed.\n- **Missing top-level file:** a missing file passed directly to `load()` still raises `FileNotFoundError`, as before. Only missing include targets raise `ConfigError`.\n- **Bare `@include`:** an `@include` with no path raises `ConfigError`.\n- **`loads()`:** it is unchanged and doesn't expand includes.\n- **Line numbers:** parse-error line numbers now count lines in the expanded text, so they shift in files that use includes.",
+  "time": {
+    "start": 1792700752176,
+    "end": 1792700752176
+  }
+}

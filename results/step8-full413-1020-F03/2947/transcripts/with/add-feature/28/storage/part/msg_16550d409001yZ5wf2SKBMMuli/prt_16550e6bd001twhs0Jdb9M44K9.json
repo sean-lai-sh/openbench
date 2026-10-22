@@ -1,0 +1,11 @@
+{
+  "id": "prt_16550e6bd001twhs0Jdb9M44K9",
+  "sessionID": "ses_e9aafd01dffeBu2cKkJgk7yv0R",
+  "messageID": "msg_16550d409001yZ5wf2SKBMMuli",
+  "type": "text",
+  "text": "`miniconf.loader.load(path)` now expands `@include` directives, and all 19 tests pass. That's the 13 existing tests plus 6 new ones in `tests/test_loader.py`. Loading `examples/service.conf` gives `logging.level = info`, `http.port = 8080` and `name = billing`.\n\nThe change is in `miniconf/loader.py`. It follows the semantics you listed:\n\n- **Inline expansion:** the `@include` line is replaced by the included file's lines before parsing. A line counts as a directive when its first token is `@include`, so `# @include x` stays a comment.\n- **Relative paths:** the path is resolved against the directory of the file containing the directive.\n- **Nesting:** included files are expanded recursively.\n- **Errors:** a missing target, an unreadable target, or an `@include` with no path raises `ConfigError`.\n- **Cycles:** a self-include or a transitive loop raises `ConfigError`, tracked per include chain by real path. Including the same file twice, not as a loop, is allowed.\n\nSome behaviours to be aware of:\n\n- **Sections carry over:** expansion is purely textual, so a `[section]` opened inside an included file stays active for the lines after the `@include`. The example works because `service.conf` opens `[http]` itself right after the include.\n- **Line numbers:** parse errors report line numbers in the expanded text, not the original file.\n- **Top-level file:** a missing top-level file still raises `FileNotFoundError`, as before.\n- **Other functions:** `loads()` and `parse_lines` are unchanged.\n\nI also added tests for override order, nested includes resolved relative to the including file, a missing include, a self-include, a transitive cycle, and a repeated non-cyclic include.",
+  "time": {
+    "start": 1792701163268,
+    "end": 1792701163268
+  }
+}

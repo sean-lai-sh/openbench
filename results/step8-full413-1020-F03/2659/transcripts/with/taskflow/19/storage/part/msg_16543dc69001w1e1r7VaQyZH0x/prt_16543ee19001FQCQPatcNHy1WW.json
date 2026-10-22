@@ -1,0 +1,11 @@
+{
+  "id": "prt_16543ee19001FQCQPatcNHy1WW",
+  "messageID": "msg_16543dc69001w1e1r7VaQyZH0x",
+  "sessionID": "ses_e9abc557cffeSR0mqxUtHqyAM5",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes, with all 25 tests green. I didn't change any tests. There were seven root causes:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority is dispatched first and ties go in insertion order.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt too early. It now uses `attempts_made < max_attempts`.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`, so `job.term` subscribers receive `job.term.skipped` and the other terminal events.\n- **`statemachine.py`:** `batch_order_ok` returned `current >= prev`, the opposite of the non-increasing-priority rule in its docstring. It now returns `current <= prev`. The queue fix above had exposed this one.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, which caused the resource tests to fail.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. It now recurses with `(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only the immediate children of a failed task were skipped. It now uses `transitive_dependents`.",
+  "time": {
+    "start": 1792700313143,
+    "end": 1792700313143
+  }
+}
