@@ -50,6 +50,9 @@ from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
 
 CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
+# Hard-pack runs (H1/H2) opt in to these; the defaults keep every existing run unchanged.
+EXEC_MODE = "local"
+CELL_META: dict | None = None
 _METERED = (
     "tokens_input_uncached",
     "tokens_output",
@@ -639,6 +642,10 @@ def execute_cell(spec: dict) -> None:
     png_server = None
     evidence = ""
     started_at = datetime.now(timezone.utc).isoformat()
+    if _running_dir(spec) is not None:
+        d = _running_dir(spec)
+        spec["concurrent_cells_at_start"] = len(list(d.iterdir())) + 1 if d.is_dir() else 1
+        mark_running(spec, True)
     try:
         if harness == "opencode":
             os.environ["OBENCH_OPENCODE_BIN"] = spec["binary"]
@@ -777,7 +784,7 @@ def execute_cell(spec: dict) -> None:
             spec["tasks_dir"],
             spec["adapters_dir"],
             CHECKER_TIMEOUT_S,
-            exec_mode="local",
+            exec_mode=str(spec.get("exec_mode") or "local"),
             harness_version=harness_version,
             version_drift=True,
             transcripts_dir=transcripts_dir,
@@ -796,6 +803,7 @@ def execute_cell(spec: dict) -> None:
                 ledger_records(spec.get("proxy")),
             )
             attach_schedule(row, spec, started_at)
+            attach_cell_meta(row, spec, started_at)
             from thesis.ab.evidence import attach_cell_metrics
             attach_cell_metrics(row, evidence if evidence else None)
             if spec.get("task") == "trig-tmpdir":
@@ -820,6 +828,7 @@ def execute_cell(spec: dict) -> None:
             publish_side_toolchain(Path(toolchain_path), spec.get("toolchain"), installed_text)
         publish_text(Path(spec["cell_path"]), json.dumps(row, sort_keys=True))
     finally:
+        mark_running(spec, False)
         if png_server is not None:
             png_server.close()
         for key, value in saved.items():
@@ -999,6 +1008,8 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "adapters_dir": adapters,
         "model": model,
         "timeout_s": cell_timeout(timeout_s),
+        **({"exec_mode": EXEC_MODE} if EXEC_MODE != "local" else {}),
+        **({"cell_meta": dict(CELL_META)} if CELL_META else {}),
         "toolchain": prepared.get("toolchain") or {},
         "toolchain_path": _absolute(out_dir / spec["pr"] / f"{spec['side']}.toolchain.json"),
         "transcripts_dir": _absolute(transcripts),
@@ -1119,6 +1130,53 @@ def zero_metered(row: dict) -> bool:
     if split and any(value > 0 for value in split.values()):
         return False
     return True
+
+
+def _running_dir(spec: dict) -> Path | None:
+    meta = spec.get("cell_meta")
+    if not isinstance(meta, dict) or not meta.get("running_dir"):
+        return None
+    return Path(str(meta["running_dir"]))
+
+
+def mark_running(spec: dict, on: bool) -> None:
+    """Touch or clear a marker so concurrent cells can be counted (opt-in --cell-meta)."""
+    d = _running_dir(spec)
+    if d is None:
+        return
+    name = Path(str(spec.get("cell_path") or "cell")).as_posix().replace("/", "_")
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        if on:
+            f.write_text(str(os.getpid()))
+        else:
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
+    """Record host, VM type, runner commit, concurrency and ET start/end (opt-in)."""
+    meta = spec.get("cell_meta")
+    if not isinstance(row, dict) or not isinstance(meta, dict):
+        return
+    from zoneinfo import ZoneInfo
+    import socket
+    et = ZoneInfo("America/New_York")
+    row["host"] = socket.gethostname()
+    row["vm_type"] = meta.get("vm_type")
+    row["runner_commit"] = meta.get("runner_commit")
+    row["exec_mode"] = spec.get("exec_mode") or "local"
+    row["timeout_cap_s"] = meta.get("timeout_cap_s")
+    if started_at:
+        row["started_et"] = datetime.fromisoformat(started_at).astimezone(et).isoformat()
+    row["ended_et"] = datetime.now(et).isoformat()
+    d = _running_dir(spec)
+    if d is not None and d.is_dir():
+        row["concurrent_cells_at_end"] = len(list(d.iterdir()))
+    if spec.get("concurrent_cells_at_start") is not None:
+        row["concurrent_cells_at_start"] = spec["concurrent_cells_at_start"]
 
 
 def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
@@ -1960,6 +2018,7 @@ def _tasks_dir_from_discovery() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global CELL_TIMEOUT_CAP_S, EXEC_MODE, CELL_META
     parser = argparse.ArgumentParser(description="A/B harness commits on the same tasks")
     parser.add_argument("prs", type=Path, help="PR list CSV or JSONL")
     parser.add_argument("--pr", action="append", default=[], help="PR id, or comma-separated ids")
@@ -2050,6 +2109,14 @@ def main(argv: list[str] | None = None) -> int:
         help="OpenCode model path. proxy is the shared Anthropic proxy. vertex is the native provider.",
     )
     parser.add_argument("--timeout", type=int, default=2400)
+    parser.add_argument("--tasks-dir", type=Path, default=None,
+                        help="Task directory or pack (e.g. data/packs/openbench-tb-hard). Default: core tasks.")
+    parser.add_argument("--timeout-cap-s", type=int, default=None,
+                        help=f"Per-cell timeout cap in seconds (default {CELL_TIMEOUT_CAP_S}). A cell that hits it fails.")
+    parser.add_argument("--exec", dest="exec_mode", choices=["local", "docker"], default="local",
+                        help="Cell execution mode passed to obench run_cell (docker uses each task's image).")
+    parser.add_argument("--cell-meta", action="store_true",
+                        help="Record host, VM type ($OBENCH_VM_TYPE), runner commit, concurrency and ET start/end on each cell.")
     parser.add_argument(
         "--no-progress-s",
         type=float,
@@ -2124,6 +2191,22 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.timeout_cap_s is not None:
+        if args.timeout_cap_s < 1:
+            print("error: --timeout-cap-s must be >= 1", file=sys.stderr)
+            return 2
+        CELL_TIMEOUT_CAP_S = args.timeout_cap_s
+    EXEC_MODE = args.exec_mode
+    if args.cell_meta:
+        import subprocess
+        try:
+            commit = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
+                                    capture_output=True, text=True, timeout=10).stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            commit = None
+        CELL_META = {"vm_type": os.environ.get("OBENCH_VM_TYPE"), "runner_commit": commit,
+                     "timeout_cap_s": CELL_TIMEOUT_CAP_S,
+                     "running_dir": str((Path(args.out) / ".running").resolve())}
     try:
         prs = select_prs(parse_prs(args.prs), args.pr or None)
         fixtures = None
@@ -2135,11 +2218,11 @@ def main(argv: list[str] | None = None) -> int:
                 prs, tasks = restrict_mapped_tasks(
                     prs, tasks, wanted, explicit=bool(args.pr),
                 )
-            resolve_tasks([name for chosen in tasks.values() for name in chosen])
+            resolve_tasks([name for chosen in tasks.values() for name in chosen], args.tasks_dir)
             fixtures = {pr.pr: mapping[pr.pr].options for pr in prs}
         else:
-            tasks = resolve_tasks(args.tasks or None)
-        tasks_dir = _tasks_dir_from_discovery()
+            tasks = resolve_tasks(args.tasks or None, args.tasks_dir)
+        tasks_dir = args.tasks_dir.resolve() if args.tasks_dir else _tasks_dir_from_discovery()
         if args.cache is not None:
             cache = args.cache
         elif any(pr.repo for pr in prs):
