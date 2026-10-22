@@ -1,0 +1,11 @@
+{
+  "id": "prt_163b85d72001blCqMzMpPnCJZG",
+  "messageID": "msg_163b83ba5001tmkxwq3LhW7wqt",
+  "sessionID": "ses_e9c47c45fffeVYb5y7pxiznycr",
+  "type": "text",
+  "text": "**Root cause:** `settings.json:2` has the key misspelled as `\"rat\"` (value 0.5) instead of `\"rate\"`.\n\nTrace:\n1. `app/config.py:10` loads `settings.json` into `SETTINGS`. This is `SETTINGS = json.load(_fh)`, with the path built at lines 7–9. The dict contains `rat`, `currency` and `label`, and has no `rate` key.\n2. `app/pricing.py:8` runs `return SETTINGS.get(\"rate\")`. `.get` returns `None` silently because the key is missing. **This is the exact line where `rate` becomes `None`.**\n3. `app/report.py:8` assigns `rate = pricing.get_rate()`, which is `None`.\n4. `app/report.py:9` runs `rate * count` and raises the `TypeError`. `main.py:7` calls it with `COUNT = 10`.\n\n**Keys involved:**\n- `rate` is the key the code reads, at `pricing.py:8`. It is absent from the settings file.\n- `rat` is the misspelled key actually in `settings.json:2`.\n- `currency` and `label` are unrelated and not used in the crash.\n\n**Fix (not applied):** rename `\"rat\"` to `\"rate\"` in `settings.json`. You could also make `get_rate` fail loudly with `SETTINGS[\"rate\"]` so a missing key raises a `KeyError` instead of returning `None`.",
+  "time": {
+    "start": 1792674389391,
+    "end": 1792674389391
+  }
+}

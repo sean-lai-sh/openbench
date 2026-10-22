@@ -1,0 +1,11 @@
+{
+  "id": "prt_15a1c43a2001ulGtRu7m4LHZt6",
+  "messageID": "msg_15a1c1eab001yGnEMGl39actzN",
+  "sessionID": "ses_ea5e3e15affeQjFnQEidmWhevn",
+  "type": "text",
+  "text": "**Root cause: `settings.json:2`.** The key is misspelled as `\"rat\"` instead of `\"rate\"`.\n\nTrace:\n1. `settings.json:2` has `\"rat\": 0.5`, so there is no `\"rate\"` key.\n2. `app/config.py:15` loads the file into `SETTINGS` with `json.load`. The dict has no `\"rate\"` key.\n3. `app/pricing.py:8` runs `SETTINGS.get(\"rate\")`. `.get` returns `None` for a missing key instead of raising `KeyError`, so this is where `None` first appears.\n4. `app/report.py:8` assigns that `None` to `rate`.\n5. `app/report.py:9` runs `rate * count` and raises the `TypeError`.\n\nFix, which I haven't applied: rename `\"rat\"` to `\"rate\"` in `settings.json:2`. Optionally, change `pricing.py:8` to `SETTINGS[\"rate\"]` so a missing key fails loudly.",
+  "time": {
+    "start": 1792513164222,
+    "end": 1792513164222
+  }
+}
