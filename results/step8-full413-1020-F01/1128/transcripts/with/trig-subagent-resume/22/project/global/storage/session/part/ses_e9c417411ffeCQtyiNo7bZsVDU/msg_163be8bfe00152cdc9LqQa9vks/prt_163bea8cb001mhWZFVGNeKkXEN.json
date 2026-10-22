@@ -1,0 +1,11 @@
+{
+  "id": "prt_163bea8cb001mhWZFVGNeKkXEN",
+  "messageID": "msg_163be8bfe00152cdc9LqQa9vks",
+  "sessionID": "ses_e9c417411ffeCQtyiNo7bZsVDU",
+  "type": "text",
+  "text": "`rate` becomes None at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n**Root cause:** `settings.json:2` has the key `\"rat\"` (a typo), not `\"rate\"`. `SETTINGS.get(\"rate\")` therefore finds nothing and returns `None`. It doesn't raise a `KeyError`, because `.get()` has no default.\n\n**Call chain:**\n- `main.py:7` calls `compute_total(COUNT)` with `COUNT = 10`.\n- `app/report.py:8` sets `rate = pricing.get_rate()`, which is `None`.\n- `app/report.py:9` runs `rate * count`, which raises `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`.\n- `app/pricing.py:8` is the line that returns the `None`.\n- `app/config.py:9-10` loads `settings.json` once at import time. It does no validation, so the bad key goes unnoticed.\n\n**Related details:**\n- The fix is probably to rename `\"rat\"` to `\"rate\"` in `settings.json`. That is the likely intent, since the value is `0.5`.\n- It would also help to make `get_rate()` fail loudly, for example with `SETTINGS[\"rate\"]` or an explicit check. That would turn a confusing `TypeError` in `report.py` into a clear missing-key error.\n- `currency` and `label` are not used anywhere in the code. `main.py` hardcodes \"Total:\" instead of using `label`.\n\nI didn't modify any files.",
+  "time": {
+    "start": 1792674801902,
+    "end": 1792674801902
+  }
+}

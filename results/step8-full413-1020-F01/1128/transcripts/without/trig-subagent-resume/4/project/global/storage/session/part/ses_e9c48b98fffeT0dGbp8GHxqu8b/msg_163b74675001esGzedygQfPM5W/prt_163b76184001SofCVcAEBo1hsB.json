@@ -1,0 +1,11 @@
+{
+  "id": "prt_163b76184001SofCVcAEBo1hsB",
+  "messageID": "msg_163b74675001esGzedygQfPM5W",
+  "sessionID": "ses_e9c48b98fffeT0dGbp8GHxqu8b",
+  "type": "text",
+  "text": "`rate` becomes None at **app/pricing.py:8**, in `get_rate()`:\n\n```python\nreturn SETTINGS.get(\"rate\")\n```\n\n`SETTINGS` is loaded from `settings.json` by `app/config.py:9-10`. That file has the key **`\"rat\"`** (settings.json:2, value 0.5), not `\"rate\"`. This looks like a typo. `dict.get(\"rate\")` finds no such key and silently returns `None`. Nothing raises an error there, so the failure only shows up later at `app/report.py:9` (`rate * count`).\n\n**Call chain:**\n1. `main.py:7` calls `compute_total(COUNT)` with `COUNT = 10`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`.\n3. `app/pricing.py:8` returns `SETTINGS.get(\"rate\")`, which is `None`.\n4. `app/report.py:9` evaluates `None * 10` and raises `TypeError`.\n\n**Other details:**\n- The most likely fix is to rename `\"rat\"` to `\"rate\"` in settings.json. The alternative is to change the lookup key in `pricing.py`. I haven't edited anything.\n- Using `SETTINGS[\"rate\"]` instead of `.get` would fail fast with a `KeyError` at the real cause. A check that `rate` is not None would do the same.\n- `settings.json` is read once at import time, so any fix to it takes effect on the next run.\n- `currency` and `label` are in settings.json, but nothing in the code reads them.",
+  "time": {
+    "start": 1792674324901,
+    "end": 1792674324901
+  }
+}
