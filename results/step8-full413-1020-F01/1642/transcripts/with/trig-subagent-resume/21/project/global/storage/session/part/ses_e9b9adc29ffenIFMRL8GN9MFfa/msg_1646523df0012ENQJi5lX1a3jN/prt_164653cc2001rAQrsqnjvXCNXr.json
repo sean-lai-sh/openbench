@@ -1,0 +1,11 @@
+{
+  "id": "prt_164653cc2001rAQrsqnjvXCNXr",
+  "messageID": "msg_1646523df0012ENQJi5lX1a3jN",
+  "sessionID": "ses_e9b9adc29ffenIFMRL8GN9MFfa",
+  "type": "text",
+  "text": "`rate` becomes None at **app/pricing.py:8**: `return SETTINGS.get(\"rate\")`.\n\nThe cause is a typo in the data, not in the code. `settings.json:2` has the key `\"rat\": 0.5` instead of `\"rate\"`. `app/config.py:10` loads the file as-is, so `SETTINGS` has no `\"rate\"` key. `.get(\"rate\")` then returns `None` instead of raising a `KeyError`.\n\nThe chain is:\n1. `main.py:7` calls `compute_total(COUNT)`.\n2. `app/report.py:8` calls `pricing.get_rate()`, which returns `None`.\n3. `app/report.py:9` evaluates `None * 10` and raises the `TypeError`.\n\nRenaming the key in `settings.json` to `\"rate\"` would fix it. Switching `pricing.py:8` to `SETTINGS[\"rate\"]` would also make this kind of typo fail loudly. I haven't changed any files.",
+  "time": {
+    "start": 1792685718784,
+    "end": 1792685718784
+  }
+}
