@@ -734,6 +734,8 @@ class AdcToken:
             return token
 
     def _fetch(self) -> tuple[str, float]:
+        if self.path is None and os.environ.get("OBENCH_ADC_METADATA") == "1":
+            return _metadata_token(self._now)
         info = json.loads(self._adc_path().read_text(encoding="utf-8"))
         kind = info.get("type")
         if kind == "authorized_user":
@@ -749,6 +751,23 @@ class AdcToken:
         if env:
             return Path(env)
         return Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+
+
+def _metadata_token(now) -> tuple[str, float]:
+    """Opt-in (OBENCH_ADC_METADATA=1): GCE metadata-server token for the VM's service account."""
+    request = urllib.request.Request(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.load(response)
+    except urllib.error.URLError as exc:
+        raise ProxyError(f"metadata token fetch failed: {exc}") from exc
+    token = payload.get("access_token")
+    if not token:
+        raise ProxyError("metadata server returned no access_token")
+    return token, now() + int(payload.get("expires_in") or 300)
 
 
 def _refresh_authorized_user(info: dict, now) -> tuple[str, float]:
