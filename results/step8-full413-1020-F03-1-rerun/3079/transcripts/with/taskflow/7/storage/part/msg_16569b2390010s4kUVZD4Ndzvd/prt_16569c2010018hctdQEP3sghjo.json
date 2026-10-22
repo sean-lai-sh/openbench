@@ -1,0 +1,11 @@
+{
+  "id": "prt_16569c2010018hctdQEP3sghjo",
+  "sessionID": "ses_e9a9690b5ffe2nuTn4kwm0fjvD",
+  "messageID": "msg_16569b2390010s4kUVZD4Ndzvd",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were six root causes, and several failures shared the same one:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.\n- **`retry.py`:** `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity for any task that held more than one unit.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`, so `job.term` subscribers receive `job.term.failed` and the other terminal events.\n- **`statemachine.py`:** `batch_order_ok` required priority to increase within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`.\n- **`config.py`:** `deep_merge` recursed with the base and override swapped, so defaults overrode task-level `retry` settings. It now recurses as `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so skips cascade through the whole downstream graph.",
+  "time": {
+    "start": 1792702792227,
+    "end": 1792702792227
+  }
+}

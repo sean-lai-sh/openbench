@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests run, none fail. I didn't touch the tests. There were eight bugs:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` was off by one, using `max_attempts - 1`. It now returns `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, as the docstring says.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base values overrode the task's own. It now calls `deep_merge(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a failed task is skipped.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1, leaking capacity for any task that held more than one unit. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` had its operands swapped. It now checks `topic.startswith(prefix + ".")`, so a prefix like `job.term` receives `job.term.failed` and similar topics.
+
+I only ran the test suite, which has no lint or type-check step.

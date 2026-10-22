@@ -1,0 +1,11 @@
+{
+  "id": "prt_1656bb8a3001JOdqvDWB0J1vKl",
+  "sessionID": "ses_e9a949712ffeu5QVsTa0DDLJv4",
+  "messageID": "msg_1656ba9a20012zq6lAmE0FieGW",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.\n\nThere were six root causes, none of them in the module the failing test was named for:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties are FIFO.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. Within a batch, priorities must be non-increasing, so it now checks `current <= prev`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base values overrode the task's own values. It now merges `(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. That leaked capacity and stalled the resource-limited pipelines.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips every task downstream of it.\n- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). `job.term.*` events never reached `History`, so its outcome sets and counts were empty. It now uses `topic.startswith(prefix + \".\")`.",
+  "time": {
+    "start": 1792702920893,
+    "end": 1792702920893
+  }
+}

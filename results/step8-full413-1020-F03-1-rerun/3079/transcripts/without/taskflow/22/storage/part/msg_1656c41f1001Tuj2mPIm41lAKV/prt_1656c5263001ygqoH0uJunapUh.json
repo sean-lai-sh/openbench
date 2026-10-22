@@ -1,0 +1,11 @@
+{
+  "id": "prt_1656c5263001ygqoH0uJunapUh",
+  "sessionID": "ses_e9a93fcd5ffeZbvebLqTCg2EFd",
+  "messageID": "msg_1656c41f1001Tuj2mPIm41lAKV",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify the tests. There were seven root causes, spread across six modules:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority is dispatched first and ties go in FIFO order.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now requires non-increasing priority within a batch (`current <= prev`).\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. It now merges `(result[key], value)`.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`. It now tests `topic.startswith(prefix + \".\")`, so prefix subscriptions like `job.term` receive `job.term.failed` and the other terminal events.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 unit instead of `cost`. It now subtracts `cost`, which stops pools from leaking capacity and blocking later tasks.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.",
+  "time": {
+    "start": 1792702960248,
+    "end": 1792702960248
+  }
+}

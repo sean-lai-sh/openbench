@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify the tests.
+
+I fixed six defects across six modules:
+
+- **`queue.py`:** `sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which stopped one attempt early. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the prefix and topic the wrong way round. It now checks `topic.startswith(prefix + ".")`, so `job.term` matches `job.term.failed`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch. It now requires non-increasing (`current <= prev`), which matches its docstring.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. Multi-unit resource costs leaked capacity, and later tasks were never admitted.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now calls `transitive_dependents`, so the whole downstream chain is skipped.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. A task's `retry.max_attempts` was lost this way. It now merges `result[key]` with `value`.
+
+I didn't run any lint or typecheck tools; I found no configuration for them in the project.

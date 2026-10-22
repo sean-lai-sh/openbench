@@ -1,0 +1,11 @@
+All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven separate bugs in `taskflow/`:
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority dispatches first and ties go FIFO.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It's now `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` had its arguments swapped (`prefix.startswith(topic + ".")`). It's now `topic.startswith(prefix + ".")`, which is what the `job.term` prefix subscription in `History` needs.
+- **`statemachine.py`**: `batch_order_ok` required priorities to rise within an admission batch. It now requires them to be non-increasing (`current <= prev`), as the docstring says.
+- **`config.py`**: `deep_merge` recursed with its arguments reversed, so the defaults overrode a task's own settings. It's now `deep_merge(result[key], value)`.
+- **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`resources.py`**: `ResourcePool.release` subtracted 1 instead of `cost`. A task holding more than one unit never freed its full share, so later tasks were never admitted.
+
+I fixed the four self-contained bugs first. The three pipeline tests that still failed after that were caused by the `scheduler.py` and `resources.py` bugs. The 18 initial failures included the tests the other bugs were hiding.

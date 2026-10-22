@@ -1,0 +1,13 @@
+`python3 -m unittest` now reports all 25 tests passing. I changed only code under `taskflow/` and left the tests alone.
+
+I found eight bugs, one line each:
+
+- **`retry.py`:** `should_retry` stopped one attempt early (`attempts_made < max_attempts - 1`). It now allows a retry while `attempts_made < max_attempts`.
+- **`queue.py`:** `_Entry.sort_key` was `(seq, -priority)`, so the queue ignored priority and ran in insertion order. It is now `(-priority, seq)`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now requires the current priority to be no higher than the previous one (`<=`).
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own values. It now calls `deep_merge(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used the direct dependents only. It now uses `dag.transitive_dependents`, so everything downstream of a failed task is skipped.
+- **`events.py`:** `_prefix_matches` had its arguments reversed, so prefix subscriptions never fired. This is why `History` showed no failed or skipped jobs.
+
+The queue, state machine and `release` fixes interacted, as the task warned: some tests only started failing for a second reason once the first bug was fixed.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_1656d3cc6001BezSZ9VcTLVnKo",
+  "sessionID": "ses_e9a941c3effeSfcSlcLHiCUqUc",
+  "messageID": "msg_1656c2137001Y7O4XU9BuuL2x2",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.\n\nThere were seven root causes, and the last one only surfaced after the others were fixed:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the ordering is `(-priority, seq)`, so priority was being ignored. I swapped the tuple.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It is now `attempts_made < max_attempts`. This fixed the retry-exhaustion and retry-succeeds pipeline tests.\n- **`events.py`:** `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). It is now `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so I changed it to `current <= prev`. With the old check, a normal priority-ordered batch was rejected and the run was marked FAILED.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base overrode the override. The test failures were `retry.max_attempts` coming out as 1 instead of 3 and 5. I fixed the argument order.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully freed, which left resource-limited pipelines stuck.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so a permanent failure skips everything downstream. This also fixed the history skipped-jobs and outcome-count tests.",
+  "time": {
+    "start": 1792703020273,
+    "end": 1792703020273
+  }
+}

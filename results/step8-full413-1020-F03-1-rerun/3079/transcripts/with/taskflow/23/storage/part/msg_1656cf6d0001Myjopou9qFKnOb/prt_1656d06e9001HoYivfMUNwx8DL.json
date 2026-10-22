@@ -1,0 +1,11 @@
+{
+  "id": "prt_1656d06e9001HoYivfMUNwx8DL",
+  "sessionID": "ses_e9a935317ffeJKEGQtEr1OUWed",
+  "messageID": "msg_1656cf6d0001Myjopou9qFKnOb",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't modify any tests. There were seven root causes:\n\n- **`queue.py`:** the sort key was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority dispatches first and FIFO breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`events.py`:** `_prefix_matches` had the arguments reversed. It's now `topic.startswith(prefix + \".\")`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity.\n- **`statemachine.py`:** `batch_order_ok` compared priorities the wrong way. It now requires `current_priority <= prev_priority`, which matches the \"non-increasing\" rule in its docstring.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. It now recurses with `(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`, so only immediate children were skipped. It now uses `transitive_dependents`.",
+  "time": {
+    "start": 1792703006481,
+    "end": 1792703006481
+  }
+}

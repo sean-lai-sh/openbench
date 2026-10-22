@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't change any tests.
+
+I fixed these defects:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`, so a task gets its full attempt budget.
+- **`statemachine.py`:** `batch_order_ok` had its comparison inverted. It now requires non-increasing priority within a batch, so `current <= prev`.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`, so `job.term` receives `job.term.skipped` and the other subtopics.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own `retry` settings. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Any task with a cost above 1 leaked capacity, which blocked later tasks.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips cascade to every downstream task.

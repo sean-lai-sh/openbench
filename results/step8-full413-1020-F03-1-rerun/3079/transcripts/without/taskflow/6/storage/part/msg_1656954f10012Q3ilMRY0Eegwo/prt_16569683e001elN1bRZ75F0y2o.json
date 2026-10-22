@@ -1,0 +1,11 @@
+{
+  "id": "prt_16569683e001elN1bRZ75F0y2o",
+  "sessionID": "ses_e9a96dca0ffeFRwpI8h976KKlW",
+  "messageID": "msg_1656954f10012Q3ilMRY0Eegwo",
+  "type": "text",
+  "text": "`python3 -m unittest` now reports all 25 tests passing. I fixed six defects, none of them in the tests:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The order is now `(-priority, seq)`, so higher priority pops first and FIFO breaks ties.\n- **`retry.py`:** `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now compares against `max_attempts`, so a task with 3 attempts retries after the 1st and 2nd failures.\n- **`events.py`:** `_prefix_matches` had its arguments swapped, checking `prefix.startswith(topic + \".\")`. It now checks `topic.startswith(prefix + \".\")`. This is why `History` never saw `job.term.*` events, and why skipped counts were wrong.\n- **`statemachine.py`:** `batch_order_ok` used `>=`, which rejected the descending-priority order the queue produces. It now uses `<=`, so non-increasing priority passes.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity on multi-unit tasks.\n- **`config.py`:** `deep_merge` recursed with its arguments reversed, so the defaults overrode the task's own settings. The task's values now win.\n\nThe scheduler also needed one change in `scheduler.py`. `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.",
+  "time": {
+    "start": 1792702769235,
+    "end": 1792702769235
+  }
+}

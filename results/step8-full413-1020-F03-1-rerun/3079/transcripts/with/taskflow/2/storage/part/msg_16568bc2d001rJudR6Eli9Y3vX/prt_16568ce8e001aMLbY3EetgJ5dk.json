@@ -1,0 +1,11 @@
+{
+  "id": "prt_16568ce8e001aMLbY3EetgJ5dk",
+  "sessionID": "ses_e9a9789fbffet343jn6J3zbxju",
+  "messageID": "msg_16568bc2d001rJudR6Eli9Y3vX",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests.\n\nThere were six root causes:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget by one. It now uses `attempts_made < max_attempts`.\n- **`events.py`:** `_prefix_matches` had the prefix and topic the wrong way round. It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit resource costs were never fully released.\n- **`config.py`:** `deep_merge` passed its arguments in the wrong order when recursing. Task-level overrides such as `retry.max_attempts` were overwritten by the defaults. It now merges `result[key]` with `value`.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`. It now uses `transitive_dependents`, so a permanent failure skips everything downstream rather than only its direct children.\n\nI didn't run a linter or type checker, and I only looked at the modules the failing tests pointed to. Other modules, such as `history.py`, could still hold defects the tests don't cover.",
+  "time": {
+    "start": 1792702729901,
+    "end": 1792702729901
+  }
+}

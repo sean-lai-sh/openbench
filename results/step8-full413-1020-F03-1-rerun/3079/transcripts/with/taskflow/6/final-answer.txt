@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests, and I only looked at code the failures pointed to. I fixed these seven bugs:
+
+- **`queue.py`:** the sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority comes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` stopped one attempt early. It now returns `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the arguments backwards, so prefix subscriptions never matched a subtree. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` demanded non-decreasing priority within an admission batch. It now requires non-increasing, as the docstring says.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now merges `override` on top of `base`.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. A multi-unit task therefore left the pool partly held, and later tasks were never admitted.
