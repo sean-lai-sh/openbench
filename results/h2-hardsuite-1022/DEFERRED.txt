@@ -1,0 +1,25 @@
+2026-10-22 ~17:36 EDT  ENV FAILURE (not scored): Opus attempt 1 (7 PR rows, started 17:21:48 EDT), moved to ~/h2/h2-deferred-opus-attempt1 (model spend $4.29).
+Cause: 16 main-study binaries were copied to the VM without their source worktrees; sdk_pin reads bun.lock from worktrees/<sha>, found none, so no @ai-sdk/anthropic pin -> runtime pulled latest -> "Unsupported model version v4 ... AI SDK 5 only supports v2" (3052, 4204 early-stopped as infra; 913 incompatible at preflight; 5140 cells ran on an unpinned toolchain).
+Fix: git worktree add --detach for all 24 SHAs in bin (binaries unchanged). Opus all 7 rows rerun from scratch. Sonnet 795 cells kept (795 + base c10134729d had worktrees, toolchain recorded ai 5.0.0-beta.7 / anthropic 2.0.0-beta.11). Watcher threshold lowered to $985 to cover attempt-1 spend.
+
+2026-10-23 ~00:30 EDT  H2 close-out (A2 scoring by an_a2.py sha256 144a098f, outputs in rescore-A2/)
+Run: start 17:37:49 EDT, end 23:37:58 EDT, both containers exit 0 (not OOM, no STOPPED file: spend watcher and disk guard never fired).
+Cells on disk: 1,313 of 2,700 planned (Sonnet 920, Opus 393). 1,387 planned cells DEFERRED (not run), all from PR-row infra early-stops:
+  Opus 4204, 5140, 13090, 13331, 26821 (already reported to Sean 2026-10-22 ~10:20 PM ET):
+    13090/13331 "sdk drift: installed @ai-sdk/anthropic missing != pin 2.0.77"; 26821 "... != pin 3.0.64"; 5140 "... != pin 2.0.0";
+    4204 "early death under 10s: Unhandled chunk type" (4 infra) + 4 incompatible ("provider stream error with no metered tokens").
+    ran 8/7/5/7/6 cells respectively (33), deferred 180-n each (867).
+  Sonnet 13331, 26821, 11731 (control) -- NEW at close-out, same pin-drift cause, early-stopped ~23:26-23:37 EDT
+    (13331/11731 "!= pin 2.0.77", 26821 "!= pin 3.0.64"); ran 7/6/7 cells (20), deferred 520.
+  Early-stopped rows' cells are kept as infra records only; they are NOT results (pass_rate_excl_infra = n/a).
+  Consequence: only 2 of 3 seeded controls (2533, 913) measured on Sonnet; Opus measured only 3052 and 913.
+Other infra cells inside measured rows (kept, flagged infra, no rerun): Sonnet 3052 with-side 3, Opus 3052 with-side 7
+  (Vertex 400 "messages.N.content.0: Invalid `signature`" on thinking blocks). an_a2.py counts these as fail;
+  per-row-A2.csv also gives pass_rate_excl_infra.
+17:36 ET kill check (step 1): 49 Sonnet 795 cells from the killed 17:21 attempt are kept; all 49 have completed=true and ended
+  17:22:32-17:35:44 EDT, before the 17:36:53 kill. The 5 cells in flight at the kill (795 with/torch-tensor-parallelism/3,
+  with/video-processing/3, without/model-extraction-relu-logits/3, without/torch-tensor-parallelism/3, without/video-processing/3)
+  left no cell record and were rerun fresh at 17:38:05-17:38:54 EDT. One record per (pr,side,task,trial); no killed/partial cell counted.
+  Opus attempt 1 stays in ~/h2/h2-deferred-opus-attempt1 (unscored; cell records $4.29, proxy ledger $6.97).
+Blocked (A2 ContentFilterError/refusal): 0 cells in H2.
+Transcripts are not committed: see MANIFEST-transcripts.txt (on VM thesis-h1-cpu:~/h2/h2-hardsuite-1022, and box backup tarball).
