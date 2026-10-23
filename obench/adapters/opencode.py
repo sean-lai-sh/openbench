@@ -294,15 +294,20 @@ def _write_cache_version(cache, version):
     """Write the checkout's CACHE_VERSION so an old binary keeps this cache.
 
     Builds from 2025 delete ``$XDG_CACHE_HOME/opencode`` at startup when
-    ``version`` is missing or differs from ``CACHE_VERSION`` in
-    ``packages/opencode/src/global/index.ts``. The next launch then installs
-    ``@ai-sdk/anthropic`` at the dist-tag, which is not the pin.
+    ``version`` is missing or differs from ``CACHE_VERSION``. The next
+    launch then installs ``@ai-sdk/anthropic`` at the dist-tag, or, once the
+    provider is bundled, leaves the package missing.
     """
     text = str(version or "").strip()
     if not text:
         return
     with open(os.path.join(cache, "version"), "w", encoding="utf-8") as fh:
         fh.write(text)
+
+
+# Same literal as thesis.ab.sdk_pin.OUTDATED_GATE_RECORD. The adapter is
+# loaded by file path and does not import the thesis package.
+OUTDATED_GATE_RECORD = "999.0.0"
 
 
 def _anthropic_pin(proxy):
@@ -329,6 +334,95 @@ def _provider_module(env):
     )
 
 
+def _cache_dependency_record(proxy):
+    """String written to the cache ``package.json`` after the pin is on disk.
+
+    Equality-gate binaries (through v1.0.x, including PR 4204) skip
+    ``bun add`` only when the dependency equals the dist-tag they pass
+    (``latest``, or ``beta``). ``isOutdated`` binaries (PR 13090 onward,
+    including 13331) treat ``latest`` and any older semver as stale and
+    reinstall ``@latest``, which is 4.x. ``999.0.0`` is newer than that
+    dist-tag and is not a range, so ``isOutdated`` returns false and the
+    hoisted files stay on the pin.
+    """
+    alias = str(proxy.get("sdk_install_alias") or "latest").strip() or "latest"
+    gate = str(proxy.get("sdk_install_gate") or "alias").strip() or "alias"
+    if gate == "outdated":
+        return OUTDATED_GATE_RECORD
+    return alias
+
+
+def _read_package_json(path):
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            parsed = json.loads(fh.read())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _set_anthropic_dependency(cache, version):
+    pkg_path = os.path.join(cache, "package.json")
+    parsed = _read_package_json(pkg_path)
+    deps = parsed.get("dependencies")
+    if not isinstance(deps, dict):
+        deps = {}
+    deps["@ai-sdk/anthropic"] = version
+    parsed["dependencies"] = deps
+    with open(pkg_path, "w", encoding="utf-8") as fh:
+        json.dump(parsed, fh)
+
+
+def _prepare_exact_install(cache, pin):
+    """Make ``bun add`` resolve this pin into the hoisted cache path.
+
+    An existing dist-tag in ``package.json`` is concatenated onto the new
+    spec (``@2.0.0@latest``). A parent ``package.json`` above ``cwd`` is
+    what ``--cwd`` stops bun from walking to. The hoisted linker is the
+    path the drift check reads.
+    """
+    _set_anthropic_dependency(cache, pin)
+    with open(os.path.join(cache, "bunfig.toml"), "w", encoding="utf-8") as fh:
+        fh.write('[install]\nexact = true\nlinker = "hoisted"\n')
+    for name in ("bun.lock", "bun.lockb", "package-lock.json"):
+        try:
+            os.unlink(os.path.join(cache, name))
+        except OSError:
+            pass
+
+
+def _materialize_hoisted_sdk(cache, pin):
+    """Copy a pin left in Bun's isolated store up to the hoisted path.
+
+    Bundled-provider builds (PR 13331, PR 26821) never call ``BunProc.install``
+    for ``@ai-sdk/anthropic``. If ``bun add`` only fills
+    ``node_modules/.bun``, the drift check reports the package missing.
+    """
+    root = os.path.join(cache, "node_modules", ".bun")
+    if not os.path.isdir(root):
+        return
+    prefix = f"@ai-sdk+anthropic@{pin}"
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    dest = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic")
+    for name in names:
+        if name != prefix and not name.startswith(prefix + "+"):
+            continue
+        store = os.path.join(root, name, "node_modules", "@ai-sdk", "anthropic")
+        if _installed_sdk_version(os.path.join(store, "package.json")) != pin:
+            continue
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copytree(store, dest, dirs_exist_ok=True)
+        except OSError:
+            return
+        return
+
+
 def _ensure_provider_sdk(env, proxy):
     pin = _anthropic_pin(proxy)
     if not pin:
@@ -344,36 +438,29 @@ def _ensure_provider_sdk(env, proxy):
     os.makedirs(cache, exist_ok=True)
     module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
     if _installed_sdk_version(module) != pin:
+        _prepare_exact_install(cache, pin)
         subprocess.run(
-            [bun, "add", f"@ai-sdk/anthropic@{pin}"],
+            [
+                bun, "add", "--force", "--exact",
+                "--cwd", os.path.abspath(cache),
+                f"@ai-sdk/anthropic@{pin}",
+            ],
             cwd=cache,
             env=env,
             stdin=subprocess.DEVNULL,
             timeout=120,
             check=False,
         )
-    pkg_path = os.path.join(cache, "package.json")
-    parsed = {}
-    if os.path.isfile(pkg_path):
-        try:
-            with open(pkg_path, encoding="utf-8") as fh:
-                parsed = json.loads(fh.read())
-        except (OSError, json.JSONDecodeError):
-            parsed = {}
-    if not isinstance(parsed, dict):
-        parsed = {}
-    deps = parsed.get("dependencies")
-    if not isinstance(deps, dict):
-        deps = {}
-    # BunProc.install skips only when package.json stores the dist-tag this
-    # binary passes ("latest", or "beta" on the July 2025 builds). The files
-    # in node_modules stay on the pin.
-    alias = str(proxy.get("sdk_install_alias") or "latest").strip() or "latest"
-    recorded = alias if _installed_sdk_version(module) == pin else pin
-    deps["@ai-sdk/anthropic"] = recorded
-    parsed["dependencies"] = deps
-    with open(pkg_path, "w", encoding="utf-8") as fh:
-        json.dump(parsed, fh)
+        if _installed_sdk_version(module) != pin:
+            _materialize_hoisted_sdk(cache, pin)
+    # Record the skip token only when the hoisted package is the pin.
+    # Recording the pin itself makes an equality-gate binary install @latest.
+    # A second bun add against the skip token would do the same, so an
+    # already-pinned cache is left on disk.
+    if _installed_sdk_version(module) == pin:
+        _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
+    else:
+        _set_anthropic_dependency(cache, pin)
     _write_cache_version(cache, proxy.get("cache_version"))
     return _installed_sdk_version(module)
 

@@ -43,7 +43,12 @@ from thesis.ab.errors import BuildError, Incompatible
 from thesis.ab.harness import harness_name
 from thesis.ab.models_config import thinking_options
 from thesis.ab.prs import AA_SIDES, PrListError, Side, parse_prs, select_prs
-from thesis.ab.sdk_pin import ai_version_for_tree, anthropic_pin_for_tree, install_alias_for_tree
+from thesis.ab.sdk_pin import (
+    ai_version_for_tree,
+    anthropic_pin_for_tree,
+    install_alias_for_tree,
+    install_gate_for_tree,
+)
 from thesis.ab.summarize import billable_tokens, row_cost
 from thesis.ab.toolchain import bun_requirement
 from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
@@ -1639,17 +1644,33 @@ def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
     _absorb_pr_early_stop(spec, out_dir, prepared)
 
 
+_CACHE_VERSION_FILES = (
+    Path("packages/opencode/src/global/index.ts"),
+    Path("packages/opencode/src/global.ts"),
+    Path("packages/core/src/global.ts"),
+)
+
+
 def cache_version_for_checkout(checkout: Path) -> str:
-    """Return CACHE_VERSION from the checkout, or "" when the tree has none."""
-    path = Path(checkout) / "packages" / "opencode" / "src" / "global" / "index.ts"
-    if not path.is_file():
-        return ""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    match = _CACHE_VERSION_RE.search(text)
-    return match.group(1) if match else ""
+    """Return CACHE_VERSION from the checkout, or "" when the tree has none.
+
+    v1.0 keeps the constant in ``packages/opencode/src/global/index.ts``.
+    Later trees move global state; the same regex is applied to the other
+    two paths when the historical file is absent.
+    """
+    root = Path(checkout)
+    for relative in _CACHE_VERSION_FILES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = _CACHE_VERSION_RE.search(text)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[dict, str | None]:
@@ -1673,6 +1694,7 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     if pin:
         proxy["anthropic_sdk"] = pin
     proxy["sdk_install_alias"] = install_alias_for_tree(checkout)
+    proxy["sdk_install_gate"] = install_gate_for_tree(checkout)
     cache_version = cache_version_for_checkout(checkout)
     if cache_version:
         proxy["cache_version"] = cache_version

@@ -740,6 +740,70 @@ class TestBunAndSdkPin(unittest.TestCase):
         )
         self.assertEqual(anthropic_pin_for_tree(root, registry={}), "1.2.12")
 
+    def test_isoutdated_tree_records_the_sentinel_and_a_moved_cache_version(self):
+        from thesis.ab.run_ab import _decorate_toolchain, cache_version_for_checkout
+        from thesis.ab.sdk_pin import (
+            OUTDATED_GATE_RECORD,
+            cache_dependency_record,
+            install_gate_for_tree,
+        )
+        root = Path(tempfile.mkdtemp())
+        sha = "e" * 40
+        checkout = root / "worktrees" / sha
+        checkout.mkdir(parents=True)
+        (checkout / "package.json").write_text(
+            json.dumps({"packageManager": "bun@1.3.5"}),
+            encoding="utf-8",
+        )
+        (checkout / "bun.lock").write_text(json.dumps(_lock(
+            "5.0.124", "2.0.1", "2.0.77", "2.0.1",
+        )), encoding="utf-8")
+        bun_src = checkout / "packages" / "opencode" / "src" / "bun"
+        bun_src.mkdir(parents=True)
+        (bun_src / "index.ts").write_text(
+            "if (await PackageRegistry.isOutdated(pkg, version, mod)) return\n",
+            encoding="utf-8",
+        )
+        provider = checkout / "packages" / "opencode" / "src" / "provider"
+        provider.mkdir(parents=True)
+        (provider / "provider.ts").write_text(
+            'const mod = await BunProc.install(pkg, "latest")\n',
+            encoding="utf-8",
+        )
+        moved = checkout / "packages" / "core" / "src"
+        moved.mkdir(parents=True)
+        (moved / "global.ts").write_text(
+            'export const CACHE_VERSION = "21"\n',
+            encoding="utf-8",
+        )
+        bun = root / "bun" / "1.3.5" / "bun"
+        bun.parent.mkdir(parents=True)
+        bun.write_text("#!/bin/sh\n", encoding="utf-8")
+        bun.chmod(0o755)
+        self.assertEqual(install_gate_for_tree(checkout), "outdated")
+        self.assertEqual(cache_version_for_checkout(checkout), "21")
+        self.assertEqual(cache_dependency_record("latest", "outdated"), OUTDATED_GATE_RECORD)
+        self.assertEqual(cache_dependency_record("beta", "alias"), "beta")
+        self.assertEqual(install_gate_for_tree(Path(tempfile.mkdtemp())), "alias")
+        state, err = _decorate_toolchain(
+            {"proxy": {"needs_sdk": False}, "harness": "opencode"},
+            root, sha, "",
+        )
+        self.assertIsNone(err)
+        proxy = state["proxy"]
+        self.assertEqual(proxy["sdk_install_gate"], "outdated")
+        self.assertEqual(proxy["sdk_install_alias"], "latest")
+        self.assertEqual(proxy["cache_version"], "21")
+        self.assertEqual(proxy["anthropic_sdk"], "2.0.77")
+        equality = Path(tempfile.mkdtemp())
+        equality_bun = equality / "packages" / "opencode" / "src" / "bun"
+        equality_bun.mkdir(parents=True)
+        (equality_bun / "index.ts").write_text(
+            "if (parsed.dependencies[pkg] === version) return mod\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(install_gate_for_tree(equality), "alias")
+
 
 class TestDistBinary(unittest.TestCase):
     def _tree(self, names):
@@ -1097,6 +1161,8 @@ class TestIncompatibleCells(unittest.TestCase):
             self.assertEqual(bun.parent.name, "1.2.14")
             self.assertEqual(proxy["anthropic_sdk"], "1.2.12")
             self.assertEqual(proxy["cache_version"], "9")
+            self.assertEqual(proxy["sdk_install_alias"], "latest")
+            self.assertEqual(proxy["sdk_install_gate"], "alias")
 
     def test_decimal_error_with_no_tokens_is_incompatible(self):
         from thesis.ab.run_ab import provider_stream_failure
@@ -1977,6 +2043,183 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertEqual(drifted["toolchain"]["anthropic"], "4.0.74")
         self.assertEqual(drifted_tool["anthropic"], "4.0.74")
         self.assertEqual(drifted["toolchain"]["ai"], "5.0.8")
+
+    def _strict_cache_bun(self, path):
+        """Leave 4.0.87 unless the runner passes --force --exact --cwd <cache>."""
+        path.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import os, pathlib, sys
+            args = sys.argv[1:]
+            spec = next((arg for arg in args if arg.startswith("@ai-sdk/anthropic@")), "")
+            version = spec.rsplit("@", 1)[1] if spec else ""
+            cache = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode"
+            cwd = args[args.index("--cwd") + 1] if "--cwd" in args else ""
+            if not cwd or os.path.abspath(cwd) != os.path.abspath(cache):
+                raise SystemExit(0)
+            if "--exact" not in args or "--force" not in args or not version:
+                version = "4.0.87"
+            module = cache / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.write_text('{"version": "%s"}' % version, encoding="utf-8")
+        """), encoding="utf-8")
+        path.chmod(0o755)
+
+    def _gate_binary(self, root, name, body):
+        task = root / "tasks" / "demo"
+        if not task.exists():
+            (task / "workspace").mkdir(parents=True)
+            (task / "instruction.md").write_text("say hi", encoding="utf-8")
+            checker = task / "checker.sh"
+            checker.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+            checker.chmod(checker.stat().st_mode | stat.S_IEXEC)
+        note = root / f"{name}.txt"
+        path = root / name
+        script = textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import json, os, pathlib, sys
+            args = sys.argv[1:]
+            note = pathlib.Path(NOTE)
+            if args == ["install", "--help"]:
+                print("bun install v1.3.2")
+                raise SystemExit(0)
+            if args == ["--version"]:
+                print("cell-test")
+                raise SystemExit(0)
+            if args[:2] == ["run", "--help"]:
+                print("--auto")
+                print("-m, --model")
+                print("--format")
+                print("--dir")
+                print("--title")
+                raise SystemExit(0)
+            cache = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode"
+            module = cache / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
+            pkg_path = cache / "package.json"
+            deps = {}
+            if pkg_path.is_file():
+                deps = json.loads(pkg_path.read_text(encoding="utf-8")).get("dependencies") or {}
+            version_path = cache / "version"
+            version_text = version_path.read_text(encoding="utf-8") if version_path.is_file() else ""
+            installed = ""
+            if module.is_file():
+                installed = json.loads(module.read_text(encoding="utf-8")).get("version") or ""
+            BODY
+            print(json.dumps({"type": "step_finish", "part": {"tokens": {
+                "input": 3, "output": 2, "reasoning": 0,
+                "cache": {"read": 0, "write": 0}, "total": 5,
+            }}}))
+        """).replace("NOTE", repr(str(note))).replace("BODY", body)
+        path.write_text(script, encoding="utf-8")
+        path.chmod(0o755)
+        return path, note
+
+    def _run_gate_cell(self, root, binary, proxy, toolchain, trial):
+        from thesis.ab.run_ab import execute_cell
+        dest = root / f"cell-{trial}.json"
+        tool = root / f"{trial}.toolchain.json"
+        saved = os.environ.get("OBENCH_OPENCODE_BIN")
+        try:
+            execute_cell({
+                "binary": str(binary),
+                "config": {},
+                "permission_config": False,
+                "proxy": proxy,
+                "toolchain": toolchain,
+                "toolchain_path": str(tool),
+                "cell_path": str(dest),
+                "tasks_dir": str(root / "tasks"),
+                "adapters_dir": str(ROOT / "obench" / "adapters"),
+                "model": "claude-opus-5-5",
+                "task": "demo",
+                "trial": trial,
+                "side": "with",
+                "timeout_s": 30,
+            })
+        finally:
+            if saved is None:
+                os.environ.pop("OBENCH_OPENCODE_BIN", None)
+            else:
+                os.environ["OBENCH_OPENCODE_BIN"] = saved
+        return (
+            json.loads(dest.read_text(encoding="utf-8")),
+            json.loads(tool.read_text(encoding="utf-8")),
+        )
+
+    def test_pr_4204_alias_gate_keeps_pin_2_0_0(self):
+        """Embedded bun reinstalls @latest unless version is 9 and the dep is latest.
+
+        The H2 row left anthropic 4.0.87 against pin 2.0.0.
+        """
+        root = Path(tempfile.mkdtemp())
+        bun = root / "bun"
+        self._strict_cache_bun(bun)
+        binary, note = self._gate_binary(root, "opencode-4204", textwrap.dedent("""\
+            kept = (
+                version_text == "9"
+                and deps.get("@ai-sdk/anthropic") == "latest"
+                and installed == "2.0.0"
+                and os.environ.get("OPENCODE_DISABLE_DEFAULT_PLUGINS") == "1"
+            )
+            if kept:
+                note.write_text("kept", encoding="utf-8")
+            else:
+                module.parent.mkdir(parents=True, exist_ok=True)
+                module.write_text('{"version": "4.0.87"}', encoding="utf-8")
+                note.write_text("reinstalled", encoding="utf-8")
+        """))
+        row, side = self._run_gate_cell(root, binary, {
+            "needs_sdk": False,
+            "model_ref": "anthropic/claude-opus-5-5",
+            "api_key": "proxy",
+            "anthropic_sdk": "2.0.0",
+            "sdk_install_alias": "latest",
+            "sdk_install_gate": "alias",
+            "cache_version": "9",
+            "bun": str(bun),
+        }, {"ai": "5.0.8", "anthropic": "2.0.0", "bun": "1.3.2"}, 1)
+        self.assertEqual(note.read_text(encoding="utf-8"), "kept")
+        self.assertNotEqual(row.get("failure_class"), "infra")
+        self.assertNotIn("sdk drift", row.get("failure_reason") or "")
+        self.assertEqual(row["toolchain"]["anthropic"], "2.0.0")
+        self.assertEqual(row["toolchain"]["ai"], "5.0.8")
+        self.assertEqual(row["toolchain"]["bun"], "1.3.2")
+        self.assertEqual(side["anthropic"], "2.0.0")
+
+    def test_pr_13331_outdated_gate_keeps_pin_2_0_77(self):
+        """Bundled isOutdated builds wipe a bad version file and drop a ``latest`` dep.
+
+        The H2 row reported anthropic missing against pin 2.0.77.
+        """
+        root = Path(tempfile.mkdtemp())
+        bun = root / "bun"
+        self._strict_cache_bun(bun)
+        binary, note = self._gate_binary(root, "opencode-13331", textwrap.dedent("""\
+            if version_text != "21":
+                if module.is_file():
+                    module.unlink()
+                note.write_text("wiped", encoding="utf-8")
+            elif deps.get("@ai-sdk/anthropic") == "999.0.0" and installed == "2.0.77":
+                note.write_text("kept", encoding="utf-8")
+            else:
+                if module.is_file():
+                    module.unlink()
+                note.write_text("dropped", encoding="utf-8")
+        """))
+        row, side = self._run_gate_cell(root, binary, {
+            "needs_sdk": False,
+            "model_ref": "anthropic/claude-opus-5-5",
+            "api_key": "proxy",
+            "anthropic_sdk": "2.0.77",
+            "sdk_install_alias": "latest",
+            "sdk_install_gate": "outdated",
+            "cache_version": "21",
+            "bun": str(bun),
+        }, {"ai": "5.0.124", "anthropic": "2.0.77", "bun": "1.3.5"}, 1)
+        self.assertEqual(note.read_text(encoding="utf-8"), "kept")
+        self.assertNotEqual(row.get("failure_class"), "infra")
+        self.assertNotIn("sdk drift", row.get("failure_reason") or "")
+        self.assertEqual(row["toolchain"]["anthropic"], "2.0.77")
+        self.assertEqual(side["anthropic"], "2.0.77")
 
 
 class TestTriggerArm(unittest.TestCase):
