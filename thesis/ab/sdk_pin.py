@@ -162,6 +162,42 @@ def install_alias_for_tree(root: Path) -> str:
     return match.group(1)
 
 
+# Cache package.json value that makes PackageRegistry.isOutdated return false
+# against the current @ai-sdk/anthropic dist-tag. The equality gate must not
+# use this string: it skips only when the dependency equals the dist-tag.
+# obench/adapters/opencode.py records the same literal.
+OUTDATED_GATE_RECORD = "999.0.0"
+
+
+def install_gate_for_tree(root: Path) -> str:
+    """Return how this checkout decides to skip ``BunProc.install``.
+
+    ``alias`` compares ``package.json`` to the dist-tag (``latest`` or
+    ``beta``). ``outdated`` calls ``PackageRegistry.isOutdated``, which
+    treats the string ``latest`` as older than the registry and reinstalls
+    ``@latest``. A tree with no ``bun/index.ts`` (v1.15 bundled providers)
+    is ``alias``: nothing reads the cache dependency for this package.
+    """
+    path = Path(root) / "packages" / "opencode" / "src" / "bun" / "index.ts"
+    if not path.is_file():
+        return "alias"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "alias"
+    if "isOutdated" in text:
+        return "outdated"
+    return "alias"
+
+
+def cache_dependency_record(alias: str, gate: str) -> str:
+    """Dependency string that keeps an already-pinned module in place."""
+    if gate == "outdated":
+        return OUTDATED_GATE_RECORD
+    text = str(alias or "").strip()
+    return text or "latest"
+
+
 def anthropic_pin_for_tree(root: Path, registry: dict[str, str] | None = None) -> str | None:
     """Read `bun.lock` when it exists. Fall back to an exact package.json pin."""
     root = Path(root)
