@@ -26,12 +26,14 @@ Notes / quirks:
   Parsing is defensive: shape drift yields tokens=None/turns=None + raw tail.
 """
 
+import importlib.util
 import json
 import os
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -1072,10 +1074,49 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
         shutil.rmtree(iso_home, ignore_errors=True)
 
 
+_COMPARISON_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def _comparison_env_set() -> bool:
+    """True when this cell asked for the harness-comparison Pi path.
+
+    The A/B vertex spec (``OBENCH_PI_VERTEX``) is checked first in ``run`` and
+    keeps that path. This flag only chooses the comparison adapter.
+    """
+    flag = os.environ.get("OBENCH_PI_HARNESS", "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return bool(os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip())
+
+
+def _load_comparison_harness():
+    """Load ``pi_harness`` as a package or as a sibling of this file.
+
+    Docker cells file-load this module as ``bench_adapter_pi``. ``obench`` is
+    not installed in the harness image, so the sibling is loaded by path.
+    """
+    try:
+        from obench.adapters import pi_harness
+        return pi_harness
+    except ImportError:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pi_harness.py")
+        module = sys.modules.get("pi_harness")
+        loaded = getattr(module, "__file__", None) if module is not None else None
+        if loaded and os.path.abspath(loaded) == path:
+            return module
+        spec = importlib.util.spec_from_file_location("pi_harness", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["pi_harness"] = module
+        spec.loader.exec_module(module)
+        return module
+
+
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     vertex = _vertex_spec()
     if model == "claude-opus-5-5" and vertex:
         return _run_vertex(instruction, workdir, timeout_s, vertex)
+    if model in _COMPARISON_MODELS and _comparison_env_set():
+        return _load_comparison_harness().run(instruction, workdir, model, timeout_s)
     if model in MODELS:
         provider = MODELS[model]["provider"]
         if not _has_subscription_auth(provider):
