@@ -18,6 +18,47 @@ from obench.proxy import extract_usage
 ANTHROPIC_VERSION = "vertex-2023-10-16"
 MODEL_ID = "claude-opus-5-5"
 LOCATION = "global"
+# Opt-in. Unset, every call uses the model passed to start_proxy (--vertex-model).
+ROUTE_BY_REQUEST_ENV = "OBENCH_VERTEX_ROUTE_BY_REQUEST"
+CALL_ROLE_HEADER = "X-OB-Call-Role"
+# Title and summary side calls are short next to the agent loop's 128k budget.
+SHORT_CALL_MAX_TOKENS = 1024
+# OpenAI chat requests omit max_tokens. Vertex requires one.
+_OPENAI_DEFAULT_MAX_TOKENS = 8192
+VERTEX_CLAUDE_MODELS = {
+    "claude-opus-5-5": "claude-opus-5-5",
+    "claude-sonnet-5-5": "claude-sonnet-5-5",
+}
+_SIDE_DETAILS = frozenset({"title", "summary", "helper", "memory", "subagent"})
+_SPLIT_FIELDS = (
+    ("input_uncached", "tokens_proxy_input_uncached"),
+    ("output", "tokens_proxy_output"),
+    ("cache_read", "tokens_proxy_cache_read"),
+    ("cache_write", "tokens_proxy_cache_write"),
+)
+_TITLE_RE = re.compile(
+    r"\b(title generator|generate (?:a |the )?(?:short |concise |brief )?"
+    r"(?:session |conversation )?title|session title|conversation title)\b",
+    re.IGNORECASE,
+)
+_SUMMARY_RE = re.compile(
+    r"\b(summarize (?:the )?(?:conversation|session|chat|above)|"
+    r"write a (?:brief |short )?summary|conversation summary|session summary)\b",
+    re.IGNORECASE,
+)
+_MEMORY_RE = re.compile(
+    r"\b(extract (?:the )?(?:relevant )?memories|memory update|"
+    r"update (?:your )?memory|remember this for later)\b",
+    re.IGNORECASE,
+)
+_HELPER_RE = re.compile(
+    r"\b(helper model|utility model|side call|you are a helper)\b",
+    re.IGNORECASE,
+)
+_SUBAGENT_RE = re.compile(
+    r"\b(you are a sub-?agent|sub-?agent session|as a sub-?agent)\b",
+    re.IGNORECASE,
+)
 _FORWARDED = ("anthropic-beta", "anthropic-version")
 _LEDGER_LOCK = threading.Lock()
 _DISCONNECT = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)
@@ -690,6 +731,7 @@ def _append_ledger(
     thinking_mode: str = "default",
     thinking_sent: str = "none",
     upstream_model: str | None = None,
+    call_role: dict | None = None,
 ) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -697,6 +739,10 @@ def _append_ledger(
         kept, timing = trim_ledger_usage(usage)
         row["usage"] = kept
         row.update(timing)
+        # Same split the cell score uses. Sibling fields, so ``usage`` stays
+        # the provider object ``proxy_split_from_usage`` already reads.
+        for key, value in normalized_usage(kept).items():
+            row[key] = value
     if isinstance(status, int) and not isinstance(status, bool):
         row["status"] = int(status)
     if isinstance(error, str) and error:
@@ -707,6 +753,14 @@ def _append_ledger(
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
     if isinstance(upstream_model, str) and upstream_model:
         row["upstream_model"] = upstream_model
+    if isinstance(call_role, dict) and call_role.get("call_role") in {"main", "side"}:
+        row["call_role"] = call_role["call_role"]
+        detail = call_role.get("call_role_detail")
+        if detail in _SIDE_DETAILS:
+            row["call_role_detail"] = detail
+        reason = call_role.get("call_role_reason")
+        if isinstance(reason, str) and reason:
+            row["call_role_reason"] = reason
     line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -714,6 +768,7 @@ def _append_ledger(
             handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())
+        _write_call_totals(Path(directory), cell_id)
 
 
 class AdcToken:
@@ -890,6 +945,763 @@ def _is_main_loop_request(raw: bytes) -> bool:
     return len(text) >= 200
 
 
+def _chat_route(route: str) -> bool:
+    path = route.split("?", 1)[0].rstrip("/")
+    return path.endswith("/chat/completions")
+
+
+def _route_by_request_default() -> bool:
+    flag = os.environ.get(ROUTE_BY_REQUEST_ENV, "").strip().lower()
+    return flag in {"1", "true", "yes", "on"}
+
+
+def normalize_vertex_model(model: str | None) -> str | None:
+    """Map a harness model id onto ``claude-sonnet-5-5`` or ``claude-opus-5-5``.
+
+    A provider prefix (``anthropic/``, ``openai/``) and an ``@default`` suffix
+    are ignored. Any other id returns None.
+    """
+    if not isinstance(model, str):
+        return None
+    text = model.strip()
+    if not text:
+        return None
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    text = text.split("@", 1)[0].strip()
+    return VERTEX_CLAUDE_MODELS.get(text)
+
+
+def resolve_upstream_model(requested, configured: str, *, route_by_request: bool) -> str:
+    """Vertex model for this call.
+
+    With request routing off (the OpenCode default), ``configured`` wins even
+    when the body names the other Claude model. That is ``--vertex-model``.
+    With routing on, a known request model selects Sonnet or Opus and anything
+    else still uses ``configured``.
+    """
+    if route_by_request:
+        known = normalize_vertex_model(requested if isinstance(requested, str) else None)
+        if known:
+            return known
+    return normalize_vertex_model(configured) or configured
+
+
+def normalized_usage(usage: dict) -> dict:
+    """Provider usage as ``input_uncached``, ``output``, ``cache_read``, ``cache_write``.
+
+    The numbers come from ``obench.run.proxy_split_from_usage``, which is the
+    cell score. A missing bucket is omitted rather than stored as zero.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return {}
+    from obench.run import proxy_split_from_usage
+    split = proxy_split_from_usage(usage)
+    out = {}
+    for name, source in _SPLIT_FIELDS:
+        value = split.get(source)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        out[name] = int(value)
+    return out
+
+
+def _prompt_text(data: dict, *, system_only: bool) -> str:
+    if system_only:
+        return _system_text(data)
+    parts = [_system_text(data)]
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        for message in messages[:6]:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content[:8]:
+                    if isinstance(block, str):
+                        parts.append(block)
+                    elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+    return "\n".join(parts)
+
+
+def _request_has_tools(data: dict) -> bool:
+    tools = data.get("tools")
+    if isinstance(tools, list) and tools:
+        return True
+    functions = data.get("functions")
+    return isinstance(functions, list) and bool(functions)
+
+
+def _request_max_tokens(data: dict):
+    for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+        value = data.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        return value
+    return None
+
+
+def _role(role: str, reason: str, detail: str | None = None) -> dict:
+    out = {"call_role": role, "call_role_reason": reason}
+    if detail:
+        out["call_role_detail"] = detail
+    return out
+
+
+def parse_call_role_header(value: str | None) -> dict | None:
+    """``X-OB-Call-Role`` when it names a role this proxy records.
+
+    Accepted values are ``main``, ``side``, a side detail (``title``,
+    ``summary``, ``helper``, ``memory``, ``subagent``), and ``side:<detail>``.
+    Anything else returns None so the heuristic can run.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if text == "main":
+        return _role("main", "header")
+    if text == "side":
+        return _role("side", "header")
+    detail = text.split(":", 1)[1].strip() if text.startswith("side:") else text
+    if detail in _SIDE_DETAILS and (text == detail or text.startswith("side:")):
+        return _role("side", "header", detail)
+    return None
+
+
+def classify_call_role(data, header: str | None) -> dict:
+    """Tag one model call ``main`` or ``side``.
+
+    The header wins. Otherwise a subagent prompt is ``side`` / ``subagent``
+    even when it carries tools. Title and summary need all three of: no
+    tools, ``max_tokens`` at most ``SHORT_CALL_MAX_TOKENS``, and a matching
+    system prompt. Memory and helper prompts are tagged when the wording is
+    specific. A short call with no tools and no matching prompt is ``side``
+    with reason ``heuristic:short-no-tools``. Everything else is ``main``.
+    """
+    parsed = parse_call_role_header(header)
+    if parsed is not None:
+        return parsed
+    if not isinstance(data, dict):
+        return _role("main", "heuristic:main")
+    if _SUBAGENT_RE.search(_prompt_text(data, system_only=False)):
+        return _role("side", "heuristic:subagent", "subagent")
+    system = _system_text(data)
+    tools = _request_has_tools(data)
+    max_tokens = _request_max_tokens(data)
+    short = (
+        isinstance(max_tokens, (int, float))
+        and not isinstance(max_tokens, bool)
+        and max_tokens <= SHORT_CALL_MAX_TOKENS
+    )
+    if not tools and _MEMORY_RE.search(system):
+        return _role("side", "heuristic:memory", "memory")
+    if not tools and _HELPER_RE.search(system):
+        return _role("side", "heuristic:helper", "helper")
+    if not tools and short:
+        if _TITLE_RE.search(system):
+            return _role("side", "heuristic:title", "title")
+        if _SUMMARY_RE.search(system):
+            return _role("side", "heuristic:summary", "summary")
+        return _role("side", "heuristic:short-no-tools")
+    return _role("main", "heuristic:main")
+
+
+def _content_blocks(content) -> list:
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        return [{"type": "text", "text": str(content)}]
+    blocks = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                blocks.append({"type": "text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type") or "text"
+        if kind == "text":
+            block = {"type": "text", "text": part.get("text") or ""}
+            if "cache_control" in part:
+                block["cache_control"] = part["cache_control"]
+            blocks.append(block)
+        elif kind == "image_url":
+            image = _image_block(part)
+            if image is not None:
+                blocks.append(image)
+        else:
+            blocks.append(dict(part))
+    return blocks
+
+
+def _image_block(part: dict) -> dict | None:
+    image = part.get("image_url")
+    url = image.get("url") if isinstance(image, dict) else image
+    if not isinstance(url, str) or not url:
+        return None
+    if url.startswith("data:"):
+        header, _, data = url.partition(",")
+        media = header[5:].split(";", 1)[0] if header.startswith("data:") else ""
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media or "image/png",
+                "data": data,
+            },
+        }
+    return {"type": "image", "source": {"type": "url", "url": url}}
+
+
+def _message_content(content):
+    if isinstance(content, str) or content is None:
+        return content or ""
+    blocks = _content_blocks(content)
+    if len(blocks) == 1 and blocks[0].get("type") == "text" and "cache_control" not in blocks[0]:
+        return blocks[0]["text"]
+    return blocks
+
+
+def _concat_content(left, right):
+    def blocks(value):
+        if isinstance(value, str):
+            return [{"type": "text", "text": value}] if value else []
+        if isinstance(value, list):
+            return list(value)
+        return [{"type": "text", "text": str(value)}] if value else []
+    return blocks(left) + blocks(right)
+
+
+def _merge_messages(messages: list) -> list:
+    merged = []
+    for message in messages:
+        if merged and merged[-1]["role"] == message["role"]:
+            merged[-1]["content"] = _concat_content(merged[-1]["content"], message["content"])
+        else:
+            merged.append(message)
+    return merged
+
+
+def _openai_tool(tool: dict) -> dict:
+    if not isinstance(tool, dict):
+        raise ProxyError("tool entries must be objects")
+    if "input_schema" in tool and isinstance(tool.get("name"), str):
+        return tool
+    function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    converted = {
+        "name": function.get("name") or "",
+        "description": function.get("description") or "",
+        "input_schema": function.get("parameters") or {"type": "object", "properties": {}},
+    }
+    cache = tool.get("cache_control", function.get("cache_control"))
+    if cache is not None:
+        converted["cache_control"] = cache
+    return converted
+
+
+def _openai_tool_choice(choice):
+    if choice == "auto" or choice is None:
+        return {"type": "auto"}
+    if choice == "none":
+        return {"type": "none"}
+    if choice == "required":
+        return {"type": "any"}
+    if isinstance(choice, dict):
+        function = choice.get("function") if isinstance(choice.get("function"), dict) else {}
+        name = function.get("name") or choice.get("name")
+        if isinstance(name, str) and name:
+            return {"type": "tool", "name": name}
+    raise ProxyError(f"unsupported tool_choice {choice!r}")
+
+
+def _openai_max_tokens(data: dict) -> int:
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = data.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value > 0:
+            return int(value)
+    return _OPENAI_DEFAULT_MAX_TOKENS
+
+
+def _system_value(blocks: list):
+    if blocks and all(set(block) <= {"type", "text"} and block.get("type") == "text" for block in blocks):
+        return "\n\n".join(block.get("text") or "" for block in blocks)
+    return blocks
+
+
+def openai_to_anthropic(data: dict) -> dict:
+    """OpenAI ``/v1/chat/completions`` body as an Anthropic Messages body.
+
+    Tools, tool calls, tool results, and ``cache_control`` on text or tool
+    blocks are kept. The model id stays so the caller can route Sonnet or
+    Opus; ``translate_body`` removes it before Vertex.
+    """
+    if not isinstance(data, dict):
+        raise ProxyError("request body must be an object")
+    messages = data.get("messages")
+    if messages is None:
+        messages = []
+    if not isinstance(messages, list):
+        raise ProxyError("messages must be a list")
+    system_blocks: list = []
+    anth_messages: list = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ProxyError("each message must be an object")
+        role = message.get("role")
+        if role in {"system", "developer"}:
+            system_blocks.extend(_content_blocks(message.get("content")))
+            continue
+        if role == "tool":
+            anth_messages.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": message.get("tool_call_id") or "",
+                    "content": _message_content(message.get("content")),
+                }],
+            })
+            continue
+        if role == "assistant":
+            blocks = _content_blocks(message.get("content"))
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                arguments = function.get("arguments") if function else call.get("arguments")
+                if isinstance(arguments, str):
+                    try:
+                        parsed = json.loads(arguments) if arguments else {}
+                    except json.JSONDecodeError:
+                        parsed = {"_raw": arguments}
+                elif isinstance(arguments, dict):
+                    parsed = arguments
+                else:
+                    parsed = {}
+                if not isinstance(parsed, dict):
+                    parsed = {"_raw": parsed}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": call.get("id") or "toolu",
+                    "name": function.get("name") or call.get("name") or "",
+                    "input": parsed,
+                })
+            anth_messages.append({
+                "role": "assistant",
+                "content": blocks if blocks else "",
+            })
+            continue
+        anth_messages.append({
+            "role": "user",
+            "content": _message_content(message.get("content")),
+        })
+    out: dict = {
+        "messages": _merge_messages(anth_messages),
+        "max_tokens": _openai_max_tokens(data),
+    }
+    if system_blocks:
+        out["system"] = _system_value(system_blocks)
+    if isinstance(data.get("model"), str):
+        out["model"] = data["model"]
+    if data.get("stream") is True:
+        out["stream"] = True
+    tools = data.get("tools")
+    if isinstance(tools, list) and tools:
+        out["tools"] = [_openai_tool(tool) for tool in tools]
+    if "tool_choice" in data and data.get("tool_choice") is not None:
+        out["tool_choice"] = _openai_tool_choice(data.get("tool_choice"))
+    for key in ("temperature", "top_p", "top_k", "metadata", "thinking"):
+        if key in data:
+            out[key] = data[key]
+    if "stop_sequences" in data:
+        out["stop_sequences"] = data["stop_sequences"]
+    elif "stop" in data:
+        stop = data["stop"]
+        if isinstance(stop, str):
+            out["stop_sequences"] = [stop]
+        elif isinstance(stop, list):
+            out["stop_sequences"] = [item for item in stop if isinstance(item, str)]
+    return out
+
+
+def _int_token(value, default: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return int(value)
+
+
+def _cache_write_tokens(usage: dict) -> int:
+    value = usage.get("cache_creation_input_tokens")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    creation = usage.get("cache_creation")
+    if not isinstance(creation, dict):
+        return 0
+    total = 0
+    for item in creation.values():
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            continue
+        total += int(item)
+    return total
+
+
+def openai_usage(usage: dict | None) -> dict:
+    """Anthropic usage as an OpenAI ``usage`` object, with cache fields kept.
+
+    ``prompt_tokens`` is uncached input plus cache read plus cache write.
+    Anthropic's ``input_tokens`` is the uncached portion. The cache counters
+    are also copied under their Anthropic names.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    uncached = _int_token(usage.get("input_tokens"))
+    output = _int_token(usage.get("output_tokens"))
+    cache_read = _int_token(usage.get("cache_read_input_tokens"))
+    cache_write = _cache_write_tokens(usage)
+    prompt = uncached + cache_read + cache_write
+    out = {
+        "prompt_tokens": prompt,
+        "completion_tokens": output,
+        "total_tokens": prompt + output,
+        "prompt_tokens_details": {
+            "cached_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+        },
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_write,
+    }
+    if isinstance(usage.get("cache_creation"), dict):
+        out["cache_creation"] = usage["cache_creation"]
+    return out
+
+
+def _openai_finish(stop_reason) -> str:
+    return {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "max_tokens": "length",
+        "tool_use": "tool_calls",
+        "refusal": "content_filter",
+    }.get(stop_reason, "stop")
+
+
+def anthropic_message_to_openai(data: dict, model: str) -> dict:
+    """One Anthropic message as an OpenAI chat completion."""
+    content = data.get("content")
+    texts: list[str] = []
+    tool_calls = []
+    if isinstance(content, str):
+        texts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                texts.append(block["text"])
+            elif block.get("type") == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id") or "toolu",
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name") or "",
+                        "arguments": json.dumps(block.get("input") or {}, separators=(",", ":")),
+                    },
+                })
+    message: dict = {"role": "assistant", "content": "".join(texts) if texts else None}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return {
+        "id": data.get("id") or "chatcmpl-proxy",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": _openai_finish(data.get("stop_reason")),
+        }],
+        "usage": openai_usage(data.get("usage") if isinstance(data.get("usage"), dict) else {}),
+    }
+
+
+def openai_error_obj(data: dict) -> dict:
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        return {"error": {
+            "message": str(err.get("message") or "upstream error"),
+            "type": str(err.get("type") or "api_error"),
+        }}
+    if isinstance(err, str) and err:
+        return {"error": {"message": err, "type": "api_error"}}
+    return {"error": {"message": "upstream error", "type": "api_error"}}
+
+
+def openai_response_bytes(payload: bytes, model: str) -> bytes:
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return payload
+    if not isinstance(data, dict):
+        return payload
+    if "error" in data or data.get("type") == "error":
+        return json.dumps(openai_error_obj(data)).encode("utf-8")
+    return json.dumps(anthropic_message_to_openai(data, model)).encode("utf-8")
+
+
+def openai_error_bytes(payload: bytes) -> bytes:
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return payload
+    if not isinstance(data, dict):
+        return payload
+    return json.dumps(openai_error_obj(data)).encode("utf-8")
+
+
+def _split_sse_events(buf: bytes) -> tuple[bytes, list[bytes]]:
+    events = []
+    while True:
+        sep = None
+        for marker in (b"\r\n\r\n", b"\n\n", b"\r\r"):
+            index = buf.find(marker)
+            if index != -1 and (sep is None or index < sep[0]):
+                sep = (index, marker)
+        if sep is None:
+            break
+        index, marker = sep
+        block = buf[:index]
+        buf = buf[index + len(marker):]
+        data_lines = []
+        for line in block.splitlines():
+            if line.startswith(b"data:"):
+                data_lines.append(line[5:].lstrip())
+        if data_lines:
+            events.append(b"\n".join(data_lines).strip())
+    return buf, events
+
+
+class _OpenAIStream:
+    """Anthropic SSE in, OpenAI chat-completion chunks out."""
+
+    def __init__(self, model: str):
+        self.model = model
+        self.buf = b""
+        self.message_id = "chatcmpl-proxy"
+        self.created = int(time.time())
+        self.saw_role = False
+        self.tool_ids: dict[int, int] = {}
+        self.next_tool = 0
+        self.usage_parts: list[dict] = []
+        self.finish_reason: str | None = None
+        self.done = False
+
+    def feed(self, chunk: bytes) -> list[bytes]:
+        self.buf += chunk
+        self.buf, events = _split_sse_events(self.buf)
+        out: list[bytes] = []
+        for data in events:
+            out.extend(self._data(data))
+        return out
+
+    def finish(self) -> list[bytes]:
+        extra: list[bytes] = []
+        if self.buf.strip():
+            extra = self.feed(b"\n\n")
+        if self.done:
+            return extra
+        self.done = True
+        tail: list[bytes] = []
+        if self.finish_reason is None:
+            self.finish_reason = "stop"
+            tail.append(self._chunk({}, "stop", with_usage=True))
+        tail.append(b"data: [DONE]\n\n")
+        return extra + tail
+
+    def _data(self, data: bytes) -> list[bytes]:
+        if not data or data == b"[DONE]":
+            return []
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(obj, dict):
+            return []
+        kind = obj.get("type")
+        out: list[bytes] = []
+        if kind == "message_start":
+            message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+            if isinstance(message.get("id"), str) and message["id"]:
+                self.message_id = message["id"]
+            usage = message.get("usage")
+            if isinstance(usage, dict):
+                self.usage_parts.append(usage)
+            out.extend(self._ensure_role())
+            return out
+        if kind == "content_block_start":
+            block = obj.get("content_block") if isinstance(obj.get("content_block"), dict) else {}
+            if block.get("type") != "tool_use":
+                return out
+            index = obj.get("index")
+            tool_index = self.next_tool
+            self.next_tool += 1
+            if isinstance(index, int) and not isinstance(index, bool):
+                self.tool_ids[index] = tool_index
+            out.extend(self._ensure_role())
+            out.append(self._chunk({
+                "tool_calls": [{
+                    "index": tool_index,
+                    "id": block.get("id") or f"toolu_{tool_index}",
+                    "type": "function",
+                    "function": {"name": block.get("name") or "", "arguments": ""},
+                }],
+            }, None))
+            return out
+        if kind == "content_block_delta":
+            delta = obj.get("delta") if isinstance(obj.get("delta"), dict) else {}
+            dtype = delta.get("type")
+            if dtype == "text_delta" and isinstance(delta.get("text"), str) and delta["text"]:
+                out.extend(self._ensure_role())
+                out.append(self._chunk({"content": delta["text"]}, None))
+            elif dtype == "input_json_delta" and isinstance(delta.get("partial_json"), str):
+                index = obj.get("index")
+                if isinstance(index, int) and not isinstance(index, bool):
+                    tool_index = self.tool_ids.get(index, 0)
+                else:
+                    tool_index = 0
+                out.append(self._chunk({
+                    "tool_calls": [{
+                        "index": tool_index,
+                        "function": {"arguments": delta["partial_json"]},
+                    }],
+                }, None))
+            return out
+        if kind == "message_delta":
+            usage = obj.get("usage")
+            if isinstance(usage, dict):
+                self.usage_parts.append(usage)
+            delta = obj.get("delta") if isinstance(obj.get("delta"), dict) else {}
+            stop = delta.get("stop_reason")
+            if isinstance(stop, str) and stop:
+                self.finish_reason = _openai_finish(stop)
+                out.append(self._chunk({}, self.finish_reason, with_usage=True))
+            return out
+        if kind == "message_stop":
+            if self.finish_reason is None:
+                self.finish_reason = "stop"
+                out.append(self._chunk({}, "stop", with_usage=True))
+            if not self.done:
+                self.done = True
+                out.append(b"data: [DONE]\n\n")
+            return out
+        usage = obj.get("usage")
+        if isinstance(usage, dict):
+            self.usage_parts.append(usage)
+        return out
+
+    def _ensure_role(self) -> list[bytes]:
+        if self.saw_role:
+            return []
+        self.saw_role = True
+        return [self._chunk({"role": "assistant"}, None)]
+
+    def _chunk(self, delta: dict, finish, *, with_usage: bool = False) -> bytes:
+        body = {
+            "id": self.message_id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish,
+            }],
+        }
+        if with_usage:
+            merged = merge_message_usage(self.usage_parts) or {}
+            body["usage"] = openai_usage(merged)
+        return b"data: " + json.dumps(body, separators=(",", ":")).encode("utf-8") + b"\n\n"
+
+
+def _split_for_total(row: dict) -> dict:
+    keys = ("input_uncached", "output", "cache_read", "cache_write")
+    if all(
+        isinstance(row.get(key), (int, float)) and not isinstance(row.get(key), bool)
+        for key in keys
+    ):
+        return {key: int(row[key]) for key in keys}
+    norm = normalized_usage(row.get("usage") if isinstance(row.get("usage"), dict) else {})
+    return {key: int(norm.get(key) or 0) for key in keys}
+
+
+def summarize_call_totals(rows: list) -> dict:
+    """All-call and main-only totals for one cell ledger.
+
+    ``side`` rows stay in ``all`` and stay out of ``main``. A row with no
+    ``call_role`` counts as main, which is how a ledger written before
+    tagging still sums.
+    """
+    keys = ("input_uncached", "output", "cache_read", "cache_write")
+
+    def blank() -> dict:
+        return {key: 0 for key in keys} | {"calls": 0}
+
+    buckets = {"all": blank(), "main": blank()}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("usage"), dict):
+            continue
+        split = _split_for_total(row)
+        buckets["all"]["calls"] += 1
+        for key in keys:
+            buckets["all"][key] += split[key]
+        if row.get("call_role") != "side":
+            buckets["main"]["calls"] += 1
+            for key in keys:
+                buckets["main"][key] += split[key]
+    return buckets
+
+
+def cell_totals_path(directory: Path, cell_id: str) -> Path:
+    """Per-cell all-call and main-only totals, beside the request ledger."""
+    ledger = cell_ledger_path(Path(directory), cell_id)
+    return ledger.with_name(f"{ledger.stem}.totals.json")
+
+
+def read_call_totals(directory: Path, cell_id: str) -> dict | None:
+    path = cell_totals_path(directory, cell_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_call_totals(directory: Path, cell_id: str) -> None:
+    """Rewrite ``<cell>.totals.json`` from the ledger. Caller holds the lock."""
+    path = cell_ledger_path(directory, cell_id)
+    rows = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    payload = json.dumps(summarize_call_totals(rows), sort_keys=True) + "\n"
+    dest = cell_totals_path(directory, cell_id)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, dest)
+
+
 class Proxy:
     def __init__(self, httpd: ThreadingHTTPServer, thread: threading.Thread):
         self._httpd = httpd
@@ -953,11 +1765,14 @@ class Proxy:
 
 def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION,
                 token, upstream: str = "https://aiplatform.googleapis.com",
-                ledger_dir: Path | None = None, thinking_mode: str = "default") -> Proxy:
+                ledger_dir: Path | None = None, thinking_mode: str = "default",
+                route_by_request: bool | None = None) -> Proxy:
     upstream = upstream.rstrip("/")
     ledger = Path(ledger_dir) if ledger_dir is not None else None
     if thinking_mode not in _THINKING_MODES:
         thinking_mode = "default"
+    if route_by_request is None:
+        route_by_request = _route_by_request_default()
     holder: dict = {}
 
     class Server(ThreadingHTTPServer):
@@ -982,14 +1797,42 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             cell, route = split_cell_path(self.path)
             route, query_removed = strip_beta_query(route)
             removed = list(query_removed)
+            presentation = "openai" if _chat_route(route) else "anthropic"
             try:
                 parsed = json.loads(raw.decode("utf-8")) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
+            requested_model = parsed.get("model") if isinstance(parsed, dict) else None
+            upstream_model = resolve_upstream_model(
+                requested_model, model, route_by_request=route_by_request,
+            )
+            call_role = classify_call_role(
+                parsed if isinstance(parsed, dict) else None,
+                self.headers.get(CALL_ROLE_HEADER),
+            )
+            if presentation == "openai":
+                if not isinstance(parsed, dict):
+                    payload = json.dumps({
+                        "error": {
+                            "message": "request body must be an object",
+                            "type": "invalid_request_error",
+                        },
+                    }).encode("utf-8")
+                    self._send(400, "application/json", payload)
+                    return
+                try:
+                    parsed = openai_to_anthropic(parsed)
+                except ProxyError as exc:
+                    payload = json.dumps({
+                        "error": {"message": str(exc), "type": "invalid_request_error"},
+                    }).encode("utf-8")
+                    self._send(400, "application/json", payload)
+                    return
+                raw = json.dumps(parsed).encode("utf-8")
             sampling_removed: list[str] = []
             if isinstance(parsed, dict):
                 removed.extend(strip_cc_body(parsed))
-                sampling_removed = strip_deprecated_sampling(parsed, model)
+                sampling_removed = strip_deprecated_sampling(parsed, upstream_model)
                 raw = json.dumps(parsed).encode("utf-8")
             binding = apply_block_binding(parsed) if _message_route(route) else None
             if binding:
@@ -1025,12 +1868,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 return
             try:
                 kind, body = translate_body(route, raw)
-                path = vertex_path(project, model, kind, location)
+                path = vertex_path(project, upstream_model, kind, location)
                 if "?" in route:
                     path += route[route.index("?"):]
                 bearer = token() if callable(token) else token
             except (ProxyError, OSError) as exc:
                 payload = json.dumps({"error": str(exc)}).encode("utf-8")
+                if presentation == "openai":
+                    payload = json.dumps({
+                        "error": {"message": str(exc), "type": "invalid_request_error"},
+                    }).encode("utf-8")
                 self._send(400, "application/json", payload)
                 return
             headers = {
@@ -1049,6 +1896,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             self._forward(
                 upstream + path, headers, body,
                 cell if ledger is not None else None, kind, identity, sent,
+                presentation=presentation, call_role=call_role,
+                upstream_model_id=upstream_model,
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -1076,29 +1925,36 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             self.wfile.flush()
 
         def _record(self, cell: str | None, usage: dict | None, status: int | None = None,
-                    identity: dict | None = None, thinking_sent: str = "none") -> None:
-            # One row per messages POST on /c/<cell-id>/. A subagent or child
-            # session that reused that base URL is included in the cell total.
+                    identity: dict | None = None, thinking_sent: str = "none",
+                    call_role: dict | None = None, upstream_model_id: str | None = None) -> None:
+            # One row per messages or chat-completions POST on /c/<cell-id>/.
+            # A subagent or child session that reused that base URL is included
+            # in the cell total. The role tag does not change that total.
             if ledger is None or not cell or not usage:
                 return
             _append_ledger(
                 ledger, cell, usage, status=status, identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
-                upstream_model=model,
+                upstream_model=upstream_model_id or model,
+                call_role=call_role,
             )
 
         def _record_error(self, cell: str | None, status: int, payload: bytes | str,
-                          identity: dict | None = None, thinking_sent: str = "none") -> None:
+                          identity: dict | None = None, thinking_sent: str = "none",
+                          call_role: dict | None = None, upstream_model_id: str | None = None) -> None:
             if ledger is None or not cell:
                 return
             _append_ledger(
                 ledger, cell, None, status=status, error=_error_body(payload), identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
-                upstream_model=model,
+                upstream_model=upstream_model_id or model,
+                call_role=call_role,
             )
 
         def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str,
-                     identity: dict | None = None, thinking_sent: str = "none") -> None:
+                     identity: dict | None = None, thinking_sent: str = "none",
+                     presentation: str = "anthropic", call_role: dict | None = None,
+                     upstream_model_id: str | None = None) -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -1106,6 +1962,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             pending = b""
             recorded = False
             status: int | None = None
+            called = upstream_model_id or model
+            translate_out = presentation == "openai" and kind != "count"
+            stream_tx = _OpenAIStream(called) if translate_out and kind == "stream" else None
 
             def finish_usage() -> dict | None:
                 nonlocal pending
@@ -1124,13 +1983,22 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 except urllib.error.HTTPError as exc:
                     payload = exc.read()
                     note_cell_bytes(ledger, cell, len(payload))
-                    self._record_error(cell, int(exc.code), payload, identity, thinking_sent)
+                    self._record_error(
+                        cell, int(exc.code), payload, identity, thinking_sent,
+                        call_role, called,
+                    )
+                    if presentation == "openai":
+                        payload = openai_error_bytes(payload)
                     content_type = exc.headers.get("Content-Type") or "application/json"
                     self._send(exc.code, content_type, payload)
                     return
                 except urllib.error.URLError as exc:
                     payload = json.dumps({"error": str(exc)}).encode("utf-8")
-                    self._record_error(cell, 502, payload, identity, thinking_sent)
+                    self._record_error(
+                        cell, 502, payload, identity, thinking_sent, call_role, called,
+                    )
+                    if presentation == "openai":
+                        payload = openai_error_bytes(payload)
                     self._send(502, "application/json", payload)
                     return
                 status = response.status
@@ -1155,17 +2023,30 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                         pending += chunk
                         pending, found = drain_sse(pending)
                         parts.extend(found)
-                    self._write_chunk(chunk)
+                    if stream_tx is not None:
+                        for piece in stream_tx.feed(chunk):
+                            self._write_chunk(piece)
+                    elif not translate_out:
+                        self._write_chunk(chunk)
                 usage = finish_usage()
                 if kind != "count":
-                    self._record(cell, usage, status, identity, thinking_sent)
+                    self._record(
+                        cell, usage, status, identity, thinking_sent, call_role, called,
+                    )
                     recorded = True
+                if stream_tx is not None:
+                    for piece in stream_tx.finish():
+                        self._write_chunk(piece)
+                elif translate_out:
+                    self._write_chunk(openai_response_bytes(bytes(raw), called))
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except _DISCONNECT:
                 self.close_connection = True
                 if not recorded and kind != "count":
-                    self._record(cell, finish_usage(), status, identity, thinking_sent)
+                    self._record(
+                        cell, finish_usage(), status, identity, thinking_sent, call_role, called,
+                    )
             finally:
                 if response is not None:
                     response.close()

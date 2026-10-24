@@ -169,6 +169,24 @@ Stock OpenCode from v1.0.123 (PR 4838) through v1.15.2 (PR 26821) imports `@ai-s
 
 `--model-route vertex` is the previous path. The config defines `google-vertex-anthropic/claude-opus-5-5@default` when the binary does not already list it. A binary that still cannot load that provider is recorded as incompatible, with the reason, and that side is not scored.
 
+## Proxy API
+
+The shared proxy is `thesis/ab/vertex_anthropic_proxy.py`. It listens on a local base URL and forwards to Vertex Claude (`claude-sonnet-5-5` or `claude-opus-5-5`) on the global endpoint. A harness uses it by setting a base URL. The proxy holds the Vertex credential. Any non-empty API key is accepted and is not sent upstream. `temperature`, `top_p`, and `top_k` are dropped for these two models, because Vertex rejects them.
+
+| Env var | Who sets it | Effect |
+| --- | --- | --- |
+| `ANTHROPIC_BASE_URL` | Anthropic Messages harnesses (OpenCode, Pi, Oh My Pi, Claude Code) | `POST /v1/messages`, streaming and non-streaming. Tools, `tool_use`, `tool_result`, and `cache_control` are forwarded. Point this at `<proxy>/c/<cell-id>/v1` so the call is metered on that cell. `ANTHROPIC_API_KEY` can be the dummy `proxy`. |
+| `OPENAI_BASE_URL` | OpenAI chat-completions harnesses | `POST /v1/chat/completions` on the same proxy. The proxy translates the call to Vertex Claude and translates the response back, including stream chunks, tool calls, and cache usage. A request that omits `max_tokens` is sent with 8192. `OPENAI_API_KEY` can be any non-empty value. |
+| `X-OB-Call-Role` | An adapter, on one request | `main`, `side`, or a side detail: `title`, `summary`, `helper`, `memory`, `subagent` (the `side:` prefix is optional). The ledger stores `call_role`, `call_role_detail`, and `call_role_reason` of `header`. |
+| `OBENCH_VERTEX_ROUTE_BY_REQUEST` | The operator, optional | `1` selects `claude-sonnet-5-5` or `claude-opus-5-5` from the request `model`. A provider prefix and an `@default` suffix are ignored. Any other id still uses `--vertex-model`. Unset, every call uses `--vertex-model`, which is what current OpenCode runs do. |
+| `GOOGLE_CLOUD_PROJECT` | The operator | Vertex project. Required, along with application-default credentials. |
+
+With no `X-OB-Call-Role` header the proxy classifies the call. No tools, `max_tokens` at most 1024, and a title or summary system prompt is `side` / `title` or `side` / `summary` (`heuristic:title`, `heuristic:summary`). A system prompt that is clearly a memory or helper call is `side` / `memory` or `side` / `helper`. A prompt that says the caller is a subagent is `side` / `subagent`, including when that call has tools. A short call with no tools and none of those prompts is `side` with reason `heuristic:short-no-tools`. Every other call is `main` (`heuristic:main`).
+
+Each finished `/c/<cell-id>/` messages or chat-completions POST appends one JSONL row. Next to the provider `usage` object the row stores `input_uncached`, `output`, `cache_read`, and `cache_write`, the same split the cell score uses, plus the role and the reason. `<cell-id>.totals.json` sums `all` calls and `main` calls. `all` counts every usage row. `main` counts rows tagged `main` and rows with no role, which is how a ledger recorded before tagging still sums its whole cell as main.
+
+The cell score still counts every request. `tokens_*`, `requests_*`, and `tokens_proxy_*` stay those all-request totals. `tokens_main_*` stays the harness session split. The totals file is the proxy's own all-versus-main accounting.
+
 ## Results
 
 Finished cells are `results/ab/<pr>/cells/<side>/<task>/<trial>.json`. The runner rewrites `results/ab/<pr>/without.jsonl` and `with.jsonl` from those files. `--aa` writes `aa-1.jsonl` and `aa-2.jsonl` instead, plus `arm.json` naming the parent SHA. `--with-aa` writes all four side files and `arm.json` in that same directory. The summary labels the aa sides parent-vs-parent noise and does not report them as a with-minus-without harness delta. An incompatible side writes `results/ab/<pr>/<side>.incompatible.json`. Each side also writes `<side>.toolchain.json` with the Bun version, the `ai` version, and the installed `@ai-sdk/anthropic` version. The same object is on each cell row. The summary prints both sides. When the installed SDK versions differ, it says `SDK changed: harness delta may be confounded`.
