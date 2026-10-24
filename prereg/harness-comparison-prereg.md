@@ -68,3 +68,11 @@ Pi lowest tokens per cell (fewest tools, no sub-agents); Hermes and ZCode highes
 
 ## 12. Deviations
 Any change after the first scored cell is a dated amendment stating what was seen at the time. Results reported regardless of direction.
+
+## Amendment A1 (2026-10-24, before any harness data)
+
+Added at Sean's request to track hard-suite completion and token efficiency as headline numbers. Descriptive headlines; they do not replace the pre-registered Holm-corrected comparisons vs Pi.
+
+For each harness × model:
+1. **Completion:** overall pass rate across all 9 hard tasks (passes / scored cells, blocked excluded), Wilson 95% CI. Tasks are not dropped.
+2. **Tokens per solved task:** total tokens / passes, bootstrap 95% CI (10k resamples, resampling cells within task). Also reported with main-agent tokens only. Dollars per pass reported alongside. If passes = 0, reported as "no solves" (undefined), not infinity.
