@@ -458,6 +458,49 @@ def _auth_mount_args(harness):
     return args
 
 
+_PI_COMPARISON_ENV = (
+    "OBENCH_PI_HARNESS",
+    "OBENCH_VERTEX_PROXY_URL",
+    "OBENCH_VERTEX_CELL_ID",
+    "OBENCH_VERTEX_LEDGER_DIR",
+    "OBENCH_VERTEX_ROUTE_BY_REQUEST",
+    "OBENCH_PI_BIN",
+    "OBENCH_PI_PIN_FILE",
+    "OBENCH_PI_MOUNT",
+    "OBENCH_PI_SETTINGS_PATH",
+)
+
+
+def _pi_comparison_docker_args(harness):
+    """Forward the Pi harness-comparison env into the cell container.
+
+    Inactive unless this is the stock ``pi`` adapter and the cell set
+    ``OBENCH_PI_HARNESS`` or ``OBENCH_VERTEX_PROXY_URL``. Values stay in the
+    client environment (bare ``-e NAME``). A loopback proxy needs
+    ``host.docker.internal``; the adapter rewrites the URL when
+    ``BENCH_IN_CONTAINER`` is set. ``OBENCH_PI_MOUNT`` is the built Pi tree,
+    mounted at the same absolute path the wrapper's ``exec`` line uses.
+    """
+    if harness != "pi":
+        return []
+    flag = os.environ.get("OBENCH_PI_HARNESS", "").strip().lower()
+    proxy = os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip()
+    if flag not in {"1", "true", "yes", "on"} and not proxy:
+        return []
+    args = []
+    for name in _PI_COMPARISON_ENV:
+        if os.environ.get(name, "").strip():
+            args += ["-e", name]
+    mount = os.environ.get("OBENCH_PI_MOUNT", "").strip()
+    if mount:
+        host = os.path.abspath(mount)
+        if ":" not in host:
+            args += ["-v", f"{host}:{host}:ro"]
+    if proxy:
+        args.append("--add-host=host.docker.internal:host-gateway")
+    return args
+
+
 def build_docker_cmd(harness, workdir, model, timeout_s, adapters_dir, image,
                      instruction_path, container_name=None,
                      extra_docker_args=None, extra_env=None,
@@ -562,6 +605,7 @@ def build_docker_cmd(harness, workdir, model, timeout_s, adapters_dir, image,
         if os.path.isfile(source) and target not in mounted_auth_targets:
             cmd += ["-v", f"{source}:{target}:ro"]
             mounted_auth_targets.add(target)
+    cmd += _pi_comparison_docker_args(effective_harness)
     if extra_docker_args:
         cmd += list(extra_docker_args)
     cmd += [image, "python3", "/bench/entry.py", harness, model, str(timeout_s)]
