@@ -1205,6 +1205,15 @@ def attach_provider_pin(row: dict, spec: dict) -> None:
     source = str(proxy.get("pin_source") or "").strip()
     if source and not row.get("pin_source"):
         row["pin_source"] = source
+    # The side JSONL is this row. Keep the version the process resolved.
+    for key in (
+        "provider_loaded_version",
+        "provider_loaded_source",
+        "provider_loaded_mismatch",
+    ):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            row[key] = value.strip()
 
 
 def attach_schedule(row: dict, spec: dict, started_at: str) -> None:

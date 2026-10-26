@@ -263,7 +263,7 @@ def run_piped(
     def pin_reason(text: str) -> str:
         if pin_violation is None or not text:
             return ""
-        return pin_violation(text)
+        return pin_violation(text, pin_raw)
 
     def note_text(text: str) -> bool:
         nonlocal carry

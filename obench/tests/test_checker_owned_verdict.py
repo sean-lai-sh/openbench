@@ -132,6 +132,11 @@ class PromotionPrecedenceTests(unittest.TestCase):
             failure_reason="sdk drift: installed @ai-sdk/anthropic 4.0.72 != pin 2.0.0",
         )
         self.assertEqual(fc.class_for_report(drift), "infra")
+        loaded = _row(
+            failure_class="infra",
+            failure_reason="provider_pin_mismatch: loaded 4.0.88 != pin 2.0.0",
+        )
+        self.assertEqual(fc.class_for_report(loaded), "infra")
         early = _row(
             failure_class="infra",
             failure_reason="early death under 10s: Unhandled chunk type",
