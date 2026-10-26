@@ -1202,6 +1202,9 @@ def attach_provider_pin(row: dict, spec: dict) -> None:
     pin_sha = str(proxy.get("provider_pin_sha256") or "").strip()
     if pin_sha and not row.get("provider_pin_sha256"):
         row["provider_pin_sha256"] = pin_sha
+    source = str(proxy.get("pin_source") or "").strip()
+    if source and not row.get("pin_source"):
+        row["pin_source"] = source
 
 
 def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
@@ -1755,6 +1758,35 @@ def _overlay_provider_pin(state: dict, cache: Path, spec: dict) -> dict:
     return state
 
 
+def _fail_closed_unpinned(state: dict, cache: Path, spec: dict) -> dict:
+    """Stop an OpenCode cell that would run with no provider pin.
+
+    A missing worktree still keeps a manifest pin. A worktree whose ``.git``
+    file points outside the mount still keeps the lockfile pin, because the
+    pin is read from ``bun.lock``. When neither resolves, the cell is infra
+    and is not launched.
+    """
+    if not state.get("ok"):
+        return state
+    harness = state.get("harness") or "opencode"
+    if harness != "opencode":
+        return state
+    proxy = state.get("proxy")
+    if not isinstance(proxy, dict) or proxy.get("provider_pins"):
+        return state
+    checkout = Path(cache) / "worktrees" / str(spec.get("sha") or "").strip().lower()
+    if (checkout / "package.json").is_file():
+        reason = "provider_pin_mismatch: toolchain unresolved"
+    else:
+        reason = "provider_pin_mismatch: worktree unresolved"
+    return {
+        "ok": False,
+        "status": "infra",
+        "reason": reason,
+        "toolchain": state.get("toolchain"),
+    }
+
+
 def resolve_runner_commit(explicit: str | None = None, root: Path | None = None) -> str | None:
     """Runner SHA for ``--cell-meta``.
 
@@ -2028,14 +2060,16 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         state = prepared[key]
         if state.get("ok"):
             state = _overlay_provider_pin(state, cache, spec)
+            state = _fail_closed_unpinned(state, cache, spec)
         write_toolchain(out_dir, spec["pr"], spec["side"], state.get("toolchain"))
         if not state["ok"]:
             _record_stopped(out_dir, spec, state)
             key = (spec["pr"], spec["side"], sha)
             if key not in announced:
                 announced.add(key)
+                label = "infra" if state.get("status") == "infra" else "incompatible"
                 print(
-                    f"{spec['pr']} {spec['side']} incompatible: {state['reason']}",
+                    f"{spec['pr']} {spec['side']} {label}: {state['reason']}",
                     file=sys.stderr,
                 )
             return None

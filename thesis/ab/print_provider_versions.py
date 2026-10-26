@@ -93,10 +93,11 @@ def format_build(sha: str, side: str = "", cache: Path | None = None, root: Path
     for row in rows:
         entry = row["entry"] if isinstance(row["entry"], dict) else {}
         lines.append(
-            "side\t{side}\tpr\t{pr}\tevidence\t{evidence}".format(
+            "side\t{side}\tpr\t{pr}\tevidence\t{evidence}\tpin_source\t{pin_source}".format(
                 side=row["side"],
                 pr=entry.get("pr") or "",
                 evidence=entry.get("evidence") or "",
+                pin_source=entry.get("pin_source") or "",
             )
         )
         lines.append("package\tmanifest\tlocked\tinstalled")

@@ -169,19 +169,42 @@ def iter_sides(sha: str, side: str = "", manifest: dict | None = None) -> list[d
     return rows
 
 
+def pin_source_for(entry) -> str:
+    """Where this side's pin was read from.
+
+    ``box_cache`` is the version a box cell left installed. ``vm_quarantine_log``
+    is the version the quarantined F03-1 log installed for a side with no
+    finished box cell. A checkout that is not in the manifest is ``lockfile``.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    source = str(entry.get("pin_source") or "").strip()
+    if source:
+        return source
+    evidence = str(entry.get("evidence") or "").strip()
+    if evidence == "f03-1-seed":
+        return "vm_quarantine_log"
+    if evidence:
+        return "box_cache"
+    return ""
+
+
 def apply_provider_pin(proxy: dict, cache, sha: str, side: str = "", pr: str = "") -> dict:
     """Copy ``proxy`` and attach the pin for this build and side.
 
     A manifest hit replaces the lockfile pin. A build that is not in the
     manifest keeps an exact lockfile pin already on ``proxy`` and still
-    refuses ``latest``.
+    refuses ``latest``. ``pin_source`` records which of those produced the pin.
     """
     proxy = dict(proxy)
-    packages = lookup_packages(sha, side, pr)
+    found = lookup_entry(sha, side, pr)
+    packages = dict(found["packages"]) if found else None
+    source = pin_source_for(found.get("entry") if found else None)
     if not packages:
         pin = str(proxy.get("anthropic_sdk") or "").strip()
         if pin and pin != "latest":
             packages = {"@ai-sdk/anthropic": pin}
+            source = "lockfile"
     if not packages:
         return proxy
     anthropic = str(packages.get("@ai-sdk/anthropic") or "").strip()
@@ -190,6 +213,8 @@ def apply_provider_pin(proxy: dict, cache, sha: str, side: str = "", pr: str = "
     proxy["provider_pins"] = packages
     proxy["provider_pin_sha256"] = pin_sha256(packages)
     proxy["pin_store"] = str(Path(cache) / "provider-pins")
+    if source:
+        proxy["pin_source"] = source
     return proxy
 
 

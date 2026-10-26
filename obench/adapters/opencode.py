@@ -1348,6 +1348,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             pin_sha = str(proxy.get("provider_pin_sha256") or "").strip()
             if pin_sha:
                 row["provider_pin_sha256"] = pin_sha
+            source = str(proxy.get("pin_source") or "").strip()
+            if source:
+                row["pin_source"] = source
         versions = observed.get("versions")
         if isinstance(versions, dict):
             row["provider_versions"] = versions

@@ -112,6 +112,7 @@ ROW_FIELDS = (
     "provider_versions",
     "machine",
     "runner_commit",
+    "pin_source",
 )
 
 
@@ -2298,6 +2299,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         pin_sha = result.get("provider_pin_sha256")
         if isinstance(pin_sha, str) and pin_sha.strip():
             row["provider_pin_sha256"] = pin_sha.strip()
+        pin_source = result.get("pin_source")
+        if isinstance(pin_source, str) and pin_source.strip():
+            row["pin_source"] = pin_source.strip()
         provider_versions = result.get("provider_versions")
         if isinstance(provider_versions, dict):
             row["provider_versions"] = {

@@ -64,7 +64,19 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(len(versions), 1, sha)
         entry = data["builds"][PR_3185_WITHOUT]["without"]
         self.assertEqual(entry["evidence"], "f03-1-seed")
+        self.assertEqual(entry["pin_source"], "vm_quarantine_log")
         self.assertEqual(data["builds"][STOCK]["aa-1"]["evidence"], "box-aa")
+        self.assertEqual(data["builds"][STOCK]["aa-1"]["pin_source"], "box_cache")
+        self.assertEqual(data["builds"][PR_3185_WITH]["with"]["pin_source"], "box_cache")
+        quarantine = 0
+        for sides in data["builds"].values():
+            for side_entry in sides.values():
+                if side_entry["evidence"] == "f03-1-seed":
+                    self.assertEqual(side_entry["pin_source"], "vm_quarantine_log")
+                    quarantine += 1
+                else:
+                    self.assertEqual(side_entry["pin_source"], "box_cache")
+        self.assertEqual(quarantine, 7)
 
     def test_missing_worktree_still_uses_the_manifest(self):
         from thesis.ab.provider_pin import apply_provider_pin
@@ -73,8 +85,11 @@ class ManifestTests(unittest.TestCase):
         proxy = apply_provider_pin({}, "/tmp/cache", STOCK, "aa-1", "26821")
         self.assertEqual(proxy["anthropic_sdk"], "3.0.64")
         self.assertEqual(proxy["provider_pins"]["@ai-sdk/anthropic"], "3.0.64")
+        self.assertEqual(proxy["pin_source"], "box_cache")
         self.assertTrue(proxy["provider_pin_sha256"])
         self.assertTrue(str(proxy["pin_store"]).endswith("provider-pins"))
+        quarantine = apply_provider_pin({}, "/tmp/cache", PR_3185_WITHOUT, "without", "3185")
+        self.assertEqual(quarantine["pin_source"], "vm_quarantine_log")
         state = {
             "ok": True,
             "proxy": {"model_ref": "anthropic/claude-opus-5-5"},
@@ -95,8 +110,10 @@ class ManifestTests(unittest.TestCase):
         )
         self.assertEqual(proxy["anthropic_sdk"], "1.2.12")
         self.assertEqual(proxy["provider_pins"], {"@ai-sdk/anthropic": "1.2.12"})
+        self.assertEqual(proxy["pin_source"], "lockfile")
         bare = apply_provider_pin({}, "/tmp/cache", "a" * 40, "with", "1")
         self.assertNotIn("provider_pins", bare)
+        self.assertNotIn("pin_source", bare)
 
     def test_drive_applies_the_manifest_when_the_worktree_is_missing(self):
         from thesis.ab.compat import Assessment
@@ -108,7 +125,11 @@ class ManifestTests(unittest.TestCase):
         seen = []
 
         def worker(spec):
-            seen.append((spec["side"], spec["proxy"].get("anthropic_sdk")))
+            seen.append((
+                spec["side"],
+                spec["proxy"].get("anthropic_sdk"),
+                spec["proxy"].get("pin_source"),
+            ))
             publish_text(Path(spec["cell_path"]), json.dumps({
                 "task": spec["task"], "trial": spec["trial"], "score": 1, "success": True,
                 "tokens_input_uncached": 1, "tokens_output": 1,
@@ -137,7 +158,10 @@ class ManifestTests(unittest.TestCase):
             max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
             build_fn=build_fn, assess_fn=assess_fn, worker=worker, aa=True,
         )
-        self.assertEqual(sorted(seen), [("aa-1", "3.0.64"), ("aa-2", "3.0.64")])
+        self.assertEqual(
+            sorted(seen),
+            [("aa-1", "3.0.64", "box_cache"), ("aa-2", "3.0.64", "box_cache")],
+        )
 
 
 class GuardTests(unittest.TestCase):
@@ -245,6 +269,7 @@ class CellAbortTests(unittest.TestCase):
             "provider_pins": packages,
             "provider_pin_sha256": pin_sha256(packages),
             "pin_store": str(root / "provider-pins"),
+            "pin_source": "vm_quarantine_log",
         }
 
     def _binary(self, path: Path, started: Path, request: Path, body: str) -> None:
@@ -314,6 +339,7 @@ class CellAbortTests(unittest.TestCase):
         self.assertIn("empty cache", row["failure_reason"])
         self.assertFalse(row["success"])
         self.assertTrue(row["provider_pin_sha256"])
+        self.assertEqual(row["pin_source"], "vm_quarantine_log")
         self.assertEqual(row["provider_versions"]["@ai-sdk/anthropic"], "missing")
         self.assertIsNone(row.get("checker_exit"))
 
@@ -353,6 +379,197 @@ class CellAbortTests(unittest.TestCase):
         self.assertIn("version=latest", row["failure_reason"])
         self.assertFalse(row["success"])
         self.assertEqual(row["provider_versions"]["@ai-sdk/anthropic"], "2.0.0")
+
+
+class ContainerGitfileTests(unittest.TestCase):
+    def _row(self, spec):
+        from thesis.ab.run_ab import attach_cell_meta, attach_provider_pin
+
+        row = {
+            "task": spec["task"],
+            "trial": spec["trial"],
+            "score": 1,
+            "success": True,
+            "tokens_input_uncached": 1,
+            "tokens_output": 1,
+            "tokens_cache_read": 0,
+            "tokens_cache_write": 0,
+        }
+        attach_cell_meta(row, spec, "2026-10-26T03:41:30.720161+00:00")
+        attach_provider_pin(row, spec)
+        return row
+
+    def _checkout(self, cache: Path, sha: str, anthropic: str) -> Path:
+        checkout = cache / "worktrees" / sha
+        checkout.mkdir(parents=True, exist_ok=True)
+        (checkout / ".git").write_text(
+            "gitdir: /h1/opencode-src/mirror/.git/worktrees/outside\n",
+            encoding="utf-8",
+        )
+        (checkout / "package.json").write_text(
+            json.dumps({"packageManager": "bun@1.2.14"}),
+            encoding="utf-8",
+        )
+        (checkout / "bun.lock").write_text(json.dumps({
+            "packages": {
+                "@ai-sdk/anthropic": [f"@ai-sdk/anthropic@{anthropic}", "", {}, "sha"],
+            },
+        }), encoding="utf-8")
+        return checkout
+
+    def test_gitfile_outside_the_mount_still_pins_and_records_the_runner(self):
+        from thesis.ab import run_ab
+        from thesis.ab.compat import Assessment
+        from thesis.ab.durable import publish_text
+        from thesis.ab.prs import PullRequest
+        from thesis.ab.run_ab import _decorate_toolchain, drive, resolve_runner_commit
+
+        mount = Path(tempfile.mkdtemp())
+        host_git = Path(tempfile.mkdtemp()) / "host-repo"
+        host_git.mkdir()
+        subprocess.run(["git", "init"], cwd=host_git, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=host_git, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=host_git, check=True)
+        (host_git / "f").write_text("a", encoding="utf-8")
+        subprocess.run(["git", "add", "f"], cwd=host_git, check=True)
+        subprocess.run(["git", "commit", "-m", "t"], cwd=host_git, check=True, capture_output=True)
+        runner_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=host_git, text=True,
+        ).strip()
+        runner = mount / "runner"
+        runner.mkdir()
+        (runner / ".git").write_text(f"gitdir: {host_git / '.git'}\n", encoding="utf-8")
+        hidden = mount / "hidden-runner"
+        hidden.mkdir()
+        (hidden / ".git").write_text("gitdir: /outside/the/mount/openbench/.git\n", encoding="utf-8")
+        saved_commit = os.environ.pop("OBENCH_RUNNER_COMMIT", None)
+        try:
+            resolved = resolve_runner_commit(root=runner)
+            self.assertEqual(resolved, runner_sha)
+            self.assertIsNone(resolve_runner_commit(root=hidden))
+            os.environ["OBENCH_RUNNER_COMMIT"] = runner_sha
+            self.assertEqual(resolve_runner_commit(root=hidden), runner_sha)
+        finally:
+            if saved_commit is None:
+                os.environ.pop("OBENCH_RUNNER_COMMIT", None)
+            else:
+                os.environ["OBENCH_RUNNER_COMMIT"] = saved_commit
+
+        cache = mount / "cache"
+        locked = "c" * 40
+        checkout = self._checkout(cache, locked, "1.2.12")
+        self.assertFalse((Path("/h1/opencode-src/mirror/.git/worktrees/outside")).exists())
+        state, err = _decorate_toolchain(
+            {
+                "ok": True,
+                "harness": "opencode",
+                "proxy": {"needs_sdk": True, "model_ref": "anthropic/claude-opus-5-5"},
+            },
+            cache,
+            locked,
+            "",
+        )
+        self.assertIsNone(err)
+        self.assertEqual(state["proxy"]["anthropic_sdk"], "1.2.12")
+        self.assertEqual(state["toolchain"]["anthropic"], "1.2.12")
+        self.assertTrue((checkout / ".git").is_file())
+
+        out = mount / "out"
+        seen = []
+
+        def worker(spec):
+            seen.append(spec["side"])
+            publish_text(Path(spec["cell_path"]), json.dumps(self._row(spec)))
+
+        def build_fn(sha, cache_path, repo=""):
+            if sha == locked:
+                self._checkout(cache_path, sha, "1.2.12")
+            return Path(cache_path) / "bin" / sha
+
+        def assess_fn(binary):
+            return Assessment("configured", "proxy", {}, False, proxy={
+                "model_ref": "anthropic/claude-opus-5-5",
+                "needs_sdk": True,
+                "api_key": "proxy",
+                "base_url": "http://127.0.0.1:9/v1",
+            })
+
+        pr = PullRequest(
+            pr="9001", title="container", merged="",
+            with_sha=PR_3185_WITH, without_sha=locked,
+            nearest_release="", category="", files_changed="", key_paths="",
+            one_line="", harness_change="", bugfix_check="",
+        )
+        previous = run_ab.CELL_META
+        run_ab.CELL_META = {
+            "runner_commit": resolved,
+            "machine": "thesis-h1-cpu",
+            "vm_type": "n2-standard-16",
+            "running_dir": str(mount / "running"),
+        }
+        try:
+            drive(
+                [pr], ("make-it-run",), 1, out,
+                jobs=1, model="claude-opus-5-5", timeout_s=5, cache=cache,
+                max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+                build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+            )
+        finally:
+            run_ab.CELL_META = previous
+        self.assertEqual(sorted(seen), ["with", "without"])
+        self.assertFalse((cache / "worktrees" / PR_3185_WITH / "package.json").exists())
+        without = json.loads(
+            (out / "9001" / "cells" / "without" / "make-it-run" / "1.json").read_text(encoding="utf-8"),
+        )
+        with_side = json.loads(
+            (out / "9001" / "cells" / "with" / "make-it-run" / "1.json").read_text(encoding="utf-8"),
+        )
+        from thesis.ab.provider_pin import pin_sha256
+        self.assertEqual(without["pin_source"], "lockfile")
+        self.assertEqual(without["runner_commit"], runner_sha)
+        self.assertEqual(
+            without["provider_pin_sha256"],
+            pin_sha256({"@ai-sdk/anthropic": "1.2.12"}),
+        )
+        self.assertEqual(with_side["pin_source"], "box_cache")
+        self.assertEqual(with_side["runner_commit"], runner_sha)
+        self.assertEqual(
+            with_side["provider_pin_sha256"],
+            pin_sha256({"@ai-sdk/anthropic": "2.0.0"}),
+        )
+        self.assertFalse((out / "9001" / "with.infra.json").exists())
+        self.assertFalse((out / "9001" / "without.infra.json").exists())
+
+        missed = Path(tempfile.mkdtemp())
+        calls = []
+
+        def refused(spec):
+            calls.append(spec["side"])
+            publish_text(Path(spec["cell_path"]), json.dumps({"task": spec["task"], "trial": spec["trial"]}))
+
+        def bare_build(sha, cache_path, repo=""):
+            return Path(cache_path) / "bin" / sha
+
+        unknown = PullRequest(
+            pr="9002", title="missing", merged="",
+            with_sha="d" * 40, without_sha="e" * 40,
+            nearest_release="", category="", files_changed="", key_paths="",
+            one_line="", harness_change="", bugfix_check="",
+        )
+        drive(
+            [unknown], ("make-it-run",), 1, missed,
+            jobs=1, model="claude-opus-5-5", timeout_s=5, cache=missed / "cache",
+            max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+            build_fn=bare_build, assess_fn=assess_fn, worker=refused,
+        )
+        self.assertEqual(calls, [])
+        for side, sha in (("without", "e" * 40), ("with", "d" * 40)):
+            sidecar = json.loads((missed / "9002" / f"{side}.infra.json").read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["status"], "infra")
+            self.assertEqual(sidecar["sha"], sha)
+            self.assertIn("provider_pin_mismatch", sidecar["reason"])
+            self.assertIn("worktree unresolved", sidecar["reason"])
+            self.assertFalse((missed / "9002" / "cells" / side / "make-it-run" / "1.json").exists())
 
 
 class RunnerCommitTests(unittest.TestCase):
@@ -447,6 +664,7 @@ class PrintTests(unittest.TestCase):
         self.assertIn("aa-1", text)
         self.assertIn("3.0.64", text)
         self.assertIn("box-aa", text)
+        self.assertIn("box_cache", text)
 
 
 if __name__ == "__main__":
