@@ -108,6 +108,10 @@ ROW_FIELDS = (
     "model_max_tokens",
     "turn_mode",
     "turn1_exit",
+    "provider_pin_sha256",
+    "provider_versions",
+    "machine",
+    "runner_commit",
 )
 
 
@@ -2291,6 +2295,16 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         installed_sdk = result.get("installed_anthropic")
         if isinstance(installed_sdk, str) and installed_sdk.strip():
             row["installed_anthropic"] = installed_sdk.strip()
+        pin_sha = result.get("provider_pin_sha256")
+        if isinstance(pin_sha, str) and pin_sha.strip():
+            row["provider_pin_sha256"] = pin_sha.strip()
+        provider_versions = result.get("provider_versions")
+        if isinstance(provider_versions, dict):
+            row["provider_versions"] = {
+                str(key): str(value)
+                for key, value in provider_versions.items()
+                if isinstance(key, str) and isinstance(value, str) and key and value
+            }
         full_output = result.get("full_output")
         classifier_output = full_output if full_output is not None else row["output_tail"]
         _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)

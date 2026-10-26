@@ -809,6 +809,7 @@ def execute_cell(spec: dict) -> None:
             )
             attach_schedule(row, spec, started_at)
             attach_cell_meta(row, spec, started_at)
+            attach_provider_pin(row, spec)
             from thesis.ab.evidence import attach_cell_metrics
             attach_cell_metrics(row, evidence if evidence else None)
             if spec.get("task") == "trig-tmpdir":
@@ -1170,6 +1171,10 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
     import socket
     et = ZoneInfo("America/New_York")
     row["host"] = socket.gethostname()
+    machine = meta.get("machine")
+    if not isinstance(machine, str) or not machine.strip():
+        machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
+    row["machine"] = machine.strip()
     row["vm_type"] = meta.get("vm_type")
     row["runner_commit"] = meta.get("runner_commit")
     row["exec_mode"] = spec.get("exec_mode") or "local"
@@ -1182,6 +1187,21 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
         row["concurrent_cells_at_end"] = len(list(d.iterdir()))
     if spec.get("concurrent_cells_at_start") is not None:
         row["concurrent_cells_at_start"] = spec["concurrent_cells_at_start"]
+
+
+def attach_provider_pin(row: dict, spec: dict) -> None:
+    """Record the pin set this cell was seeded with.
+
+    The sha is the canonical JSON of that set. Resolved versions come from
+    the adapter when it read ``node_modules``; this fills the sha if the
+    adapter returned before stamping it.
+    """
+    if not isinstance(row, dict):
+        return
+    proxy = spec.get("proxy") if isinstance(spec.get("proxy"), dict) else {}
+    pin_sha = str(proxy.get("provider_pin_sha256") or "").strip()
+    if pin_sha and not row.get("provider_pin_sha256"):
+        row["provider_pin_sha256"] = pin_sha
 
 
 def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
@@ -1706,6 +1726,83 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     return state, None
 
 
+def _overlay_provider_pin(state: dict, cache: Path, spec: dict) -> dict:
+    """Attach this side's pin without mutating the shared prepared state.
+
+    The manifest wins over the lockfile pin. A missing worktree still gets
+    the manifest pin, which is the VM case where the checkout was deleted
+    and the binary would otherwise install ``@latest``.
+    """
+    proxy = state.get("proxy")
+    if not isinstance(proxy, dict):
+        return state
+    from thesis.ab.provider_pin import apply_provider_pin
+    pinned = apply_provider_pin(
+        proxy,
+        cache,
+        str(spec.get("sha") or ""),
+        str(spec.get("side") or ""),
+        str(spec.get("pr") or ""),
+    )
+    tool = dict(state.get("toolchain") or {})
+    anthropic = str(pinned.get("anthropic_sdk") or "").strip()
+    if anthropic:
+        tool["anthropic"] = anthropic
+    state = dict(state)
+    state["proxy"] = pinned
+    if tool:
+        state["toolchain"] = tool
+    return state
+
+
+def resolve_runner_commit(explicit: str | None = None, root: Path | None = None) -> str | None:
+    """Runner SHA for ``--cell-meta``.
+
+    ``--runner-commit`` wins, then ``OBENCH_RUNNER_COMMIT``, then
+    ``git rev-parse``. A worktree whose ``.git`` file points at a git dir
+    outside the mount uses that git dir when it is visible. A missing git
+    dir returns None so the cell stays explicit about the gap.
+    """
+    import subprocess
+    chosen = str(explicit or "").strip()
+    if not chosen:
+        chosen = os.environ.get("OBENCH_RUNNER_COMMIT", "").strip()
+    if chosen:
+        return chosen
+    repo = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+
+    def _head(argv: list[str]) -> str | None:
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        text = (proc.stdout or "").strip()
+        if text and all(char in "0123456789abcdefABCDEF" for char in text):
+            return text
+        return None
+
+    found = _head(["git", "-C", str(repo), "rev-parse", "HEAD"])
+    if found:
+        return found
+    gitfile = repo / ".git"
+    if not gitfile.is_file():
+        return None
+    try:
+        line = gitfile.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    gitdir = Path(line.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = (repo / gitdir).resolve()
+    if not gitdir.is_dir():
+        return None
+    return _head(["git", "--git-dir", str(gitdir), "rev-parse", "HEAD"])
+
+
 def _default_preflight(binary: str, state: dict) -> str | None:
     proxy = state.get("proxy") or {}
     if not proxy.get("needs_sdk"):
@@ -1929,6 +2026,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                                     "toolchain": tool,
                                 }
         state = prepared[key]
+        if state.get("ok"):
+            state = _overlay_provider_pin(state, cache, spec)
         write_toolchain(out_dir, spec["pr"], spec["side"], state.get("toolchain"))
         if not state["ok"]:
             _record_stopped(out_dir, spec, state)
@@ -2138,7 +2237,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exec", dest="exec_mode", choices=["local", "docker"], default="local",
                         help="Cell execution mode passed to obench run_cell (docker uses each task's image).")
     parser.add_argument("--cell-meta", action="store_true",
-                        help="Record host, VM type ($OBENCH_VM_TYPE), runner commit, concurrency and ET start/end on each cell.")
+                        help="Record host, machine, VM type ($OBENCH_VM_TYPE), runner commit, concurrency and ET start/end on each cell.")
+    parser.add_argument(
+        "--runner-commit",
+        default=None,
+        help=(
+            "Git SHA recorded as runner_commit when --cell-meta is set. "
+            "Overrides OBENCH_RUNNER_COMMIT. When both are unset, the runner "
+            "uses git rev-parse, then a worktree gitdir when .git is a gitfile "
+            "and that directory is visible."
+        ),
+    )
     parser.add_argument(
         "--no-progress-s",
         type=float,
@@ -2220,13 +2329,11 @@ def main(argv: list[str] | None = None) -> int:
         CELL_TIMEOUT_CAP_S = args.timeout_cap_s
     EXEC_MODE = args.exec_mode
     if args.cell_meta:
-        import subprocess
-        try:
-            commit = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
-                                    capture_output=True, text=True, timeout=10).stdout.strip() or None
-        except (OSError, subprocess.SubprocessError):
-            commit = None
-        CELL_META = {"vm_type": os.environ.get("OBENCH_VM_TYPE"), "runner_commit": commit,
+        import socket
+        machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
+        CELL_META = {"vm_type": os.environ.get("OBENCH_VM_TYPE"),
+                     "runner_commit": resolve_runner_commit(args.runner_commit),
+                     "machine": machine,
                      "timeout_cap_s": CELL_TIMEOUT_CAP_S,
                      "running_dir": str((Path(args.out) / ".running").resolve())}
     try:
