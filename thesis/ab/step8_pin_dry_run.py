@@ -5,19 +5,24 @@ Loads every pinned side plus ``rerun-1443.json``, resolves the pin, seeds the
 shared provider cache once per version, and checks that the OpenCode binary
 for that SHA is present. When the binary is present and ``strace`` can see an
 ``openat`` of ``node_modules/@ai-sdk/anthropic``, the loaded version is
-compared to the pin (the PR #156 path). A missing binary is not ready. An
-unproven load (binary present, no open of the package) is recorded and does
-not by itself fail the side.
+compared to the pin (the PR #156 path). The trace uses the seeded cache
+(``<cache>/seed-cells/<version>``) via ``HOME`` and ``XDG_CACHE_HOME``, not
+the caller's home. A missing binary is not ready. An unproven load (binary
+present, no open of the package) is recorded and does not by itself fail the
+side.
 
-  python3 -m thesis.ab.step8_pin_dry_run --cache /tmp/step8-pin-cache
+  python3 -m thesis.ab.step8_pin_dry_run --cache /tmp/step8-pin-cache --bin-root <opencode-src>
 
-Writes ``results/step8-pins/dry-run.csv``.
+``<opencode-src>`` is the directory of built OpenCode binaries
+(``<opencode-src>/bin/<sha>/opencode``). Writes ``data/step8-pins/dry-run.csv``.
+The seeded cache and strace homes stay under ``--cache`` and are not committed.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -32,7 +37,7 @@ from thesis.ab.provider_pin import (
     pin_sha256,
     seed_cell_cache,
 )
-from thesis.ab.step8_pins import DEFAULT_OUT, PACKAGE, RERUN_PR
+from thesis.ab.step8_pins import DEFAULT_OUT, DRY_RUN_WITH_BINARIES, PACKAGE, RERUN_PR
 
 ROOT = Path(__file__).resolve().parents[2]
 TRACE_OPEN_RE = re.compile(r'openat\([^,]*,\s*"((?:\\.|[^"\\])*)"')
@@ -84,13 +89,75 @@ def version_from_trace(text: str) -> str:
     return ""
 
 
-def trace_binary(binary: Path, trace_path: Path) -> tuple[str, str]:
+def seeded_cell_cache(cache: Path, version: str) -> Path:
+    """Directory ``seed_cell_cache`` fills for one provider version."""
+    return Path(cache) / "seed-cells" / version
+
+
+def provider_cache_env(seed_cache: Path, home: Path) -> dict:
+    """Environment for one loaded-version trace.
+
+    The runner keeps provider packages at ``$XDG_CACHE_HOME/opencode``
+    (``obench.adapters.opencode``). ``seed_cache`` is that tree
+    (``<cache>/seed-cells/<version>``). ``HOME`` is ``home``, an isolated
+    directory, never the caller's home. ``$HOME/.cache/opencode`` is a
+    symlink to ``seed_cache``, and ``XDG_CACHE_HOME`` is ``$HOME/.cache``.
+    """
+    seed_cache = Path(seed_cache)
+    home = Path(home)
+    xdg_cache = home / ".cache"
+    xdg_config = home / ".config"
+    xdg_data = home / ".local" / "share"
+    xdg_state = home / ".local" / "state"
+    for path in (home, xdg_cache, xdg_config, xdg_data, xdg_state):
+        path.mkdir(parents=True, exist_ok=True)
+    link = xdg_cache / "opencode"
+    target = seed_cache.resolve()
+    if link.is_symlink() or link.exists():
+        current = link.resolve() if link.exists() else None
+        if current != target:
+            if link.is_symlink() or link.is_file():
+                link.unlink()
+            else:
+                shutil.rmtree(link)
+            link.symlink_to(target, target_is_directory=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(xdg_config)
+    env["XDG_DATA_HOME"] = str(xdg_data)
+    env["XDG_STATE_HOME"] = str(xdg_state)
+    env["XDG_CACHE_HOME"] = str(xdg_cache)
+    for name in ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"):
+        env.pop(name, None)
+    return env
+
+
+def trace_cache_path(env: dict) -> Path:
+    """OpenCode cache directory the trace is pointed at."""
+    return Path(env["XDG_CACHE_HOME"]) / "opencode"
+
+
+def trace_binary(binary: Path, trace_path: Path, seed_cache: Path) -> tuple[str, str]:
     """Run ``strace -e openat`` on ``binary --version``. No model call.
+
+    ``seed_cache`` is the seeded provider tree for this side's version.
+    The subprocess ``HOME`` and ``XDG_CACHE_HOME`` point at that tree.
+    The seeded path is printed before the trace runs.
 
     Returns ``(version, source)``. ``source`` is ``strace`` when an open
     resolved a version, ``none`` when the trace has no such open, and
     ``skipped`` when strace cannot be run.
     """
+    seed_cache = Path(seed_cache)
+    home = trace_path.with_suffix(".home")
+    env = provider_cache_env(seed_cache, home)
+    print(
+        f"strace loaded-version cache: {seed_cache.resolve()} "
+        f"(HOME={env['HOME']} XDG_CACHE_HOME={env['XDG_CACHE_HOME']})",
+        flush=True,
+    )
     strace = shutil.which("strace") or ""
     if not strace:
         return "", "skipped"
@@ -103,6 +170,8 @@ def trace_binary(binary: Path, trace_path: Path) -> tuple[str, str]:
             capture_output=True,
             timeout=30,
             check=False,
+            env=env,
+            cwd=str(home),
         )
     except (OSError, subprocess.SubprocessError):
         return "", "skipped"
@@ -251,7 +320,7 @@ def seed_versions(versions: list[str], cache: Path, bun: str) -> dict[str, str]:
     store = cache / "provider-pins"
     reasons = {}
     for version in versions:
-        cell = cache / "seed-cells" / version
+        cell = seeded_cell_cache(cache, version)
         reason = seed_cell_cache(cell, store, {PACKAGE: version}, bun)
         if reason:
             reasons[version] = reason
@@ -282,9 +351,11 @@ def run_dry(pins_csv: Path, rerun_path: Path, cache: Path, bin_root: Path, bun: 
         cache_ok = bool(version) and not reason and seed_reason == ""
         loaded_version = ""
         loaded_source = ""
-        if row.get("status") != "deferred" and binary.is_file() and can_exec(binary):
+        if row.get("status") != "deferred" and version and binary.is_file() and can_exec(binary):
             loaded_version, loaded_source = trace_binary(
-                binary, cache / "traces" / f"{row['sha']}-{row['side']}.trace",
+                binary,
+                cache / "traces" / f"{row['sha']}-{row['side']}.trace",
+                seeded_cell_cache(cache, version),
             )
         out_rows.append(assess_row(
             row,
@@ -333,7 +404,15 @@ def write_summary(rows: list[dict], path: Path) -> None:
     seeded = sorted({row["version"] for row in rows if row["cache_seeded"] == "yes"})
     body = f"""# Step-8 pin dry run
 
-No model calls and no GCP. Each F03-2..F16 side and both sides of `rerun-1443.json` were loaded. Pins were resolved from `provider_pins.json` (the 1443 rerun uses the single version in that config). The shared cache was seeded once per version with `bun add --exact`. The OpenCode binary check is `results/opencode-src/bin/<sha>/opencode`. The loaded-version check is the PR #156 strace `openat` of `node_modules/@ai-sdk/anthropic`, and it runs only when that binary is present.
+No model calls and no GCP. Each F03-2..F16 side and both sides of `rerun-1443.json` were loaded. Pins were resolved from `provider_pins.json` (the 1443 rerun uses the single version in that config). The shared cache was seeded once per version with `bun add --exact` under `<cache>/seed-cells/<version>`. The OpenCode binary check is `<bin-root>/bin/<sha>/opencode` (`--bin-root`, default `results/opencode-src`). The loaded-version check is the PR #156 strace `openat` of `node_modules/@ai-sdk/anthropic`. It runs only when that binary is present. The trace sets `HOME` to a directory under `<cache>/traces/` and points `$XDG_CACHE_HOME/opencode` at `<cache>/seed-cells/<version>`, not the caller's home. That seeded path is printed as `strace loaded-version cache: ...`.
+
+On a machine that has the built binaries:
+
+```bash
+{DRY_RUN_WITH_BINARIES}
+```
+
+`<opencode-src>` is the directory that contains `bin/<sha>/opencode`.
 
 ```
 {text}
@@ -351,7 +430,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pins", type=Path, default=DEFAULT_OUT / "pins.csv")
     parser.add_argument("--rerun", type=Path, default=DEFAULT_OUT / "rerun-1443.json")
     parser.add_argument("--cache", type=Path, default=Path("/tmp/step8-pin-cache"))
-    parser.add_argument("--bin-root", type=Path, default=ROOT / "results" / "opencode-src")
+    parser.add_argument(
+        "--bin-root",
+        type=Path,
+        default=ROOT / "results" / "opencode-src",
+        help="directory of built OpenCode binaries; reads <bin-root>/bin/<sha>/opencode",
+    )
     parser.add_argument("--bun-version", default="1.2.21")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT / "dry-run.csv")
     args = parser.parse_args(argv)

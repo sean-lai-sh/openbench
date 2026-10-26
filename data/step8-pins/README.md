@@ -15,7 +15,7 @@ Under that decision the D4 gate can be used:
 - Leave-one-PR-out (how a new PR is pinned): 113/116 agree. Misses: 3, predicted 2.0.0-beta.11, 3.0.64. Misses on a version with a provider fault: 0.
 - Provider-fault cells on a recorded version: none. The F01 cell 579 without trig-read-lines trial 27 logs `TimeoutError` plus the words `stream error`. #155 kept that cell as a hang (`label_only`). It is a timeout, not a provider fault, and it does not disqualify `1.2.12`.
 
-Agreement is above 95%, and no miss predicts a version that has a provider fault. The earlier infra-only reading of the same misses is in `results/step8-pins-D4/` and is not the rule these pins use.
+Leave-one-out agreement is 114/116 (98.3%). Apply exits nonzero when that rate is below 95%. No miss predicts a version that has a provider fault. The earlier infra-only reading of the same misses is in `results/step8-pins-D4/` and is not the rule these pins use.
 
 ## What was pinned
 
@@ -48,7 +48,7 @@ Post-monorepo runner work for **51062**, **53166**, and **55613** is excluded. E
 
 ```bash
 python3 -m thesis.ab.step8_pins apply --mirror <opencode-mirror>
-python3 -m thesis.ab.step8_pin_dry_run --cache /tmp/step8-pin-cache
+python3 -m thesis.ab.step8_pin_dry_run --cache /tmp/step8-pin-cache --bin-root <opencode-src>
 ```
 
-`apply` rewrites this directory and merges new sides into `thesis/ab/provider_pins.json`. It does not call a model. The dry run seeds the pin cache and writes `dry-run.csv` and `dry-run.md`.
+`<opencode-src>` is the directory of built OpenCode binaries. The dry run reads `<opencode-src>/bin/<sha>/opencode` (`--bin-root`). `apply` rewrites this directory (`data/step8-pins/`) and merges new sides into `thesis/ab/provider_pins.json`. It does not call a model. The dry run seeds `<cache>/seed-cells/<version>` and writes `dry-run.csv` and `dry-run.md` here. Strace homes stay under `--cache` and are not committed.

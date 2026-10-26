@@ -15,8 +15,9 @@ without (parent) commit on the OpenCode first-parent line. 51062, 53166, and
 
   python3 -m thesis.ab.step8_pins apply --mirror <opencode mirror>
 
-Writes results/step8-pins/pins.csv, README.md, and rerun-1443.json, and merges
+Writes data/step8-pins/pins.csv, README.md, and rerun-1443.json, and merges
 new sides into thesis/ab/provider_pins.json. Does not launch a model.
+Apply exits nonzero when leave-one-out agreement is below 95%.
 """
 from __future__ import annotations
 
@@ -41,8 +42,16 @@ ROOT = Path(__file__).resolve().parents[2]
 PINS = Path(__file__).with_name("provider_pins.json")
 DEFAULT_SUBS = ROOT / "results/step8-vm-F03-1-1025-QUARANTINED/SUBS.txt"
 DEFAULT_PRS = ROOT / "results/step8-full413-1020/prs.csv"
-DEFAULT_OUT = ROOT / "results/step8-pins"
+DEFAULT_OUT = ROOT / "data" / "step8-pins"
 DEFERRED = ("51062", "53166", "55613")
+# D4 rule 3(b): the nearest-box rule may be used only at or above this rate.
+LOO_MIN_PERCENT = 95
+# Built binaries live at <opencode-src>/bin/<sha>/opencode. --bin-root is that
+# directory (the runner's results/opencode-src layout).
+DRY_RUN_WITH_BINARIES = (
+    "python3 -m thesis.ab.step8_pin_dry_run "
+    "--cache /tmp/step8-pin-cache --bin-root <opencode-src>"
+)
 # PR 1443 is the only box PR whose sides recorded different versions.
 RERUN_PR = "1443"
 RERUN_VERSION = "2.0.0-beta.11"
@@ -278,6 +287,34 @@ def _reasoning(row: dict, tip: str) -> str:
     )
 
 
+def loo_agreement_ok(loo: dict) -> bool:
+    """True when leave-one-out agreement is at least ``LOO_MIN_PERCENT``."""
+    n = int(loo.get("n") or 0)
+    agree = int(loo.get("agree") or 0)
+    if n <= 0:
+        return False
+    return agree * 100 >= n * LOO_MIN_PERCENT
+
+
+def require_loo_agreement(summary: dict) -> None:
+    """Exit nonzero when D4 leave-one-out agreement is below 95%.
+
+    Called before the manifest is merged. A miss that is not a provider
+    fault still fails this gate: the brief requires the rate itself.
+    """
+    loo = summary["loo"]
+    n = int(loo.get("n") or 0)
+    agree = int(loo.get("agree") or 0)
+    rate = (agree / n) if n else 0.0
+    if loo_agreement_ok(loo):
+        return
+    raise SystemExit(
+        "D4 leave-one-out agreement "
+        f"{agree}/{n} = {rate:.1%} is below {LOO_MIN_PERCENT}%; "
+        "refusing to merge pins"
+    )
+
+
 def _loo_summary(detail: list[dict], faults: Counter) -> dict:
     out = {}
     for tag in ("loo", "lpo"):
@@ -307,6 +344,13 @@ def _readme(rows: list[dict], facts: dict, faults: Counter, summary: dict) -> st
     differ = ", ".join(facts["within_differ"]) or "none"
     loo = summary["loo"]
     lpo = summary["lpo"]
+    loo_n = int(loo["n"])
+    loo_agree = int(loo["agree"])
+    loo_rate = (loo_agree / loo_n) if loo_n else 0.0
+    loo_line = (
+        f"Leave-one-out agreement is {loo_agree}/{loo_n} ({loo_rate:.1%}). "
+        f"Apply exits nonzero when that rate is below {LOO_MIN_PERCENT}%."
+    )
     return f"""# Step-8 nearest-box provider pins (F03-2 through F16)
 
 Both sides of each PR use one `@ai-sdk/anthropic` version: the version a box-run OpenCode build left in its cache, chosen as the build nearest the without (parent) commit. That is the nearest-box method, the same rule as the F03-1 pinned rerun (the version shipped in the OpenCode build closest to the PR). The seven F03-1 sides stay `vm_quarantine_log` / `2.0.0` and are not rewritten. `pin_from` is the source build.
@@ -324,7 +368,7 @@ Under that decision the D4 gate can be used:
 - Leave-one-PR-out (how a new PR is pinned): {lpo['agree']}/{lpo['n']} agree. Misses: {lpo['misses']}, predicted {', '.join(lpo['miss_preds']) or 'none'}. Misses on a version with a provider fault: {lpo['bad']}.
 - Provider-fault cells on a recorded version: {fault_lines}. The F01 cell 579 without trig-read-lines trial 27 logs `TimeoutError` plus the words `stream error`. #155 kept that cell as a hang (`label_only`). It is a timeout, not a provider fault, and it does not disqualify `1.2.12`.
 
-Agreement is above 95%, and no miss predicts a version that has a provider fault. The earlier infra-only reading of the same misses is in `results/step8-pins-D4/` and is not the rule these pins use.
+{loo_line} No miss predicts a version that has a provider fault. The earlier infra-only reading of the same misses is in `results/step8-pins-D4/` and is not the rule these pins use.
 
 ## What was pinned
 
@@ -355,10 +399,10 @@ Post-monorepo runner work for **51062**, **53166**, and **55613** is excluded. E
 
 ```bash
 python3 -m thesis.ab.step8_pins apply --mirror <opencode-mirror>
-python3 -m thesis.ab.step8_pin_dry_run --cache /tmp/step8-pin-cache
+{DRY_RUN_WITH_BINARIES}
 ```
 
-`apply` rewrites this directory and merges new sides into `thesis/ab/provider_pins.json`. It does not call a model. The dry run seeds the pin cache and writes `dry-run.csv` and `dry-run.md`.
+`<opencode-src>` is the directory of built OpenCode binaries. The dry run reads `<opencode-src>/bin/<sha>/opencode` (`--bin-root`). `apply` rewrites this directory (`data/step8-pins/`) and merges new sides into `thesis/ab/provider_pins.json`. It does not call a model. The dry run seeds `<cache>/seed-cells/<version>` and writes `dry-run.csv` and `dry-run.md` here. Strace homes stay under `--cache` and are not committed.
 """
 
 
@@ -450,7 +494,7 @@ def merge_manifest(rows: list[dict], manifest_path: Path) -> int:
     extra = (
         " pin_source=nearest_box_build is the box_cache version of the OpenCode "
         "build nearest the without (parent) side, applied to both sides of each "
-        "F03-2 through F16 PR (results/step8-pins/). pin_from is that source build. "
+        "F03-2 through F16 PR (data/step8-pins/). pin_from is that source build. "
         "PRs 51062, 53166, and 55613 are deferred (post-monorepo, no packages/opencode) "
         "and have no entry."
     )
@@ -476,6 +520,7 @@ def write_outputs(rows: list[dict], facts: dict, faults: Counter, out_dir: Path)
         json.dumps(rerun, indent=2) + "\n",
         encoding="utf-8",
     )
+    require_loo_agreement(summary)
     bad = summary["loo"]["bad"] + summary["lpo"]["bad"]
     if bad:
         raise SystemExit(f"provider-fault gate failed: {bad} leave-one-out misses on a faulted version")

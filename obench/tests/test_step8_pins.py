@@ -7,15 +7,22 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import stat
+import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
+
+from thesis.ab.step8_pins import DEFAULT_OUT
 
 ROOT = Path(__file__).resolve().parents[2]
-PINS = ROOT / "results" / "step8-pins" / "pins.csv"
-RERUN = ROOT / "results" / "step8-pins" / "rerun-1443.json"
-DRY = ROOT / "results" / "step8-pins" / "dry-run.csv"
+PINS = DEFAULT_OUT / "pins.csv"
+RERUN = DEFAULT_OUT / "rerun-1443.json"
+DRY = DEFAULT_OUT / "dry-run.csv"
 OVERRIDES = ROOT / "results" / "step8-full413-1020-F01" / "rescore-provider-faults" / "overrides.csv"
 DEFERRED = {"51062", "53166", "55613"}
 PACKAGE = "@ai-sdk/anthropic"
@@ -100,6 +107,56 @@ class PinTableTests(unittest.TestCase):
         self.assertIn("infra", EXCLUDED_FROM_SOLVE_RATE)
         self.assertNotIn(HANG, EXCLUDED_FROM_SOLVE_RATE)
 
+    def test_tables_live_under_data(self):
+        self.assertEqual(DEFAULT_OUT, ROOT / "data" / "step8-pins")
+        self.assertTrue(PINS.is_file())
+        self.assertTrue(RERUN.is_file())
+        self.assertTrue(DRY.is_file())
+        self.assertFalse(str(PINS).startswith(str(ROOT / "results")))
+
+    def test_leave_one_out_below_95_percent_exits_nonzero(self):
+        from thesis.ab.step8_pins import require_loo_agreement
+
+        with self.assertRaises(SystemExit) as caught:
+            require_loo_agreement({"loo": {"n": 116, "agree": 110, "misses": 6, "bad": 0}})
+        self.assertNotEqual(caught.exception.code, 0)
+        message = str(caught.exception)
+        self.assertIn("110/116", message)
+        self.assertIn("below 95%", message)
+        self.assertIn("refusing to merge pins", message)
+        require_loo_agreement({"loo": {"n": 116, "agree": 114}})
+        require_loo_agreement({"loo": {"n": 100, "agree": 95}})
+        with self.assertRaises(SystemExit):
+            require_loo_agreement({"loo": {"n": 100, "agree": 94}})
+        with self.assertRaises(SystemExit):
+            require_loo_agreement({"loo": {"n": 0, "agree": 0}})
+
+    def test_write_outputs_stops_before_a_low_agreement_manifest_merge(self):
+        from collections import Counter
+
+        from thesis.ab.step8_pins import write_outputs
+
+        detail = []
+        for index in range(10):
+            detail.append({
+                "tag": "loo", "sha": f"{index:040x}", "side": "with", "pr": "1",
+                "version": "2.0.0", "match": index < 9, "pred": "2.0.0",
+                "pin_from": "a" * 40, "distance": 1,
+            })
+        facts = {
+            "tip": "b" * 40,
+            "tip_ref": "origin/dev",
+            "line_len": 1,
+            "box_sides": 10,
+            "within_differ": ["1443"],
+            "loo_detail": detail,
+            "candidates": 1,
+        }
+        with self.assertRaises(SystemExit) as caught:
+            write_outputs([], facts, Counter(), Path(tempfile.mkdtemp()))
+        self.assertIn("below 95%", str(caught.exception))
+        self.assertIn("refusing to merge pins", str(caught.exception))
+
 
 class DryRunRuleTests(unittest.TestCase):
     def test_trace_line_reads_the_opened_package_version(self):
@@ -180,6 +237,64 @@ class DryRunRuleTests(unittest.TestCase):
             self.assertEqual(row["loaded_check"], "skipped")
         self.assertEqual({row["version"] for row in rerun}, {"2.0.0-beta.11"})
         self.assertNotIn("4.0.88", {row["version"] for row in rows})
+
+    def test_trace_points_at_the_seeded_cache_not_the_caller_home(self):
+        from thesis.ab.step8_pin_dry_run import (
+            provider_cache_env,
+            trace_binary,
+            trace_cache_path,
+        )
+
+        root = Path(tempfile.mkdtemp())
+        seed = root / "seed-cells" / "2.0.0"
+        package = seed / "node_modules" / "@ai-sdk" / "anthropic"
+        package.mkdir(parents=True)
+        (package / "package.json").write_text('{"version": "2.0.0"}', encoding="utf-8")
+        home = root / "isolate"
+        env = provider_cache_env(seed, home)
+        self.assertEqual(Path(env["HOME"]), home)
+        self.assertNotEqual(Path(env["HOME"]), Path.home())
+        self.assertNotEqual(env["HOME"], os.environ.get("HOME"))
+        self.assertEqual(env["XDG_CACHE_HOME"], str(home / ".cache"))
+        linked = trace_cache_path(env)
+        self.assertEqual(linked.resolve(), seed.resolve())
+        self.assertEqual(
+            (linked / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8"),
+            '{"version": "2.0.0"}',
+        )
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["env"] = kwargs.get("env")
+            seen["cwd"] = kwargs.get("cwd")
+            opened = (
+                Path(kwargs["env"]["XDG_CACHE_HOME"]) / "opencode"
+                / "node_modules" / "@ai-sdk" / "anthropic" / "dist" / "index.js"
+            )
+            trace = Path(cmd[cmd.index("-o") + 1])
+            trace.parent.mkdir(parents=True, exist_ok=True)
+            trace.write_text(
+                f'openat(AT_FDCWD, "{opened}", O_RDONLY) = 3\n',
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(cmd, 0)
+
+        binary = root / "opencode"
+        binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        stdout = StringIO()
+        with patch("thesis.ab.step8_pin_dry_run.shutil.which", return_value="/usr/bin/strace"), \
+                patch("thesis.ab.step8_pin_dry_run.subprocess.run", side_effect=fake_run), \
+                redirect_stdout(stdout):
+            version, source = trace_binary(binary, root / "traces" / "abc-with.trace", seed)
+        self.assertEqual((version, source), ("2.0.0", "strace"))
+        self.assertEqual(seen["env"]["HOME"], str((root / "traces" / "abc-with.home")))
+        self.assertNotEqual(seen["env"]["HOME"], os.environ.get("HOME"))
+        self.assertEqual(Path(seen["env"]["XDG_CACHE_HOME"], "opencode").resolve(), seed.resolve())
+        self.assertEqual(seen["cwd"], seen["env"]["HOME"])
+        self.assertIn(str(seed.resolve()), stdout.getvalue())
+        self.assertIn("strace loaded-version cache:", stdout.getvalue())
+        self.assertNotIn(str(Path.home()), seen["env"]["HOME"])
 
 
 if __name__ == "__main__":
