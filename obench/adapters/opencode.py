@@ -469,7 +469,11 @@ _PROBE_NAME = ".obench-provider-probe.mjs"
 _TRACE_NAME = "provider-open.trace"
 _ANTHROPIC_OPEN_MARKER = "node_modules/@ai-sdk/anthropic"
 _LOADED_SOURCES = {"preload", "strace", "none"}
-_TRACE_OPEN_RE = re.compile(r'openat\([^,]*,\s*"((?:\\.|[^"\\])*)"')
+# The return group is the openat result. A negative fd (ENOENT, EACCES, ...)
+# is a failed lookup, not evidence the package was loaded.
+_TRACE_OPEN_RE = re.compile(
+    r'openat\([^,]*,\s*"((?:\\.|[^"\\])*)"[^"]*\)\s*=\s*(-?\d+)'
+)
 _STRACE_ATTACH = None
 # Kept at import so a test that replaces subprocess.run does not count the
 # attach probe as an OpenCode invocation, and does not fake a successful attach.
@@ -477,7 +481,12 @@ _subprocess_run = subprocess.run
 
 
 def _provider_probe_script(cache):
-    """Preload that prints the SDK version and logs the real dynamic import."""
+    """Preload that logs the SDK version after the provider module loads.
+
+    Resolving ``package.json`` in the cache is not a load. The line is
+    printed from the load hook, and only after that module file has been
+    read. A build that never imports ``@ai-sdk/anthropic`` prints nothing.
+    """
     cache_js = json.dumps(cache)
     return (
         "import { createRequire } from \"node:module\";\n"
@@ -502,12 +511,9 @@ def _provider_probe_script(cache):
         "      \" path=\" + dir,\n"
         "  );\n"
         "}\n"
-        "try {\n"
-        "  const pkgPath = require.resolve(\"@ai-sdk/anthropic/package.json\", {\n"
-        "    paths: [cache],\n"
-        "  });\n"
-        "  emit(versionOf(pkgPath), dirname(pkgPath));\n"
-        "} catch {}\n"
+        "function loaderFor(file) {\n"
+        "  return file.endsWith(\".json\") ? \"json\" : \"js\";\n"
+        "}\n"
         "try {\n"
         "  if (typeof Bun !== \"undefined\" && typeof Bun.plugin === \"function\") {\n"
         "    Bun.plugin({\n"
@@ -527,18 +533,21 @@ def _provider_probe_script(cache):
         "            \"OBENCH_PROVIDER_RESOLVE pkg=@ai-sdk/anthropic path=\" +\n"
         "              (resolved || args.path),\n"
         "          );\n"
-        "          if (!resolved) return;\n"
-        "          let pkgJson = resolved;\n"
-        "          if (!pkgJson.endsWith(\"package.json\")) {\n"
+        "        });\n"
+        "        build.onLoad({\n"
+        "          filter: /\\/node_modules\\/@ai-sdk\\/anthropic\\/.*\\.(?:mjs|cjs|js|json)$/,\n"
+        "        }, (args) => {\n"
+        "          const text = readFileSync(args.path, \"utf8\");\n"
+        "          const loader = loaderFor(args.path);\n"
+        "          if (loader === \"js\") {\n"
         "            try {\n"
-        "              pkgJson = require.resolve(\"@ai-sdk/anthropic/package.json\", {\n"
-        "                paths: [dirname(resolved), cache],\n"
+        "              const pkgJson = require.resolve(\"@ai-sdk/anthropic/package.json\", {\n"
+        "                paths: [dirname(args.path), cache],\n"
         "              });\n"
-        "            } catch {\n"
-        "              return;\n"
-        "            }\n"
+        "              emit(versionOf(pkgJson), dirname(pkgJson));\n"
+        "            } catch {}\n"
         "          }\n"
-        "          emit(versionOf(pkgJson), dirname(pkgJson));\n"
+        "          return { contents: text, loader };\n"
         "        });\n"
         "      },\n"
         "    });\n"
@@ -709,6 +718,13 @@ def _version_from_trace_line(line):
     if not match:
         return None
     try:
+        fd = int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+    # openat returns the new fd on success and -1 (with an errno) on failure.
+    if fd < 0:
+        return None
+    try:
         raw = bytes(match.group(1), "utf-8").decode("unicode_escape")
     except UnicodeError:
         raw = match.group(1)
@@ -740,9 +756,11 @@ def _version_from_strace(env):
 def _loaded_provider_version(env, output_text):
     """``(version or None, source, path)`` for the SDK this process resolved.
 
-    A preload line wins. Otherwise the first ``openat`` path under
-    ``node_modules/@ai-sdk/anthropic`` whose ``package.json`` has a version.
-    Reading that file without an open in the trace is not a result.
+    A preload line wins. Otherwise the first successful ``openat`` (a
+    non-negative fd) of a file under ``node_modules/@ai-sdk/anthropic``
+    whose ``package.json`` has a version. A failed open, including
+    ``ENOENT``, is not proof. Reading that file without a successful open
+    in the trace is not a result.
     """
     parsed = _loaded_line(output_text or "")
     if parsed:

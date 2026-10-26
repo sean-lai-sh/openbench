@@ -2,7 +2,9 @@
 
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -93,6 +95,52 @@ class ParseTests(unittest.TestCase):
 
         version, source, path = opencode._loaded_provider_version({}, "hello\n")
         self.assertEqual((version, source, path), (None, "none", ""))
+
+    def test_enoent_opens_do_not_count_as_loaded(self):
+        """Failed openat calls are not proof, even when package.json is on disk."""
+        import obench.adapters.opencode as opencode
+
+        root = Path(tempfile.mkdtemp())
+        pkg = _package(root, "4.0.88")
+        missing = pkg / "dist" / "missing.js"
+        trace = root / "provider-open.trace"
+        env = {"OBENCH_PROVIDER_TRACE_FILE": str(trace)}
+        cases = {
+            "enoent": (
+                f'123 openat(AT_FDCWD, "{missing}", O_RDONLY|O_CLOEXEC) = -1 '
+                "ENOENT (No such file or directory)\n"
+            ),
+            "eacces": (
+                f'124 openat(AT_FDCWD, "{missing}", O_RDONLY) = -1 '
+                "EACCES (Permission denied)\n"
+            ),
+        }
+        for name, line in cases.items():
+            with self.subTest(name=name):
+                trace.write_text(line, encoding="utf-8")
+                version, source, path = opencode._loaded_provider_version(env, "")
+                self.assertEqual((version, source, path), (None, "none", ""))
+
+    def test_failed_open_does_not_mask_a_later_successful_load(self):
+        import obench.adapters.opencode as opencode
+
+        root = Path(tempfile.mkdtemp())
+        missed = _package(root / "miss", "9.9.9")
+        hit = _package(root / "hit", "2.0.0")
+        missing = missed / "dist" / "missing.js"
+        opened = hit / "dist" / "index.js"
+        opened.parent.mkdir(parents=True, exist_ok=True)
+        opened.write_text("export {}\n", encoding="utf-8")
+        trace = root / "provider-open.trace"
+        trace.write_text(
+            f'1 openat(AT_FDCWD, "{missing}", O_RDONLY) = -1 ENOENT '
+            "(No such file or directory)\n"
+            f'1 openat(AT_FDCWD, "{opened}", O_RDONLY) = 5\n',
+            encoding="utf-8",
+        )
+        env = {"OBENCH_PROVIDER_TRACE_FILE": str(trace)}
+        version, source, path = opencode._loaded_provider_version(env, "")
+        self.assertEqual((version, source, path), ("2.0.0", "strace", str(hit)))
 
 
 class MismatchTests(unittest.TestCase):
@@ -246,8 +294,10 @@ class PlumbingTests(unittest.TestCase):
         text = Path(probe).read_text(encoding="utf-8")
         self.assertIn("require.resolve(\"@ai-sdk/anthropic/package.json\"", text)
         self.assertIn("Bun.plugin", text)
+        self.assertIn("build.onLoad(", text)
         self.assertIn("/^@ai-sdk\\/anthropic/", text)
         self.assertIn("OBENCH_PROVIDER_LOADED pkg=@ai-sdk/anthropic version=", text)
+        self.assertNotIn("emit(versionOf(pkgPath)", text)
         again = dict(env)
         opencode._append_bun_preload(again, probe)
         self.assertEqual(again["BUN_OPTIONS"], env["BUN_OPTIONS"])
@@ -398,6 +448,129 @@ class CellTests(unittest.TestCase):
         self.assertNotIn("provider_loaded_mismatch", row)
         self.assertTrue(row["completed"])
         self.assertNotIn("sdk_drift", row)
+
+
+_PROBE_HARNESS = textwrap.dedent("""\
+    import { pathToFileURL } from "node:url";
+
+    const probe = process.argv[2];
+    const modulePath = process.argv[3];
+    const missingPath = process.argv[4];
+    const logs = [];
+    const hooks = [];
+    globalThis.Bun = {
+      plugin(spec) {
+        spec.setup({
+          onResolve(opts, fn) {
+            hooks.push({ kind: "resolve", filter: opts.filter, fn });
+          },
+          onLoad(opts, fn) {
+            hooks.push({ kind: "load", filter: opts.filter, fn });
+          },
+        });
+      },
+    };
+    console.error = (...args) => {
+      logs.push(args.map((part) => String(part)).join(" "));
+    };
+
+    await import(pathToFileURL(probe).href);
+
+    function loadedLines() {
+      return logs.filter((line) => line.includes("OBENCH_PROVIDER_LOADED"));
+    }
+
+    const before = loadedLines();
+    for (const hook of hooks) {
+      if (hook.kind !== "resolve") continue;
+      hook.fn({ path: "@ai-sdk/anthropic", importer: probe });
+    }
+    const afterResolve = loadedLines();
+
+    let missingThrew = false;
+    const loadHooks = hooks.filter((hook) => hook.kind === "load" && hook.filter.test(modulePath));
+    for (const hook of loadHooks) {
+      if (!hook.filter.test(missingPath)) continue;
+      try {
+        hook.fn({ path: missingPath });
+      } catch {
+        missingThrew = true;
+      }
+    }
+    const afterMissing = loadedLines();
+
+    let loadResult = null;
+    let loadError = "";
+    for (const hook of loadHooks) {
+      try {
+        loadResult = hook.fn({ path: modulePath });
+      } catch (err) {
+        loadError = String(err && err.stack || err);
+      }
+    }
+    const afterLoad = loadedLines();
+    const filter = loadHooks.length ? loadHooks[0].filter : null;
+    process.stdout.write(JSON.stringify({
+      before,
+      afterResolve,
+      afterMissing,
+      missingThrew,
+      afterLoad,
+      loadError,
+      loadResult,
+      filterMatched: Boolean(filter && filter.test(modulePath) && filter.test(missingPath)),
+      filterSkippedUnrelated: Boolean(filter && !filter.test("/tmp/other/file.js")),
+    }) + "\\n");
+    """)
+
+
+class ProbeEmitTests(unittest.TestCase):
+    def test_loaded_line_does_not_fire_before_the_import(self):
+        import obench.adapters.opencode as opencode
+
+        node = shutil.which("node")
+        self.assertTrue(node, "node is required to execute the provider probe")
+        root = Path(tempfile.mkdtemp())
+        pkg = root / "node_modules" / "@ai-sdk" / "anthropic"
+        module = pkg / "dist" / "index.js"
+        module.parent.mkdir(parents=True)
+        module.write_text("export const loaded = true;\n", encoding="utf-8")
+        (pkg / "package.json").write_text(
+            json.dumps({
+                "name": "@ai-sdk/anthropic",
+                "version": "2.0.0",
+                "main": "dist/index.js",
+            }),
+            encoding="utf-8",
+        )
+        missing = pkg / "dist" / "missing.js"
+        probe = opencode._arm_provider_probe({}, str(root))
+        harness = root / "harness.mjs"
+        harness.write_text(_PROBE_HARNESS, encoding="utf-8")
+        proc = subprocess.run(
+            [node, str(harness), probe, str(module), str(missing)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["before"], [])
+        self.assertEqual(report["afterResolve"], [])
+        self.assertEqual(report["afterMissing"], [])
+        self.assertTrue(report["missingThrew"])
+        self.assertEqual(report["loadError"], "")
+        self.assertEqual(len(report["afterLoad"]), 1)
+        self.assertIn("version=2.0.0", report["afterLoad"][0])
+        self.assertIn(str(pkg), report["afterLoad"][0])
+        self.assertEqual(report["loadResult"]["loader"], "js")
+        self.assertEqual(
+            report["loadResult"]["contents"],
+            module.read_text(encoding="utf-8"),
+        )
+        self.assertTrue(report["filterMatched"])
+        self.assertTrue(report["filterSkippedUnrelated"])
 
 
 if __name__ == "__main__":
