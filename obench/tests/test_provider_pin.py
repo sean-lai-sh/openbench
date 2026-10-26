@@ -647,6 +647,100 @@ class RunnerCommitTests(unittest.TestCase):
             backfill_runner_commit(bad, cells)
         self.assertEqual(empty.read_text(encoding="utf-8"), before)
 
+    def test_backfill_jsonl_fills_null_rows_and_round_trips_the_rest(self):
+        from thesis.ab.backfill_runner_commit import backfill_runner_commit
+
+        sha = "c25856a78b626646882b553699939780d69c4728"
+        root = Path(tempfile.mkdtemp())
+        log = root / "driver.log"
+        log.write_text(f"runner={sha}\n", encoding="utf-8")
+        cells = root / "cells"
+        cells.mkdir()
+        null_row = {
+            "note": "keep-me",
+            "runner_commit": None,
+            "score": 1,
+            "task": "trig-subagent-resume",
+            "trial": 1,
+        }
+        empty_row = {
+            "note": "blank",
+            "runner_commit": "",
+            "score": 0,
+            "task": "trig-subagent-resume",
+            "trial": 3,
+        }
+        kept_row = {
+            "note": "untouched",
+            "runner_commit": "already-set",
+            "score": 0,
+            "task": "trig-subagent-resume",
+            "trial": 2,
+        }
+        null_line = json.dumps(null_row, sort_keys=True)
+        empty_line = json.dumps(empty_row, sort_keys=True)
+        kept_line = json.dumps(kept_row, sort_keys=True)
+        # Non-canonical on purpose: an untouched row must stay byte-identical
+        # even when re-dumping with sort_keys would rewrite it.
+        weird_kept = b'{"trial": 9, "task": "demo", "runner_commit": "already", "score": 1}'
+        sidecar = json.dumps({"sha": "abc"}, sort_keys=True)
+        original_lines = [
+            null_line.encode(),
+            kept_line.encode(),
+            b"",
+            sidecar.encode(),
+            weird_kept,
+            empty_line.encode(),
+        ]
+        original = b"\n".join(original_lines) + b"\n"
+        path = cells / "with.jsonl"
+        path.write_bytes(original)
+        untouched = cells / "nested" / "without.jsonl"
+        untouched.parent.mkdir()
+        untouched.write_bytes(kept_line.encode() + b"\n" + weird_kept + b"\n")
+        kept_json = cells / "kept.json"
+        kept_json_bytes = json.dumps(
+            {"task": "demo", "trial": 2, "runner_commit": "already"},
+            sort_keys=True,
+        ).encode()
+        kept_json.write_bytes(kept_json_bytes)
+
+        self.assertEqual(backfill_runner_commit(log, cells), 2)
+
+        raw = path.read_bytes()
+        self.assertEqual(raw.count(b"\n"), original.count(b"\n"))
+        lines = raw.split(b"\n")
+        self.assertEqual(lines[-1], b"")
+        body = lines[:-1]
+        self.assertEqual(len(body), len(original_lines))
+
+        filled = json.loads(body[0])
+        self.assertEqual(filled["runner_commit"], sha)
+        self.assertEqual(
+            {key: value for key, value in filled.items() if key != "runner_commit"},
+            {key: value for key, value in null_row.items() if key != "runner_commit"},
+        )
+        expected_null = dict(null_row)
+        expected_null["runner_commit"] = sha
+        self.assertEqual(body[0], json.dumps(expected_null, sort_keys=True).encode())
+
+        self.assertEqual(body[1], kept_line.encode())
+        self.assertEqual(json.loads(body[1])["runner_commit"], "already-set")
+        self.assertEqual(body[2], b"")
+        self.assertEqual(body[3], sidecar.encode())
+        self.assertEqual(body[4], weird_kept)
+        self.assertEqual(json.loads(body[4])["runner_commit"], "already")
+
+        filled_empty = json.loads(body[5])
+        self.assertEqual(filled_empty["runner_commit"], sha)
+        self.assertEqual(
+            {key: value for key, value in filled_empty.items() if key != "runner_commit"},
+            {key: value for key, value in empty_row.items() if key != "runner_commit"},
+        )
+
+        self.assertEqual(untouched.read_bytes(), kept_line.encode() + b"\n" + weird_kept + b"\n")
+        self.assertEqual(kept_json.read_bytes(), kept_json_bytes)
+
 
 class PrintTests(unittest.TestCase):
     def test_print_stock_pin(self):
