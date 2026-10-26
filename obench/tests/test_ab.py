@@ -623,6 +623,21 @@ class TestCellRun(unittest.TestCase):
         self.assertEqual(os.environ.get("OBENCH_OPENCODE_BIN"), saved)
 
 
+def _pinned_checkout(cache, sha, anthropic="1.2.12"):
+    """Lockfile pin so a proxy cell is not launched unpinned."""
+    checkout = Path(cache) / "worktrees" / sha
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "package.json").write_text(
+        json.dumps({"packageManager": "bun@1.2.14"}),
+        encoding="utf-8",
+    )
+    (checkout / "bun.lock").write_text(
+        json.dumps(_lock("4.3.16", "1.1.3", anthropic, "1.1.3")),
+        encoding="utf-8",
+    )
+    return checkout
+
+
 def _lock(ai_version, ai_provider, anthropic_version, anthropic_provider):
     return {
         "packages": {
@@ -963,6 +978,7 @@ class TestIncompatibleCells(unittest.TestCase):
             publish_text(Path(spec["cell_path"]), json.dumps(body))
 
         def build_fn(sha, cache, repo=""):
+            _pinned_checkout(cache, sha)
             return Path("/tmp") / sha
 
         def assess_fn(binary):
@@ -1200,6 +1216,7 @@ class TestIncompatibleCells(unittest.TestCase):
             publish_text(Path(spec["cell_path"]), json.dumps(body))
 
         def build_fn(sha, cache, repo=""):
+            _pinned_checkout(cache, sha)
             return Path("/tmp") / sha
 
         def assess_fn(binary):

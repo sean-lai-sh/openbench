@@ -423,19 +423,92 @@ def _materialize_hoisted_sdk(cache, pin):
         return
 
 
+def _provider_packages(proxy):
+    """Exact provider packages this cell must have on disk, or {}."""
+    if not isinstance(proxy, dict):
+        return {}
+    raw = proxy.get("provider_pins")
+    if not isinstance(raw, dict):
+        return {}
+    packages = {}
+    for name, version in raw.items():
+        package = str(name or "").strip()
+        pinned = str(version or "").strip()
+        if package and pinned:
+            packages[package] = pinned
+    return packages
+
+
+def _provider_pin_block(env, proxy):
+    """Infra reason when the cell cache is not the pin. Empty when it matches."""
+    packages = _provider_packages(proxy)
+    if not packages:
+        return ""
+    try:
+        from thesis.ab.provider_pin import mismatch_reason
+    except ImportError:
+        return "provider_pin_mismatch: pin checker unavailable"
+    cache = os.path.join(env.get("XDG_CACHE_HOME") or "", "opencode")
+    return mismatch_reason(cache, packages)
+
+
+def _provider_pin_violation(env, text):
+    """Infra reason when a pinned cell logs an @latest provider install."""
+    if not isinstance(env, dict) or not str(env.get("OBENCH_PROVIDER_PINS") or "").strip():
+        return ""
+    if not text:
+        return ""
+    try:
+        from thesis.ab.provider_pin import violation_in_text
+    except ImportError:
+        return ""
+    return violation_in_text(text)
+
+
+def _resolved_provider_versions(env, proxy):
+    packages = _provider_packages(proxy)
+    if not packages:
+        return None
+    try:
+        from thesis.ab.provider_pin import resolved_versions
+    except ImportError:
+        return None
+    cache = os.path.join(env.get("XDG_CACHE_HOME") or "", "opencode")
+    return resolved_versions(cache, packages)
+
+
 def _ensure_provider_sdk(env, proxy):
     pin = _anthropic_pin(proxy)
-    if not pin:
+    packages = _provider_packages(proxy)
+    if not pin and not packages:
         return ""
     # Default auth plugins (`opencode-anthropic-auth`, `opencode-copilot-auth`)
     # run `bun add --force` and re-resolve the dist-tag in package.json. That
     # upgrades a pinned @ai-sdk/anthropic to whatever "latest" is today.
     env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "1"
+    if packages:
+        env["OBENCH_PROVIDER_PINS"] = json.dumps(
+            packages, sort_keys=True, separators=(",", ":"),
+        )
     bun = _resolve_bun(proxy.get("bun"))
     if not bun:
         return ""
     cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
     os.makedirs(cache, exist_ok=True)
+    store = str(proxy.get("pin_store") or "").strip() if isinstance(proxy, dict) else ""
+    if store and packages:
+        try:
+            from thesis.ab.provider_pin import seed_cell_cache
+        except ImportError:
+            return ""
+        seed_cell_cache(cache, store, packages, bun, env)
+        module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
+        if pin and _installed_sdk_version(module) == pin:
+            _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
+            _write_cache_version(cache, proxy.get("cache_version"))
+        return _installed_sdk_version(module) if pin else ""
+    if not pin:
+        return ""
     module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
     if _installed_sdk_version(module) != pin:
         _prepare_exact_install(cache, pin)
@@ -999,6 +1072,7 @@ def _kill_process_group(proc):
 
 
 def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
+    from thesis.ab.provider_pin import ProviderPinMismatch
     from thesis.ab.watch import PromptIdle, WatchdogKill, run_piped
     try:
         return run_piped(
@@ -1012,6 +1086,8 @@ def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
             prompt_re=_PROMPT_RE if watch_prompt else None,
             prompt_idle_s=_PROMPT_IDLE_S,
         )
+    except ProviderPinMismatch:
+        raise
     except PromptIdle as exc:
         raise _PromptWait(exc.output) from exc
     except WatchdogKill as exc:
@@ -1063,6 +1139,11 @@ def _invoke(cmd, cwd, env, timeout_s, watch_prompt):
                     last_output = now
                     if _PROMPT_RE.search("".join(chunks)):
                         prompted = True
+                    reason = _provider_pin_violation(env, "".join(chunks)[-2000:])
+                    if reason:
+                        _kill_process_group(proc)
+                        from thesis.ab.provider_pin import ProviderPinMismatch
+                        raise ProviderPinMismatch(reason, "".join(chunks))
             if prompted and now - last_output >= _PROMPT_IDLE_S:
                 _kill_process_group(proc)
                 raise _PromptWait("".join(chunks))
@@ -1263,6 +1344,16 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         installed = observed.get("installed") or installed_anthropic
         if installed:
             row["installed_anthropic"] = installed
+        if isinstance(proxy, dict):
+            pin_sha = str(proxy.get("provider_pin_sha256") or "").strip()
+            if pin_sha:
+                row["provider_pin_sha256"] = pin_sha
+            source = str(proxy.get("pin_source") or "").strip()
+            if source:
+                row["pin_source"] = source
+        versions = observed.get("versions")
+        if isinstance(versions, dict):
+            row["provider_versions"] = versions
         return row
 
     def _observe():
@@ -1271,6 +1362,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         observed["done"] = True
         observed["drift"] = _provider_sdk_drift(env, proxy)
         observed["installed"] = _installed_provider_sdk(env, proxy)
+        observed["versions"] = _resolved_provider_versions(env, proxy)
         _preserve_opencode_evidence(env)
 
     turn_state = {"mode": None, "exit": None, "failure": None}
@@ -1288,6 +1380,14 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             row["failure_class"] = "infra"
             row["completed"] = False
             row["error"] = turn_state["failure"]
+        pin_error = row.get("error")
+        if isinstance(pin_error, str) and pin_error.startswith("provider_pin_mismatch"):
+            row["failure_class"] = "infra"
+            row["completed"] = False
+            row["error"] = pin_error
+            row["sdk_drift"] = pin_error
+            _write_agent_output(row.get("full_output") or row.get("output_tail") or "")
+            return _stamp(row)
         _write_agent_output(row.get("full_output") or row.get("output_tail") or "")
         return _stamp(_attach_sdk_drift(row, observed["drift"]))
     exe = _exe()
@@ -1419,7 +1519,21 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         turn_state["mode"] = "single"
 
     try:
+        from thesis.ab.provider_pin import ProviderPinMismatch
         try:
+            block = _provider_pin_block(env, proxy)
+            if block:
+                return _finish({
+                    "completed": False,
+                    "failure_class": "infra",
+                    "error": block,
+                    "output_tail": "",
+                    "full_output": "",
+                    "tokens": None,
+                    "turns": None,
+                    "cmd": cmd,
+                    **_empty_token_usage(),
+                })
             proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
             if two_turn and len(prompts) == 2:
                 turn_state["exit"] = proc.returncode
@@ -1475,6 +1589,21 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 "cmd": cmd,
                 **_empty_token_usage(),
             })
+        except ProviderPinMismatch as e:
+            if two_turn and turn_state["mode"] is None:
+                turn_state["mode"] = "turn-failure"
+            full_output = e.output or ""
+            return _finish({
+                "completed": False,
+                "failure_class": "infra",
+                "error": e.reason or str(e),
+                "output_tail": full_output[-2000:],
+                "full_output": full_output,
+                "tokens": None,
+                "turns": None,
+                "cmd": cmd,
+                **_empty_token_usage(),
+            })
         except subprocess.TimeoutExpired as e:
             if two_turn and turn_state["mode"] is None:
                 turn_state["mode"] = "turn-failure"
@@ -1499,6 +1628,19 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         shutil.rmtree(iso_home, ignore_errors=True)
 
     combined = (proc.stdout or "") + (proc.stderr or "")
+    violation = _provider_pin_violation(env, combined)
+    if violation:
+        return _finish({
+            "completed": False,
+            "failure_class": "infra",
+            "error": violation,
+            "output_tail": combined[-2000:],
+            "full_output": combined,
+            "tokens": None,
+            "turns": None,
+            "cmd": cmd,
+            **_empty_token_usage(),
+        })
     try:
         tokens, turns, tail, token_usage = _parse_json_with_usage(proc.stdout or "")
     except Exception:  # noqa: BLE001 - never let usage parsing break a run

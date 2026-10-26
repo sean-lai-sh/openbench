@@ -247,9 +247,23 @@ def run_piped(
     if ledger_path and not bytes_path:
         stream_path = str(Path(ledger_path).with_suffix(".bytes"))
     last_stream = read_byte_total(stream_path)
+    pin_raw = ""
+    if isinstance(env, dict):
+        pin_raw = str(env.get("OBENCH_PROVIDER_PINS") or "").strip()
+    pin_violation = None
+    pin_error = None
+    if pin_raw:
+        from thesis.ab.provider_pin import ProviderPinMismatch, violation_in_text
+        pin_violation = violation_in_text
+        pin_error = ProviderPinMismatch
 
     def output() -> str:
         return "".join(chunks)
+
+    def pin_reason(text: str) -> str:
+        if pin_violation is None or not text:
+            return ""
+        return pin_violation(text)
 
     def note_text(text: str) -> bool:
         nonlocal carry
@@ -271,13 +285,22 @@ def run_piped(
                 except BlockingIOError:
                     piece = b""
                 if piece:
-                    fatal = note_text(piece.decode("utf-8", "replace")) or fatal
+                    decoded = piece.decode("utf-8", "replace")
+                    fatal = note_text(decoded) or fatal
                     last_stdout = now
                     progressed = True
+                    reason = pin_reason(decoded) or pin_reason(carry)
+                    if reason and pin_error is not None:
+                        kill_process_group(proc)
+                        raise pin_error(reason, output())
             log_text = _new_log_text(data_root, log_offsets)
             if log_text:
                 progressed = True
                 log_carry = (log_carry + log_text)[-400:]
+                reason = pin_reason(log_text) or pin_reason(log_carry)
+                if reason and pin_error is not None:
+                    kill_process_group(proc)
+                    raise pin_error(reason, output())
                 if FATAL_RE.search(log_carry):
                     fatal = True
             signature = _tree_signature(data_root)
@@ -305,11 +328,18 @@ def run_piped(
                     rest = os.read(fd, 65536)
                 except (BlockingIOError, OSError):
                     rest = b""
-                if rest and note_text(rest.decode("utf-8", "replace")):
-                    kill_process_group(proc)
-                    raise WatchdogKill(
-                        "wasm_abort", max(0.0, now - last_progress), output()
-                    )
+                if rest:
+                    decoded = rest.decode("utf-8", "replace")
+                    wasm = note_text(decoded)
+                    reason = pin_reason(decoded) or pin_reason(output()[-2000:])
+                    if reason and pin_error is not None:
+                        kill_process_group(proc)
+                        raise pin_error(reason, output())
+                    if wasm:
+                        kill_process_group(proc)
+                        raise WatchdogKill(
+                            "wasm_abort", max(0.0, now - last_progress), output()
+                        )
                 break
             if prompt_re is not None and not prompted and prompt_re.search(output()):
                 prompted = True
