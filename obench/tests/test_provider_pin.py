@@ -69,14 +69,21 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(data["builds"][STOCK]["aa-1"]["pin_source"], "box_cache")
         self.assertEqual(data["builds"][PR_3185_WITH]["with"]["pin_source"], "box_cache")
         quarantine = 0
+        nearest = 0
         for sides in data["builds"].values():
             for side_entry in sides.values():
+                source = side_entry["pin_source"]
                 if side_entry["evidence"] == "f03-1-seed":
-                    self.assertEqual(side_entry["pin_source"], "vm_quarantine_log")
+                    self.assertEqual(source, "vm_quarantine_log")
                     quarantine += 1
+                elif source == "nearest_box_build":
+                    self.assertEqual(side_entry["evidence"], "nearest-box-build")
+                    self.assertRegex(str(side_entry.get("pin_from") or ""), r"^[0-9a-f]{40}$")
+                    nearest += 1
                 else:
-                    self.assertEqual(side_entry["pin_source"], "box_cache")
+                    self.assertEqual(source, "box_cache")
         self.assertEqual(quarantine, 7)
+        self.assertGreater(nearest, 0)
 
     def test_missing_worktree_still_uses_the_manifest(self):
         from thesis.ab.provider_pin import apply_provider_pin
