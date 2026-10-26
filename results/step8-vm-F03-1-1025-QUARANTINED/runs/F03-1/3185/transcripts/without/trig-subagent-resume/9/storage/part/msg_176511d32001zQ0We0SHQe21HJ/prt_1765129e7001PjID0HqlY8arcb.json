@@ -1,0 +1,11 @@
+{
+  "id": "prt_1765129e7001PjID0HqlY8arcb",
+  "sessionID": "ses_e89aef4f1ffeikWDg7qoDmOpna",
+  "messageID": "msg_176511d32001zQ0We0SHQe21HJ",
+  "type": "text",
+  "text": "`rate` becomes None at **app/pricing.py:8**, in `get_rate()`:\n```python\nreturn SETTINGS.get(\"rate\")\n```\n`SETTINGS` has no `\"rate\"` key, so `dict.get` returns None instead of raising a KeyError.\n\n**Cause:** `settings.json:2` has a typo. The key is `\"rat\": 0.5`, not `\"rate\"`.\n\n**Call chain:**\n1. `main.py:7` calls `compute_total(COUNT)` with `COUNT = 10`.\n2. `app/report.py:8` sets `rate = pricing.get_rate()`, which is None.\n3. `app/report.py:9` evaluates `rate * count`, which is `None * 10`, and raises the TypeError.\n\n**Config involved:**\n- `app/config.py:9-10` loads `settings.json` once at import time into `SETTINGS`, with no schema validation or required-key check.\n- `settings.json` has `rat` (typo), `currency` and `label`. Nothing else in the app reads `currency` or `label`.\n\n**Fix (not applied, as requested):** rename `\"rat\"` to `\"rate\"` in `settings.json`. You could also make `get_rate()` use `SETTINGS[\"rate\"]` so a missing key fails with a clear KeyError.",
+  "time": {
+    "start": 1792986393097,
+    "end": 1792986393097
+  }
+}
