@@ -118,6 +118,8 @@ def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
             k = _cell_key(f)
             if k not in cells or not route_ok(cells[k][1]):
                 cells[k] = (f, c)
+    split = pair_route_split([dict(pr=k[0], route=c.get("route")) for k, (f, c) in cells.items()
+                              if route_ok(c)])
     ok_prs = set(gate.get("ok_prs") or [])
     bad = set(gate.get("mismatch_sides") or [])
     sides = {}
@@ -129,6 +131,8 @@ def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
         why = None
         if key.split("/")[0] not in ok_prs or key in bad:
             why = "gate not passed"
+        elif key.split("/")[0] in split:
+            why = split[key.split("/")[0]]
         elif len(on) < SCORED_PER_SIDE:
             why = f"{len(on)}/{SCORED_PER_SIDE} on-route scored cells"
         if why:
@@ -158,6 +162,19 @@ def judge(cell: dict, pin: str) -> tuple[bool, str]:
     return True, f"{method} {loaded}"
 
 
+def _how(route) -> str:
+    return str(route or "").partition(":")[2]
+
+
+def pair_route_split(rows) -> dict:
+    """{pr: why} for pairs whose cells did not all take one route (both sides,
+    every cell). Rows need ``pr`` and ``route``."""
+    hows = {}
+    for x in rows:
+        hows.setdefault(x["pr"], set()).add(_how(x.get("route")))
+    return {pr: "pair route differs: " + ",".join(sorted(h)) for pr, h in hows.items() if len(h) > 1}
+
+
 def evaluate(run_dir: str, pins: dict, sides: dict, later: bool = False) -> tuple[dict, int]:
     cells, bad = [], {}
     for f, pr, side in _cell_files(run_dir):
@@ -177,6 +194,11 @@ def evaluate(run_dir: str, pins: dict, sides: dict, later: bool = False) -> tupl
                           ok=ok, why=why, cost=c.get("requests_cost_usd")))
         if not ok:
             bad.setdefault(f"{pr}/{side}", []).append(rel)
+    for pr, why in pair_route_split([x for x in cells if route_ok(x)]).items():
+        for x in cells:
+            if x["pr"] == pr and x["ok"]:
+                x["ok"], x["why"] = False, why
+                bad.setdefault(f"{pr}/{x['side']}", []).append(x["cell"])
     if later:
         return dict(cells=cells, rerun=[x for v in bad.values() for x in v],
                     label="infra:provider_pin_mismatch_or_off_route"), 0

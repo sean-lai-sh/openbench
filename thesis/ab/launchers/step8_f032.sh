@@ -15,6 +15,9 @@
 # for the whole run + container /etc/hosts sinkhole; verified failing before
 # any cell runs; re-resolved (A+AAAA) every 30 s with a REJECT added for any
 # new IP (failure to add = abort); removed on exit.
+# Route: OBENCH_FORCE_ROUTE=provider-options (no base-url-env fallback; a side
+# whose build will not list via provider options is infra). The gate fails a
+# pair whose cells differ in route; --complete marks such a pair incomplete.
 # Halt: OBENCH_ROUTE_HALT=1 makes run_ab stop launching a side's cells as soon
 # as it has >2 off-route cells; spend by cells started after the halt is in
 # route-<phase>.json halted_spend.
@@ -48,7 +51,7 @@ route(){ # off-route check over $B/$1; rc 1 = halt batch
 }
 run(){ # $1 out-name $2 prs $3 trials $4 cap $5 trace(1|0) $6 extra docker -e args
   sudo docker rm -f s8-f032 >/dev/null 2>&1
-  sudo docker run -d --name s8-f032 --network host $EGRESS_ADD_HOST -e OBENCH_ADC_METADATA=1 -e GOOGLE_CLOUD_PROJECT=nyu-rdg-fy26-js11531-a68d -e VERTEX_LOCATION=global -e OBENCH_VM_TYPE=n2-standard-16 -e OBENCH_CELL_IMAGE=$IMG -e OBENCH_PROVIDER_TRACE=$5 -e OBENCH_ROUTE_HALT=1 ${6:-} -e TZ=America/New_York -e PATH=/h1/opencode-src/go/1.24.6/bin:/h1/toolchain/node-v20.19.2-linux-x64/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin -v $HOME/ob-f032:/ob -v $HOME/h1:/h1 -v $HOME/s8f032:/c -v $HOME/s8:/s8 -v $B:/o $IMG bash -c "
+  sudo docker run -d --name s8-f032 --network host $EGRESS_ADD_HOST -e OBENCH_ADC_METADATA=1 -e GOOGLE_CLOUD_PROJECT=nyu-rdg-fy26-js11531-a68d -e VERTEX_LOCATION=global -e OBENCH_VM_TYPE=n2-standard-16 -e OBENCH_CELL_IMAGE=$IMG -e OBENCH_PROVIDER_TRACE=$5 -e OBENCH_ROUTE_HALT=1 -e OBENCH_FORCE_ROUTE=provider-options ${6:-} -e TZ=America/New_York -e PATH=/h1/opencode-src/go/1.24.6/bin:/h1/toolchain/node-v20.19.2-linux-x64/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin -v $HOME/ob-f032:/ob -v $HOME/h1:/h1 -v $HOME/s8f032:/c -v $HOME/s8:/s8 -v $B:/o $IMG bash -c "
 git config --global --add safe.directory '*'; python3 -m venv /venv && /venv/bin/pip install -q -e /ob && cd /ob && exec /venv/bin/python -m thesis.ab.run_ab /s8/prs.csv --pr $2 --task-map /s8/task-map.csv --trials $3 --jobs 4 --vertex-model claude-sonnet-5-5 --cell-meta --out /o/$1 --cache /c --order interleave-seeded --seed 1016 --max-cost-usd $4 > /o/$1.log 2>&1" >/dev/null
   while sudo docker ps -q -f name=s8-f032 | grep -q .; do
     V=$(spend); echo "$(TZ=America/New_York date '+%F %T %Z') $1 spend=\$$V" >> $B/spend.log
