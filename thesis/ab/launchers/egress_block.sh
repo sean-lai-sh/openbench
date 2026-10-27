@@ -27,6 +27,20 @@ egress_apply(){
   echo "egress: blocked $EGRESS_HOST -> $(echo $ips)"
 }
 
+# Re-resolve (A + AAAA) and REJECT any address not yet blocked. Called at
+# every 30 s monitor tick. Non-zero = a rule could not be added: abort the run.
+egress_refresh(){
+  local ip t r new=""
+  for ip in $( { getent ahostsv4 "$EGRESS_HOST"; getent ahostsv6 "$EGRESS_HOST"; } 2>/dev/null | awk '{print $1}' | sort -u); do
+    if [[ $ip == *:* ]]; then t=ip6tables; r=icmp6-adm-prohibited; else t=iptables; r=icmp-admin-prohibited; fi
+    sudo $t -C OUTPUT -d "$ip" -m comment --comment "$EGRESS_TAG" -j REJECT --reject-with $r 2>/dev/null && continue
+    sudo $t -I OUTPUT 1 -d "$ip" -m comment --comment "$EGRESS_TAG" -j REJECT --reject-with $r || { echo "egress: FAILED to block new $ip"; return 1; }
+    echo "$ip" >> "$EGRESS_STATE"; new="$new $ip"
+  done
+  [ -n "$new" ] && echo "egress: blocked new$new"
+  return 0
+}
+
 # Delete every rule carrying the tag (also catches IPs that rotated since apply).
 egress_remove(){
   local t n
@@ -66,7 +80,7 @@ egress_verify(){
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
-    apply) egress_apply ;; remove) egress_remove ;; status) egress_status ;;
+    apply) egress_apply ;; refresh) egress_refresh ;; remove) egress_remove ;; status) egress_status ;;
     verify) egress_verify "${2:-}" ;; *) echo "usage: $0 apply|verify [image]|remove|status"; exit 2 ;;
   esac
 fi
