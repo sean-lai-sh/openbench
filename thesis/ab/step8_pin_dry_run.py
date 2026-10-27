@@ -72,7 +72,7 @@ from thesis.ab.step8_monorepo_smoke import (
     load_smoke,
     group_decision,
 )
-from thesis.ab.step8_scoring_parity import DEFAULT_PARITY_CSV, parity_from_table
+from thesis.ab.step8_scoring_parity import DEFAULT_PARITY_CSV, default_parity_from_table
 from thesis.ab.step8_pins import DEFAULT_OUT, DRY_RUN_WITH_BINARIES, PACKAGE, RERUN_PR
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -530,7 +530,7 @@ def run_monorepo(
             build_reason=build_gate_reason(records, sha, binary),
         ))
     check_pr_providers(out)
-    return apply_monorepo_gate(out, smoke, parity_from_table(parity_csv))
+    return apply_monorepo_gate(out, smoke, default_parity_from_table(parity_csv))
 
 
 def monorepo_rows(pins_csv: Path, rerun_path: Path) -> list[dict]:

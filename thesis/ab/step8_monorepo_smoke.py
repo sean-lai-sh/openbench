@@ -341,8 +341,8 @@ def main(argv: list[str] | None = None) -> int:
         for cmd, code in zip(commands, codes):
             if code:
                 print(f"run_ab exited {code}: {' '.join(cmd)}", file=sys.stderr)
-    from thesis.ab.step8_scoring_parity import DEFAULT_PARITY_CSV, parity_from_table
-    rows = collect(args.out, sides, tasks, parity_from_table(args.parity or DEFAULT_PARITY_CSV))
+    from thesis.ab.step8_scoring_parity import DEFAULT_PARITY_CSV, default_parity_from_table
+    rows = collect(args.out, sides, tasks, default_parity_from_table(args.parity or DEFAULT_PARITY_CSV))
     write_report(rows, args.report)
     print(summarize(rows))
     print(f"wrote {args.report}")

@@ -289,7 +289,7 @@ class RunnerPathTests(unittest.TestCase):
 
 
 PARITY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "step8-scoring-parity" / "box-run"
-PARITY_PRS = ("4001", "4002")
+PARITY_PRS = ("4001", "4002", "4003")
 PARITY_OK = (True, "")
 
 
@@ -323,16 +323,20 @@ def _good_records(binary: Path, sha: str) -> list[dict]:
 
 
 class ScoringParityTests(unittest.TestCase):
+    def _sources(self, prs=PARITY_PRS, root=PARITY_FIXTURE):
+        return [(root, pr) for pr in prs]
+
     def test_fixture_outputs_reproduce_the_box(self):
         from thesis.ab.step8_scoring_parity import parity_result, run_parity
 
-        rows = run_parity(PARITY_FIXTURE, PARITY_PRS)
-        self.assertEqual(len(rows), 7)
+        rows = run_parity(self._sources())
+        self.assertEqual(len(rows), 9)
         self.assertEqual({row["box_call"] for row in rows}, {"pass", "fail"})
+        self.assertEqual({row["box_failure_class"] for row in rows},
+                         {"solved", "wrong_answer", "infra", "timeout", "hang"})
         self.assertTrue(all(row["match"] == "true" for row in rows))
-        self.assertEqual([row["replay_failure_class"] for row in rows],
-                         [row["box_failure_class"] for row in rows])
-        self.assertEqual(parity_result(rows, PARITY_PRS), (True, ""))
+        self.assertTrue(all(row["call_match"] == "true" and row["class_match"] == "true" for row in rows))
+        self.assertEqual(parity_result(rows, self._sources(), 9), (True, ""))
 
     def test_replay_uses_the_runner_scoring_path(self):
         from thesis.ab.step8_scoring_parity import box_cells, replay_cell
@@ -352,7 +356,20 @@ class ScoringParityTests(unittest.TestCase):
         # The saved row is not modified.
         self.assertEqual(cells[("without", 1)]["failure_class"], "solved")
 
-    def test_one_mismatched_cell_fails_parity(self):
+    def test_watchdog_step_turns_a_passing_checker_into_hang(self):
+        from thesis.ab.step8_scoring_parity import _replay_checker, box_cells, replay_cell
+
+        cells = {row["trial"]: row for _side, row in box_cells(PARITY_FIXTURE, "4003")}
+        # The checker passed the workspace, but the agent was killed for no progress.
+        self.assertEqual(_replay_checker(cells[1], None)["failure_class"], "solved")
+        hang = replay_cell(cells[1])
+        self.assertEqual((hang["failure_class"], hang["success"], hang["score"]), ("hang", False, 0.0))
+        self.assertEqual(hang["hang_reason"], "no_progress")
+        # The same kill with no model requests is infra.
+        infra = replay_cell(cells[2])
+        self.assertEqual((infra["failure_class"], infra["success"]), ("infra", False))
+
+    def test_one_mismatched_call_fails_parity(self):
         from thesis.ab.step8_scoring_parity import parity_result, run_parity
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -366,52 +383,100 @@ class ScoringParityTests(unittest.TestCase):
             tampered.update({"failure_class": "solved", "success": True})
             lines[1] = json.dumps(tampered)
             target.write_text("\n".join(lines) + "\n")
-            rows = run_parity(box, PARITY_PRS)
+            rows = run_parity(self._sources(root=box))
         bad = [row for row in rows if row["match"] == "false"]
         self.assertEqual(len(bad), 1)
         self.assertEqual((bad[0]["box_call"], bad[0]["replay_call"]), ("pass", "fail"))
-        passed, reason = parity_result(rows, PARITY_PRS)
+        passed, reason = parity_result(rows, self._sources(root=box))
         self.assertFalse(passed)
-        self.assertIn("6/7 cells", reason)
+        self.assertIn("8/9 cells", reason)
 
-    def test_parity_needs_two_prs_with_cells(self):
+    def test_class_mismatch_with_same_call_fails_parity(self):
+        from thesis.ab.step8_scoring_parity import parity_result, run_parity
+
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Path(tmp) / "box-run"
+            for path in PARITY_FIXTURE.rglob("*.jsonl"):
+                _write(box / path.relative_to(PARITY_FIXTURE), path.read_text())
+            # Both are fails, but the box said wrong_answer where the replay says hang.
+            target = box / "4003" / "without.jsonl"
+            lines = target.read_text().splitlines()
+            tampered = json.loads(lines[0])
+            tampered["failure_class"] = "wrong_answer"
+            lines[0] = json.dumps(tampered)
+            target.write_text("\n".join(lines) + "\n")
+            rows = run_parity(self._sources(root=box))
+        bad = [row for row in rows if row["match"] == "false"]
+        self.assertEqual(len(bad), 1)
+        self.assertEqual((bad[0]["call_match"], bad[0]["class_match"]), ("true", "false"))
+        passed, reason = parity_result(rows, self._sources(root=box))
+        self.assertFalse(passed)
+        self.assertIn("fail/wrong_answer != replay fail/hang", reason)
+
+    def test_parity_needs_every_source_and_the_expected_count(self):
         from thesis.ab.step8_scoring_parity import parity_result, run_parity
 
         self.assertEqual(parity_result([]), (False, "scoring parity not run"))
-        one = run_parity(PARITY_FIXTURE, ("4001",))
+        one = run_parity(self._sources(("4001",)))
         self.assertIn("needs 2 PRs", parity_result(one)[1])
-        missing = run_parity(PARITY_FIXTURE, ("4001", "9999"))
-        self.assertIn("no cells for 9999", parity_result(missing, ("4001", "9999"))[1])
+        missing = run_parity(self._sources(("4001", "9999")))
+        self.assertIn("no cells for box-run:9999", parity_result(missing, self._sources(("4001", "9999")))[1])
+        rows = run_parity(self._sources())
+        self.assertIn("has 9 cells, expected 180", parity_result(rows, self._sources(), 180)[1])
 
     def test_table_roundtrip_and_cli(self):
         from thesis.ab import step8_scoring_parity as parity
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "scoring-parity.csv"
+            args = []
+            for pr in PARITY_PRS:
+                args += ["--source", f"{PARITY_FIXTURE}:{pr}"]
             with redirect_stdout(StringIO()) as printed:
-                code = parity.main(["--box-run", str(PARITY_FIXTURE), "--pr", "4001", "--pr", "4002",
-                                    "--out", str(out)])
+                code = parity.main([*args, "--out", str(out)])
             self.assertEqual(code, 0)
-            self.assertIn("scoring_parity pass: 7/7 cells", printed.getvalue())
+            self.assertIn("scoring_parity pass: 9/9 cells", printed.getvalue())
             self.assertEqual(parity.parity_from_table(out), (True, ""))
-            # A hand-edited match column does not hide a call mismatch.
+            # The default gate wants the three default sources and 180 cells.
+            self.assertFalse(parity.default_parity_from_table(out)[0])
+            # Hand-edited match columns do not hide a call or class mismatch.
             rows = _rows(out)
-            rows[0]["replay_call"] = "fail" if rows[0]["box_call"] == "pass" else "pass"
+            rows[0]["replay_failure_class"] = "wrong_answer" if rows[0]["box_failure_class"] != "wrong_answer" else "solved"
             parity.write_parity(rows, out)
             self.assertFalse(parity.parity_from_table(out)[0])
 
     def test_committed_parity_table(self):
-        from thesis.ab.step8_scoring_parity import DEFAULT_BOX_RUN, DEFAULT_PRS, parity_result, run_parity
+        from thesis.ab.step8_scoring_parity import (
+            DEFAULT_SOURCES, EXPECTED_CELLS, default_parity_from_table, parity_result, run_parity,
+        )
 
         committed = _rows(DEFAULT_OUT / "scoring-parity.csv")
-        self.assertEqual(sorted({row["pr"] for row in committed}), sorted(DEFAULT_PRS))
-        self.assertEqual({row["box_run"] for row in committed}, {DEFAULT_BOX_RUN.name})
-        self.assertEqual(len(committed), 120)
-        self.assertEqual(parity_result(committed, DEFAULT_PRS), (True, ""))
+        self.assertEqual(EXPECTED_CELLS, 180)
+        self.assertEqual(len(committed), 180)
+        by_source: dict[tuple[str, str], list[dict]] = {}
+        for row in committed:
+            by_source.setdefault((row["box_run"], row["pr"]), []).append(row)
+        self.assertEqual(sorted(by_source), sorted((run.name, pr) for run, pr in DEFAULT_SOURCES))
+        self.assertEqual(sorted(by_source),
+                         [("step8-full413-1020-F01", "579"),
+                          ("step8-full413-1020-F03-1-rerun", "3006"),
+                          ("step8-full413-1020-F03-1-rerun", "3079")])
+        f01 = by_source[("step8-full413-1020-F01", "579")]
+        self.assertEqual(len(f01), 60)
+        self.assertEqual({row["box_call"] for row in f01}, {"fail"})
+        self.assertEqual({row["box_failure_class"] for row in f01}, {"hang"})
+        self.assertEqual(sum(1 for row in committed if row["box_call"] == "pass"), 120)
+        self.assertTrue(all(row["match"] == "true" for row in committed))
+        self.assertEqual(parity_result(committed, DEFAULT_SOURCES, 180), (True, ""))
+        self.assertEqual(default_parity_from_table(DEFAULT_OUT / "scoring-parity.csv"), (True, ""))
         # Reproducible from the box's saved outputs on main.
-        fresh = run_parity(DEFAULT_BOX_RUN, DEFAULT_PRS)
-        self.assertEqual([(r["pr"], r["side"], str(r["trial"]), r["replay_call"]) for r in fresh],
-                         [(r["pr"], r["side"], r["trial"], r["replay_call"]) for r in committed])
+        fresh = run_parity(DEFAULT_SOURCES)
+        self.assertEqual(
+            [(r["box_run"], r["pr"], r["side"], str(r["trial"]), r["replay_call"], r["replay_failure_class"])
+             for r in fresh],
+            [(r["box_run"], r["pr"], r["side"], r["trial"], r["replay_call"], r["replay_failure_class"])
+             for r in committed],
+        )
 
 
 class DryRunMonorepoTests(unittest.TestCase):
