@@ -41,6 +41,7 @@ from typing import Callable
 
 from thesis.ab.monorepo import LOADED_SOURCE, MONOREPO_PRS
 from thesis.ab.step8_pins import DEFAULT_OUT, DEFAULT_PRS, ROOT, is_provider_fault
+from thesis.ab.watch import NO_PROGRESS_S
 
 DEFAULT_TASK_MAP = ROOT / "results/step8-full413-1020/task-map.csv"
 DEFAULT_SMOKE_CSV = DEFAULT_OUT / "monorepo-smoke.csv"
@@ -91,7 +92,11 @@ def smoke_commands(
     model: str,
     python: str = sys.executable,
 ) -> list[list[str]]:
-    """One run_ab command per PR: one trial, both sides, one task."""
+    """One run_ab command per PR: one trial, both sides, one task.
+
+    ``--no-progress-s`` is the shared ``watch.NO_PROGRESS_S``, the same
+    threshold the scoring-parity replay checks the box's kills against.
+    """
     commands = []
     for pr in MONOREPO_PRS:
         commands.append([
@@ -104,6 +109,7 @@ def smoke_commands(
             "--order", "interleave",
             "--model", model,
             "--cell-meta",
+            "--no-progress-s", str(NO_PROGRESS_S),
             "--out", str(out),
             "--cache", str(cache),
         ])

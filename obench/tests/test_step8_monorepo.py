@@ -479,6 +479,145 @@ class ScoringParityTests(unittest.TestCase):
         )
 
 
+class WatchdogParityTests(unittest.TestCase):
+    """The live monorepo path and the parity replay share the watchdog code and threshold."""
+
+    def _box_hang(self) -> dict:
+        from thesis.ab.step8_scoring_parity import box_cells
+
+        return next(row for _side, row in box_cells(PARITY_FIXTURE, "4003") if row["trial"] == 1)
+
+    def test_live_path_and_replay_call_the_same_watchdog_identically(self):
+        import inspect
+
+        from thesis.ab import run_ab, step8_scoring_parity, watch
+        from thesis.ab.watch import NO_PROGRESS_S
+
+        saved = self._box_hang()
+        real = watch.apply_watchdog_class
+        seen_env = {}
+
+        def fake_run_cell(*args, **kwargs):
+            from obench.adapters import opencode
+            seen_env["OBENCH_NO_PROGRESS_S"] = os.environ.get("OBENCH_NO_PROGRESS_S")
+            seen_env["adapter_limit"] = opencode._no_progress_limit()
+            seen_env["timeout_s"] = args[4]
+            # What obench.run.run_cell returns for this cell, before run_ab's post-pass:
+            # the checker verdict and classify_failure, with the watchdog marker in error.
+            row = step8_scoring_parity._replay_checker(saved, None)
+            row.pop("hang_reason", None)
+            return row
+
+        provider = {"package": "@opencode/ai", "version": "2.0.29", "tree": "a" * 40}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            spec = {
+                "harness": "opencode", "binary": str(make_exec(tmp / "opencode")), "config": {},
+                "permission_config": False, "cell_path": str(tmp / "cell.json"),
+                "tasks_dir": str(tmp / "tasks"), "adapters_dir": str(ROOT / "obench" / "adapters"),
+                "model": "claude-sonnet-5-5", "task": saved["task"], "trial": 1, "side": "with",
+                "pr": "51062", "sha": SHA_WITH, "timeout_s": saved["timeout_s"],
+                # drive() puts its no_progress_s (default NO_PROGRESS_S) on every spec.
+                "no_progress_s": inspect.signature(run_ab.drive).parameters["no_progress_s"].default,
+                "proxy": monorepo.bundled_proxy({}, provider),
+            }
+            with patch.object(watch, "apply_watchdog_class", wraps=real) as spy, \
+                    patch("obench.run.run_cell", side_effect=fake_run_cell), \
+                    patch("obench.run.load_adapter", return_value=object()):
+                run_ab.execute_cell(spec)
+                live_calls = list(spy.call_args_list)
+                live_row = json.loads(Path(spec["cell_path"]).read_text())
+                spy.reset_mock()
+                replayed = step8_scoring_parity.replay_cell(saved)
+                replay_calls = list(spy.call_args_list)
+
+        # One call each, to the same function object, with the same signature: (row,), no kwargs.
+        self.assertEqual(len(live_calls), 1)
+        self.assertEqual(len(replay_calls), 1)
+        self.assertEqual(len(live_calls[0].args), 1)
+        self.assertEqual(live_calls[0].kwargs, {})
+        self.assertEqual(len(replay_calls[0].args), 1)
+        self.assertEqual(replay_calls[0].kwargs, {})
+        # Both classify the same no-progress kill the same way.
+        self.assertEqual(live_row["failure_class"], "hang")
+        self.assertEqual(replayed["failure_class"], "hang")
+        self.assertEqual(live_row["no_progress_idle_s"], replayed["no_progress_idle_s"])
+        self.assertEqual(live_row["provider_loaded_source"], "bundled")
+        # The live cell ran with the shared threshold: run_ab exported it and the adapter read it.
+        self.assertEqual(float(seen_env["OBENCH_NO_PROGRESS_S"]), NO_PROGRESS_S)
+        self.assertEqual(seen_env["adapter_limit"], NO_PROGRESS_S)
+        self.assertEqual(seen_env["timeout_s"], saved["timeout_s"])
+
+    def test_one_shared_threshold(self):
+        import inspect
+
+        from thesis.ab import run_ab, step8_scoring_parity
+        from thesis.ab import step8_monorepo_smoke as smoke
+        from thesis.ab.watch import NO_PROGRESS_S
+
+        self.assertEqual(NO_PROGRESS_S, 300.0)
+        self.assertIs(run_ab.NO_PROGRESS_S, NO_PROGRESS_S)
+        self.assertIs(step8_scoring_parity.NO_PROGRESS_S, NO_PROGRESS_S)
+        self.assertIs(smoke.NO_PROGRESS_S, NO_PROGRESS_S)
+        self.assertEqual(inspect.signature(run_ab.drive).parameters["no_progress_s"].default, NO_PROGRESS_S)
+
+        # The monorepo smoke's own run_ab command, parsed by the real run_ab.main, hands
+        # run() the shared threshold; so does run_ab with no --no-progress-s.
+        tasks = smoke.first_tasks(ROOT / "results/step8-full413-1020/task-map.csv")
+        with tempfile.TemporaryDirectory() as tmp:
+            commands = smoke.smoke_commands(
+                prs=ROOT / "results/step8-full413-1020/prs.csv",
+                task_map=ROOT / "results/step8-full413-1020/task-map.csv",
+                tasks=tasks, out=Path(tmp) / "out", cache=Path(tmp) / "src", model="claude-sonnet-5-5",
+            )
+            seen = []
+
+            def fake_run(*args, **kwargs):
+                seen.append(kwargs["no_progress_s"])
+                return "", 0, None
+
+            for cmd in commands:
+                self.assertEqual(cmd[cmd.index("--no-progress-s") + 1], str(NO_PROGRESS_S))
+            without_flag = [part for part in commands[0][3:]]
+            index = without_flag.index("--no-progress-s")
+            del without_flag[index:index + 2]
+            with patch.object(run_ab, "drive", side_effect=fake_run), redirect_stdout(StringIO()), \
+                    patch("sys.stderr", new_callable=StringIO):
+                for argv in [cmd[3:] for cmd in commands] + [without_flag]:
+                    run_ab.main(argv)
+        self.assertEqual(seen, [NO_PROGRESS_S] * 4)
+
+        # The parity table records the same threshold, and the box's kills fired at or above it.
+        committed = _rows(DEFAULT_OUT / "scoring-parity.csv")
+        self.assertEqual({float(row["no_progress_s"]) for row in committed}, {NO_PROGRESS_S})
+        idle = [float(row["watchdog_idle_s"]) for row in committed if row["watchdog_idle_s"]]
+        self.assertEqual(len(idle), 60)
+        self.assertTrue(all(value >= NO_PROGRESS_S for value in idle))
+
+    def test_parity_fails_on_a_kill_below_the_threshold_or_a_stale_table(self):
+        from thesis.ab import step8_scoring_parity as parity
+
+        rows = parity.run_parity([(PARITY_FIXTURE, pr) for pr in PARITY_PRS])
+        self.assertEqual(parity.parity_result(rows), (True, ""))
+        early = [dict(row) for row in rows]
+        target = next(row for row in early if row["watchdog_idle_s"] != "")
+        target["watchdog_idle_s"] = parity.NO_PROGRESS_S - 60
+        passed, reason = parity.parity_result(early)
+        self.assertFalse(passed)
+        self.assertIn("below the no-progress threshold", reason)
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "scoring-parity.csv"
+            committed = _rows(DEFAULT_OUT / "scoring-parity.csv")
+            parity.write_parity(committed, table)
+            self.assertEqual(parity.default_parity_from_table(table), (True, ""))
+            for row in committed:
+                row["no_progress_s"] = "600.0"
+            parity.write_parity(committed, table)
+            passed, reason = parity.default_parity_from_table(table)
+        self.assertFalse(passed)
+        self.assertIn("live threshold is 300.0", reason)
+
+
 class DryRunMonorepoTests(unittest.TestCase):
     provider = {"package": "@opencode/ai", "version": "2.0.29", "tree": "a" * 40, "sdk_locked": False}
 
