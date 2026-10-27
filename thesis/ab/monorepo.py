@@ -16,7 +16,7 @@ PRs have the same ``packages/ai/src`` tree, so the provider is not part of
 the with/without difference.
 
 This module does not import the rest of ``thesis.ab`` so the build and the
-runner can both use it.
+runner can both use it. Runner notes and commands: ``data/step8-pins/MONOREPO.md``.
 """
 
 from __future__ import annotations

@@ -36,9 +36,9 @@ Queue: `results/step8-vm-F03-1-1025-QUARANTINED/SUBS.txt` from `F03-2` through `
 
 Every pinned PR has the same version on both sides. No pinned SHA is already a box_cache or F03-1 entry. Historical pins, including PR 1443 (`2.0.0-beta.13` on the merge, `2.0.0-beta.11` on the parent), are left as recorded.
 
-## Post-monorepo sides (not pinned)
+## Deferred (not this PR)
 
-**51062**, **53166**, and **55613** have no `packages/opencode` (`51062` `328f74c2` / `32b1a1bf`, `53166` `0cb43477` / `bcf23b67`, `55613` `ae8d59f8` / `7ced591c`). They stay `status=deferred` in `pins.csv` and have no `provider_pins.json` entry, because there is nothing to pin: the Anthropic provider is OpenCode's own `packages/ai` (`@opencode/ai`), compiled into the binary, and `bun.lock` has no `@ai-sdk/anthropic`. They run on the provider-free path in `thesis/ab/monorepo.py`. `dry-run.csv` reports them as `provider_mode=bundled` with ready/not-ready and a reason. Their binaries are built by `thesis.ab.step8_monorepo_build`, which first rebuilds three existing step-8 builds as a control (each must match its existing build's `opencode --version` and loaded provider) and writes one record per binary to `monorepo-builds.csv` (source commit, lockfile sha256, binary sha256). A side is not ready until that control step passes and its binary matches its record. They are `scorable` only after `thesis.ab.step8_monorepo_smoke` shows zero provider faults and `score_match=true`: the smoke cell's scoring call equals the box's scoring call for that side as recorded on main (`monorepo-smoke.csv`). Missing box data is `score_match=false`.
+Post-monorepo runner work for **51062**, **53166**, and **55613** is excluded. Each side has no `packages/opencode` (`51062` `328f74c2` / `32b1a1bf`, `53166` `0cb43477` / `bcf23b67`, `55613` `ae8d59f8` / `7ced591c`). They are `status=deferred` in `pins.csv` and have no `provider_pins.json` entry.
 
 ## PR 1443 rerun (do not run)
 

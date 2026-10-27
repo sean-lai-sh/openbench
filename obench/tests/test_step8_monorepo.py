@@ -477,15 +477,18 @@ class DryRunMonorepoTests(unittest.TestCase):
                 )
             self.assertEqual(gated[0]["ready"], "no")
             self.assertIn("build gate: control step not run", gated[0]["reason"])
+            before = out.read_bytes()
+            mono_out = tmp / "monorepo-dry-run.csv"
             with patch.object(dry, "trace_binary", return_value=("", "none")) as traced:
-                rows = dry.refresh_monorepo(pins, rerun, out, cache=tmp / "cache", bin_root=bin_root,
+                rows = dry.refresh_monorepo(pins, rerun, mono_out, cache=tmp / "cache", bin_root=bin_root,
                                             mirror=None, smoke_csv=tmp / "no-smoke.csv", builds_csv=builds)
             self.assertEqual(traced.call_count, 1)
-            written = _rows(out)
+            # The full dry-run table is never rewritten by the monorepo pass.
+            self.assertEqual(out.read_bytes(), before)
+            written = _rows(mono_out)
+            self.assertEqual(len(written), 2)
             self.assertEqual(list(written[0].keys()), dry.FIELDS)
-            self.assertEqual(written[0]["provider_mode"], "pinned")
-            self.assertEqual(written[0]["version"], "2.0.0")
-            with_row, without_row = written[1], written[2]
+            with_row, without_row = written[0], written[1]
             self.assertEqual(with_row["group"], "monorepo")
             self.assertEqual(with_row["ready"], "yes")
             self.assertEqual(with_row["loaded_source"], "bundled")
@@ -495,9 +498,15 @@ class DryRunMonorepoTests(unittest.TestCase):
             self.assertIn("monorepo sides 2 ready 1 scorable 0", dry.summarize(rows))
 
     def test_committed_tables(self):
-        dry = _rows(DEFAULT_OUT / "dry-run.csv")
-        mono = [row for row in dry if row["pr"] in monorepo.MONOREPO_PRS]
+        # Main's dry-run table from #160 is not rewritten: the six rows stay deferred there.
+        main_dry = _rows(DEFAULT_OUT / "dry-run.csv")
+        self.assertNotIn("provider_mode", main_dry[0])
+        main_mono = [row for row in main_dry if row["pr"] in monorepo.MONOREPO_PRS]
+        self.assertEqual(len(main_mono), 6)
+        self.assertTrue(all(row["reason"].startswith("deferred") for row in main_mono))
+        mono = _rows(DEFAULT_OUT / "monorepo-dry-run.csv")
         self.assertEqual(len(mono), 6)
+        self.assertEqual({row["sha"] for row in mono}, {row["sha"] for row in main_mono})
         for row in mono:
             self.assertEqual(row["group"], "monorepo")
             self.assertEqual(row["provider_mode"], "bundled")
@@ -512,7 +521,6 @@ class DryRunMonorepoTests(unittest.TestCase):
         for row in mono:
             by_pr.setdefault(row["pr"], set()).add(row["bundled_provider"])
         self.assertTrue(all(len(labels) == 1 for labels in by_pr.values()))
-        self.assertTrue(all(row["provider_mode"] == "pinned" for row in dry if row not in mono))
         pins = _rows(DEFAULT_OUT / "pins.csv")
         deferred = [row for row in pins if row["pr"] in monorepo.MONOREPO_PRS]
         self.assertEqual({row["status"] for row in deferred}, {"deferred"})
