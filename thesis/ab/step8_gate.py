@@ -149,6 +149,8 @@ def pin_for(pins: dict, sha: str, side: str) -> str:
 
 def judge(cell: dict, pin: str) -> tuple[bool, str]:
     """(ok, why) for one gate cell against its pin."""
+    if cell.get("missing_fields"):
+        return False, "cell missing fields: " + ",".join(cell["missing_fields"])
     method = cell.get("probe_method") or ""
     loaded = str(cell.get("provider_loaded_version") or "")
     if method not in PROBE_METHODS or not loaded:

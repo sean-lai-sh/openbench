@@ -810,6 +810,7 @@ def execute_cell(spec: dict) -> None:
             attach_schedule(row, spec, started_at)
             attach_cell_meta(row, spec, started_at)
             attach_provider_pin(row, spec)
+            attach_required_fields(row, spec)
             from thesis.ab.evidence import attach_cell_metrics
             attach_cell_metrics(row, evidence if evidence else None)
             if spec.get("task") == "trig-tmpdir":
@@ -1193,6 +1194,45 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
         row["concurrent_cells_at_end"] = len(list(d.iterdir()))
     if spec.get("concurrent_cells_at_start") is not None:
         row["concurrent_cells_at_start"] = spec["concurrent_cells_at_start"]
+
+
+# Every field step8_gate (gate, route_check, --complete) and the step-8
+# provenance checks read from a saved cell. A field the runner cannot produce
+# is written as null and listed in ``missing_fields``: never silently absent.
+GATE_CELL_FIELDS = (
+    "route", "rerun", "probe_method", "provider_loaded_version", "provider_loaded_source",
+    "provider_loaded_mismatch", "requests_cost_usd", "started_et", "ended_et",
+)
+PROVENANCE_CELL_FIELDS = (
+    "cell_image", "provider_trace", "opencode_cache", "lockfile_sha256", "build_channel", "runner_commit",
+)
+REQUIRED_CELL_FIELDS = GATE_CELL_FIELDS + PROVENANCE_CELL_FIELDS
+# Legitimately null when the run had nothing to report (no mismatch; not a rerun).
+NULLABLE_CELL_FIELDS = {"provider_loaded_mismatch"}
+
+
+def build_channel_of(binary) -> str | None:
+    stamp = Path(str(binary or "")).parent / "build-stamp.json"
+    try:
+        return str(json.loads(stamp.read_text()).get("build_channel") or "") or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def attach_required_fields(row: dict, spec: dict) -> None:
+    """Fill rerun/build_channel, then record any required field still missing."""
+    if not isinstance(row, dict):
+        return
+    row.setdefault("rerun", 1 if os.environ.get("OBENCH_RERUN", "").strip() == "1" else 0)
+    if not row.get("build_channel"):
+        row["build_channel"] = build_channel_of(spec.get("binary"))
+    missing = [k for k in REQUIRED_CELL_FIELDS
+               if k not in NULLABLE_CELL_FIELDS and row.get(k) in (None, "")]
+    for k in REQUIRED_CELL_FIELDS:
+        row.setdefault(k, None)
+    if missing:
+        row["missing_fields"] = missing
+        print(f"{spec.get('pr')}/{spec.get('side')}: cell missing required fields {missing}", file=sys.stderr)
 
 
 def attach_provider_pin(row: dict, spec: dict) -> None:
