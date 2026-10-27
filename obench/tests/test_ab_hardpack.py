@@ -23,6 +23,7 @@ def test_resolve_tasks_from_pack():
 def test_cell_meta_fields(tmp_path):
     spec = {"cell_path": str(tmp_path / "c.json"), "exec_mode": "docker",
             "cell_meta": {"vm_type": "n2-standard-16", "runner_commit": "abc",
+                          "cell_image": "h1-env:1027-strace",
                           "timeout_cap_s": 2400, "running_dir": str(tmp_path / ".running")}}
     run_ab.mark_running(spec, True)
     spec["concurrent_cells_at_start"] = 1
@@ -30,6 +31,7 @@ def test_cell_meta_fields(tmp_path):
     run_ab.attach_cell_meta(row, spec, "2026-10-22T18:00:00+00:00")
     run_ab.mark_running(spec, False)
     assert row["vm_type"] == "n2-standard-16" and row["exec_mode"] == "docker"
+    assert row["cell_image"] == "h1-env:1027-strace"
     assert row["started_et"].startswith("2026-10-22T14:00:00")
     assert row["concurrent_cells_at_end"] == 1 and row["timeout_cap_s"] == 2400
     assert not list((tmp_path / ".running").iterdir())

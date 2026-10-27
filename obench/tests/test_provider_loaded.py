@@ -282,15 +282,19 @@ class PlumbingTests(unittest.TestCase):
         side = json.loads(json.dumps(row, sort_keys=True))
         self.assertEqual(side["provider_loaded_source"], "strace")
 
-    def test_preload_appends_bun_options_and_writes_the_probe(self):
+    def test_probe_is_written_but_bun_options_untouched(self):
+        # Compiled OpenCode forwards BUN_OPTIONS into its argv; a --preload
+        # there makes `opencode run` print usage and exit 1.
         import obench.adapters.opencode as opencode
 
         cache = Path(tempfile.mkdtemp()) / "opencode"
         env = {"BUN_OPTIONS": "--smol"}
         probe = opencode._arm_provider_probe(env, str(cache))
         self.assertTrue(probe.endswith(".obench-provider-probe.mjs"))
-        self.assertTrue(env["BUN_OPTIONS"].startswith("--smol "))
-        self.assertIn(f"--preload {probe}", env["BUN_OPTIONS"])
+        self.assertEqual(env, {"BUN_OPTIONS": "--smol"})
+        bare = {}
+        opencode._arm_provider_probe(bare, str(cache))
+        self.assertNotIn("BUN_OPTIONS", bare)
         text = Path(probe).read_text(encoding="utf-8")
         self.assertIn("require.resolve(\"@ai-sdk/anthropic/package.json\"", text)
         self.assertIn("Bun.plugin", text)
@@ -300,7 +304,8 @@ class PlumbingTests(unittest.TestCase):
         self.assertNotIn("emit(versionOf(pkgPath)", text)
         again = dict(env)
         opencode._append_bun_preload(again, probe)
-        self.assertEqual(again["BUN_OPTIONS"], env["BUN_OPTIONS"])
+        opencode._append_bun_preload(again, probe)
+        self.assertEqual(again["BUN_OPTIONS"].count("--preload"), 1)
 
 
 def _executable(path, body):

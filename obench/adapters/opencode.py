@@ -468,7 +468,7 @@ def _provider_pin_violation(env, text):
 _PROBE_NAME = ".obench-provider-probe.mjs"
 _TRACE_NAME = "provider-open.trace"
 _ANTHROPIC_OPEN_MARKER = "node_modules/@ai-sdk/anthropic"
-_LOADED_SOURCES = {"preload", "strace", "none"}
+_LOADED_SOURCES = {"preload", "strace", "embedded", "none"}
 # The return group is the openat result. A negative fd (ENOENT, EACCES, ...)
 # is a failed lookup, not evidence the package was loaded.
 _TRACE_OPEN_RE = re.compile(
@@ -567,12 +567,14 @@ def _append_bun_preload(env, probe):
 
 
 def _arm_provider_probe(env, cache):
-    """Write the preload and point this cell's bun at it.
+    """Write the preload script next to the cell cache. Do not arm it.
 
-    Compiled OpenCode bakes ``execArgv`` ending in ``--``, so this preload
-    does not run on those binaries. The file is still written: a build that
-    honors ``BUN_OPTIONS`` prints the loaded version, and the script is kept
-    with the cell evidence.
+    ``BUN_OPTIONS`` is not set. Compiled OpenCode (bun 1.3.0 and 1.3.2
+    builds alike) passes ``BUN_OPTIONS`` tokens through to its own argv, so
+    ``--preload <probe>`` reaches yargs as an unknown option and ``opencode
+    run`` prints usage and exits 1 before any session starts (F03-2 phase 1,
+    2026-10-26). The loaded version comes from strace instead. The script is
+    still written and kept with the cell evidence.
     """
     if not cache:
         return ""
@@ -583,7 +585,6 @@ def _arm_provider_probe(env, cache):
             fh.write(_provider_probe_script(os.path.abspath(cache)))
     except OSError:
         return ""
-    _append_bun_preload(env, probe)
     return probe
 
 
@@ -649,10 +650,15 @@ def _use_provider_trace():
     cell output shows the strace error. The automatic path skips a strace
     that cannot ptrace, because that would fail every cell.
     """
+    flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()
+    if flag == "0":
+        # Scored cells run untraced; one traced gate cell per side proves
+        # the loaded provider (step-8 F03-2 launcher, Researcher 2026-10-27).
+        return ""
     binary = shutil.which("strace") or ""
     if not binary:
         return ""
-    if os.environ.get("OBENCH_PROVIDER_TRACE", "").strip() == "1":
+    if flag == "1":
         return binary
     if _strace_attaches(binary):
         return binary
@@ -1735,7 +1741,15 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         version, loaded_source, _path = loaded
         if loaded_source not in _LOADED_SOURCES:
             loaded_source = "none"
+        if not version:
+            # Bundled provider: strace sees no package open, so read the
+            # version compiled into the binary.
+            from obench.provider_embedded import embedded_version
+            bundled = embedded_version(exe)
+            if bundled:
+                version, loaded_source = bundled, "embedded"
         row["provider_loaded_source"] = loaded_source
+        row["probe_method"] = loaded_source if loaded_source in ("strace", "embedded") else ""
         if version:
             row["provider_loaded_version"] = version
         pin = _anthropic_pin(proxy) if isinstance(proxy, dict) else ""
@@ -1844,11 +1858,17 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             env.pop("ANTHROPIC_API_KEY", None)  # force Anthropic OAuth route
         if proxy:
             env["ANTHROPIC_API_KEY"] = str(proxy.get("api_key") or "proxy")
-            if proxy.get("base_url_env"):
-                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url") or "")
+            # Both routes: config baseURL (from compat) and the env var.
+            if proxy.get("base_url"):
+                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url"))
             else:
                 env.pop("ANTHROPIC_BASE_URL", None)
             env.pop("VERTEX_LOCATION", None)
+            # Builds from late 2025 drop any models.dev entry with an
+            # ``experimental`` key from ``run`` (provider.ts filter). Today's
+            # registry tags claude-opus-5-5 that way (fast mode), so those
+            # builds exit 1 with ProviderModelNotFoundError and print usage.
+            env["OPENCODE_ENABLE_EXPERIMENTAL_MODELS"] = "1"
             installed_anthropic = _ensure_provider_sdk(env, proxy) or ""
         elif model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
             env["VERTEX_LOCATION"] = "global"
