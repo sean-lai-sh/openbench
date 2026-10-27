@@ -143,27 +143,37 @@ def provider_fault_counts(root: Path = ROOT) -> Counter:
                 version = version or (cell.get("toolchain") or {}).get("anthropic") or ""
                 if not version or version in {"unrecorded", "unknown", "missing"}:
                     continue
-                failure = cell.get("failure_class") or ""
-                text = " | ".join(
-                    str(cell.get(key))
-                    for key in (
-                        "error", "infra_reason", "provider_error",
-                        "requests_error", "hang_reason", "output_tail",
-                    )
-                    if cell.get(key)
-                )
-                chunk = failure not in {"infra", "hang"} and "Unhandled chunk type" in text
-                if failure not in {"infra", "hang"} and not chunk:
-                    continue
-                if AUTH.search(text) or INST.search(text):
-                    continue
-                match = PROV.search(text)
-                if not match:
-                    continue
-                if match.group(0).lower() == "stream error" and TIMEOUT.search(text):
-                    continue
-                counts[version] += 1
+                if is_provider_fault(cell):
+                    counts[version] += 1
     return counts
+
+
+def is_provider_fault(cell: dict) -> bool:
+    """True when one cell row is a provider fault under the D4 rule.
+
+    The rule ``provider_fault_counts`` charges to a version. It does not need
+    a recorded version, so the monorepo smoke (bundled provider) uses it too.
+    """
+    failure = cell.get("failure_class") or ""
+    text = " | ".join(
+        str(cell.get(key))
+        for key in (
+            "error", "infra_reason", "provider_error",
+            "requests_error", "hang_reason", "output_tail",
+        )
+        if cell.get(key)
+    )
+    chunk = failure not in {"infra", "hang"} and "Unhandled chunk type" in text
+    if failure not in {"infra", "hang"} and not chunk:
+        return False
+    if AUTH.search(text) or INST.search(text):
+        return False
+    match = PROV.search(text)
+    if not match:
+        return False
+    if match.group(0).lower() == "stream error" and TIMEOUT.search(text):
+        return False
+    return True
 
 
 def _source_index(sides) -> dict:
