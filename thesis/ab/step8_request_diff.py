@@ -25,7 +25,7 @@ def _norm(req: dict) -> dict:
     except ValueError:
         body = {"_raw": req.get("body")}
     tools = [t.get("name") for t in body.get("tools") or [] if isinstance(t, dict)]
-    return {"path": req.get("path"), "headers": headers, "body": body, "tools": tools}
+    return {"method": req.get("method"), "path": req.get("path"), "headers": headers, "body": body, "tools": tools}
 
 
 def _diff(a, b, path="") -> list[str]:
@@ -47,6 +47,51 @@ def _diff(a, b, path="") -> list[str]:
                    if l[:1] in "+-" and not l.startswith(("+++", "---"))]
         return [f"{path} line: {l[:200]}" for l in changed]
     return [f"{path}: {json.dumps(a)[:200]} != {json.dumps(b)[:200]}"]
+
+
+_WORKDIR = "Working directory:"
+
+
+def _shape(x):
+    """Keys and value types only; tool lists keep their names."""
+    if isinstance(x, dict):
+        return {k: _shape(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_shape(v) for v in x]
+    return type(x).__name__
+
+
+def _drop_workdir(x):
+    if isinstance(x, dict):
+        return {k: _drop_workdir(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_drop_workdir(v) for v in x]
+    if isinstance(x, str) and _WORKDIR in x:
+        return "\n".join(l for l in x.splitlines() if _WORKDIR not in l)
+    return x
+
+
+def _key(r: dict) -> tuple:
+    return (r.get("method"), r.get("path"), str(r["body"].get("model") or ""))
+
+
+def compare_requests(a: list[dict], b: list[dict]) -> tuple[list[str], list[str]]:
+    """Match two normalized request sets on endpoint path, method and body
+    shape. Requests pair up by (method, path, model) since the title and main
+    calls race. Returns (reasons they don't match, informational content diffs
+    with the Working directory line ignored)."""
+    ka, kb = sorted(map(_key, a)), sorted(map(_key, b))
+    if ka != kb:
+        return [f"request sets differ: {ka} != {kb}"], []
+    reasons, notes = [], []
+    for x, y in zip(sorted(a, key=_key), sorted(b, key=_key)):
+        tag = "%s %s %s" % _key(x)
+        shape = _diff(_shape(x["body"]), _shape(y["body"]))
+        if x["tools"] != y["tools"]:
+            shape.append(f"tools {x['tools']} != {y['tools']}")
+        reasons += [f"{tag}: {d}" for d in shape]
+        notes += [f"{tag}: {d}" for d in _diff(_drop_workdir(x["body"]), _drop_workdir(y["body"]))]
+    return reasons, notes
 
 
 def load(path: Path) -> list[dict]:

@@ -468,7 +468,7 @@ def _provider_pin_violation(env, text):
 _PROBE_NAME = ".obench-provider-probe.mjs"
 _TRACE_NAME = "provider-open.trace"
 _ANTHROPIC_OPEN_MARKER = "node_modules/@ai-sdk/anthropic"
-_LOADED_SOURCES = {"preload", "strace", "none"}
+_LOADED_SOURCES = {"preload", "strace", "embedded", "none"}
 # The return group is the openat result. A negative fd (ENOENT, EACCES, ...)
 # is a failed lookup, not evidence the package was loaded.
 _TRACE_OPEN_RE = re.compile(
@@ -1741,7 +1741,15 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         version, loaded_source, _path = loaded
         if loaded_source not in _LOADED_SOURCES:
             loaded_source = "none"
+        if not version:
+            # Bundled provider: strace sees no package open, so read the
+            # version compiled into the binary.
+            from obench.provider_embedded import embedded_version
+            bundled = embedded_version(exe)
+            if bundled:
+                version, loaded_source = bundled, "embedded"
         row["provider_loaded_source"] = loaded_source
+        row["probe_method"] = loaded_source if loaded_source in ("strace", "embedded") else ""
         if version:
             row["provider_loaded_version"] = version
         pin = _anthropic_pin(proxy) if isinstance(proxy, dict) else ""

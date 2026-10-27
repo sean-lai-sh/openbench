@@ -4,7 +4,8 @@
 # Per side: 1 traced gate cell (OBENCH_PROVIDER_TRACE=1, unscored, kept as infra
 # evidence) + 30 untraced scored cells (OBENCH_PROVIDER_TRACE=0). Scored cells
 # record opencode_cache + lockfile_sha256 + cell_image + provider_trace.
-# Gate on #156 probe (loaded provider == pin). >2 mismatched sides -> STOP.
+# Gate (thesis.ab.step8_gate): loaded provider == pin, by probe_method strace or
+# embedded (bundled provider read from the binary). >2 mismatched sides -> STOP.
 # Hard stop $60 batch spend (flag file at $50).
 # Usage: RUNNER_SHA=<openbench sha checked out in ~/ob-f032> bash step8_f032.sh
 set -u
@@ -33,7 +34,7 @@ git config --global --add safe.directory '*'; python3 -m venv /venv && /venv/bin
 log "start gate (1 traced unscored cell per side) prs=$PRS image=$IMG"
 run gate $PRS 1 60 1
 [ -e $B/STOP ] && exit 1
-python3 $B/gate.py $B/gate ~/ob-f032/thesis/ab/provider_pins.json > $B/gate.json; rc=$?
+(cd ~/ob-f032 && python3 -m thesis.ab.step8_gate $B/gate thesis/ab/provider_pins.json ~/s8/prs_f032_sides.json) > $B/gate.json; rc=$?
 log "gate rc=$rc $(python3 -c "import json;d=json.load(open('$B/gate.json'));print('ok_prs',d['ok_prs'],'mismatch',d['mismatch_sides'])")"
 [ $rc -ne 0 ] && { echo "gate: >2 sides mismatched (see gate.json)" > $B/STOP; log "$(cat $B/STOP)"; exit 1; }
 touch $B/GATE-DONE  # gate cells are infra evidence; scoring reads only $B/scored

@@ -188,6 +188,7 @@ def check_side(binary: str, cache: str, sha: str, side: str, pr: str, timeout_s:
         "completed": row.get("completed"),
         "provider_loaded_version": loaded,
         "provider_loaded_source": row.get("provider_loaded_source"),
+        "probe_method": row.get("probe_method") or "",
         "provider_loaded_mismatch": row.get("provider_loaded_mismatch"),
         "cmd": json.dumps((row.get("cmd") or [])[:-1]),
         "output_tail": str(row.get("output_tail") or "")[-300:],
@@ -238,16 +239,29 @@ def check_control(label: str, rebuild: str, original: str, sha: str, cache: str,
         reasons.append(f"probe recorded no version (rebuild {a or 'none'}, original {b or 'none'})")
     elif a != b:
         reasons.append(f"provider differs: rebuild {a} != original {b}")
+    methods = {r.get("probe_method") for r in rows}
+    if "embedded" in methods:
+        # Bundled provider: the version string alone doesn't show the two
+        # binaries behave alike, so their stub requests must match too.
+        if capture is None:
+            reasons.append("bundled provider: --capture needed to compare requests")
+        else:
+            from thesis.ab.step8_request_diff import compare_requests, load
+            reqs = [load(capture / f"{label}-{k}.requests.jsonl") for k in ("rebuild", "original")]
+            bad, notes = compare_requests(*reqs)
+            reasons += [f"requests: {x}" for x in bad]
+            for r in rows:
+                r["request_diff"] = "; ".join(notes)[:500] or "none"
     for r in rows:
         r["ready"] = not reasons
-        r["reason"] = "; ".join(reasons) or f"ok: both loaded {a}"
+        r["reason"] = "; ".join(reasons) or f"ok: both loaded {a} ({'/'.join(sorted(methods))})"
     return rows
 
 
 FIELDS = ["label", "pr", "side", "sha", "ready", "reason", "build_channel", "cell_image",
           "strace", "wall_s", "assess", "pin",
-          "provider_loaded_version", "provider_loaded_source", "provider_loaded_mismatch",
-          "stub_requests", "completed", "exit_error", "cmd", "binary", "output_tail"]
+          "provider_loaded_version", "provider_loaded_source", "probe_method", "provider_loaded_mismatch",
+          "stub_requests", "request_diff", "completed", "exit_error", "cmd", "binary", "output_tail"]
 
 
 def main(argv=None) -> int:
