@@ -24,6 +24,11 @@ Replay per cell, in the order ``obench.run.run_cell`` and then
 4. ``apply_watchdog_class``: a watchdog marker in ``error`` /
    ``output_tail`` (``openbench-infra:no_progress ...``) discards the checker
    score; after real model requests it is a scored ``hang``, otherwise infra.
+   This is the same function ``run_ab.execute_cell`` calls on every live cell,
+   monorepo sides included. The no-progress threshold is the shared
+   ``watch.NO_PROGRESS_S`` (the live ``--no-progress-s`` default, and what the
+   monorepo smoke passes). Each row records it, and parity fails if a box
+   watchdog kill in the data (``no_progress_idle_s``) is below it.
 5. The call is ``pass`` when the replayed ``failure_class`` is ``solved``,
    otherwise ``fail``. The box's call comes from its recorded
    ``failure_class`` the same way.
@@ -59,6 +64,7 @@ import sys
 from pathlib import Path
 
 from thesis.ab.step8_pins import DEFAULT_OUT, ROOT
+from thesis.ab.watch import NO_PROGRESS_S
 
 DEFAULT_BOX_RUN = ROOT / "results" / "step8-full413-1020-F03-1-rerun"
 DEFAULT_PRS = ("3006", "3079")
@@ -76,7 +82,7 @@ VERDICT_FIELDS = ("success", "score", "failure_class", "failure_reason")
 FIELDS = [
     "box_run", "pr", "side", "task", "trial", "checker_exit",
     "box_failure_class", "replay_failure_class", "box_call", "replay_call",
-    "call_match", "class_match", "match",
+    "call_match", "class_match", "no_progress_s", "watchdog_idle_s", "match",
 ]
 
 
@@ -156,6 +162,7 @@ def run_parity(sources, tasks_dir: Path | None = None) -> list[dict]:
             replayed = replay_cell(saved, tasks_dir)
             box_call = call_of(saved.get("failure_class"))
             replay_call = call_of(replayed.get("failure_class"))
+            idle = replayed.get("no_progress_idle_s")
             box_class = saved.get("failure_class") or ""
             replay_class = replayed.get("failure_class") or ""
             call_match = box_call == replay_call
@@ -169,6 +176,8 @@ def run_parity(sources, tasks_dir: Path | None = None) -> list[dict]:
                 "box_call": box_call, "replay_call": replay_call,
                 "call_match": "true" if call_match else "false",
                 "class_match": "true" if class_match else "false",
+                "no_progress_s": NO_PROGRESS_S,
+                "watchdog_idle_s": "" if idle is None else idle,
                 "match": "true" if call_match and class_match else "false",
             })
     return rows
@@ -176,6 +185,17 @@ def run_parity(sources, tasks_dir: Path | None = None) -> list[dict]:
 
 def _source_key(row: dict) -> tuple[str, str]:
     return str(row.get("box_run") or ""), str(row.get("pr") or "")
+
+
+def _killed_below_threshold(row: dict) -> bool:
+    """A box watchdog kill whose recorded idle time is below the shared threshold."""
+    idle = str(row.get("watchdog_idle_s") or "").strip()
+    if not idle:
+        return False
+    try:
+        return float(idle) < float(row.get("no_progress_s") or NO_PROGRESS_S)
+    except ValueError:
+        return True
 
 
 def parity_result(rows: list[dict], sources=None, expected_cells: int | None = None) -> tuple[bool, str]:
@@ -203,6 +223,14 @@ def parity_result(rows: list[dict], sources=None, expected_cells: int | None = N
         or not row.get("box_failure_class")
         or row.get("box_failure_class") != row.get("replay_failure_class")
     ]
+    below = [row for row in rows if _killed_below_threshold(row)]
+    if below:
+        first = below[0]
+        return False, (
+            f"scoring parity: {len(below)} watchdog kill(s) below the no-progress threshold, e.g. "
+            f"{first.get('pr')} {first.get('side')} trial {first.get('trial')} idle "
+            f"{first.get('watchdog_idle_s')} < {first.get('no_progress_s')}"
+        )
     if bad:
         first = bad[0]
         return False, (
@@ -235,8 +263,26 @@ def parity_from_table(path: Path) -> tuple[bool, str]:
 
 
 def default_parity_from_table(path: Path) -> tuple[bool, str]:
-    """The committed table checked against the default sources and 180 cells."""
-    return parity_result(load_parity(path), DEFAULT_SOURCES, EXPECTED_CELLS)
+    """The committed table checked against the default sources and 180 cells.
+
+    Every row must also record the live no-progress threshold
+    (``watch.NO_PROGRESS_S``).
+    """
+    rows = load_parity(path)
+    stale = [row for row in rows if _as_float(row.get("no_progress_s")) != NO_PROGRESS_S]
+    if stale:
+        return False, (
+            f"scoring parity table records no_progress_s {stale[0].get('no_progress_s') or 'none'}, "
+            f"live threshold is {NO_PROGRESS_S}"
+        )
+    return parity_result(rows, DEFAULT_SOURCES, EXPECTED_CELLS)
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def summarize(rows: list[dict]) -> str:

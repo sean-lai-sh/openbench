@@ -20,7 +20,7 @@ Cells run provider-free (`thesis/ab/monorepo.py`). Nothing is seeded, `anthropic
 |---|---|---|
 | `monorepo-builds.csv` | `thesis.ab.step8_monorepo_build` | one build record per binary: source commit, worktree `HEAD`, build plan, bun version, lockfile sha256, binary sha256, reported build info, loaded provider. Control rows add the existing build's values plus `control_match` and `control_status`. |
 | `dry-run-monorepo.csv` | `thesis.ab.step8_pin_dry_run` (full run or `--monorepo-only`) | one row per side, keyed by `side_key` (`<pr>:<side>`). It has #160's dry-run columns plus `provider_mode`, `bundled_provider`, `scoring_parity` and `scorable`. `dry-run.csv` keeps #160's format, with the six sides `deferred`. |
-| `scoring-parity.csv` | `thesis.ab.step8_scoring_parity` | one row per replayed box cell: box and replayed `failure_class`, box and replayed pass/fail call, `call_match`, `class_match`, `match` |
+| `scoring-parity.csv` | `thesis.ab.step8_scoring_parity` | one row per replayed box cell: box and replayed `failure_class`, box and replayed pass/fail call, `call_match`, `class_match`, `no_progress_s` (shared threshold), `watchdog_idle_s` (box kill), `match` |
 | `monorepo-smoke.csv` | `thesis.ab.step8_monorepo_smoke` | one smoke cell per side: provider faults, the agent's call, loaded source, bundled version, `smoke_ok`, `scoring_parity`, `scorable` |
 
 As committed, nothing has been built and no smoke has run. `monorepo-builds.csv` holds the source commit and lockfile sha256 from the mirror (`used=no`, "not built; control step not run"). `scoring-parity.csv` passes: 180/180 cells (3006, 3079, 579) agree on pass/fail and on `failure_class`. `dry-run-monorepo.csv` shows all six sides not ready (binary missing), `scoring_parity=pass`, and `scorable=excluded`.
@@ -51,6 +51,8 @@ Each cell goes through the runner's scoring path, in the order `obench.run.run_c
 2. Parse `SCORE:` from the saved `checker_stdout`.
 3. Apply `apply_explicit_verdict` (thesis tasks) or the exit-code rule, then `classify_failure`.
 4. Apply `thesis.ab.watch.apply_watchdog_class`.
+
+Step 4 is the same function `run_ab.execute_cell` calls on every live cell, monorepo sides included. The no-progress kill threshold is one shared constant, `thesis.ab.watch.NO_PROGRESS_S` (300 s). It is the live `--no-progress-s` default, it is passed explicitly by the monorepo smoke, and it is recorded on each parity row. Parity fails if a box watchdog kill in the data has `idle_s` below it; 579's 60 kills are 300.0 to 311.6 s. A test spies on `apply_watchdog_class` and checks that the live path and the replay call it identically, with the live cell running at that threshold.
 
 The replayed pass/fail (`solved` = pass) **and** `failure_class` must equal the box's on 100% of cells, and the table must have exactly those three PRs and 180 cells. It uses saved outputs only: no model calls and no checker re-run. Today it reproduces **180/180** (120 pass, 60 fail). Step 4 matters: without it, 579's cells would replay as 59 `solved` and 1 `wrong_answer`.
 

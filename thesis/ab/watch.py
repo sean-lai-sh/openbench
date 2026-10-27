@@ -19,6 +19,11 @@ import subprocess
 import time
 from pathlib import Path
 
+# Default no-progress kill threshold, in seconds. ``run_ab`` (``--no-progress-s``
+# and ``run()``), the monorepo smoke, and the step-8 scoring-parity replay all
+# read this one value, and ``apply_watchdog_class`` classifies the kill.
+NO_PROGRESS_S = 300.0
+
 FATAL_RE = re.compile(
     r"failed to asynchronously prepare wasm|Aborted\(|ENOENT:[^\n]*tree-sitter[^\n]*\.wasm"
 )
