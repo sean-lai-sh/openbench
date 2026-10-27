@@ -650,10 +650,15 @@ def _use_provider_trace():
     cell output shows the strace error. The automatic path skips a strace
     that cannot ptrace, because that would fail every cell.
     """
+    flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()
+    if flag == "0":
+        # Scored cells run untraced; one traced gate cell per side proves
+        # the loaded provider (step-8 F03-2 launcher, Researcher 2026-10-27).
+        return ""
     binary = shutil.which("strace") or ""
     if not binary:
         return ""
-    if os.environ.get("OBENCH_PROVIDER_TRACE", "").strip() == "1":
+    if flag == "1":
         return binary
     if _strace_attaches(binary):
         return binary

@@ -15,8 +15,10 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -40,13 +42,14 @@ _EVENTS = [
 _KEYS = (
     "OBENCH_OPENCODE_BIN", "OBENCH_OPENCODE_CONFIG_JSON",
     "OBENCH_OPENCODE_PERMISSION_CONFIG", "OBENCH_OPENCODE_PROXY",
-    "OBENCH_ADC_METADATA", "GOOGLE_APPLICATION_CREDENTIALS",
+    "OBENCH_ADC_METADATA", "GOOGLE_APPLICATION_CREDENTIALS", "OBENCH_CELL_TEMP_ROOT",
 )
 
 
 class Stub:
     def __init__(self):
         self.hits: list[str] = []
+        self.requests: list[dict] = []
         stub = self
 
         class H(BaseHTTPRequestHandler):
@@ -60,6 +63,9 @@ class Stub:
             def do_POST(self):
                 raw = self._body()
                 stub.hits.append(self.path)
+                stub.requests.append({"method": "POST", "path": self.path,
+                                      "headers": dict(self.headers.items()),
+                                      "body": raw.decode("utf-8", "replace")})
                 try:
                     streaming = bool(json.loads(raw or b"{}").get("stream"))
                 except ValueError:
@@ -101,8 +107,26 @@ class Stub:
         self.server.server_close()
 
 
-def check_side(binary: str, cache: str, sha: str, side: str, pr: str, timeout_s: int = 120) -> dict:
-    out = {"pr": pr, "side": side, "sha": sha, "binary": binary}
+def build_channel_of(binary: str) -> str:
+    """``build_channel`` from the build stamp next to the binary.
+
+    Stamps written before the column existed have no key; those builds ran
+    with ``OPENCODE_CHANNEL`` unset, recorded as ``default``.
+    """
+    try:
+        stamp = json.loads((Path(binary).parent / "build-stamp.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    return str(stamp.get("build_channel") or "default")
+
+
+def check_side(binary: str, cache: str, sha: str, side: str, pr: str, timeout_s: int = 120,
+               capture: Path | None = None, label: str = "") -> dict:
+    out = {"pr": pr, "side": side, "sha": sha, "binary": binary,
+           "build_channel": build_channel_of(binary),
+           "cell_image": os.environ.get("OBENCH_CELL_IMAGE", ""),
+           "strace": "off" if os.environ.get("OBENCH_PROVIDER_TRACE") == "0"
+           or not shutil.which("strace") else "on"}
     if not Path(binary).is_file():
         return {**out, "ready": False, "reason": "binary missing"}
     stub = Stub()
@@ -133,12 +157,24 @@ def check_side(binary: str, cache: str, sha: str, side: str, pr: str, timeout_s:
         os.environ["OBENCH_OPENCODE_PERMISSION_CONFIG"] = "1" if a.permission_config else "0"
         os.environ["OBENCH_OPENCODE_PROXY"] = json.dumps(proxy)
         from obench.adapters import opencode as adapter
-        with tempfile.TemporaryDirectory(prefix="stub-ready-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="stub-ready-") as tmp, \
+                tempfile.TemporaryDirectory(prefix="stub-cell-") as cell:
+            # Cells get a temp root; the strace trace lands there, outside the
+            # opencode cache that pre-2026 builds wipe at startup.
+            os.environ["OBENCH_CELL_TEMP_ROOT"] = cell
+            t0 = time.monotonic()
             row = adapter.run("Reply with ok.", tmp, "claude-opus-5-5", timeout_s)
+            out["wall_s"] = round(time.monotonic() - t0, 3)
     except Exception as exc:  # noqa: BLE001 - recorded, not raised
         return {**out, "ready": False, "reason": f"exception: {exc!r}"[:300]}
     finally:
         stub.close()
+        if capture is not None:
+            capture.mkdir(parents=True, exist_ok=True)
+            name = (label or sha or "side").replace("/", "_")
+            with open(capture / f"{name}.requests.jsonl", "w") as fh:
+                for req in stub.requests:
+                    fh.write(json.dumps(req, sort_keys=True) + "\n")
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -172,7 +208,44 @@ def check_side(binary: str, cache: str, sha: str, side: str, pr: str, timeout_s:
     return out
 
 
-FIELDS = ["label", "pr", "side", "sha", "ready", "reason", "assess", "pin",
+def ran(r: dict) -> list[str]:
+    """Reasons a run did not start a session and reach the stub."""
+    reasons = []
+    if not r.get("stub_requests"):
+        reasons.append("no request reached stub")
+    if "opencode run [message" in str(r.get("output_tail") or ""):
+        reasons.append("printed usage")
+    if str(r.get("reason", "")).startswith(("binary missing", "assess", "exception", "toolchain")):
+        reasons.append(r["reason"])
+    return reasons
+
+
+def check_control(label: str, rebuild: str, original: str, sha: str, cache: str,
+                  timeout_s: int, capture: Path | None) -> list[dict]:
+    """A control passes when both binaries run and reach the stub, and the
+    probe records the same provider version for the rebuild as for its
+    original. Controls have no manifest pin; none is needed."""
+    rows = []
+    for kind, path in (("rebuild", rebuild), ("original", original)):
+        r = check_side(path, cache, sha, "", "", timeout_s, capture, f"{label}-{kind}")
+        r["label"] = f"{label}/{kind}"
+        rows.append(r)
+    reasons = []
+    for r in rows:
+        reasons += [f"{r['label']}: {x}" for x in ran(r)]
+    a, b = (str(r.get("provider_loaded_version") or "") for r in rows)
+    if not a or not b:
+        reasons.append(f"probe recorded no version (rebuild {a or 'none'}, original {b or 'none'})")
+    elif a != b:
+        reasons.append(f"provider differs: rebuild {a} != original {b}")
+    for r in rows:
+        r["ready"] = not reasons
+        r["reason"] = "; ".join(reasons) or f"ok: both loaded {a}"
+    return rows
+
+
+FIELDS = ["label", "pr", "side", "sha", "ready", "reason", "build_channel", "cell_image",
+          "strace", "wall_s", "assess", "pin",
           "provider_loaded_version", "provider_loaded_source", "provider_loaded_mismatch",
           "stub_requests", "completed", "exit_error", "cmd", "binary", "output_tail"]
 
@@ -183,7 +256,10 @@ def main(argv=None) -> int:
     p.add_argument("--bin-root", type=Path, required=True, help="dir holding <sha>/opencode")
     p.add_argument("--cache", type=Path, required=True, help="build cache (provider-pins store)")
     p.add_argument("--binary", action="append", default=[],
-                   help="extra label=path[=sha] checked with no PR side (controls)")
+                   help="extra label=path[=sha] checked with no PR side")
+    p.add_argument("--control", action="append", default=[],
+                   help="label=rebuild_path=original_path=sha; passes on same loaded provider")
+    p.add_argument("--capture", type=Path, help="write each run's stub requests here")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--timeout", type=int, default=120)
     a = p.parse_args(argv)
@@ -200,10 +276,15 @@ def main(argv=None) -> int:
         jobs.append((parts[0], parts[1], parts[2] if len(parts) > 2 else "", "", ""))
     rows = []
     for label, binary, sha, side, pr in jobs:
-        r = check_side(binary, str(a.cache), sha, side, pr, a.timeout)
+        r = check_side(binary, str(a.cache), sha, side, pr, a.timeout, a.capture, label)
         r["label"] = label
         rows.append(r)
         print(f"{label} ready={r['ready']} {r['reason']}", flush=True)
+    for spec in a.control:
+        label, rebuild, original, sha = spec.split("=")
+        for r in check_control(label, rebuild, original, sha, str(a.cache), a.timeout, a.capture):
+            rows.append(r)
+            print(f"{r['label']} ready={r['ready']} {r['reason']}", flush=True)
     with open(a.out / "stub_ready.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
         w.writeheader()

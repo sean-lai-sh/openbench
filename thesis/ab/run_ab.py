@@ -1176,6 +1176,10 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
         machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
     row["machine"] = machine.strip()
     row["vm_type"] = meta.get("vm_type")
+    # Cell container image tag (e.g. h1-env:1027-strace); set by the launcher.
+    row["cell_image"] = meta.get("cell_image") or os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None
+    flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()
+    row["provider_trace"] = "off" if flag == "0" or not shutil.which("strace") else "on"
     row["runner_commit"] = meta.get("runner_commit")
     row["exec_mode"] = spec.get("exec_mode") or "local"
     row["timeout_cap_s"] = meta.get("timeout_cap_s")
@@ -1205,6 +1209,9 @@ def attach_provider_pin(row: dict, spec: dict) -> None:
     source = str(proxy.get("pin_source") or "").strip()
     if source and not row.get("pin_source"):
         row["pin_source"] = source
+    for key in ("opencode_cache", "lockfile", "lockfile_sha256"):
+        if proxy.get(key) and not row.get(key):
+            row[key] = proxy[key]
     # The side JSONL is this row. Keep the version the process resolved.
     for key in (
         "provider_loaded_version",
@@ -1719,6 +1726,14 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     if not (checkout / "package.json").is_file():
         return state, None
     proxy = dict(proxy)
+    # Recorded on every cell so a scored (untraced) cell names the cache and
+    # lockfile its provider resolved from.
+    proxy["opencode_cache"] = str(Path(cache).resolve())
+    for lock in ("bun.lock", "bun.lockb"):
+        if (checkout / lock).is_file():
+            proxy["lockfile"] = lock
+            proxy["lockfile_sha256"] = hashlib.sha256((checkout / lock).read_bytes()).hexdigest()
+            break
     try:
         bun = bun_for_checkout(cache, checkout)
     except BuildError as exc:
@@ -2406,6 +2421,7 @@ def main(argv: list[str] | None = None) -> int:
         import socket
         machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
         CELL_META = {"vm_type": os.environ.get("OBENCH_VM_TYPE"),
+                     "cell_image": os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None,
                      "runner_commit": resolve_runner_commit(args.runner_commit),
                      "machine": machine,
                      "timeout_cap_s": CELL_TIMEOUT_CAP_S,

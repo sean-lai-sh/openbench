@@ -581,7 +581,18 @@ def _build_stamp(plan: dict) -> dict:
             "minify": False,
             "tree_sitter_wasm": mode,
         }
-    return {"args": list(plan.get("args") or []), "kind": kind}
+    return {"args": list(plan.get("args") or []), "kind": kind,
+            "build_channel": build_channel()}
+
+
+def build_channel() -> str:
+    """``OPENCODE_CHANNEL`` the build saw; ``default`` when unset.
+
+    OpenCode's build script stamps the channel into the binary. A non-local
+    channel makes ``Installation.isLocal()`` false, so config load runs
+    ``bun add @opencode-ai/plugin@<stamped version>``, which is not on npm.
+    """
+    return os.environ.get("OPENCODE_CHANNEL", "").strip() or "default"
 
 
 def _read_build_stamp(published: Path) -> dict | None:
