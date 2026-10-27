@@ -13,14 +13,22 @@
 # >2 off-route on a side halts the side, >2 halted sides halts the batch.
 # Egress backstop (egress_block.sh): api.anthropic.com REJECTed in host OUTPUT
 # for the whole run + container /etc/hosts sinkhole; verified failing before
-# any cell runs; removed on exit.
+# any cell runs; re-resolved (A+AAAA) every 30 s with a REJECT added for any
+# new IP (failure to add = abort); removed on exit.
+# Halt: OBENCH_ROUTE_HALT=1 makes run_ab stop launching a side's cells as soon
+# as it has >2 off-route cells; spend by cells started after the halt is in
+# route-<phase>.json halted_spend.
+# Reruns: RERUN=1 runs route-scored.json's rerun list into $B/rerun tagged
+# rerun=1 (manual reruns must set OBENCH_RERUN=1 too); same route check.
+# complete.json (step8_gate --complete) lists sides with 30 on-route scored
+# cells; the rest are incomplete and are not scored or padded.
 # Usage: RUNNER_SHA=<openbench sha checked out in ~/ob-f032> bash step8_f032.sh
 set -u
 B=$HOME/s8f032run; mkdir -p $B
 IMG=h1-env:1027-strace
 PRS=3251,3302,3381,3390,3402,3424,3433,3449,3481,3507,3546
 log(){ echo "$(TZ=America/New_York date '+%F %T %Z') $*" >> $B/driver.log; }
-spend(){ python3 -c "import json,glob;print(round(sum((json.load(open(f)).get('requests_cost_usd') or 0) for f in glob.glob('$B/[gs]*/*/cells/*/*/*.json')),2))"; }
+spend(){ python3 -c "import json,glob;print(round(sum((json.load(open(f)).get('requests_cost_usd') or 0) for f in glob.glob('$B/[gsr]*/*/cells/*/*/*.json')),2))"; }
 . ~/ob-f032/thesis/ab/launchers/egress_block.sh
 [ "$(git -C ~/ob-f032 rev-parse HEAD)" = "${RUNNER_SHA:?set RUNNER_SHA}" ] || { log "runner not $RUNNER_SHA; abort"; exit 1; }
 sudo docker image inspect $IMG >/dev/null || { log "image $IMG missing; abort"; exit 1; }
@@ -38,14 +46,15 @@ route(){ # off-route check over $B/$1; rc 1 = halt batch
   python3 -c "import json;d=json.load(open('$B/route-$1.json'));open('$B/HALT-SIDES-$1','w').write('\n'.join(d['halted_sides'])+'\n') if d['halted_sides'] else None"
   return $rc
 }
-run(){ # $1 out-name $2 prs $3 trials $4 cap $5 trace(1|0)
+run(){ # $1 out-name $2 prs $3 trials $4 cap $5 trace(1|0) $6 extra docker -e args
   sudo docker rm -f s8-f032 >/dev/null 2>&1
-  sudo docker run -d --name s8-f032 --network host $EGRESS_ADD_HOST -e OBENCH_ADC_METADATA=1 -e GOOGLE_CLOUD_PROJECT=nyu-rdg-fy26-js11531-a68d -e VERTEX_LOCATION=global -e OBENCH_VM_TYPE=n2-standard-16 -e OBENCH_CELL_IMAGE=$IMG -e OBENCH_PROVIDER_TRACE=$5 -e TZ=America/New_York -e PATH=/h1/opencode-src/go/1.24.6/bin:/h1/toolchain/node-v20.19.2-linux-x64/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin -v $HOME/ob-f032:/ob -v $HOME/h1:/h1 -v $HOME/s8f032:/c -v $HOME/s8:/s8 -v $B:/o $IMG bash -c "
+  sudo docker run -d --name s8-f032 --network host $EGRESS_ADD_HOST -e OBENCH_ADC_METADATA=1 -e GOOGLE_CLOUD_PROJECT=nyu-rdg-fy26-js11531-a68d -e VERTEX_LOCATION=global -e OBENCH_VM_TYPE=n2-standard-16 -e OBENCH_CELL_IMAGE=$IMG -e OBENCH_PROVIDER_TRACE=$5 -e OBENCH_ROUTE_HALT=1 ${6:-} -e TZ=America/New_York -e PATH=/h1/opencode-src/go/1.24.6/bin:/h1/toolchain/node-v20.19.2-linux-x64/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin -v $HOME/ob-f032:/ob -v $HOME/h1:/h1 -v $HOME/s8f032:/c -v $HOME/s8:/s8 -v $B:/o $IMG bash -c "
 git config --global --add safe.directory '*'; python3 -m venv /venv && /venv/bin/pip install -q -e /ob && cd /ob && exec /venv/bin/python -m thesis.ab.run_ab /s8/prs.csv --pr $2 --task-map /s8/task-map.csv --trials $3 --jobs 4 --vertex-model claude-sonnet-5-5 --cell-meta --out /o/$1 --cache /c --order interleave-seeded --seed 1016 --max-cost-usd $4 > /o/$1.log 2>&1" >/dev/null
   while sudo docker ps -q -f name=s8-f032 | grep -q .; do
     V=$(spend); echo "$(TZ=America/New_York date '+%F %T %Z') $1 spend=\$$V" >> $B/spend.log
     python3 -c "import sys;sys.exit(0 if $V>=50 else 1)" && [ ! -e $B/FLAG-50 ] && { echo "spend \$$V >= \$50" > $B/FLAG-50; log "FLAG: $(cat $B/FLAG-50)"; }
     python3 -c "import sys;sys.exit(0 if $V>=60 else 1)" && { echo "hard stop: spend \$$V >= \$60" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; }
+    egress_refresh >> $B/egress_refresh.log 2>&1 || { echo "egress: could not block a new api.anthropic.com IP" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; break; }
     route $1 || { echo "route: >2 sides halted off-route in $1 (see $B/route-$1.json)" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; }
     sleep 30; done
   log "end $1 rc=$(sudo docker inspect -f '{{.State.ExitCode}}' s8-f032) spend=\$$(spend)"
@@ -66,5 +75,13 @@ CAP=$(python3 -c "print(round(60-$(spend),2))")
 log "start scored prs=$OK trials=30 untraced cap=\$$CAP"
 run scored $OK 30 $CAP 0
 route scored; log "scored route: $(python3 -c "import json;d=json.load(open('$B/route-scored.json'));print('rerun(infra:off_route)',len(d['rerun']),'halted',d['halted_sides'])")"
+if [ "${RERUN:-0}" = 1 ] && [ ! -e $B/STOP ] && python3 -c "import json,sys;sys.exit(0 if json.load(open('$B/route-scored.json'))['rerun'] else 1)"; then
+  CAP=$(python3 -c "print(round(60-$(spend),2))")
+  log "start rerun of off-route cells (tagged rerun=1) cap=\$$CAP"
+  run rerun $OK 30 $CAP 0 "-e OBENCH_RERUN=1 -e OBENCH_RERUN_CELLS=/o/route-scored.json"
+  route rerun
+fi
+(cd ~/ob-f032 && python3 -m thesis.ab.step8_gate --complete $B/scored $B/gate.json $( [ -d $B/rerun ] && echo $B/rerun )) > $B/complete.json
+log "complete sides: $(python3 -c "import json;d=json.load(open('$B/complete.json'));print(len(d['complete']),'incomplete',sorted(d['incomplete']))")"
 [ -e $B/STOP ] || touch $B/DONE
 log "F03-2 done spend=\$$(spend)"

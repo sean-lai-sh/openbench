@@ -1164,6 +1164,8 @@ def mark_running(spec: dict, on: bool) -> None:
 
 def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
     """Record host, VM type, runner commit, concurrency and ET start/end (opt-in)."""
+    if isinstance(row, dict) and os.environ.get("OBENCH_RERUN", "").strip() == "1":
+        row["rerun"] = 1  # rerun of an infra (e.g. off-route) cell; same gate + route check
     meta = spec.get("cell_meta")
     if not isinstance(row, dict) or not isinstance(meta, dict):
         return
@@ -1654,6 +1656,45 @@ def _absorb_pr_early_stop(spec: dict, out_dir: Path, prepared: dict) -> None:
         print(f"{spec['pr']}: {reason}; skipping its remaining cells", file=sys.stderr)
 
 
+def _cell_rel(spec: dict) -> str:
+    """``<pr>/cells/<side>/<task>/<trial>.json``, the key step8_gate rerun lists use."""
+    return f"{spec['pr']}/cells/{spec['side']}/{task_component(spec['task'])}/{spec['trial']}.json"
+
+
+def rerun_cells_from_env() -> set[str] | None:
+    """OBENCH_RERUN_CELLS=<json>: a list of cell keys, or a step8_gate output
+    with a ``rerun`` list. Only those cells are scheduled."""
+    path = os.environ.get("OBENCH_RERUN_CELLS", "").strip()
+    if not path:
+        return None
+    data = json.loads(Path(path).read_text())
+    items = data.get("rerun", []) if isinstance(data, dict) else data
+    return {str(item) for item in items}
+
+
+ROUTE_HALT_MAX_OFF = 2
+
+
+def _absorb_route_halt(spec: dict, out_dir: Path, prepared: dict) -> None:
+    """OBENCH_ROUTE_HALT=1: >2 off-route cells on a side stops launching that
+    side's remaining cells at once (cells already in flight finish)."""
+    if os.environ.get("OBENCH_ROUTE_HALT", "").strip() != "1":
+        return
+    if not prepared.get(_side_key(spec), {}).get("ok", True):
+        return
+    from thesis.ab.route import off_route
+    off = sum(1 for row in _finished_rows(out_dir, spec) if off_route(row))
+    if off > ROUTE_HALT_MAX_OFF:
+        reason = f"route halt: {off} off-route cells on {spec['pr']}/{spec['side']}"
+        write_infra(out_dir, spec["pr"], spec["side"], spec["sha"], reason)
+        prepared[_side_key(spec)] = {"ok": False, "reason": reason, "status": "infra"}
+        (out_dir / spec["pr"] / f"route-halt-{spec['side']}.json").write_text(json.dumps({
+            "pr": spec["pr"], "side": spec["side"], "off_route": off, "reason": reason,
+            "halted_at": datetime.now().astimezone().isoformat(),
+        }, sort_keys=True))
+        print(f"{spec['pr']}/{spec['side']}: {reason}; not launching its remaining cells", file=sys.stderr)
+
+
 def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
     path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
     row = read_cell(path)
@@ -1684,6 +1725,7 @@ def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
                 "reason": death,
                 "status": "infra",
             }
+    _absorb_route_halt(spec, out_dir, prepared)
     project_side(out_dir, spec["pr"], spec["side"])
     _absorb_pr_early_stop(spec, out_dir, prepared)
 
@@ -2036,6 +2078,9 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         order=order,
         seed=seed,
     )
+    only = rerun_cells_from_env()
+    if only is not None:
+        scheduled = [spec for spec in scheduled if _cell_rel(spec) in only]
     for spec in scheduled:
         path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
         if read_cell(path) is not None:
