@@ -4,7 +4,8 @@ import tempfile
 import unittest
 
 from obench.provider_embedded import embedded_version, scan
-from thesis.ab.step8_gate import evaluate, judge
+from thesis.ab.route import how_of, off_route, route_label
+from thesis.ab.step8_gate import evaluate, judge, route_check
 from thesis.ab.step8_request_diff import _norm, compare_requests
 
 BUN = (b"\x00// ../../node_modules/.bun/@ai-sdk+anthropic@2.0.58+d6123d32214422cb/"
@@ -60,13 +61,81 @@ class GateTest(unittest.TestCase):
                     # layout: RUN/<pr>/cells/<side>/<task>/<cell>.json
                     cell = os.path.join(d, pr, "cells", side, "t", "c.json")
                     os.makedirs(os.path.dirname(cell), exist_ok=True)
-                    json.dump({"probe_method": method, "provider_loaded_version": "2.0.58"}, open(cell, "w"))
+                    json.dump({"probe_method": method, "provider_loaded_version": "2.0.58",
+                               "route": "on:provider-options"}, open(cell, "w"))
             pins = {f"{pr}{s}": {s: {"packages": {"@ai-sdk/anthropic": "2.0.58"}}}
                     for pr, v in sides.items() for s in v}
             out, rc = evaluate(d, pins, sides)
             self.assertEqual(rc, 0, out["mismatch_sides"])
             self.assertEqual(out["sides_seen"], 22)
             self.assertIn("embedded 2.0.58", {c["why"] for c in out["cells"]})
+
+
+def _cells(d, routes):
+    """routes: {(pr, side): [route, ...]} -> one cell file per route."""
+    for (pr, side), rs in routes.items():
+        for i, r in enumerate(rs):
+            cell = os.path.join(d, pr, "cells", side, f"t{i}", "c.json")
+            os.makedirs(os.path.dirname(cell), exist_ok=True)
+            json.dump({} if r is None else {"route": r}, open(cell, "w"))
+
+
+class RouteTest(unittest.TestCase):
+    def test_label(self):
+        self.assertEqual(route_label({"route": "provider options"}, 3), "on:provider-options")
+        self.assertEqual(route_label({"route": "ANTHROPIC_BASE_URL"}, 0), "off:base-url-env")
+        self.assertEqual(how_of(None), "none")
+        self.assertTrue(off_route({"route": "off:base-url-env"}))
+        self.assertFalse(off_route({"route": "on:base-url-env"}))
+
+    def test_off_route_gate_cell_is_infra(self):
+        with tempfile.TemporaryDirectory() as d:
+            sides, pins = {}, {}
+            for i in range(11):
+                pr = str(100 + i)
+                for side in ("without", "with"):
+                    sides.setdefault(pr, {})[side] = f"{pr}{side}"
+                    pins[f"{pr}{side}"] = {side: {"packages": {"@ai-sdk/anthropic": "2.0.0"}}}
+                    cell = os.path.join(d, pr, "cells", side, "t", "c.json")
+                    os.makedirs(os.path.dirname(cell), exist_ok=True)
+                    route = "off:base-url-env" if (i, side) == (0, "without") else "on:provider-options"
+                    json.dump({"probe_method": "strace", "provider_loaded_version": "2.0.0",
+                               "route": route}, open(cell, "w"))
+            out, rc = evaluate(d, pins, sides)
+            self.assertEqual(out["mismatch_sides"], ["100/without"])
+            self.assertEqual(rc, 0)
+            later, _ = evaluate(d, pins, sides, later=True)
+            self.assertEqual(later["rerun"], ["100/cells/without/t/c.json"])
+
+    def test_two_off_route_cells_keep_the_side(self):
+        with tempfile.TemporaryDirectory() as d:
+            _cells(d, {("1", "with"): ["off:provider-options", "off:base-url-env", "on:base-url-env"]})
+            out, rc = route_check(d)
+            self.assertEqual(rc, 0)
+            self.assertEqual(out["halted_sides"], [])
+            self.assertEqual(len(out["rerun"]), 2)
+            self.assertEqual(out["label"], "infra:off_route")
+
+    def test_three_off_route_cells_halt_the_side(self):
+        with tempfile.TemporaryDirectory() as d:
+            _cells(d, {("1", "with"): ["off:a", "off:b", None, "on:a"],
+                       ("1", "without"): ["on:a"]})
+            out, rc = route_check(d)
+            self.assertEqual(out["halted_sides"], ["1/with"])
+            self.assertFalse(out["halt_batch"])
+            self.assertEqual(rc, 0)
+
+    def test_three_halted_sides_halt_the_batch(self):
+        with tempfile.TemporaryDirectory() as d:
+            _cells(d, {(str(p), "with"): ["off:x"] * 3 for p in range(3)})
+            out, rc = route_check(d)
+            self.assertEqual(len(out["halted_sides"]), 3)
+            self.assertTrue(out["halt_batch"])
+            self.assertEqual(rc, 1)
+            _cells(d, {})
+        with tempfile.TemporaryDirectory() as d:
+            _cells(d, {(str(p), "with"): ["off:x"] * 3 for p in range(2)})
+            self.assertEqual(route_check(d)[1], 0)
 
 
 def _req(model, tools=None, wd="/tmp/a", extra=None):

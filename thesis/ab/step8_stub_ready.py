@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from thesis.ab.compat import assess
+from thesis.ab.route import route_label
 
 _EVENTS = [
     ("message_start", {"type": "message_start", "message": {
@@ -184,6 +185,7 @@ def check_side(binary: str, cache: str, sha: str, side: str, pr: str, timeout_s:
     loaded = str(row.get("provider_loaded_version") or "")
     out.update({
         "stub_requests": len(msgs),
+        "route": route_label(proxy, len(msgs)),
         "exit_error": str(row.get("error") or ""),
         "completed": row.get("completed"),
         "provider_loaded_version": loaded,
@@ -196,6 +198,7 @@ def check_side(binary: str, cache: str, sha: str, side: str, pr: str, timeout_s:
     reasons = []
     if not msgs:
         reasons.append("no request reached stub")
+        reasons.append(f"route {out['route']}")
     if "usage" in out["output_tail"].lower() and "opencode run [message" in out["output_tail"]:
         reasons.append("printed usage")
     if not pin:
@@ -261,7 +264,7 @@ def check_control(label: str, rebuild: str, original: str, sha: str, cache: str,
 FIELDS = ["label", "pr", "side", "sha", "ready", "reason", "build_channel", "cell_image",
           "strace", "wall_s", "assess", "pin",
           "provider_loaded_version", "provider_loaded_source", "probe_method", "provider_loaded_mismatch",
-          "stub_requests", "request_diff", "completed", "exit_error", "cmd", "binary", "output_tail"]
+          "route", "stub_requests", "request_diff", "completed", "exit_error", "cmd", "binary", "output_tail"]
 
 
 def main(argv=None) -> int:

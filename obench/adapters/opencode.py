@@ -1858,8 +1858,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             env.pop("ANTHROPIC_API_KEY", None)  # force Anthropic OAuth route
         if proxy:
             env["ANTHROPIC_API_KEY"] = str(proxy.get("api_key") or "proxy")
-            if proxy.get("base_url_env"):
-                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url") or "")
+            # Both routes: config baseURL (from compat) and the env var.
+            if proxy.get("base_url"):
+                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url"))
             else:
                 env.pop("ANTHROPIC_BASE_URL", None)
             env.pop("VERTEX_LOCATION", None)

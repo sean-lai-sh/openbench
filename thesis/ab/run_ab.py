@@ -1355,6 +1355,8 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     row["faults_served"] = faults_served(str(ledger), str(cell))
     records = read_proxy_ledger(str(ledger), str(cell))
     ledger_path = cell_ledger_path(Path(str(ledger)), str(cell))
+    from thesis.ab.route import route_label
+    row["route"] = route_label(proxy, sum(1 for r in records or [] if isinstance(r, dict)))
     if not records:
         # An empty ledger file is a measured zero. A missing file is not.
         if ledger_path.is_file():
