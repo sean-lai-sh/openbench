@@ -14,15 +14,19 @@ side.
 The six post-monorepo sides (51062, 53166, 55613) stay ``deferred`` in
 ``dry-run.csv``, which keeps the #160 columns and format. They are also
 assessed on the provider-free path (``thesis/ab/monorepo.py``) and written to
-their own table, ``monorepo-dry-run.csv`` (``--monorepo-out``), with four more
-columns: ``provider_mode``, ``bundled_provider``, ``score_match``,
-``scorable``. Ready needs the monorepo layout, the bundled ``@opencode/ai``
+their own table, ``dry-run-monorepo.csv`` (``--monorepo-out``), keyed by side
+(``side_key`` = ``<pr>:<side>``), with four more columns: ``provider_mode``,
+``bundled_provider``, ``scoring_parity``, ``scorable``. Ready needs the monorepo layout, the bundled ``@opencode/ai``
 (from ``<bin-root>/worktrees/<sha>``, ``--mirror``, or ``<bin-root>/mirror``),
 the binary, the build gate (``monorepo-builds.csv``: control step passed and
 the binary's sha256 matches its record), and a strace check that opens no
-``node_modules/@ai-sdk/anthropic``. ``scorable`` also needs
-``monorepo-smoke.csv`` to show zero provider faults, a bundled load, and the
-smoke scoring call equal to the box's (recomputed here).
+``node_modules/@ai-sdk/anthropic``. The three PRs are scorable together or
+not at all: every side ready, all six cells in ``monorepo-smoke.csv`` with a
+bundled load and zero provider faults, and ``scoring_parity`` passing
+(``scoring-parity.csv``: the box's saved outputs for two PRs it scored,
+replayed through this runner's scoring path, reproduce the box's pass/fail on
+100% of cells). Otherwise every side is ``scorable=excluded``. All of it is
+recomputed here from those tables.
 ``--monorepo-only`` writes only that table and needs neither bun nor a seeded
 cache. See ``data/step8-pins/MONOREPO.md``.
 
@@ -66,9 +70,9 @@ from thesis.ab.step8_monorepo_build import DEFAULT_BUILDS_CSV, build_gate_reason
 from thesis.ab.step8_monorepo_smoke import (
     DEFAULT_SMOKE_CSV,
     load_smoke,
-    score_match,
-    smoke_scorable,
+    group_decision,
 )
+from thesis.ab.step8_scoring_parity import DEFAULT_PARITY_CSV, parity_from_table
 from thesis.ab.step8_pins import DEFAULT_OUT, DRY_RUN_WITH_BINARIES, PACKAGE, RERUN_PR
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,10 +83,10 @@ FIELDS = [
     "cache_seeded", "binary_present", "binary_path", "loaded_check",
     "loaded_version", "loaded_source", "ready", "reason",
 ]
-# monorepo-dry-run.csv only. dry-run.csv keeps FIELDS.
-MONOREPO_FIELDS = FIELDS + ["provider_mode", "bundled_provider", "score_match", "scorable"]
+# dry-run-monorepo.csv only, one row per side keyed by side_key. dry-run.csv keeps FIELDS.
+MONOREPO_FIELDS = ["side_key"] + FIELDS + ["provider_mode", "bundled_provider", "scoring_parity", "scorable"]
 MONOREPO_GROUP = "monorepo"
-DEFAULT_MONOREPO_OUT = DEFAULT_OUT / "monorepo-dry-run.csv"
+DEFAULT_MONOREPO_OUT = DEFAULT_OUT / "dry-run-monorepo.csv"
 
 
 def version_from_trace_line(line: str) -> str:
@@ -382,17 +386,16 @@ def assess_monorepo_row(
     binary: Path,
     loaded_version: str = "",
     loaded_source: str = "",
-    smoke: dict | None = None,
     build_reason: str = "",
 ) -> dict:
     """One readiness row for a provider-free monorepo side.
 
     Ready needs the monorepo layout, a bundled provider, and a runnable
     binary. The strace check fails the side when the binary opens a
-    separately installed ``@ai-sdk/anthropic``. ``scorable`` additionally
-    needs the smoke: zero provider faults, a bundled load, and the smoke's
-    scoring call equal to the box's. ``build_reason`` is the build gate
-    (``step8_monorepo_build.build_gate_reason``); non-empty is not ready.
+    separately installed ``@ai-sdk/anthropic``. ``build_reason`` is the
+    build gate (``step8_monorepo_build.build_gate_reason``); non-empty is not
+    ready. ``scoring_parity`` and ``scorable`` are set for all six sides at
+    once by ``apply_monorepo_gate``.
     """
     reasons = []
     why = bundled_reason(layout, provider)
@@ -417,8 +420,8 @@ def assess_monorepo_row(
     if present and build_reason:
         reasons.append(f"build gate: {build_reason}")
     ready = not reasons
-    scorable, smoke_reason = smoke_scorable(smoke)
     return {
+        "side_key": f"{row.get('pr') or ''}:{row.get('side') or ''}",
         "group": MONOREPO_GROUP,
         "batch": row.get("batch") or "",
         "pr": row.get("pr") or "",
@@ -436,12 +439,10 @@ def assess_monorepo_row(
         "reason": "; ".join(reasons),
         "provider_mode": "bundled",
         "bundled_provider": bundled_label(provider),
-        "score_match": "true" if smoke and score_match(
-            str(smoke.get("smoke_score") or ""), str(smoke.get("box_score") or ""),
-        ) else "false",
-        "scorable": "yes" if ready and scorable else "no",
+        "scoring_parity": "",
+        "scorable": "excluded",
         "_provider": provider,
-        "_scorable_reason": "not ready" if not ready else smoke_reason,
+        "_scorable_reason": "",
     }
 
 
@@ -466,7 +467,28 @@ def check_pr_providers(rows: list[dict]) -> None:
             reason = f"bundled provider differs between sides ({labels})"
             row["reason"] = "; ".join(part for part in (row["reason"], reason) if part)
             row["ready"] = "no"
-            row["scorable"] = "no"
+
+
+def apply_monorepo_gate(
+    rows: list[dict],
+    smoke: dict[tuple[str, str], dict],
+    parity: tuple[bool, str],
+) -> list[dict]:
+    """All-or-nothing ``scorable`` for the three PRs (D5 §4).
+
+    ``yes`` for every side only when every side is ready, all six smoke cells
+    loaded the bundled provider with zero provider faults, and
+    ``scoring_parity`` passes. Otherwise every side is ``excluded``.
+    """
+    sides = [{"pr": row["pr"], "side": row["side"]} for row in rows]
+    ok, reasons = group_decision(smoke, sides, parity)
+    not_ready = [f"{row['pr']} {row['side']} not ready" for row in rows if row["ready"] != "yes"]
+    reasons = not_ready + reasons
+    for row in rows:
+        row["scoring_parity"] = "pass" if parity[0] else "fail"
+        row["scorable"] = "yes" if ok and not not_ready else "excluded"
+        row["_scorable_reason"] = "; ".join(reasons)
+    return rows
 
 
 def run_monorepo(
@@ -477,6 +499,7 @@ def run_monorepo(
     mirror: Path | None,
     smoke_csv: Path,
     builds_csv: Path = DEFAULT_BUILDS_CSV,
+    parity_csv: Path = DEFAULT_PARITY_CSV,
 ) -> list[dict]:
     """Assess the monorepo rows. No bun, no seeding, no model call."""
     smoke = load_smoke(smoke_csv)
@@ -504,11 +527,10 @@ def run_monorepo(
             binary=binary,
             loaded_version=loaded_version,
             loaded_source=loaded_source,
-            smoke=smoke.get((row.get("pr") or "", row.get("side") or "")),
             build_reason=build_gate_reason(records, sha, binary),
         ))
     check_pr_providers(out)
-    return out
+    return apply_monorepo_gate(out, smoke, parity_from_table(parity_csv))
 
 
 def monorepo_rows(pins_csv: Path, rerun_path: Path) -> list[dict]:
@@ -517,6 +539,9 @@ def monorepo_rows(pins_csv: Path, rerun_path: Path) -> list[dict]:
 
 
 def write_monorepo_csv(rows: list[dict], out_csv: Path) -> None:
+    keys = [row.get("side_key") for row in rows]
+    if len(set(keys)) != len(keys) or not all(keys):
+        raise SystemExit(f"dry-run-monorepo.csv needs one row per side, got {keys}")
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=MONOREPO_FIELDS, lineterminator="\n")
@@ -534,16 +559,17 @@ def refresh_monorepo(
     mirror: Path | None,
     smoke_csv: Path = DEFAULT_SMOKE_CSV,
     builds_csv: Path = DEFAULT_BUILDS_CSV,
+    parity_csv: Path = DEFAULT_PARITY_CSV,
 ) -> list[dict]:
     """Assess only the monorepo rows and write them to ``out_csv``.
 
-    ``out_csv`` is its own table (default ``monorepo-dry-run.csv``).
+    ``out_csv`` is its own table (default ``dry-run-monorepo.csv``).
     ``dry-run.csv`` and ``dry-run.md`` are not read or written.
     """
     rows = run_monorepo(
         monorepo_rows(pins_csv, rerun_path),
         cache=cache, bin_root=bin_root, mirror=mirror, smoke_csv=smoke_csv,
-        builds_csv=builds_csv,
+        builds_csv=builds_csv, parity_csv=parity_csv,
     )
     write_monorepo_csv(rows, out_csv)
     return rows
@@ -558,8 +584,12 @@ def summarize_monorepo(rows: list[dict]) -> str:
         lines.append(
             f"  {row['pr']} {row['side']:<7} {row['sha'][:8]} "
             f"{row.get('bundled_provider') or 'bundled provider unknown'}; {status}; "
-            f"score_match={row.get('score_match') or 'false'}; scorable={row.get('scorable') or 'no'}"
+            f"scorable={row.get('scorable') or 'excluded'}"
         )
+    if rows:
+        lines.append(f"scoring_parity {rows[0].get('scoring_parity') or 'fail'}; "
+                     f"scorable {rows[0].get('scorable')}"
+                     + (f" ({rows[0]['_scorable_reason']})" if rows[0].get("_scorable_reason") else ""))
     return "\n".join(lines)
 
 
@@ -696,6 +726,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="monorepo build records; a monorepo binary is used only with a passed control step")
     parser.add_argument("--smoke", type=Path, default=DEFAULT_SMOKE_CSV,
                         help="monorepo smoke report; a monorepo side is scorable only from it")
+    parser.add_argument("--parity", type=Path, default=DEFAULT_PARITY_CSV,
+                        help="scoring parity table (thesis.ab.step8_scoring_parity)")
     parser.add_argument("--monorepo-out", type=Path, default=DEFAULT_MONOREPO_OUT,
                         help="table for the 51062/53166/55613 sides (dry-run.csv keeps them deferred)")
     parser.add_argument(
@@ -707,7 +739,7 @@ def main(argv: list[str] | None = None) -> int:
     mono = refresh_monorepo(
         args.pins, args.rerun, args.monorepo_out,
         cache=args.cache, bin_root=args.bin_root, mirror=args.mirror,
-        smoke_csv=args.smoke, builds_csv=args.builds,
+        smoke_csv=args.smoke, builds_csv=args.builds, parity_csv=args.parity,
     )
     if args.monorepo_only:
         print(summarize_monorepo(mono))
