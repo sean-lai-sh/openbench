@@ -20,12 +20,12 @@ def gate_reads() -> set[str]:
 
 
 class CellFieldCompleteness(TestPhaseTiming):
-    def _cell(self, d, side, extra_env=None, stamp=True, proxy=None):
+    def _cell(self, d, side, extra_env=None, stamp=True, proxy=None, trial=0):
         binary = Path(d) / "bin" / SHA[side] / "opencode"
         binary.parent.mkdir(parents=True, exist_ok=True)
         if stamp:
             (binary.parent / "build-stamp.json").write_text(json.dumps({"build_channel": "local"}))
-        spec = dict(pr="1", side=side, sha=SHA[side], task="t", trial=0, binary=str(binary),
+        spec = dict(pr="1", side=side, sha=SHA[side], task="t", trial=trial, binary=str(binary),
                     cell_meta={"cell_image": "h1-env:1027-strace", "runner_commit": "c" * 40},
                     proxy=proxy if proxy is not None else
                     {"route": "provider options", "opencode_cache": "/c", "lockfile_sha256": "f" * 64})
@@ -37,7 +37,7 @@ class CellFieldCompleteness(TestPhaseTiming):
             run_ab.attach_cell_meta(row, spec, "2026-10-27T03:00:00-04:00")
             run_ab.attach_provider_pin(row, spec)
             run_ab.attach_required_fields(row, spec)
-        path = run_ab.cell_file(Path(d) / "run", "1", side, "t", 0)
+        path = run_ab.cell_file(Path(d) / "run", "1", side, "t", trial)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(row))
         return json.loads(path.read_text())
@@ -66,6 +66,29 @@ class CellFieldCompleteness(TestPhaseTiming):
             self.assertIn("halted_spend", route)
             done, _ = step8_gate.complete(str(Path(d) / "run"), out)
             self.assertIn("1/with", done["incomplete"])  # 1 cell, not 30: not padded
+
+    def test_traced_gate_cell_excluded_from_31(self):
+        """31 cells on one side, one traced gate cell: exactly 30 scored."""
+        with tempfile.TemporaryDirectory() as d:
+            gate = {"ok_prs": ["1"], "mismatch_sides": []}
+            traced = self._cell(d, "with", {"OBENCH_PROVIDER_TRACE": "1", "OBENCH_GATE_CELL": "1"}, trial=0)
+            self.assertIs(traced["gate_cell"], True)
+            for t in range(1, 31):
+                c = self._cell(d, "with", {"OBENCH_PROVIDER_TRACE": "0", "OBENCH_GATE_CELL": "0"}, trial=t)
+                self.assertIs(c["strace_on"], False)
+                self.assertIs(c["gate_cell"], False)
+            done, _ = step8_gate.complete(str(Path(d) / "run"), gate)
+            side = done["complete"]["1/with"]
+            self.assertEqual(side["on_route"], 30)
+            self.assertEqual(len(side["cells"]), 30)
+            tf = str(run_ab.cell_file(Path(d) / "run", "1", "with", "t", 0))
+            self.assertEqual(done["excluded_traced"], [tf])
+            self.assertNotIn(tf, side["cells"])
+            # Dropping the marker must not silently score the traced cell.
+            p = Path(tf); c = json.loads(p.read_text()); c.pop("gate_cell"); c["strace_on"] = False
+            p.write_text(json.dumps(c))
+            done, _ = step8_gate.complete(str(Path(d) / "run"), gate)
+            self.assertEqual(done["excluded_traced"], [])  # proves the test catches a dropped marker
 
     def test_rerun_tag_saved(self):
         with tempfile.TemporaryDirectory() as d:

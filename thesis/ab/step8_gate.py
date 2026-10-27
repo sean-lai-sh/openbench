@@ -101,6 +101,11 @@ def _cell_key(f: str) -> tuple[str, str, str, str]:
     return p[-5], p[-3], p[-2], p[-1]
 
 
+def scorable(c: dict) -> bool:
+    """A traced (strace_on) or gate cell is infra evidence, never scored."""
+    return not (c.get("strace_on") is True or c.get("gate_cell") is True)
+
+
 def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
     """Sides to score: gate-passed PR and 30 on-route scored cells. A tagged
     rerun (``rerun=1``) replaces its off-route original; untagged cells in a
@@ -125,8 +130,10 @@ def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
     sides = {}
     for k, (f, c) in sorted(cells.items()):
         sides.setdefault(f"{k[0]}/{k[1]}", []).append((f, c))
-    out = dict(complete={}, incomplete={}, untagged_rerun_cells=untagged)
+    out = dict(complete={}, incomplete={}, untagged_rerun_cells=untagged, excluded_traced=[])
     for key, rs in sorted(sides.items()):
+        out["excluded_traced"] += [f for f, c in rs if not scorable(c)]
+        rs = [(f, c) for f, c in rs if scorable(c)]
         on = [f for f, c in rs if route_ok(c)]
         why = None
         if key.split("/")[0] not in ok_prs or key in bad:

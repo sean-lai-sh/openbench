@@ -550,7 +550,8 @@ def _cell_json_rows(root: Path, side: str) -> list[dict]:
             parsed = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if isinstance(parsed, dict):
+        # Traced/gate cells are infra evidence, not scored (step8_gate.scorable).
+        if isinstance(parsed, dict) and not (parsed.get("strace_on") is True or parsed.get("gate_cell") is True):
             rows.append(parsed)
     return rows
 

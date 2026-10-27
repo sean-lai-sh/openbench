@@ -1183,6 +1183,10 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
     row["cell_image"] = meta.get("cell_image") or os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None
     flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()
     row["provider_trace"] = "off" if flag == "0" or not shutil.which("strace") else "on"
+    # strace_on: this cell ran under strace. gate_cell: launcher-marked traced
+    # gate cell. Either one makes the cell unscorable (step8_gate.scorable).
+    row["strace_on"] = row["provider_trace"] == "on"
+    row["gate_cell"] = bool(meta.get("gate_cell")) or os.environ.get("OBENCH_GATE_CELL", "").strip() == "1"
     row["runner_commit"] = meta.get("runner_commit")
     row["exec_mode"] = spec.get("exec_mode") or "local"
     row["timeout_cap_s"] = meta.get("timeout_cap_s")
@@ -1201,7 +1205,7 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
 # is written as null and listed in ``missing_fields``: never silently absent.
 GATE_CELL_FIELDS = (
     "route", "rerun", "probe_method", "provider_loaded_version", "provider_loaded_source",
-    "provider_loaded_mismatch", "requests_cost_usd", "started_et", "ended_et",
+    "provider_loaded_mismatch", "requests_cost_usd", "started_et", "ended_et", "strace_on", "gate_cell",
 )
 PROVENANCE_CELL_FIELDS = (
     "cell_image", "provider_trace", "opencode_cache", "lockfile_sha256", "build_channel", "runner_commit",
