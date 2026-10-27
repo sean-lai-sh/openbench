@@ -30,9 +30,12 @@ Not ready because the OpenCode binaries for these SHAs are not built in this che
 
 These six sides have no `packages/opencode`. They are `provider_mode=bundled`. The CLI builds from `packages/cli`, and the Anthropic provider is OpenCode's own `packages/ai` (`@opencode/ai`), compiled into the binary. `bun.lock` has no `@ai-sdk/anthropic`, so nothing is pinned or seeded. `pins.csv` and `provider_pins.json` are unchanged. `bundled_provider` is the `@opencode/ai` version and the git tree id of `packages/ai/src`; both sides of each PR must match. When a binary is present, the strace check passes if the binary opens no `node_modules/@ai-sdk/anthropic` (`loaded_source=bundled`).
 
-A monorepo side is `scorable=yes` only when it is ready and `monorepo-smoke.csv` shows its smoke cell loaded the bundled provider with zero provider faults.
+A monorepo binary is used only after `monorepo-builds.csv` shows a passed control step (three existing step-8 builds rebuilt, each matching its existing build's `opencode --version` and loaded provider) and a build record whose binary sha256 matches the binary on disk. Otherwise the side is not ready.
+
+A monorepo side is `scorable=yes` only when it is ready and `monorepo-smoke.csv` shows its smoke cell loaded the bundled provider with zero provider faults and `score_match=true`: the smoke cell's scoring call equals the box's scoring call for that side as recorded on main. Missing box data is `score_match=false`.
 
 ```bash
+python3 -m thesis.ab.step8_monorepo_build --cache <opencode-src>
 python3 -m thesis.ab.step8_pin_dry_run --monorepo-only --bin-root <opencode-src> --mirror <opencode-mirror>
 python3 -m thesis.ab.step8_monorepo_smoke --cache <opencode-src> --out results/step8-monorepo-smoke-<date> [--box-out <box run dir>]
 ```

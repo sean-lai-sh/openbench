@@ -288,11 +288,34 @@ class RunnerPathTests(unittest.TestCase):
         self.assertIn("provider_bundled_mismatch", traced["error"])
 
 
-def _smoke_row(pr: str, side: str, *, faults: int = 0, loaded: str = "bundled", scorable: str = "yes") -> dict:
+def _smoke_row(pr: str, side: str, *, faults: int = 0, loaded: str = "bundled", scorable: str = "yes",
+               smoke_score: str = "pass", box_score: str = "pass", box_cells: int = 30,
+               match: str | None = None) -> dict:
+    if match is None:
+        match = "true" if smoke_score and smoke_score == box_score else "false"
     return {
         "pr": pr, "side": side, "cell_present": "yes", "provider_faults": str(faults),
         "provider_loaded_source": loaded, "scorable": scorable, "reason": "",
+        "smoke_score": smoke_score, "box_score": box_score, "box_cells": str(box_cells),
+        "score_match": match,
     }
+
+
+def _box(solved: int, scored: int, cells: int | None = None, faults: int = 0) -> dict:
+    from thesis.ab.step8_monorepo_smoke import box_score
+
+    return {"cells": scored if cells is None else cells, "scored": scored, "solved": solved,
+            "faults": faults, "score": box_score(solved, scored), "runs": ["box"]}
+
+
+def _good_records(binary: Path, sha: str) -> list[dict]:
+    from thesis.ab.step8_monorepo_build import sha256_file
+
+    controls = [
+        {"kind": "control", "sha": str(i) * 40, "control_match": "yes", "control_status": "pass", "used": "no"}
+        for i in range(3)
+    ]
+    return controls + [{"kind": "monorepo", "sha": sha, "used": "yes", "binary_sha256": sha256_file(binary)}]
 
 
 class DryRunMonorepoTests(unittest.TestCase):
@@ -329,6 +352,14 @@ class DryRunMonorepoTests(unittest.TestCase):
             clean = assess_monorepo_row(row, layout="monorepo", provider=self.provider, binary=binary,
                                         loaded_source="none", smoke=_smoke_row("51062", "with"))
             self.assertEqual(clean["scorable"], "yes")
+            self.assertEqual(clean["score_match"], "true")
+
+            gated = assess_monorepo_row(row, layout="monorepo", provider=self.provider, binary=binary,
+                                        loaded_source="none", smoke=_smoke_row("51062", "with"),
+                                        build_reason="control step not run")
+            self.assertEqual(gated["ready"], "no")
+            self.assertIn("build gate: control step not run", gated["reason"])
+            self.assertEqual(gated["scorable"], "no")
 
             faulted = assess_monorepo_row(row, layout="monorepo", provider=self.provider, binary=binary,
                                           loaded_source="none", smoke=_smoke_row("51062", "with", faults=1))
@@ -342,6 +373,28 @@ class DryRunMonorepoTests(unittest.TestCase):
             self.assertEqual(leaked["ready"], "no")
             self.assertEqual(leaked["loaded_check"], "mismatch")
             self.assertEqual(leaked["scorable"], "no")
+
+            mismatched = assess_monorepo_row(row, layout="monorepo", provider=self.provider, binary=binary,
+                                             loaded_source="none",
+                                             smoke=_smoke_row("51062", "with", box_score="fail"))
+            self.assertEqual(mismatched["ready"], "yes")
+            self.assertEqual(mismatched["score_match"], "false")
+            self.assertEqual(mismatched["scorable"], "no")
+            self.assertIn("smoke pass != box fail", mismatched["_scorable_reason"])
+
+            # A hand-edited table that says true is recomputed from the two calls.
+            edited = assess_monorepo_row(row, layout="monorepo", provider=self.provider, binary=binary,
+                                         loaded_source="none",
+                                         smoke=_smoke_row("51062", "with", box_score="fail", match="true"))
+            self.assertEqual(edited["score_match"], "false")
+            self.assertEqual(edited["scorable"], "no")
+
+            no_box = assess_monorepo_row(row, layout="monorepo", provider=self.provider, binary=binary,
+                                         loaded_source="none",
+                                         smoke=_smoke_row("51062", "with", box_score="", box_cells=0))
+            self.assertEqual(no_box["score_match"], "false")
+            self.assertEqual(no_box["scorable"], "no")
+            self.assertIn("no box data", no_box["_scorable_reason"])
 
             legacy = assess_monorepo_row(row, layout="legacy", provider=None, binary=binary,
                                          smoke=_smoke_row("51062", "with"))
@@ -411,10 +464,22 @@ class DryRunMonorepoTests(unittest.TestCase):
             bin_root = tmp / "src"
             make_monorepo(bin_root / "worktrees" / SHA_WITH)
             make_monorepo(bin_root / "worktrees" / SHA_WITHOUT)
-            make_exec(dry.binary_path(bin_root, SHA_WITH))
+            binary = make_exec(dry.binary_path(bin_root, SHA_WITH))
+            from thesis.ab.step8_monorepo_build import write_records
+
+            no_builds = tmp / "no-builds.csv"
+            builds = tmp / "monorepo-builds.csv"
+            write_records(_good_records(binary, SHA_WITH), builds)
+            with patch.object(dry, "trace_binary", return_value=("", "none")):
+                gated = dry.run_monorepo(
+                    [{"pr": "51062", "side": "with", "sha": SHA_WITH}], cache=tmp / "cache",
+                    bin_root=bin_root, mirror=None, smoke_csv=tmp / "no-smoke.csv", builds_csv=no_builds,
+                )
+            self.assertEqual(gated[0]["ready"], "no")
+            self.assertIn("build gate: control step not run", gated[0]["reason"])
             with patch.object(dry, "trace_binary", return_value=("", "none")) as traced:
                 rows = dry.refresh_monorepo(pins, rerun, out, cache=tmp / "cache", bin_root=bin_root,
-                                            mirror=None, smoke_csv=tmp / "no-smoke.csv")
+                                            mirror=None, smoke_csv=tmp / "no-smoke.csv", builds_csv=builds)
             self.assertEqual(traced.call_count, 1)
             written = _rows(out)
             self.assertEqual(list(written[0].keys()), dry.FIELDS)
@@ -442,6 +507,7 @@ class DryRunMonorepoTests(unittest.TestCase):
             self.assertTrue(row["reason"] or row["ready"] == "yes")
             # No smoke table is committed, so nothing is scorable yet.
             self.assertEqual(row["scorable"], "no")
+            self.assertEqual(row["score_match"], "false")
         by_pr: dict[str, set[str]] = {}
         for row in mono:
             by_pr.setdefault(row["pr"], set()).add(row["bundled_provider"])
@@ -451,6 +517,14 @@ class DryRunMonorepoTests(unittest.TestCase):
         deferred = [row for row in pins if row["pr"] in monorepo.MONOREPO_PRS]
         self.assertEqual({row["status"] for row in deferred}, {"deferred"})
         self.assertEqual({row["version"] for row in deferred}, {""})
+        builds = _rows(DEFAULT_OUT / "monorepo-builds.csv")
+        self.assertEqual(sorted(row["sha"] for row in builds), sorted(row["sha"] for row in mono))
+        for row in builds:
+            self.assertEqual(row["kind"], "monorepo")
+            self.assertEqual(row["lockfile"], "bun.lock")
+            self.assertRegex(row["lockfile_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(row["used"], "no")
+            self.assertEqual(row["binary_sha256"], "")
 
 
 class SmokeTests(unittest.TestCase):
@@ -468,24 +542,90 @@ class SmokeTests(unittest.TestCase):
         from thesis.ab.step8_monorepo_smoke import assess_side
 
         side = {"pr": "51062", "side": "with", "sha": SHA_WITH}
-        box = {"cells": 0, "solved": 0, "faults": 0}
+        box = _box(29, 30)
         clean = assess_side(side, "misleading-error", self._cell(), box)
         self.assertEqual((clean["provider_faults"], clean["call"], clean["scorable"]), (0, "solved", "yes"))
-        self.assertEqual(clean["call_matches_box"], "no box cells")
+        self.assertEqual((clean["smoke_score"], clean["box_score"], clean["score_match"]), ("pass", "pass", "true"))
         faulted = assess_side(side, "misleading-error", self._cell(
             failure_class="infra", success=False, error="AI_APICallError: overloaded_error",
         ), box)
         self.assertEqual((faulted["provider_faults"], faulted["scorable"]), (1, "no"))
         timeout = assess_side(side, "misleading-error", self._cell(
             failure_class="hang", success=False, error="TimeoutError timed out. stream error",
-        ), box)
-        self.assertEqual((timeout["provider_faults"], timeout["scorable"]), (0, "yes"))
+        ), _box(0, 30))
+        self.assertEqual((timeout["provider_faults"], timeout["smoke_score"], timeout["scorable"]),
+                         (0, "fail", "yes"))
         unbundled = assess_side(side, "misleading-error", self._cell(provider_loaded_source=""), box)
         self.assertEqual(unbundled["scorable"], "no")
         missing = assess_side(side, "misleading-error", None, box)
         self.assertEqual((missing["cell_present"], missing["scorable"]), ("no", "no"))
-        compared = assess_side(side, "misleading-error", self._cell(), {"cells": 30, "solved": 29, "faults": 0})
-        self.assertEqual((compared["box_solved"], compared["call_matches_box"]), ("29/30", "yes"))
+        self.assertEqual(missing["score_match"], "false")
+        compared = assess_side(side, "misleading-error", self._cell(), _box(29, 30))
+        self.assertEqual((compared["box_solved"], compared["score_match"]), ("29/30", "true"))
+
+    def test_mismatched_scoring_call_is_not_scorable(self):
+        from thesis.ab.step8_monorepo_smoke import assess_side, smoke_scorable
+
+        side = {"pr": "51062", "side": "with", "sha": SHA_WITH}
+        # Smoke solved, box mostly failed: zero provider faults is not enough.
+        row = assess_side(side, "misleading-error", self._cell(), _box(3, 30))
+        self.assertEqual((row["provider_faults"], row["smoke_score"], row["box_score"]), (0, "pass", "fail"))
+        self.assertEqual(row["score_match"], "false")
+        self.assertEqual(row["scorable"], "no")
+        self.assertIn("smoke pass != box fail", row["reason"])
+        # The other direction, and a tie (which is fail on the box side).
+        row = assess_side(side, "misleading-error", self._cell(failure_class="wrong_answer", success=False),
+                          _box(20, 30))
+        self.assertEqual((row["score_match"], row["scorable"]), ("false", "no"))
+        row = assess_side(side, "misleading-error", self._cell(), _box(15, 30))
+        self.assertEqual((row["box_score"], row["score_match"]), ("fail", "false"))
+        # An infra smoke cell has no scoring call.
+        row = assess_side(side, "misleading-error", self._cell(failure_class="infra", success=False),
+                          _box(30, 30))
+        self.assertEqual((row["smoke_score"], row["score_match"], row["scorable"]), ("", "false", "no"))
+        # The table check refuses a mismatch even if score_match and scorable were edited.
+        self.assertFalse(smoke_scorable(_smoke_row("51062", "with", box_score="fail", match="true"))[0])
+
+    def test_missing_box_data_is_not_scorable(self):
+        from thesis.ab.step8_monorepo_smoke import assess_side, box_summary, smoke_scorable
+
+        side = {"pr": "51062", "side": "with", "sha": SHA_WITH}
+        with tempfile.TemporaryDirectory() as tmp:
+            box_dir = Path(tmp) / "box"
+            empty = box_summary([box_dir], "51062", "with", "misleading-error")
+            self.assertEqual((empty["cells"], empty["score"]), (0, ""))
+            row = assess_side(side, "misleading-error", self._cell(), empty)
+            self.assertEqual((row["box_score"], row["score_match"], row["scorable"]), ("", "false", "no"))
+            self.assertIn("no box data for this side on main", row["reason"])
+            # Box cells for another task or side do not count.
+            _write(box_dir / "51062" / "with.jsonl", json.dumps(self._cell(task="other-task")) + "\n")
+            _write(box_dir / "51062" / "without.jsonl", json.dumps(self._cell()) + "\n")
+            self.assertEqual(box_summary([box_dir], "51062", "with", "misleading-error")["cells"], 0)
+            # Box cells that are all infra give no scoring call either.
+            _write(box_dir / "51062" / "with.jsonl",
+                   json.dumps(self._cell(failure_class="infra", success=False)) + "\n")
+            infra = box_summary([box_dir], "51062", "with", "misleading-error")
+            self.assertEqual((infra["cells"], infra["scored"], infra["score"]), (1, 0, ""))
+            row = assess_side(side, "misleading-error", self._cell(), infra)
+            self.assertEqual(row["score_match"], "false")
+            self.assertIn("all infra", row["reason"])
+        self.assertFalse(smoke_scorable(_smoke_row("51062", "with", box_score="", box_cells=0))[0])
+
+    def test_box_calls_come_from_main(self):
+        from thesis.ab.step8_monorepo_smoke import box_summary, default_box_dirs
+
+        dirs = default_box_dirs()
+        names = {path.name for path in dirs}
+        self.assertIn("step8-full413-1020-F01", names)
+        self.assertNotIn("step8-vm-F03-1-1025-QUARANTINED", names)
+        recorded = box_summary(dirs, "1443", "without", "trig-read-lines")
+        self.assertGreater(recorded["scored"], 0)
+        self.assertIn(recorded["score"], {"pass", "fail"})
+        self.assertIn("step8-full413-1020-F01", recorded["runs"])
+        # The three monorepo PRs have no box cells on main.
+        for pr, task in (("51062", "misleading-error"), ("53166", "make-it-run"), ("55613", "taskflow")):
+            for side in ("with", "without"):
+                self.assertEqual(box_summary(dirs, pr, side, task)["cells"], 0)
 
     def test_smoke_scorable_rechecks_counts(self):
         from thesis.ab.step8_monorepo_smoke import smoke_scorable
@@ -529,6 +669,7 @@ class SmokeTests(unittest.TestCase):
             by_key = {(row["pr"], row["side"]): row for row in rows}
             self.assertEqual(by_key[("51062", "with")]["scorable"], "yes")
             self.assertEqual(by_key[("51062", "with")]["box_solved"], "2/3")
+            self.assertEqual(by_key[("51062", "with")]["score_match"], "true")
             self.assertEqual(by_key[("51062", "without")]["provider_faults"], 1)
             self.assertEqual(by_key[("51062", "without")]["scorable"], "no")
             self.assertEqual(by_key[("53166", "with")]["reason"], "smoke cell missing")
@@ -538,6 +679,20 @@ class SmokeTests(unittest.TestCase):
             self.assertTrue(smoke.smoke_scorable(loaded[("51062", "with")])[0])
             self.assertFalse(smoke.smoke_scorable(loaded[("51062", "without")])[0])
             self.assertIn("sides 6 provider-faults 1 scorable 1", smoke.summarize(rows))
+
+    def test_launch_refused_without_build_gate(self):
+        from thesis.ab import step8_monorepo_smoke as smoke
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(smoke, "run_smoke") as launched, redirect_stdout(StringIO()), \
+                    patch("sys.stderr", new_callable=StringIO) as err:
+                code = smoke.main(["--cache", str(Path(tmp) / "src"), "--out", str(Path(tmp) / "out"),
+                                   "--builds", str(Path(tmp) / "none.csv"),
+                                   "--report", str(Path(tmp) / "report.csv"),
+                                   "--task-map", str(ROOT / "results/step8-full413-1020/task-map.csv")])
+        self.assertEqual(code, 3)
+        launched.assert_not_called()
+        self.assertIn("control step not run", err.getvalue())
 
     def test_plan_mode_launches_nothing(self):
         from thesis.ab import step8_monorepo_smoke as smoke
@@ -550,6 +705,174 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(lines), 3)
         self.assertTrue(all("--trials 1" in line for line in lines))
         self.assertIn("--tasks misleading-error", lines[0])
+
+
+class FakeProbe:
+    """Build info and loaded provider from a table, keyed by binary path."""
+
+    def __init__(self, info=None, loaded=None):
+        self.info = info or {}
+        self.loaded_map = loaded or {}
+
+    def build_info(self, binary):
+        return self.info.get(str(binary), "2.0.29")
+
+    def loaded(self, binary, sha, side, tag):
+        return self.loaded_map.get(str(binary), "no @ai-sdk/anthropic opened")
+
+
+class MonorepoBuildRecordTests(unittest.TestCase):
+    CONTROLS = [{"pr": str(i), "side": "without", "sha": str(i) * 40} for i in (7, 8, 9)]
+
+    def _setup(self, tmp: Path):
+        cache = tmp / "src"
+        for control in self.CONTROLS:
+            make_exec(cache / "bin" / control["sha"] / "opencode")
+        built: list[tuple[str, Path]] = []
+
+        def build_fn(sha, where):
+            built.append((sha, Path(where)))
+            root = Path(where) / "worktrees" / sha
+            if sha in {row["sha"] for row in self.CONTROLS}:
+                make_legacy(root)
+            else:
+                make_monorepo(root)
+            return make_exec(Path(where) / "bin" / sha / "opencode")
+
+        return cache, built, build_fn
+
+    def test_control_pass_builds_and_records(self):
+        from thesis.ab import step8_monorepo_build as build
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            cache, built, build_fn = self._setup(tmp)
+            out = tmp / "builds.csv"
+            with patch.object(build, "worktree_head", side_effect=lambda root: Path(root).name), \
+                    redirect_stdout(StringIO()):
+                code = build.run_build(pins_csv=DEFAULT_OUT / "pins.csv", cache=cache, out=out,
+                                       controls=self.CONTROLS, build_fn=build_fn, probe=FakeProbe())
+            self.assertEqual(code, 0)
+            # Controls are rebuilt into control-rebuild, never over the existing binaries.
+            for sha, where in built[:3]:
+                self.assertEqual(where.name, "control-rebuild")
+            self.assertEqual(len(built), 9)
+            rows = _rows(out)
+            controls = [row for row in rows if row["kind"] == "control"]
+            sides = [row for row in rows if row["kind"] == "monorepo"]
+            self.assertEqual(len(controls), 3)
+            self.assertTrue(all(row["control_match"] == "yes" and row["control_status"] == "pass"
+                                for row in controls))
+            self.assertEqual(len(sides), 6)
+            for row in sides:
+                self.assertEqual(row["used"], "yes", row)
+                self.assertEqual(row["worktree_head"], row["sha"])
+                self.assertEqual(row["plan_kind"], "monorepo")
+                self.assertEqual(row["lockfile"], "bun.lock")
+                self.assertRegex(row["lockfile_sha256"], r"^[0-9a-f]{64}$")
+                self.assertRegex(row["binary_sha256"], r"^[0-9a-f]{64}$")
+                self.assertIn("bundled @opencode/ai@2.0.29", row["loaded_provider"])
+            records = build.load_records(out)
+            sha = sides[0]["sha"]
+            binary = cache / "bin" / sha / "opencode"
+            self.assertEqual(build.build_gate_reason(records, sha, binary), "")
+            binary.write_text("#!/bin/sh\nexit 1\n")
+            self.assertIn("binary sha256", build.build_gate_reason(records, sha, binary))
+            self.assertEqual(build.build_gate_reason(records, "f" * 40, binary), "no build record")
+
+    def _failed(self, probe) -> tuple[int, list[dict], list]:
+        from thesis.ab import step8_monorepo_build as build
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            cache, built, build_fn = self._setup(tmp)
+            out = tmp / "builds.csv"
+            probe = probe(cache)
+            with patch.object(build, "worktree_head", side_effect=lambda root: Path(root).name), \
+                    redirect_stdout(StringIO()), patch("sys.stderr", new_callable=StringIO):
+                code = build.run_build(pins_csv=DEFAULT_OUT / "pins.csv", cache=cache, out=out,
+                                       controls=self.CONTROLS, build_fn=build_fn, probe=probe)
+            rows = _rows(out)
+            gate = build.launch_gate(out, build.monorepo_sides(DEFAULT_OUT / "pins.csv"), cache)
+        return code, rows, built, gate
+
+    def _assert_failed(self, code, rows, built, gate, expected):
+        self.assertEqual(code, 3)
+        # No monorepo side was built after the failed control.
+        self.assertEqual(len(built), 3)
+        sides = [row for row in rows if row["kind"] == "monorepo"]
+        self.assertEqual(len(sides), 6)
+        self.assertTrue(all(row["used"] == "no" and row["binary_sha256"] == "" for row in sides))
+        self.assertTrue(all(row["control_status"] == "fail" for row in rows))
+        self.assertTrue(any(expected in row["reason"] for row in rows if row["kind"] == "control"))
+        self.assertEqual(len(gate), 6)
+        self.assertTrue(all("control step failed" in problem for problem in gate))
+
+    def test_build_info_mismatch_fails_the_step(self):
+        def probe(cache):
+            rebuilt = cache.resolve() / "control-rebuild" / "bin" / self.CONTROLS[1]["sha"] / "opencode"
+            return FakeProbe(info={str(rebuilt): "2.0.30"})
+
+        self._assert_failed(*self._failed(probe), "build info '2.0.30' != existing '2.0.29'")
+
+    def test_loaded_provider_mismatch_fails_the_step(self):
+        def probe(cache):
+            existing = cache / "bin" / self.CONTROLS[0]["sha"] / "opencode"
+            rebuilt = cache.resolve() / "control-rebuild" / "bin" / self.CONTROLS[0]["sha"] / "opencode"
+            return FakeProbe(loaded={str(existing): "@ai-sdk/anthropic@2.0.0 (strace)",
+                                     str(rebuilt): "@ai-sdk/anthropic@3.0.71 (strace)"})
+
+        self._assert_failed(*self._failed(probe), "loaded provider")
+
+    def test_unverified_loaded_provider_fails_the_step(self):
+        def probe(cache):
+            rebuilt = cache.resolve() / "control-rebuild" / "bin" / self.CONTROLS[2]["sha"] / "opencode"
+            return FakeProbe(loaded={str(rebuilt): "unverified (strace unavailable)"})
+
+        self._assert_failed(*self._failed(probe), "loaded provider unverified")
+
+    def test_too_few_controls_fails_the_step(self):
+        from thesis.ab import step8_monorepo_build as build
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ok, rows = build.run_controls(self.CONTROLS[:2], cache=Path(tmp), build_fn=lambda *a: None,
+                                          probe=FakeProbe())
+        self.assertFalse(ok)
+        self.assertIn("need 3 existing builds", rows[0]["reason"])
+        self.assertIn("control step failed", build.control_problem(rows))
+        self.assertEqual(build.control_problem([]), "control step not run")
+
+    def test_control_candidates_need_existing_binaries(self):
+        from thesis.ab.step8_monorepo_build import control_candidates
+
+        pins = _rows(DEFAULT_OUT / "pins.csv")
+        pinned = [row for row in pins if row["status"] == "pinned"]
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            self.assertEqual(control_candidates(DEFAULT_OUT / "pins.csv", cache), [])
+            for row in pinned[-4:]:
+                make_exec(cache / "bin" / row["sha"] / "opencode")
+            found = control_candidates(DEFAULT_OUT / "pins.csv", cache)
+        self.assertEqual(len(found), 4)
+        self.assertEqual(found[0]["sha"], pinned[-1]["sha"])
+        self.assertTrue(all(row["pr"] not in monorepo.MONOREPO_PRS for row in found))
+
+    def test_records_only_reads_lockfile_from_mirror(self):
+        from thesis.ab import step8_monorepo_build as build
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q")
+            make_monorepo(repo, lock='{"lockfileVersion": 1}\n')
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-qm", "m")
+            sha = _git(repo, "rev-parse", "HEAD")
+            rows = build.records_only([{"pr": "51062", "side": "with", "sha": sha}], repo)
+        import hashlib
+        self.assertEqual(rows[0]["lockfile"], "bun.lock")
+        self.assertEqual(rows[0]["lockfile_sha256"], hashlib.sha256(b'{"lockfileVersion": 1}\n').hexdigest())
+        self.assertEqual(rows[0]["used"], "no")
 
 
 if __name__ == "__main__":
