@@ -567,12 +567,14 @@ def _append_bun_preload(env, probe):
 
 
 def _arm_provider_probe(env, cache):
-    """Write the preload and point this cell's bun at it.
+    """Write the preload script next to the cell cache. Do not arm it.
 
-    Compiled OpenCode bakes ``execArgv`` ending in ``--``, so this preload
-    does not run on those binaries. The file is still written: a build that
-    honors ``BUN_OPTIONS`` prints the loaded version, and the script is kept
-    with the cell evidence.
+    ``BUN_OPTIONS`` is not set. Compiled OpenCode (bun 1.3.0 and 1.3.2
+    builds alike) passes ``BUN_OPTIONS`` tokens through to its own argv, so
+    ``--preload <probe>`` reaches yargs as an unknown option and ``opencode
+    run`` prints usage and exits 1 before any session starts (F03-2 phase 1,
+    2026-10-26). The loaded version comes from strace instead. The script is
+    still written and kept with the cell evidence.
     """
     if not cache:
         return ""
@@ -583,7 +585,6 @@ def _arm_provider_probe(env, cache):
             fh.write(_provider_probe_script(os.path.abspath(cache)))
     except OSError:
         return ""
-    _append_bun_preload(env, probe)
     return probe
 
 
@@ -1849,6 +1850,11 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             else:
                 env.pop("ANTHROPIC_BASE_URL", None)
             env.pop("VERTEX_LOCATION", None)
+            # Builds from late 2025 drop any models.dev entry with an
+            # ``experimental`` key from ``run`` (provider.ts filter). Today's
+            # registry tags claude-opus-5-5 that way (fast mode), so those
+            # builds exit 1 with ProviderModelNotFoundError and print usage.
+            env["OPENCODE_ENABLE_EXPERIMENTAL_MODELS"] = "1"
             installed_anthropic = _ensure_provider_sdk(env, proxy) or ""
         elif model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
             env["VERTEX_LOCATION"] = "global"
