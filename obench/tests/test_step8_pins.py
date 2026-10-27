@@ -224,10 +224,12 @@ class DryRunRuleTests(unittest.TestCase):
         self.assertEqual(len(deferred), 6)
         self.assertEqual(len(rerun), 2)
         self.assertEqual(len(pinned), 586)
-        self.assertTrue(all(row["ready"] == "no" for row in deferred))
-        self.assertTrue(all(row["pin_resolved"] == "no" for row in deferred))
-        self.assertTrue(all(row["cache_seeded"] == "no" for row in deferred))
-        self.assertTrue(all("deferred" in row["reason"] for row in deferred))
+        # Post-monorepo sides take the bundled-provider path (test_step8_monorepo).
+        self.assertTrue(all(row["group"] == "monorepo" for row in deferred))
+        self.assertTrue(all(row["pin_resolved"] == "bundled" for row in deferred))
+        self.assertTrue(all(row["cache_seeded"] == "n/a" for row in deferred))
+        self.assertTrue(all(row["ready"] in {"yes", "no"} and row["reason"] for row in deferred))
+        self.assertTrue(all("deferred" not in row["reason"] for row in deferred))
         for row in pinned + rerun:
             self.assertEqual(row["pin_resolved"], "yes", row)
             self.assertEqual(row["cache_seeded"], "yes", row)

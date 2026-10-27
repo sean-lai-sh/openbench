@@ -1214,6 +1214,9 @@ def attach_provider_pin(row: dict, spec: dict) -> None:
         value = row.get(key)
         if isinstance(value, str) and value.strip():
             row[key] = value.strip()
+    # Monorepo builds: overrides the probe source with bundled/separate_install.
+    from thesis.ab.monorepo import attach_bundled_provider
+    attach_bundled_provider(row, proxy)
 
 
 def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
@@ -1722,6 +1725,31 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
         return state, f"bun: {exc}"
     if bun.is_file():
         proxy["bun"] = str(bun)
+    from thesis.ab.monorepo import (
+        bundled_provider_for_tree,
+        bundled_proxy,
+        bundled_reason,
+        is_monorepo_tree,
+    )
+    if is_monorepo_tree(checkout):
+        # Post-monorepo build: the provider is bundled, so nothing is pinned
+        # or seeded. See thesis/ab/monorepo.py.
+        provider = bundled_provider_for_tree(checkout)
+        reason = bundled_reason("monorepo", provider)
+        cache_version = cache_version_for_checkout(checkout)
+        if cache_version:
+            proxy["cache_version"] = cache_version
+        state = dict(state)
+        state["toolchain"] = toolchain_for_checkout(checkout)
+        if reason:
+            state["proxy"] = proxy
+            return state, f"monorepo: {reason}"
+        state["proxy"] = bundled_proxy(proxy, provider)
+        tool = dict(state.get("toolchain") or {})
+        tool.pop("anthropic", None)
+        tool["provider_bundled"] = f"{provider['package']}@{provider['version']}"
+        state["toolchain"] = tool
+        return state, None
     pin = anthropic_pin_for_tree(checkout)
     if pin:
         proxy["anthropic_sdk"] = pin
@@ -1746,7 +1774,7 @@ def _overlay_provider_pin(state: dict, cache: Path, spec: dict) -> dict:
     and the binary would otherwise install ``@latest``.
     """
     proxy = state.get("proxy")
-    if not isinstance(proxy, dict):
+    if not isinstance(proxy, dict) or proxy.get("provider_bundled"):
         return state
     from thesis.ab.provider_pin import apply_provider_pin
     pinned = apply_provider_pin(
@@ -1782,6 +1810,9 @@ def _fail_closed_unpinned(state: dict, cache: Path, spec: dict) -> dict:
         return state
     proxy = state.get("proxy")
     if not isinstance(proxy, dict) or proxy.get("provider_pins"):
+        return state
+    if proxy.get("provider_bundled"):
+        # Monorepo build: the provider ships in the binary. Not unpinned.
         return state
     checkout = Path(cache) / "worktrees" / str(spec.get("sha") or "").strip().lower()
     if (checkout / "package.json").is_file():

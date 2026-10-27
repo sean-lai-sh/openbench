@@ -143,27 +143,37 @@ def provider_fault_counts(root: Path = ROOT) -> Counter:
                 version = version or (cell.get("toolchain") or {}).get("anthropic") or ""
                 if not version or version in {"unrecorded", "unknown", "missing"}:
                     continue
-                failure = cell.get("failure_class") or ""
-                text = " | ".join(
-                    str(cell.get(key))
-                    for key in (
-                        "error", "infra_reason", "provider_error",
-                        "requests_error", "hang_reason", "output_tail",
-                    )
-                    if cell.get(key)
-                )
-                chunk = failure not in {"infra", "hang"} and "Unhandled chunk type" in text
-                if failure not in {"infra", "hang"} and not chunk:
-                    continue
-                if AUTH.search(text) or INST.search(text):
-                    continue
-                match = PROV.search(text)
-                if not match:
-                    continue
-                if match.group(0).lower() == "stream error" and TIMEOUT.search(text):
-                    continue
-                counts[version] += 1
+                if is_provider_fault(cell):
+                    counts[version] += 1
     return counts
+
+
+def is_provider_fault(cell: dict) -> bool:
+    """True when one cell row is a provider fault under the D4 rule.
+
+    The rule ``provider_fault_counts`` charges to a version. It does not need
+    a recorded version, so the monorepo smoke (bundled provider) uses it too.
+    """
+    failure = cell.get("failure_class") or ""
+    text = " | ".join(
+        str(cell.get(key))
+        for key in (
+            "error", "infra_reason", "provider_error",
+            "requests_error", "hang_reason", "output_tail",
+        )
+        if cell.get(key)
+    )
+    chunk = failure not in {"infra", "hang"} and "Unhandled chunk type" in text
+    if failure not in {"infra", "hang"} and not chunk:
+        return False
+    if AUTH.search(text) or INST.search(text):
+        return False
+    match = PROV.search(text)
+    if not match:
+        return False
+    if match.group(0).lower() == "stream error" and TIMEOUT.search(text):
+        return False
+    return True
 
 
 def _source_index(sides) -> dict:
@@ -387,9 +397,9 @@ Queue: `results/step8-vm-F03-1-1025-QUARANTINED/SUBS.txt` from `F03-2` through `
 
 Every pinned PR has the same version on both sides. No pinned SHA is already a box_cache or F03-1 entry. Historical pins, including PR 1443 (`2.0.0-beta.13` on the merge, `2.0.0-beta.11` on the parent), are left as recorded.
 
-## Deferred (not this PR)
+## Post-monorepo sides (not pinned)
 
-Post-monorepo runner work for **51062**, **53166**, and **55613** is excluded. Each side has no `packages/opencode` (`51062` `328f74c2` / `32b1a1bf`, `53166` `0cb43477` / `bcf23b67`, `55613` `ae8d59f8` / `7ced591c`). They are `status=deferred` in `pins.csv` and have no `provider_pins.json` entry.
+**51062**, **53166**, and **55613** have no `packages/opencode` (`51062` `328f74c2` / `32b1a1bf`, `53166` `0cb43477` / `bcf23b67`, `55613` `ae8d59f8` / `7ced591c`). They stay `status=deferred` in `pins.csv` and have no `provider_pins.json` entry, because there is nothing to pin: the Anthropic provider is OpenCode's own `packages/ai` (`@opencode/ai`), compiled into the binary, and `bun.lock` has no `@ai-sdk/anthropic`. They run on the provider-free path in `thesis/ab/monorepo.py`. `dry-run.csv` reports them as `provider_mode=bundled` with ready/not-ready and a reason. They are `scorable` only after `thesis.ab.step8_monorepo_smoke` shows zero provider faults (`monorepo-smoke.csv`).
 
 ## PR 1443 rerun (do not run)
 
