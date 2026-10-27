@@ -450,16 +450,20 @@ def has_checker_crash(row):
 def has_pinned_infra_reason(row):
     """True when the A/B runner already decided this cell is not a verdict.
 
-    SDK drift and sub-10s provider crashes are written as ``failure_class=infra``
-    with a stable ``failure_reason``. A checker exit of 0 or 1 on those rows is
-    not a capability result: the pin moved, or the agent died before it could
-    work. ``class_for_report`` must not promote them back to ``wrong_answer``.
+    SDK drift, a loaded provider that is not the pin, and sub-10s provider
+    crashes are written as ``failure_class=infra`` with a stable
+    ``failure_reason``. A checker exit of 0 or 1 on those rows is not a
+    capability result: the pin moved, or the agent died before it could work.
+    ``class_for_report`` must not promote them back to ``wrong_answer``.
     """
     reason = str((row or {}).get("failure_reason") or "")
     return (
         reason.startswith("sdk drift")
         or reason.startswith("early death")
         or reason.startswith("checker_crash")
+        # Future batches only. A loaded SDK that is not the pin is the same
+        # exclusion as cache drift; the reason text is the loaded mismatch.
+        or reason.startswith("provider_pin_mismatch: loaded ")
     )
 
 

@@ -1908,8 +1908,18 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertEqual(note.read_text(encoding="utf-8"), "")
         row = json.loads(dest.read_text(encoding="utf-8"))
         self.assertEqual(row["failure_class"], "infra")
-        self.assertIn("sdk drift", row["failure_reason"])
         self.assertIn("4.0.72", row["failure_reason"])
+        # A host strace records the package.json this process wrote. That
+        # loaded mismatch is the failure reason; the cache drift stays on
+        # sdk_drift. Without strace the reason is still the cache drift.
+        if row.get("provider_loaded_version"):
+            self.assertEqual(
+                row["failure_reason"],
+                "provider_pin_mismatch: loaded 4.0.72 != pin 2.0.0",
+            )
+            self.assertIn("sdk drift", row.get("sdk_drift") or "")
+        else:
+            self.assertIn("sdk drift", row["failure_reason"])
         self.assertFalse(row["success"])
         self.assertIn("--print-logs", row["cmd"])
         self.assertEqual(
@@ -2056,7 +2066,14 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertEqual(drift_note.read_text(encoding="utf-8"), "reinstalled")
         self.assertEqual(drifted["failure_class"], "infra")
         self.assertIn("4.0.74", drifted["failure_reason"])
-        self.assertIn("sdk drift", drifted["failure_reason"])
+        if drifted.get("provider_loaded_version"):
+            self.assertEqual(
+                drifted["failure_reason"],
+                "provider_pin_mismatch: loaded 4.0.74 != pin 2.0.0",
+            )
+            self.assertIn("sdk drift", drifted.get("sdk_drift") or "")
+        else:
+            self.assertIn("sdk drift", drifted["failure_reason"])
         self.assertEqual(drifted["toolchain"]["anthropic"], "4.0.74")
         self.assertEqual(drifted_tool["anthropic"], "4.0.74")
         self.assertEqual(drifted["toolchain"]["ai"], "5.0.8")

@@ -22,6 +22,10 @@ _MANIFEST: dict | None = None
 _EXACT = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _LATEST_SPEC = re.compile(r"@ai-sdk/[A-Za-z0-9._-]+@latest\b", re.IGNORECASE)
 _VERSION_LATEST = re.compile(r"\bversion=latest\b", re.IGNORECASE)
+LOADED_LINE = re.compile(
+    r"OBENCH_PROVIDER_LOADED\s+pkg=@ai-sdk/anthropic\s+version=(\S+)"
+    r"(?:\s+path=(\S+))?"
+)
 
 
 class ProviderPinMismatch(Exception):
@@ -314,18 +318,70 @@ def mismatch_reason(cache, packages: dict) -> str:
     return ""
 
 
-def violation_in_text(text: str) -> str:
-    """A log line that means the binary is resolving ``@latest``.
+def _pins_from(pins) -> dict:
+    """Normalize a pin map or the ``OBENCH_PROVIDER_PINS`` JSON string."""
+    if isinstance(pins, dict):
+        raw = pins
+    else:
+        text = str(pins or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        raw = parsed if isinstance(parsed, dict) else {}
+    found = {}
+    for name, version in raw.items():
+        package = str(name or "").strip()
+        pinned = str(version or "").strip()
+        if package and pinned:
+            found[package] = pinned
+    return found
+
+
+def loaded_line_mismatch(text: str, pins) -> str:
+    """Mismatch when a live preload line names a version other than the pin.
+
+    ``pins`` is the ``OBENCH_PROVIDER_PINS`` object or its JSON string. A line
+    whose version equals the pin is not a violation. No pin means no check.
+    """
+    if not text:
+        return ""
+    match = None
+    for match in LOADED_LINE.finditer(text):
+        pass
+    if match is None:
+        return ""
+    packages = _pins_from(pins)
+    pin = packages.get("@ai-sdk/anthropic") or ""
+    if not pin:
+        return ""
+    loaded = match.group(1)
+    if loaded == pin:
+        return ""
+    return f"provider_pin_mismatch: loaded {loaded} != pin {pin}"
+
+
+def violation_in_text(text: str, pins=None) -> str:
+    """A log line that means the binary is resolving ``@latest`` or another SDK.
 
     A failed ``@opencode-ai/plugin@0.0.0--<build time>`` install is not a
     violation. That install fails on the box and the VM, and the box still
     uses the pre-seeded provider pin.
+
+    A live ``OBENCH_PROVIDER_LOADED`` line is a violation when its version
+    differs from the ``@ai-sdk/anthropic`` entry in ``pins`` (the cell's
+    ``OBENCH_PROVIDER_PINS``). Callers that omit ``pins`` keep the previous
+    ``@latest`` check only.
     """
     if not text:
         return ""
     if _VERSION_LATEST.search(text) or _LATEST_SPEC.search(text):
         return "provider_pin_mismatch: version=latest"
-    return ""
+    if pins is None:
+        return ""
+    return loaded_line_mismatch(text, pins)
 
 
 def _hoist(cache: Path, packages: dict) -> None:
