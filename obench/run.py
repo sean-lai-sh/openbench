@@ -116,6 +116,7 @@ ROW_FIELDS = (
     "provider_loaded_version",
     "provider_loaded_source",
     "provider_loaded_mismatch",
+    "probe_method",
 )
 
 
@@ -2326,9 +2327,13 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             row["provider_loaded_version"] = loaded_version.strip()
         loaded_source = result.get("provider_loaded_source")
         if isinstance(loaded_source, str) and loaded_source.strip() in {
-            "preload", "strace", "none",
+            "preload", "strace", "embedded", "none",
         }:
             row["provider_loaded_source"] = loaded_source.strip()
+        # How the loaded version was proven (strace/embedded); step8_gate needs it.
+        probe_method = result.get("probe_method")
+        if isinstance(probe_method, str) and probe_method.strip() in {"strace", "embedded"}:
+            row["probe_method"] = probe_method.strip()
         loaded_mismatch = result.get("provider_loaded_mismatch")
         if isinstance(loaded_mismatch, str) and loaded_mismatch.strip():
             row["provider_loaded_mismatch"] = loaded_mismatch.strip()
