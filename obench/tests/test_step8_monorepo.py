@@ -452,7 +452,7 @@ class DryRunMonorepoTests(unittest.TestCase):
             rerun.write_text(json.dumps({"pr": "1443", "do_not_run": True, "version": "2.0.0-beta.11",
                                          "sides": []}))
             out = tmp / "dry-run.csv"
-            old_fields = dry.FIELDS[: dry.FIELDS.index("reason") + 1]
+            old_fields = dry.FIELDS
             with out.open("w", newline="") as fh:
                 writer = csv.DictWriter(fh, fieldnames=old_fields)
                 writer.writeheader()
@@ -487,7 +487,7 @@ class DryRunMonorepoTests(unittest.TestCase):
             self.assertEqual(out.read_bytes(), before)
             written = _rows(mono_out)
             self.assertEqual(len(written), 2)
-            self.assertEqual(list(written[0].keys()), dry.FIELDS)
+            self.assertEqual(list(written[0].keys()), dry.MONOREPO_FIELDS)
             with_row, without_row = written[0], written[1]
             self.assertEqual(with_row["group"], "monorepo")
             self.assertEqual(with_row["ready"], "yes")
@@ -495,7 +495,37 @@ class DryRunMonorepoTests(unittest.TestCase):
             self.assertEqual(with_row["scorable"], "no")
             self.assertEqual(without_row["ready"], "no")
             self.assertIn("opencode binary missing", without_row["reason"])
-            self.assertIn("monorepo sides 2 ready 1 scorable 0", dry.summarize(rows))
+            self.assertIn("monorepo sides 2 ready 1 scorable 0", dry.summarize_monorepo(rows))
+
+    def test_full_dry_run_keeps_main_format(self):
+        from thesis.ab import step8_pin_dry_run as dry
+
+        # dry-run.csv keeps #160's columns; the four new columns are only in monorepo-dry-run.csv.
+        self.assertEqual(dry.MONOREPO_FIELDS[: len(dry.FIELDS)], dry.FIELDS)
+        for name in ("provider_mode", "bundled_provider", "score_match", "scorable"):
+            self.assertNotIn(name, dry.FIELDS)
+            self.assertIn(name, dry.MONOREPO_FIELDS)
+        main_header = list(_rows(DEFAULT_OUT / "dry-run.csv")[0].keys())
+        self.assertEqual(main_header, dry.FIELDS)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            out = tmp / "dry-run.csv"
+            mono_out = tmp / "monorepo-dry-run.csv"
+            with patch.object(dry, "seed_versions", return_value={}), \
+                    patch.object(dry, "trace_binary", return_value=("", "none")):
+                rows = dry.run_dry(DEFAULT_OUT / "pins.csv", DEFAULT_OUT / "rerun-1443.json", tmp / "cache",
+                                   tmp / "src", "bun", out)
+                mono = dry.refresh_monorepo(DEFAULT_OUT / "pins.csv", DEFAULT_OUT / "rerun-1443.json", mono_out,
+                                            cache=tmp / "cache", bin_root=tmp / "src", mirror=None,
+                                            smoke_csv=tmp / "none.csv", builds_csv=tmp / "none.csv")
+            written = _rows(out)
+            self.assertEqual(list(written[0].keys()), dry.FIELDS)
+            deferred = [row for row in written if row["pr"] in monorepo.MONOREPO_PRS]
+            self.assertEqual(len(deferred), 6)
+            self.assertTrue(all(row["reason"].startswith("deferred") for row in deferred))
+            self.assertEqual(len(rows), 594)
+            self.assertEqual(list(_rows(mono_out)[0].keys()), dry.MONOREPO_FIELDS)
+            self.assertEqual(len(mono), 6)
 
     def test_committed_tables(self):
         # Main's dry-run table from #160 is not rewritten: the six rows stay deferred there.

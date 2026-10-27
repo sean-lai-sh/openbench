@@ -11,20 +11,20 @@ the caller's home. A missing binary is not ready. An unproven load (binary
 present, no open of the package) is recorded and does not by itself fail the
 side.
 
-The six post-monorepo sides (51062, 53166, 55613) take the provider-free path
-(``thesis/ab/monorepo.py``): the layout and the bundled ``@opencode/ai``
-version are read from ``<bin-root>/worktrees/<sha>``, ``--mirror``, or
-``<bin-root>/mirror``; nothing is pinned or seeded; the strace check passes
-when the binary opens no ``node_modules/@ai-sdk/anthropic``. A ready
-monorepo side needs ``monorepo-builds.csv`` (``thesis.ab.step8_monorepo_build``)
-to show a passed control step and a build record whose binary sha256 matches
-the binary on disk; otherwise it is not ready. A ready side is ``scorable``
-only when ``monorepo-smoke.csv`` shows its smoke cell loaded the bundled
-provider with zero provider faults and ``score_match`` true (the smoke call
-equals the box's scoring call for that side; recomputed here).
-``--monorepo-only`` assesses just those six rows, writes them to
-``monorepo-dry-run.csv`` (``--monorepo-out``), and needs neither bun nor a
-seeded cache. It does not touch ``dry-run.csv`` or ``dry-run.md``.
+The six post-monorepo sides (51062, 53166, 55613) stay ``deferred`` in
+``dry-run.csv``, which keeps the #160 columns and format. They are also
+assessed on the provider-free path (``thesis/ab/monorepo.py``) and written to
+their own table, ``monorepo-dry-run.csv`` (``--monorepo-out``), with four more
+columns: ``provider_mode``, ``bundled_provider``, ``score_match``,
+``scorable``. Ready needs the monorepo layout, the bundled ``@opencode/ai``
+(from ``<bin-root>/worktrees/<sha>``, ``--mirror``, or ``<bin-root>/mirror``),
+the binary, the build gate (``monorepo-builds.csv``: control step passed and
+the binary's sha256 matches its record), and a strace check that opens no
+``node_modules/@ai-sdk/anthropic``. ``scorable`` also needs
+``monorepo-smoke.csv`` to show zero provider faults, a bundled load, and the
+smoke scoring call equal to the box's (recomputed here).
+``--monorepo-only`` writes only that table and needs neither bun nor a seeded
+cache. See ``data/step8-pins/MONOREPO.md``.
 
   python3 -m thesis.ab.step8_pin_dry_run --cache /tmp/step8-pin-cache --bin-root <opencode-src>
 
@@ -78,18 +78,10 @@ FIELDS = [
     "group", "batch", "pr", "side", "sha", "version", "pin_resolved",
     "cache_seeded", "binary_present", "binary_path", "loaded_check",
     "loaded_version", "loaded_source", "ready", "reason",
-    "provider_mode", "bundled_provider", "score_match", "scorable",
 ]
+# monorepo-dry-run.csv only. dry-run.csv keeps FIELDS.
+MONOREPO_FIELDS = FIELDS + ["provider_mode", "bundled_provider", "score_match", "scorable"]
 MONOREPO_GROUP = "monorepo"
-BUILD_WITH_CONTROL = "python3 -m thesis.ab.step8_monorepo_build --cache <opencode-src>"
-SMOKE_WITH_BINARIES = (
-    "python3 -m thesis.ab.step8_monorepo_smoke --cache <opencode-src> "
-    "--out results/step8-monorepo-smoke-<date> [--box-out <box run dir>]"
-)
-MONOREPO_DRY_RUN = (
-    "python3 -m thesis.ab.step8_pin_dry_run --monorepo-only "
-    "--bin-root <opencode-src> --mirror <opencode-mirror>"
-)
 DEFAULT_MONOREPO_OUT = DEFAULT_OUT / "monorepo-dry-run.csv"
 
 
@@ -237,7 +229,7 @@ def _load_rows(pins_csv: Path, rerun_path: Path) -> list[dict]:
     rows = []
     for row in csv.DictReader(open(pins_csv, newline="")):
         item = dict(row)
-        item["group"] = MONOREPO_GROUP if item.get("pr") in MONOREPO_PRS else "F03-2-F16"
+        item["group"] = "F03-2-F16"
         rows.append(item)
     rerun = json.loads(rerun_path.read_text(encoding="utf-8"))
     if str(rerun.get("pr")) != RERUN_PR:
@@ -262,8 +254,6 @@ def _load_rows(pins_csv: Path, rerun_path: Path) -> list[dict]:
 
 def resolve_pin(row: dict, manifest: dict) -> tuple[str, str]:
     """Return ``(version, reason)``. A deferred row does not resolve."""
-    if row.get("group") == MONOREPO_GROUP:
-        return "", "bundled provider; no pin (monorepo path)"
     if row.get("status") == "deferred":
         return "", "deferred post-monorepo; excluded from this pin set"
     if row.get("group") == "rerun-1443":
@@ -358,10 +348,6 @@ def assess_row(
         "loaded_source": loaded_source,
         "ready": "yes" if not reasons else "no",
         "reason": "; ".join(reasons),
-        "provider_mode": "pinned",
-        "bundled_provider": "",
-        "score_match": "",
-        "scorable": "",
     }
 
 
@@ -525,8 +511,56 @@ def run_monorepo(
     return out
 
 
-def _public(row: dict) -> dict:
-    return {key: row.get(key, "") for key in FIELDS}
+def monorepo_rows(pins_csv: Path, rerun_path: Path) -> list[dict]:
+    """The six monorepo sides from ``pins.csv``, in table order."""
+    return [row for row in _load_rows(pins_csv, rerun_path) if row.get("pr") in MONOREPO_PRS]
+
+
+def write_monorepo_csv(rows: list[dict], out_csv: Path) -> None:
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=MONOREPO_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows({key: row.get(key, "") for key in MONOREPO_FIELDS} for row in rows)
+
+
+def refresh_monorepo(
+    pins_csv: Path,
+    rerun_path: Path,
+    out_csv: Path,
+    *,
+    cache: Path,
+    bin_root: Path,
+    mirror: Path | None,
+    smoke_csv: Path = DEFAULT_SMOKE_CSV,
+    builds_csv: Path = DEFAULT_BUILDS_CSV,
+) -> list[dict]:
+    """Assess only the monorepo rows and write them to ``out_csv``.
+
+    ``out_csv`` is its own table (default ``monorepo-dry-run.csv``).
+    ``dry-run.csv`` and ``dry-run.md`` are not read or written.
+    """
+    rows = run_monorepo(
+        monorepo_rows(pins_csv, rerun_path),
+        cache=cache, bin_root=bin_root, mirror=mirror, smoke_csv=smoke_csv,
+        builds_csv=builds_csv,
+    )
+    write_monorepo_csv(rows, out_csv)
+    return rows
+
+
+def summarize_monorepo(rows: list[dict]) -> str:
+    scorable = sum(1 for row in rows if row.get("scorable") == "yes")
+    ready = sum(1 for row in rows if row["ready"] == "yes")
+    lines = [f"monorepo sides {len(rows)} ready {ready} scorable {scorable}"]
+    for row in rows:
+        status = "ready" if row["ready"] == "yes" else f"not ready: {row['reason']}"
+        lines.append(
+            f"  {row['pr']} {row['side']:<7} {row['sha'][:8]} "
+            f"{row.get('bundled_provider') or 'bundled provider unknown'}; {status}; "
+            f"score_match={row.get('score_match') or 'false'}; scorable={row.get('scorable') or 'no'}"
+        )
+    return "\n".join(lines)
 
 
 def seed_versions(versions: list[str], cache: Path, bun: str) -> dict[str, str]:
@@ -545,31 +579,13 @@ def seed_versions(versions: list[str], cache: Path, bun: str) -> dict[str, str]:
     return reasons
 
 
-def run_dry(
-    pins_csv: Path,
-    rerun_path: Path,
-    cache: Path,
-    bin_root: Path,
-    bun: str,
-    out_csv: Path,
-    *,
-    mirror: Path | None = None,
-    smoke_csv: Path = DEFAULT_SMOKE_CSV,
-    builds_csv: Path = DEFAULT_BUILDS_CSV,
-) -> list[dict]:
+def run_dry(pins_csv: Path, rerun_path: Path, cache: Path, bin_root: Path, bun: str, out_csv: Path) -> list[dict]:
     manifest = load_manifest()
     # Drop a stale in-process cache if apply just rewrote the file.
     import thesis.ab.provider_pin as provider_pin
     provider_pin._MANIFEST = None
     manifest = load_manifest()
-    all_rows = _load_rows(pins_csv, rerun_path)
-    rows = [row for row in all_rows if row.get("group") != MONOREPO_GROUP]
-    monorepo = run_monorepo(
-        [row for row in all_rows if row.get("group") == MONOREPO_GROUP],
-        cache=cache, bin_root=bin_root, mirror=mirror, smoke_csv=smoke_csv,
-        builds_csv=builds_csv,
-    )
-    by_key = {(row["pr"], row["side"]): row for row in monorepo}
+    rows = _load_rows(pins_csv, rerun_path)
     resolved = []
     for row in rows:
         version, reason = resolve_pin(row, manifest)
@@ -599,55 +615,15 @@ def run_dry(
             loaded_version=loaded_version,
             loaded_source=loaded_source,
         ))
-    # Keep pins.csv order: monorepo rows go back where they were.
-    ordered = []
-    pinned = iter(out_rows)
-    for row in all_rows:
-        if row.get("group") == MONOREPO_GROUP:
-            ordered.append(by_key[(row["pr"], row["side"])])
-        else:
-            ordered.append(next(pinned))
-    write_csv(ordered, out_csv)
-    return ordered
-
-
-def write_csv(rows: list[dict], out_csv: Path) -> None:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=FIELDS, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(_public(row) for row in rows)
-
-
-def refresh_monorepo(
-    pins_csv: Path,
-    rerun_path: Path,
-    out_csv: Path,
-    *,
-    cache: Path,
-    bin_root: Path,
-    mirror: Path | None,
-    smoke_csv: Path = DEFAULT_SMOKE_CSV,
-    builds_csv: Path = DEFAULT_BUILDS_CSV,
-) -> list[dict]:
-    """Assess only the monorepo rows and write them to ``out_csv``.
-
-    ``out_csv`` is its own table (default ``monorepo-dry-run.csv``). The
-    full ``dry-run.csv`` is not read or rewritten.
-    """
-    all_rows = _load_rows(pins_csv, rerun_path)
-    monorepo = run_monorepo(
-        [row for row in all_rows if row.get("group") == MONOREPO_GROUP],
-        cache=cache, bin_root=bin_root, mirror=mirror, smoke_csv=smoke_csv,
-        builds_csv=builds_csv,
-    )
-    write_csv(monorepo, out_csv)
-    return monorepo
+        writer.writerows(out_rows)
+    return out_rows
 
 
 def _reason_bucket(reason: str) -> str:
-    if reason.startswith("monorepo:"):
-        return reason.split(";", 1)[0]
     if reason.startswith("deferred"):
         return "deferred post-monorepo; not pinned and not seeded"
     if "opencode binary missing" in reason and reason.startswith("opencode binary missing"):
@@ -667,18 +643,6 @@ def summarize(rows: list[dict]) -> str:
     ]
     for reason, count in sorted(buckets.items(), key=lambda item: (-item[1], item[0])):
         lines.append(f"  {count} {reason}")
-    monorepo = [row for row in rows if row.get("group") == MONOREPO_GROUP]
-    if monorepo:
-        scorable = sum(1 for row in monorepo if row.get("scorable") == "yes")
-        ready_count = sum(1 for row in monorepo if row["ready"] == "yes")
-        lines.append(f"monorepo sides {len(monorepo)} ready {ready_count} scorable {scorable}")
-        for row in monorepo:
-            status = "ready" if row["ready"] == "yes" else f"not ready: {row['reason']}"
-            lines.append(
-                f"  {row['pr']} {row['side']:<7} {row['sha'][:8]} "
-                f"{row.get('bundled_provider') or 'bundled provider unknown'}; {status}; "
-                f"scorable={row.get('scorable') or 'no'}"
-            )
     return "\n".join(lines)
 
 
@@ -704,21 +668,7 @@ On a machine that has the built binaries:
 
 Cache seeded for: {', '.join(f'`{version}`' for version in seeded) or 'none'}.
 
-Not ready because the OpenCode binaries for these SHAs are not built in this checkout. For pinned sides the pin resolved and the cache holds that version, so the remaining gap is the binary. Per-side paths are in `dry-run.csv`.
-
-## Post-monorepo sides (51062, 53166, 55613)
-
-These six sides have no `packages/opencode`. They are `provider_mode=bundled`. The CLI builds from `packages/cli`, and the Anthropic provider is OpenCode's own `packages/ai` (`@opencode/ai`), compiled into the binary. `bun.lock` has no `@ai-sdk/anthropic`, so nothing is pinned or seeded. `pins.csv` and `provider_pins.json` are unchanged. `bundled_provider` is the `@opencode/ai` version and the git tree id of `packages/ai/src`; both sides of each PR must match. When a binary is present, the strace check passes if the binary opens no `node_modules/@ai-sdk/anthropic` (`loaded_source=bundled`).
-
-A monorepo binary is used only after `monorepo-builds.csv` shows a passed control step (three existing step-8 builds rebuilt, each matching its existing build's `opencode --version` and loaded provider) and a build record whose binary sha256 matches the binary on disk. Otherwise the side is not ready.
-
-A monorepo side is `scorable=yes` only when it is ready and `monorepo-smoke.csv` shows its smoke cell loaded the bundled provider with zero provider faults and `score_match=true`: the smoke cell's scoring call equals the box's scoring call for that side as recorded on main. Missing box data is `score_match=false`.
-
-```bash
-{BUILD_WITH_CONTROL}
-{MONOREPO_DRY_RUN}
-{SMOKE_WITH_BINARIES}
-```
+Not ready because the OpenCode binaries for these SHAs are not built in this checkout. The pin resolved and the cache holds that version, so the remaining gap is the binary. Deferred rows (51062, 53166, 55613) were not pinned and were not seeded. Per-side paths are in `dry-run.csv`.
 """
     path.write_text(body, encoding="utf-8")
 
@@ -746,34 +696,32 @@ def main(argv: list[str] | None = None) -> int:
                         help="monorepo build records; a monorepo binary is used only with a passed control step")
     parser.add_argument("--smoke", type=Path, default=DEFAULT_SMOKE_CSV,
                         help="monorepo smoke report; a monorepo side is scorable only from it")
+    parser.add_argument("--monorepo-out", type=Path, default=DEFAULT_MONOREPO_OUT,
+                        help="table for the 51062/53166/55613 sides (dry-run.csv keeps them deferred)")
     parser.add_argument(
         "--monorepo-only",
         action="store_true",
-        help="assess only the 51062/53166/55613 rows into --monorepo-out; no bun, no seeding; "
-             "dry-run.csv and dry-run.md are not touched",
+        help="write only --monorepo-out; no bun, no seeding; dry-run.csv and dry-run.md are not touched",
     )
-    parser.add_argument("--monorepo-out", type=Path, default=DEFAULT_MONOREPO_OUT)
     args = parser.parse_args(argv)
+    mono = refresh_monorepo(
+        args.pins, args.rerun, args.monorepo_out,
+        cache=args.cache, bin_root=args.bin_root, mirror=args.mirror,
+        smoke_csv=args.smoke, builds_csv=args.builds,
+    )
     if args.monorepo_only:
-        rows = refresh_monorepo(
-            args.pins, args.rerun, args.monorepo_out,
-            cache=args.cache, bin_root=args.bin_root, mirror=args.mirror, smoke_csv=args.smoke,
-            builds_csv=args.builds,
-        )
-        print(summarize(rows))
+        print(summarize_monorepo(mono))
         print(f"wrote {args.monorepo_out}")
         return 0
-    else:
-        bun = str(ensure_bun(args.bun_version, args.cache))
-        rows = run_dry(
-            args.pins, args.rerun, args.cache, args.bin_root, bun, args.out,
-            mirror=args.mirror, smoke_csv=args.smoke, builds_csv=args.builds,
-        )
+    bun = str(ensure_bun(args.bun_version, args.cache))
+    rows = run_dry(args.pins, args.rerun, args.cache, args.bin_root, bun, args.out)
     print(summarize(rows))
     summary = args.out.with_name("dry-run.md")
     write_summary(rows, summary)
     print(f"wrote {args.out}")
     print(f"wrote {summary}")
+    print(summarize_monorepo(mono))
+    print(f"wrote {args.monorepo_out}")
     return 0
 
 
