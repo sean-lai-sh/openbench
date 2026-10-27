@@ -178,7 +178,9 @@ def pin_source_for(entry) -> str:
 
     ``box_cache`` is the version a box cell left installed. ``vm_quarantine_log``
     is the version the quarantined F03-1 log installed for a side with no
-    finished box cell. A checkout that is not in the manifest is ``lockfile``.
+    finished box cell. ``nearest_box_build`` is that box version taken from the
+    box-run build nearest the side's parent (F03-2 through F16). A checkout
+    that is not in the manifest is ``lockfile``.
     """
     if not isinstance(entry, dict):
         return ""
@@ -219,6 +221,10 @@ def apply_provider_pin(proxy: dict, cache, sha: str, side: str = "", pr: str = "
     proxy["pin_store"] = str(Path(cache) / "provider-pins")
     if source:
         proxy["pin_source"] = source
+    if found:
+        pin_from = str((found.get("entry") or {}).get("pin_from") or "").strip()
+        if pin_from:
+            proxy["pin_from"] = pin_from
     return proxy
 
 
