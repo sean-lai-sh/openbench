@@ -6,7 +6,20 @@
 # record opencode_cache + lockfile_sha256 + cell_image + provider_trace.
 # Gate (thesis.ab.step8_gate): loaded provider == pin, by probe_method strace or
 # embedded (bundled provider read from the binary). >2 mismatched sides -> STOP.
-# Hard stop $60 batch spend (flag file at $50).
+# Spend: STOP_USD (default 60) hard stop, FLAG_USD (default 50) flag file, both
+# cumulative with PRIOR_SPEND_USD (spend outside $B, counted once in spend()).
+# The --max-cost-usd for a phase is stop minus prior minus cell spend OUTSIDE
+# that phase directory. run_ab.over_budget sums cells already in the directory,
+# so subtracting them here would count each resumed cell twice.
+# Projection (thesis.ab.step8_project, imported via run_module.py so a cwd of
+# ~/ob-f032 cannot shadow this checkout's thesis): before the scored phase and
+# each time a PR finishes, spent + remaining cells x side gate cost x max(pooled
+# scored/gate ratio over finished PRs [1.0 before any], PR's own ratio).
+# Completion counts the same on-route cells as step8_gate.complete (off-route
+# cost stays in spent; a tagged rerun replaces its off-route original).
+# > STOP_USD -> HOLD (before scored) or STOP (during). Log: $B/projection.log.
+# Resume: rerun with the same $B; a passed gate (GATE-DONE) is not rerun and
+# run_ab skips cells already on disk.
 # Route (thesis.ab.route): compat sets the proxy base URL on BOTH routes
 # (config options.baseURL and ANTHROPIC_BASE_URL); every cell logs `route`
 # (on:/off:<how>). Off-route cells are infra (not scored, listed for rerun);
@@ -25,13 +38,21 @@
 # rerun=1 (manual reruns must set OBENCH_RERUN=1 too); same route check.
 # complete.json (step8_gate --complete) lists sides with 30 on-route scored
 # cells; the rest are incomplete and are not scored or padded.
-# Usage: RUNNER_SHA=<openbench sha checked out in ~/ob-f032> bash step8_f032.sh
+# Usage: [STOP_USD=70 FLAG_USD=50 PRIOR_SPEND_USD=2.08] RUNNER_SHA=<openbench sha checked out in ~/ob-f032> bash <launcher checkout>/thesis/ab/launchers/step8_f032.sh
 set -u
 B=$HOME/s8f032run; mkdir -p $B
+STOP_USD=${STOP_USD:-60}; FLAG_USD=${FLAG_USD:-50}; PRIOR_SPEND_USD=${PRIOR_SPEND_USD:-0}
+LDIR=$(cd "$(dirname "$0")/../../.." && pwd)  # launcher's checkout (may differ from runner ~/ob-f032)
+# Import this checkout. python -m would search cwd (~/ob-f032) before PYTHONPATH
+# and load the pinned runner's thesis, which has no step8_project.
+py(){ python3 "$LDIR/thesis/ab/launchers/run_module.py" "$@"; }
+project(){ py thesis.ab.step8_project "$B" --prior "$PRIOR_SPEND_USD" --stop "$STOP_USD" --n 30 > "$B/projection.json"; local rc=$?
+  echo "$(TZ=America/New_York date '+%F %T %Z') $(cat $B/projection.json)" >> $B/projection.log; return $rc; }
+pj(){ python3 -c "import json;d=json.load(open('$B/projection.json'));print(d['projected'],len(d['done_prs']))"; }
 IMG=h1-env:1027-strace
 PRS=3251,3302,3381,3390,3402,3424,3433,3449,3481,3507,3546
 log(){ echo "$(TZ=America/New_York date '+%F %T %Z') $*" >> $B/driver.log; }
-spend(){ python3 -c "import json,glob;print(round(sum((json.load(open(f)).get('requests_cost_usd') or 0) for f in glob.glob('$B/[gsr]*/*/cells/*/*/*.json')),2))"; }
+spend(){ python3 -c "import json,glob;print(round($PRIOR_SPEND_USD+sum((json.load(open(f)).get('requests_cost_usd') or 0) for f in glob.glob('$B/[gsr]*/*/cells/*/*/*.json')),2))"; }
 . ~/ob-f032/thesis/ab/launchers/egress_block.sh
 [ "$(git -C ~/ob-f032 rev-parse HEAD)" = "${RUNNER_SHA:?set RUNNER_SHA}" ] || { log "runner not $RUNNER_SHA; abort"; exit 1; }
 sudo docker image inspect $IMG >/dev/null || { log "image $IMG missing; abort"; exit 1; }
@@ -55,13 +76,20 @@ run(){ # $1 out-name $2 prs $3 trials $4 cap $5 trace(1|0) $6 extra docker -e ar
 git config --global --add safe.directory '*'; python3 -m venv /venv && /venv/bin/pip install -q -e /ob && cd /ob && exec /venv/bin/python -m thesis.ab.run_ab /s8/prs.csv --pr $2 --task-map /s8/task-map.csv --trials $3 --jobs 4 --vertex-model claude-sonnet-5-5 --cell-meta --out /o/$1 --cache /c --order interleave-seeded --seed 1016 --max-cost-usd $4 > /o/$1.log 2>&1" >/dev/null
   while sudo docker ps -q -f name=s8-f032 | grep -q .; do
     V=$(spend); echo "$(TZ=America/New_York date '+%F %T %Z') $1 spend=\$$V" >> $B/spend.log
-    python3 -c "import sys;sys.exit(0 if $V>=50 else 1)" && [ ! -e $B/FLAG-50 ] && { echo "spend \$$V >= \$50" > $B/FLAG-50; log "FLAG: $(cat $B/FLAG-50)"; }
-    python3 -c "import sys;sys.exit(0 if $V>=60 else 1)" && { echo "hard stop: spend \$$V >= \$60" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; }
+    python3 -c "import sys;sys.exit(0 if $V>=$FLAG_USD else 1)" && [ ! -e $B/FLAG-$FLAG_USD ] && { echo "spend \$$V >= \$$FLAG_USD" > $B/FLAG-$FLAG_USD; log "FLAG: $(cat $B/FLAG-$FLAG_USD)"; }
+    python3 -c "import sys;sys.exit(0 if $V>=$STOP_USD else 1)" && { echo "hard stop: spend \$$V >= \$$STOP_USD" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; }
     egress_refresh >> $B/egress_refresh.log 2>&1 || { echo "egress: could not block a new api.anthropic.com IP" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; break; }
     route $1 || { echo "route: >2 sides halted off-route in $1 (see $B/route-$1.json)" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; }
+    if [ "$1" = scored ]; then  # re-project each time a PR finishes
+      project; prc=$?; read PJ ND < <(pj)
+      if [ "$ND" != "${LAST_ND:-}" ]; then LAST_ND=$ND; log "projection: \$$PJ after $ND finished PRs"
+        [ $prc -ne 0 ] && { echo "projection: \$$PJ > \$$STOP_USD after $ND finished PRs" > $B/STOP; log "$(cat $B/STOP)"; sudo docker stop -t 60 s8-f032; }; fi
+    fi
     sleep 30; done
   log "end $1 rc=$(sudo docker inspect -f '{{.State.ExitCode}}' s8-f032) spend=\$$(spend)"
 }
+[ -e $B/STOP ] && { log "STOP present ($(cat $B/STOP)); clear it to resume"; exit 1; }
+if [ -e $B/GATE-DONE ]; then log "gate already passed (GATE-DONE); resuming"; else
 log "start gate (1 traced unscored cell per side) prs=$PRS image=$IMG"
 run gate $PRS 1 60 1
 [ -e $B/STOP ] && exit 1
@@ -70,16 +98,17 @@ log "gate rc=$rc $(python3 -c "import json;d=json.load(open('$B/gate.json'));pri
 [ $rc -ne 0 ] && { echo "gate: >2 sides mismatched (see gate.json)" > $B/STOP; log "$(cat $B/STOP)"; exit 1; }
 route gate; log "gate route: $(python3 -c "import json;d=json.load(open('$B/route-gate.json'));print('off_route',sorted(d['off_route']),'halted',d['halted_sides'])")"
 touch $B/GATE-DONE  # gate cells are infra evidence; scoring reads only $B/scored
-P=$(python3 -c "import json;d=json.load(open('$B/gate.json'));c=[x['cost'] or 0 for x in d['cells'] if x['pr'] in d['ok_prs']];print(round(sum(c)*30,2))")
-python3 -c "import sys;sys.exit(0 if $P+$(spend)>60 else 1)" && { echo "projected \$$(python3 -c "print(round($P+$(spend),2))") > \$60; holding before scored phase" > $B/HOLD; log "$(cat $B/HOLD)"; exit 0; }
+fi
+project || { echo "projected \$$(pj | cut -d' ' -f1) > \$$STOP_USD; holding before scored phase" > $B/HOLD; log "$(cat $B/HOLD)"; exit 0; }
+log "projection: \$$(pj | cut -d' ' -f1) (stop \$$STOP_USD)"
 OK=$(python3 -c "import json;print(','.join(json.load(open('$B/gate.json'))['ok_prs']))")
 [ -z "$OK" ] && { log "no PRs passed gate"; exit 1; }
-CAP=$(python3 -c "print(round(60-$(spend),2))")
+CAP=$(py thesis.ab.step8_project --phase-cap scored "$B" --prior "$PRIOR_SPEND_USD" --stop "$STOP_USD")
 log "start scored prs=$OK trials=30 untraced cap=\$$CAP"
 run scored $OK 30 $CAP 0
 route scored; log "scored route: $(python3 -c "import json;d=json.load(open('$B/route-scored.json'));print('rerun(infra:off_route)',len(d['rerun']),'halted',d['halted_sides'])")"
 if [ "${RERUN:-0}" = 1 ] && [ ! -e $B/STOP ] && python3 -c "import json,sys;sys.exit(0 if json.load(open('$B/route-scored.json'))['rerun'] else 1)"; then
-  CAP=$(python3 -c "print(round(60-$(spend),2))")
+  CAP=$(py thesis.ab.step8_project --phase-cap rerun "$B" --prior "$PRIOR_SPEND_USD" --stop "$STOP_USD")
   log "start rerun of off-route cells (tagged rerun=1) cap=\$$CAP"
   run rerun $OK 30 $CAP 0 "-e OBENCH_RERUN=1 -e OBENCH_RERUN_CELLS=/o/route-scored.json"
   route rerun
