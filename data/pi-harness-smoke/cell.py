@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--cache", type=Path, default=Path(os.environ.get("PI_HARNESS_CACHE", "/h1/pi-src")))
     parser.add_argument("--tasks-dir", type=Path, default=None)
+    parser.add_argument("--models", default=",".join(PIN_MODELS),
+                        help="comma-separated subset of the pinned smoke models")
     args = parser.parse_args(argv)
 
     repo = _repo_root()
@@ -67,6 +69,10 @@ def main(argv: list[str] | None = None) -> int:
     if PIN_MODELS != ("claude-opus-5-5", "claude-sonnet-5-5"):
         raise RuntimeError("smoke models drifted")
 
+    models = tuple(m for m in args.models.split(",") if m)
+    if not models or any(m not in PIN_MODELS for m in models):
+        raise SystemExit(f"--models must be a subset of {PIN_MODELS}")
+
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     wrapper = binary(PIN, args.cache.resolve())
@@ -79,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     ledger = out / "proxy-ledger"
     ledger.mkdir(parents=True, exist_ok=True)
     os.environ["OBENCH_VERTEX_LEDGER_DIR"] = str(ledger)
-    proxy = start_from_env(ledger_dir=ledger, thinking_mode="default", model=PIN_MODELS[0])
+    proxy = start_from_env(ledger_dir=ledger, thinking_mode="default", model=models[0])
     os.environ["OBENCH_VERTEX_PROXY_URL"] = proxy.base_url
     print(f"proxy {proxy.base_url} pin {PIN}", flush=True)
 
@@ -87,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     adapters = repo / "obench" / "adapters"
     records = []
     try:
-        for model in PIN_MODELS:
+        for model in models:
             cell_id = secrets.token_hex(8)
             os.environ["OBENCH_VERTEX_CELL_ID"] = cell_id
             os.environ.pop("OBENCH_PI_SETTINGS_PATH", None)

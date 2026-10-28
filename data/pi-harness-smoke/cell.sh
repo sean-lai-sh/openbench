@@ -84,6 +84,6 @@ fi
 
 OUT="${1:-/h2/pi-harness-smoke}"
 mkdir -p "$OUT"
-cd /ob && /venv/bin/python data/pi-harness-smoke/cell.py --out "$OUT" \
+cd /ob && /venv/bin/python data/pi-harness-smoke/cell.py --out "$OUT" ${PI_SMOKE_MODELS:+--models "$PI_SMOKE_MODELS"} \
   > "$OUT/run.log" 2>&1
 echo EXIT $? >> "$OUT/run.log"
