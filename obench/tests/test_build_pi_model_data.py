@@ -26,6 +26,7 @@ def test_hydrates_missing_data_from_published_package(tmp_path, monkeypatch):
     data = _tree(tmp_path)
     data.mkdir(parents=True)
     (data / "openai.json").write_text('{"committed":true}')
+    (data / "anthropic.json").write_text("{}\n")
     calls = []
     monkeypatch.setattr(build_pi, "_pack_into", _fake_pack(calls))
     build_pi._hydrate_model_data(tmp_path, {})
@@ -43,3 +44,15 @@ def test_skips_when_manifest_committed(tmp_path, monkeypatch):
     monkeypatch.setattr(build_pi, "_pack_into", _fake_pack(calls))
     build_pi._hydrate_model_data(tmp_path, {})
     assert calls == []
+
+
+def test_replaces_placeholders_even_when_manifest_present(tmp_path, monkeypatch):
+    data = _tree(tmp_path)
+    data.mkdir(parents=True)
+    (data / ".manifest.json").write_text('{"schemaVersion":6}')
+    (data / "anthropic.json").write_text("{}\n")
+    calls = []
+    monkeypatch.setattr(build_pi, "_pack_into", _fake_pack(calls))
+    build_pi._hydrate_model_data(tmp_path, {})
+    assert len(calls) == 1
+    assert json.loads((data / "anthropic.json").read_text()) == {"published": True}
