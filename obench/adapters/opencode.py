@@ -39,10 +39,73 @@ import subprocess
 import tempfile
 import time
 
-try:
-    from obench.auth_persist import try_persist_auth_file
-except ImportError:  # file-path / Docker mount layout
-    from auth_persist import try_persist_auth_file
+
+def _cellload():
+    """Sibling loader. The cell image does not install ``obench`` or ``thesis``."""
+    import importlib.util
+    import sys
+    name = "obench_cellload"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cellload.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _prefer(filename, qualname, importer):
+    return _cellload().prefer(__file__, filename, qualname, importer)
+
+
+def _provider_pin():
+    def importer():
+        import thesis.ab.provider_pin as mod
+        return mod
+    return _prefer("cell_provider_pin.py", "obench_cell_provider_pin", importer)
+
+
+def _watch():
+    def importer():
+        import thesis.ab.watch as mod
+        return mod
+    return _prefer("cell_watch.py", "obench_cell_watch", importer)
+
+
+def _final_answer():
+    def importer():
+        import obench.final_answer as mod
+        return mod
+    return _prefer("cell_final_answer.py", "obench_cell_final_answer", importer)
+
+
+def _lsp():
+    def importer():
+        import obench.lsp_cell as mod
+        return mod
+    return _prefer("cell_lsp.py", "obench_cell_lsp", importer)
+
+
+def _embedded_version(binary):
+    def importer():
+        import obench.provider_embedded as mod
+        return mod
+    return _prefer(
+        "cell_provider_embedded.py", "obench_cell_provider_embedded", importer,
+    ).embedded_version(binary)
+
+
+def try_persist_auth_file(copy_path, master_path):
+    """Persist rotated auth. Host package, then ``/bench/auth_persist.py``."""
+    try:
+        from obench.auth_persist import try_persist_auth_file as persist
+    except ImportError:
+        from auth_persist import try_persist_auth_file as persist
+    return persist(copy_path, master_path)
 
 NAME = "opencode"
 _EXE = "opencode"
@@ -444,12 +507,8 @@ def _provider_pin_block(env, proxy):
     packages = _provider_packages(proxy)
     if not packages:
         return ""
-    try:
-        from thesis.ab.provider_pin import mismatch_reason
-    except ImportError:
-        return "provider_pin_mismatch: pin checker unavailable"
     cache = os.path.join(env.get("XDG_CACHE_HOME") or "", "opencode")
-    return mismatch_reason(cache, packages)
+    return _provider_pin().mismatch_reason(cache, packages)
 
 
 def _provider_pin_violation(env, text):
@@ -458,11 +517,7 @@ def _provider_pin_violation(env, text):
         return ""
     if not text:
         return ""
-    try:
-        from thesis.ab.provider_pin import violation_in_text
-    except ImportError:
-        return ""
-    return violation_in_text(text, env.get("OBENCH_PROVIDER_PINS"))
+    return _provider_pin().violation_in_text(text, env.get("OBENCH_PROVIDER_PINS"))
 
 
 _PROBE_NAME = ".obench-provider-probe.mjs"
@@ -707,12 +762,8 @@ def _trace_files(env):
 
 def _loaded_line(text):
     """Last preload line, or None. Returns ``(version, path)``."""
-    try:
-        from thesis.ab.provider_pin import LOADED_LINE
-    except ImportError:
-        return None
     match = None
-    for match in LOADED_LINE.finditer(text or ""):
+    for match in _provider_pin().LOADED_LINE.finditer(text or ""):
         pass
     if match is None:
         return None
@@ -819,12 +870,8 @@ def _resolved_provider_versions(env, proxy):
     packages = _provider_packages(proxy)
     if not packages:
         return None
-    try:
-        from thesis.ab.provider_pin import resolved_versions
-    except ImportError:
-        return None
     cache = os.path.join(env.get("XDG_CACHE_HOME") or "", "opencode")
-    return resolved_versions(cache, packages)
+    return _provider_pin().resolved_versions(cache, packages)
 
 
 def _ensure_provider_sdk(env, proxy):
@@ -848,11 +895,7 @@ def _ensure_provider_sdk(env, proxy):
     try:
         store = str(proxy.get("pin_store") or "").strip() if isinstance(proxy, dict) else ""
         if store and packages:
-            try:
-                from thesis.ab.provider_pin import seed_cell_cache
-            except ImportError:
-                return ""
-            seed_cell_cache(cache, store, packages, bun, env)
+            _provider_pin().seed_cell_cache(cache, store, packages, bun, env)
             module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
             if pin and _installed_sdk_version(module) == pin:
                 _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
@@ -1069,8 +1112,7 @@ def _write_agent_output(text):
         if assembled:
             with open(os.path.join(dest_root, "streamed-text.txt"), "w", encoding="utf-8") as fh:
                 fh.write(assembled)
-        from obench.final_answer import publish_final_answer
-        publish_final_answer(dest_root, text)
+        _final_answer().publish_final_answer(dest_root, text)
     except OSError:
         return
 
@@ -1297,15 +1339,15 @@ def _apply_lsp_enable(body):
         return
     if "lsp" in body:
         return
-    from obench.lsp_cell import LspProvisionError, lsp_boolean_enables_all, worktree_root
-    root = worktree_root(_exe())
+    lsp = _lsp()
+    root = lsp.worktree_root(_exe())
     if not root:
-        raise LspProvisionError(
+        raise lsp.LspProvisionError(
             "LSP was requested but the OpenCode worktree for this binary "
             "could not be found, so lsp: true cannot be written to opencode.json",
             infra=True,
         )
-    if lsp_boolean_enables_all(root):
+    if lsp.lsp_boolean_enables_all(root):
         body["lsp"] = True
 
 
@@ -1434,9 +1476,8 @@ def _provision_lsp(env, workdir):
     raw = os.environ.get("OBENCH_OPENCODE_LSP", "").strip()
     if not raw:
         return
-    from obench.lsp_cell import provision_language_servers
     tools = [part.strip() for part in raw.split(",") if part.strip()]
-    provision_language_servers(
+    _lsp().provision_language_servers(
         env,
         workdir,
         tools,
@@ -1493,10 +1534,10 @@ def _kill_process_group(proc):
 
 
 def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
-    from thesis.ab.provider_pin import ProviderPinMismatch
-    from thesis.ab.watch import PromptIdle, WatchdogKill, run_piped
+    pin = _provider_pin()
+    watch = _watch()
     try:
-        return run_piped(
+        return watch.run_piped(
             cmd,
             cwd,
             env,
@@ -1507,11 +1548,11 @@ def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
             prompt_re=_PROMPT_RE if watch_prompt else None,
             prompt_idle_s=_PROMPT_IDLE_S,
         )
-    except ProviderPinMismatch:
+    except pin.ProviderPinMismatch:
         raise
-    except PromptIdle as exc:
+    except watch.PromptIdle as exc:
         raise _PromptWait(exc.output) from exc
-    except WatchdogKill as exc:
+    except watch.WatchdogKill as exc:
         raise _WatchdogKill(exc.marker(), exc.output) from exc
 
 
@@ -1564,8 +1605,7 @@ def _invoke(cmd, cwd, env, timeout_s, watch_prompt):
                     reason = _provider_pin_violation(env, "".join(chunks)[-2000:])
                     if reason:
                         _kill_process_group(proc)
-                        from thesis.ab.provider_pin import ProviderPinMismatch
-                        raise ProviderPinMismatch(reason, "".join(chunks))
+                        raise _provider_pin().ProviderPinMismatch(reason, "".join(chunks))
             if prompted and now - last_output >= _PROMPT_IDLE_S:
                 _kill_process_group(proc)
                 raise _PromptWait("".join(chunks))
@@ -1734,8 +1774,7 @@ def _isolated_env():
 
 
 def _lsp_failure(exc, iso_home, cmd=None):
-    from obench.lsp_cell import LspProvisionError
-    if not isinstance(exc, LspProvisionError):
+    if not isinstance(exc, _lsp().LspProvisionError):
         return None
     shutil.rmtree(iso_home, ignore_errors=True)
     row = {
@@ -1796,8 +1835,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         if not version:
             # Bundled provider: strace sees no package open, so read the
             # version compiled into the binary.
-            from obench.provider_embedded import embedded_version
-            bundled = embedded_version(exe)
+            bundled = _embedded_version(exe)
             if bundled:
                 version, loaded_source = bundled, "embedded"
         row["provider_loaded_source"] = loaded_source
@@ -1990,7 +2028,6 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
 
     proc = None
     try:
-        from thesis.ab.provider_pin import ProviderPinMismatch
         try:
             block = _provider_pin_block(env, proxy)
             if block:

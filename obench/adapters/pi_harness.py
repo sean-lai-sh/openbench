@@ -431,14 +431,36 @@ def _require_pin(binary: str) -> str:
 
 
 def _pi_module():
+    """The ``pi`` adapter that loaded this file, or the sibling ``pi.py``.
+
+    A docker cell file-loads adapters and does not install ``obench``. The
+    loaded module is the one whose ``__file__`` is the sibling, whatever name
+    ``entry.py`` registered it under.
+    """
     try:
         from obench.adapters import pi as pi_mod
         return pi_mod
     except ImportError:
-        mod = sys.modules.get("bench_adapter_pi")
-        if mod is None:
-            raise
-        return mod
+        pass
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pi.py")
+    for mod in list(sys.modules.values()):
+        loaded = getattr(mod, "__file__", None)
+        if not loaded or not hasattr(mod, "_run_streaming"):
+            continue
+        try:
+            same = os.path.abspath(loaded) == path
+        except OSError:
+            continue
+        if same:
+            return mod
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("bench_adapter_pi", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["bench_adapter_pi"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _fail(message: str) -> dict:

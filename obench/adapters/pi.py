@@ -39,12 +39,45 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-try:
-    from obench.auth_persist import try_persist_auth_file
-    from obench import gateway_spec as _gateway_spec
-except ImportError:  # file-path / Docker mount layout
-    from auth_persist import try_persist_auth_file
-    import gateway_spec as _gateway_spec
+
+class _LazyModule:
+    """Resolve a host module on first use. Importing this adapter must not."""
+
+    def __init__(self, loader):
+        self._loader = loader
+        self._mod = None
+
+    def _get(self):
+        if self._mod is None:
+            self._mod = self._loader()
+        return self._mod
+
+    def __getattr__(self, name):
+        return getattr(self._get(), name)
+
+
+def _load_gateway():
+    try:
+        from obench import gateway_spec as mod
+        return mod
+    except ImportError:
+        import gateway_spec as mod
+        return mod
+
+
+def _load_persist():
+    try:
+        from obench.auth_persist import try_persist_auth_file as persist
+    except ImportError:
+        from auth_persist import try_persist_auth_file as persist
+    return persist
+
+
+def try_persist_auth_file(copy_path, master_path):
+    return _load_persist()(copy_path, master_path)
+
+
+_gateway_spec = _LazyModule(_load_gateway)
 
 NAME = "pi"
 ADAPTER_API_VERSION = 2
