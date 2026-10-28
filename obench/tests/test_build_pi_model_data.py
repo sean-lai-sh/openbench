@@ -39,7 +39,8 @@ def test_hydrates_missing_data_from_published_package(tmp_path, monkeypatch):
 def test_skips_when_manifest_committed(tmp_path, monkeypatch):
     data = _tree(tmp_path)
     data.mkdir(parents=True)
-    (data / ".manifest.json").write_text("{}")
+    (data / ".manifest.json").write_text('{"schemaVersion":6}')
+    (data / "openai.json").write_text('{"committed":true}')
     calls = []
     monkeypatch.setattr(build_pi, "_pack_into", _fake_pack(calls))
     build_pi._hydrate_model_data(tmp_path, {})
