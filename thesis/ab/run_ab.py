@@ -49,7 +49,7 @@ from thesis.ab.sdk_pin import (
     install_alias_for_tree,
     install_gate_for_tree,
 )
-from thesis.ab.summarize import billable_tokens, row_cost
+from thesis.ab.summarize import billable_tokens, proxy_cost_from_records, row_cost
 from thesis.ab.toolchain import bun_requirement
 from thesis.ab.proxy_bridge import (
     cell_network,
@@ -545,8 +545,20 @@ def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None,
     return "\n".join(lines) + "\n"
 
 
+def cell_proxy_spend(row: dict) -> float | None:
+    """USD this cell contributes to ``--max-spend``.
+
+    ``proxy_cost_usd`` is the proxy ledger priced at Vertex list rates. Cells
+    written before that field existed fall back to ``row_cost``.
+    """
+    value = row.get("proxy_cost_usd")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return row_cost(row)
+    return float(value)
+
+
 def over_budget(out_dir: Path, max_cost_usd: float | None) -> str | None:
-    """Return a stop reason once finished cells pass the cap or lack tokens."""
+    """Return a stop reason once cumulative ``proxy_cost_usd`` passes the cap."""
     if max_cost_usd is None:
         return None
     spent = 0.0
@@ -556,12 +568,12 @@ def over_budget(out_dir: Path, max_cost_usd: float | None) -> str | None:
             continue
         if row.get("failure_class") in _GUARD_SKIP:
             continue
-        cost = row_cost(row)
+        cost = cell_proxy_spend(row)
         if cost is None:
             return "unmetered tokens in a finished cell; not launching more cells"
         spent += cost
     if spent >= max_cost_usd:
-        return f"estimated cost ${spent:.2f} reached the ${max_cost_usd:.2f} cap"
+        return f"proxy cost ${spent:.2f} reached the ${max_cost_usd:.2f} cap"
     return None
 
 
@@ -1440,9 +1452,13 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
         # An empty ledger file is a measured zero. A missing file is not.
         if ledger_path.is_file():
             row["requests_count"] = 0
+            row["proxy_cost_usd"] = 0.0
         return row
     apply_proxy_ledger(row, records)
     attach_upstream_model(row, records)
+    row["proxy_cost_usd"] = proxy_cost_from_records(
+        records, str(row.get("upstream_model") or ""),
+    )
     expose_request_totals(row)
     promote_proxy_meter(row)
     # Every ledger row, not only 2xx rows that carried a usage object.
@@ -2512,7 +2528,22 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--cache", type=Path, default=None)
-    parser.add_argument("--max-cost-usd", type=float, default=None)
+    parser.add_argument(
+        "--max-spend",
+        type=float,
+        default=None,
+        help=(
+            "Stop launching cells when cumulative proxy_cost_usd reaches this "
+            "many USD. proxy_cost_usd is the proxy ledger priced at Vertex list "
+            "rates, not the harness-reported token split."
+        ),
+    )
+    parser.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        help="Alias of --max-spend.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.trials < 1:
@@ -2521,8 +2552,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.jobs < 1:
         print("error: --jobs must be >= 1", file=sys.stderr)
         return 2
-    if args.max_cost_usd is not None and args.max_cost_usd < 0:
-        print("error: --max-cost-usd must be >= 0", file=sys.stderr)
+    if args.max_spend is not None and args.max_cost_usd is not None and args.max_spend != args.max_cost_usd:
+        print("error: pass only one of --max-spend and --max-cost-usd", file=sys.stderr)
+        return 2
+    spend_cap = args.max_spend if args.max_spend is not None else args.max_cost_usd
+    if spend_cap is not None and spend_cap < 0:
+        print("error: --max-spend must be >= 0", file=sys.stderr)
         return 2
     if args.no_progress_s < 0:
         print("error: --no-progress-s must be >= 0", file=sys.stderr)
@@ -2605,7 +2640,7 @@ def main(argv: list[str] | None = None) -> int:
         plan, launched, stopped = drive(
             prs, tasks, args.trials, args.out,
             jobs=args.jobs, model=args.model, timeout_s=args.timeout,
-            cache=cache, max_cost_usd=args.max_cost_usd, dry_run=args.dry_run,
+            cache=cache, max_cost_usd=spend_cap, dry_run=args.dry_run,
             tasks_dir=tasks_dir, model_route=args.model_route,
             transcripts_dir=args.transcripts_dir, aa=args.aa,
             fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,

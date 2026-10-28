@@ -104,6 +104,47 @@ def row_cost(row: dict) -> float | None:
     return total
 
 
+def proxy_cost_usd(
+    model: str,
+    *,
+    input_uncached: int | float = 0,
+    output: int | float = 0,
+    cache_read: int | float = 0,
+    cache_write: int | float = 0,
+) -> float:
+    """Vertex list price for proxy-ledger tokens. Ignores harness-reported usage."""
+    cost = row_cost({
+        "upstream_model": model,
+        "tokens_input_uncached": input_uncached,
+        "tokens_output": output,
+        "tokens_cache_read": cache_read,
+        "tokens_cache_write": cache_write,
+    })
+    return 0.0 if cost is None else cost
+
+
+def proxy_cost_from_records(records, default_model: str = "") -> float:
+    """Sum input, output, cache write, and cache read across proxy ledger rows."""
+    buckets: dict[str, dict[str, int]] = {}
+    keys = ("input_uncached", "output", "cache_read", "cache_write")
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("record_type") not in (None, "request"):
+            continue
+        model = str(record.get("upstream_model") or default_model or "")
+        bucket = buckets.setdefault(model, {key: 0 for key in keys})
+        for key in keys:
+            value = record.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            bucket[key] += int(value)
+    total = 0.0
+    for model, bucket in buckets.items():
+        total += proxy_cost_usd(model, **bucket)
+    return total
+
+
 def load_jsonl(path: Path) -> list[dict]:
     if not path.is_file():
         return []
