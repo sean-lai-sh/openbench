@@ -997,15 +997,29 @@ def _vertex_spec():
     return data if isinstance(data, dict) else None
 
 
+def _proxy_loopback():
+    """Sibling module. The cell image does not install ``thesis`` or ``obench``."""
+    name = "obench_adapters_proxy_loopback"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_loopback.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _bridge_models_body(spec):
     """Rewrite the shared proxy origin inside Pi/omp models, and nothing else."""
     body = spec.get("models_body") or ""
     origin = str(spec.get("proxy_url") or "").strip()
     if not origin:
         return body
-    from thesis.ab.proxy_bridge import proxy_origin_for_network, runtime_network
-
-    updated = proxy_origin_for_network(origin, runtime_network())
+    updated = _proxy_loopback().origin_for_this_process(origin)
     if updated == origin:
         return body
     return body.replace(origin, updated)

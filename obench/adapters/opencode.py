@@ -1075,11 +1075,28 @@ def _write_agent_output(text):
         return
 
 
+def _proxy_loopback():
+    """Sibling of this file. The cell does not have ``thesis`` on its path."""
+    import importlib.util
+    import sys
+
+    name = "obench_adapters_proxy_loopback"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_loopback.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def reachable_proxy_base(url: str) -> str:
     """Bridge origin for this process. Pi uses the same rule."""
-    from thesis.ab.proxy_bridge import proxy_origin_for_network, runtime_network
-
-    return proxy_origin_for_network(url, runtime_network())
+    return _proxy_loopback().origin_for_this_process(url)
 
 
 def _rewrite_proxy_origins(body):

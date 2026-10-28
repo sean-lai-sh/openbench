@@ -23,13 +23,18 @@ import os
 import socket
 import subprocess
 import threading
-from urllib.parse import urlsplit, urlunsplit
+from pathlib import Path
+from urllib.parse import urlsplit
 
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-CONTAINER_HOST = "host.docker.internal"
+from obench.adapters.proxy_loopback import (
+    CONTAINER_HOST,
+    LOOPBACK_HOSTS,
+    proxy_origin_for_network,
+    runtime_network,
+)
+
 ANTHROPIC_HOST = "api.anthropic.com"
 ANTHROPIC_SINKHOLE = "0.0.0.0"
-_TRUTHY_NETWORKS = frozenset({"host", "bridge", "local"})
 _LOCK = threading.Lock()
 _FORWARDERS: dict[int, "BridgeForwarder"] = {}
 
@@ -55,45 +60,6 @@ def cell_network(exec_mode: str, docker_args: list[str] | None = None) -> str:
     if name == "host":
         return "host"
     return "bridge"
-
-
-def runtime_network() -> str:
-    """Network of the process that is about to open the proxy.
-
-    ``OBENCH_DOCKER_NETWORK`` is set by the cell container. A container that
-    does not say otherwise is bridge: that is ``docker run``'s default, and
-    host-network runs set the variable to ``host``.
-    """
-    explicit = os.environ.get("OBENCH_DOCKER_NETWORK", "").strip().lower()
-    if explicit in _TRUTHY_NETWORKS:
-        return explicit
-    if os.environ.get("BENCH_IN_CONTAINER"):
-        return "bridge"
-    return "local"
-
-
-def proxy_origin_for_network(url: str, network: str) -> str:
-    """Shared origin for Pi and OpenCode.
-
-    ``local`` and ``host`` keep the URL. ``bridge`` rewrites a loopback host
-    to ``host.docker.internal`` and keeps the scheme, port, and path. A URL
-    that is already that name, or any non-loopback host, is unchanged.
-    """
-    text = (url or "").strip()
-    if network != "bridge" or not text:
-        return text
-    parts = urlsplit(text)
-    if parts.hostname not in LOOPBACK_HOSTS:
-        return text
-    port = f":{parts.port}" if parts.port else ""
-    user = ""
-    if parts.username:
-        user = parts.username
-        if parts.password is not None:
-            user += f":{parts.password}"
-        user += "@"
-    netloc = f"{user}{CONTAINER_HOST}{port}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def reachable_proxy_port(url: str) -> int | None:
@@ -377,6 +343,69 @@ def ensure_forwarder_from_env(network_name: str = "bridge") -> BridgeForwarder |
     if port is None:
         return None
     return publish_proxy_port(port, network_name=network_name)
+
+
+def reasoning_tokens(usage: dict | None) -> int | None:
+    """Reasoning tokens the proxy stored on one request, if the provider sent them."""
+    if not isinstance(usage, dict):
+        return None
+    for key in ("reasoning_tokens", "reasoning_output_tokens", "reasoning"):
+        value = usage.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        return int(value)
+    details = usage.get("output_tokens_details")
+    if isinstance(details, dict):
+        value = details.get("reasoning_tokens")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+    return None
+
+
+def proxy_observed_settings(records: list | None) -> list[dict]:
+    """Thinking and reasoning the proxy recorded for each request.
+
+    ``thinking_mode`` is the proxy's pin. ``thinking_sent`` is the ``thinking``
+    field it classified on the request. ``reasoning_tokens`` is the provider
+    usage field when one was present.
+    """
+    observed = []
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("record_type") not in {None, "request"}:
+            continue
+        usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
+        observed.append({
+            "thinking_mode": record.get("thinking_mode"),
+            "thinking_sent": record.get("thinking_sent"),
+            "reasoning_tokens": reasoning_tokens(usage),
+        })
+    return observed
+
+
+def read_proxy_observed(ledger_dir, cell_id: str) -> list[dict]:
+    """Settings from the cell's ledger. An empty ledger is an empty list."""
+    from thesis.ab.vertex_anthropic_proxy import cell_ledger_path
+
+    path = cell_ledger_path(Path(ledger_dir), cell_id)
+    if not path.is_file():
+        return []
+    records = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            records.append(item)
+    return proxy_observed_settings(records)
 
 
 def format_egress_line(blocked: bool, detail: str) -> str:

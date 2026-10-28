@@ -35,8 +35,10 @@ host OUTPUT rules are not changed.
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:?}"
 export OBENCH_CELL_IMAGE="${OBENCH_CELL_IMAGE:-h2-env:1022}"
-# Set this when the image has no Node >= 22.19.0. The mount is read-only.
-# export PI_NODE_PREFIX=/opt/node-v22.19.0
+# Set this when the image has no Node >= 22.19.0. The host directory is
+# mounted read-only at /opt/node-v22.19.0, and the cache at /h1/pi-src.
+# Those are the paths the cached wrapper execs.
+# export PI_NODE_PREFIX="$HOME/h1/toolchain/node-v22.19.0-linux-x64"
 python3 data/pi-harness-smoke/cell.py \
   --out "${HOME}/pi-harness-smoke-bridge" \
   --models claude-sonnet-5-5 \
@@ -49,3 +51,7 @@ Stdout and `<out>/smoke.log` each get two lines:
 
 - `egress api.anthropic.com blocked (...)` before the cell. `REACHABLE` exits 1 and does not start the cell. The probe resolves the sinkhole name. It does not send an HTTP request to Anthropic.
 - `proxy-reached cell=<id> reached=yes calls=<n>` after the cell, when a request arrived at the proxy.
+
+Each cell record includes `network_mode` (`bridge` for this command) and
+`proxy_observed`, the thinking mode, thinking field, and reasoning tokens the
+proxy recorded for each request. An empty ledger is an empty list.

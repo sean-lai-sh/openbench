@@ -33,6 +33,7 @@ from thesis.ab.proxy_bridge import (
     docker_bridge_gateway,
     proxy_origin_for_network,
     publish_proxy_port,
+    read_proxy_observed,
     shared_proxy_port,
 )
 from thesis.ab.run_ab import bind_cell_proxy
@@ -46,6 +47,9 @@ _ENV = (
     "OBENCH_OPENCODE_PROXY",
     "OBENCH_PI_VERTEX",
     "OBENCH_PI_HARNESS",
+    "OBENCH_OPENCODE_BIN",
+    "OBENCH_OPENCODE_MOUNT",
+    "OPENCODE_NODE_PREFIX",
 )
 
 
@@ -229,6 +233,71 @@ class SharedOriginTests(unittest.TestCase):
             )
         self.assertNotIn("--add-host=host.docker.internal:host-gateway", host_cmd)
         self.assertNotIn("api.anthropic.com", " ".join(host_cmd))
+
+    def test_opencode_binary_and_node_mount_at_the_wrapper_paths(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache = Path(root) / "h1" / "opencode-src"
+            node = Path(root) / "h1" / "toolchain" / "node-v20.19.2-linux-x64"
+            binary = cache / "bin" / "abc" / "opencode"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            node.mkdir(parents=True)
+            updates = _cleared()
+            updates["OBENCH_OPENCODE_PROXY"] = json.dumps({
+                "model_ref": "anthropic/claude-opus-5-5",
+                "base_url": "http://127.0.0.1:9/v1",
+            })
+            updates["OBENCH_OPENCODE_BIN"] = str(binary)
+            updates["OBENCH_OPENCODE_MOUNT"] = str(cache)
+            updates["OPENCODE_NODE_PREFIX"] = str(node)
+            with _Env(**updates):
+                cmd = docker_exec.build_docker_cmd(
+                    harness="opencode", workdir="/tmp/wd", model="claude-opus-5-5",
+                    timeout_s=60, adapters_dir="/repo/obench/adapters",
+                    image="h1-env:1027-strace", instruction_path="/tmp/instr",
+                )
+        self.assertIn(f"{os.path.abspath(cache)}:/h1/opencode-src:ro", cmd)
+        self.assertIn(
+            f"{os.path.abspath(node)}:/h1/toolchain/node-v20.19.2-linux-x64:ro",
+            cmd,
+        )
+        self.assertIn("OBENCH_OPENCODE_BIN=/h1/opencode-src/bin/abc/opencode", cmd)
+        self.assertIn(
+            "PATH=/h1/toolchain/node-v20.19.2-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            cmd,
+        )
+        self.assertIn("OBENCH_DOCKER_NETWORK=bridge", cmd)
+
+    def test_opencode_bridge_cell_requires_an_image(self):
+        import importlib.util
+        path = Path(__file__).resolve().parents[2] / "data" / "opencode-harness-smoke" / "cell.py"
+        spec = importlib.util.spec_from_file_location("opencode_bridge_cell", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with _Env(OBENCH_CELL_IMAGE=None):
+            with self.assertRaises(SystemExit) as caught:
+                module.main([
+                    "--out", "/tmp/oc-bridge-no-image", "--exec", "docker", "--sha", "a" * 40,
+                ])
+        self.assertIn("image", str(caught.exception))
+
+    def test_proxy_observed_reads_thinking_and_reasoning(self):
+        ledger = Path(tempfile.mkdtemp())
+        self.assertEqual(read_proxy_observed(ledger, "cell"), [])
+        (ledger / "cell.jsonl").write_text(
+            json.dumps({
+                "record_type": "request",
+                "thinking_mode": "default",
+                "thinking_sent": "adaptive",
+                "usage": {"reasoning_tokens": 12, "output_tokens": 20},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(read_proxy_observed(ledger, "cell"), [{
+            "thinking_mode": "default",
+            "thinking_sent": "adaptive",
+            "reasoning_tokens": 12,
+        }])
 
 
 class ForwarderTests(unittest.TestCase):

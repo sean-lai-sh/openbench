@@ -51,13 +51,19 @@ from thesis.ab.sdk_pin import (
 )
 from thesis.ab.summarize import billable_tokens, row_cost
 from thesis.ab.toolchain import bun_requirement
-from thesis.ab.proxy_bridge import cell_network, proxy_origin_for_network
+from thesis.ab.proxy_bridge import (
+    cell_network,
+    proxy_origin_for_network,
+    read_proxy_observed,
+)
 from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
 
 CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
 # Hard-pack runs (H1/H2) opt in to these; the defaults keep every existing run unchanged.
 EXEC_MODE = "local"
+# Image for --exec docker when the task does not declare one. OBENCH_CELL_IMAGE.
+DOCKER_IMAGE: str | None = None
 CELL_META: dict | None = None
 _METERED = (
     "tokens_input_uncached",
@@ -791,6 +797,7 @@ def execute_cell(spec: dict) -> None:
             spec["adapters_dir"],
             CHECKER_TIMEOUT_S,
             exec_mode=str(spec.get("exec_mode") or "local"),
+            docker_image=(str(spec.get("docker_image") or "").strip() or None),
             harness_version=harness_version,
             version_drift=True,
             transcripts_dir=transcripts_dir,
@@ -808,6 +815,7 @@ def execute_cell(spec: dict) -> None:
                 str(spec.get("thinking_mode") or "default"),
                 ledger_records(spec.get("proxy")),
             )
+            attach_bridge_record(row, spec)
             attach_schedule(row, spec, started_at)
             attach_cell_meta(row, spec, started_at)
             attach_provider_pin(row, spec)
@@ -999,6 +1007,25 @@ def attach_thinking(row: dict, mode: str, records: list | None = None) -> dict:
     return row
 
 
+def attach_bridge_record(row: dict, spec: dict) -> dict:
+    """Record the cell network and the thinking settings the proxy observed.
+
+    ``network_mode`` is ``local``, ``host``, or ``bridge``. ``proxy_observed``
+    is one entry per ledger request (empty when nothing reached the proxy).
+    """
+    if not isinstance(row, dict):
+        return row
+    row["network_mode"] = cell_network(
+        str(spec.get("exec_mode") or "local"),
+        list(spec.get("docker_args") or []),
+    )
+    proxy = spec.get("proxy") if isinstance(spec.get("proxy"), dict) else None
+    ledger = str((proxy or {}).get("ledger_dir") or "").strip()
+    cell = str((proxy or {}).get("cell_id") or "").strip()
+    row["proxy_observed"] = read_proxy_observed(ledger, cell) if ledger and cell else []
+    return row
+
+
 def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: str,
           model: str, timeout_s: int, transcripts_root: Path | None = None,
           no_progress_s: float = 0, thinking_mode: str = "default") -> dict:
@@ -1017,6 +1044,11 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "model": model,
         "timeout_s": cell_timeout(timeout_s),
         **({"exec_mode": EXEC_MODE} if EXEC_MODE != "local" else {}),
+        **(
+            {"docker_image": DOCKER_IMAGE}
+            if EXEC_MODE == "docker" and DOCKER_IMAGE
+            else {}
+        ),
         **({"cell_meta": dict(CELL_META)} if CELL_META else {}),
         "toolchain": prepared.get("toolchain") or {},
         "toolchain_path": _absolute(out_dir / spec["pr"] / f"{spec['side']}.toolchain.json"),
@@ -2338,7 +2370,7 @@ def _tasks_dir_from_discovery() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global CELL_TIMEOUT_CAP_S, EXEC_MODE, CELL_META
+    global CELL_TIMEOUT_CAP_S, EXEC_MODE, CELL_META, DOCKER_IMAGE
     parser = argparse.ArgumentParser(description="A/B harness commits on the same tasks")
     parser.add_argument("prs", type=Path, help="PR list CSV or JSONL")
     parser.add_argument("--pr", action="append", default=[], help="PR id, or comma-separated ids")
@@ -2434,7 +2466,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout-cap-s", type=int, default=None,
                         help=f"Per-cell timeout cap in seconds (default {CELL_TIMEOUT_CAP_S}). A cell that hits it fails.")
     parser.add_argument("--exec", dest="exec_mode", choices=["local", "docker"], default="local",
-                        help="Cell execution mode passed to obench run_cell (docker uses each task's image).")
+                        help=("Cell execution mode passed to obench run_cell. "
+                              "docker passes --image, or OBENCH_CELL_IMAGE, when the task has no image. "
+                              "A Pi cache is mounted at /h1/pi-src and PI_NODE_PREFIX at /opt/node-v22.19.0. "
+                              "An OpenCode cache is mounted at /h1/opencode-src; set OPENCODE_NODE_PREFIX to mount Node."))
+    parser.add_argument(
+        "--image",
+        default=os.environ.get("OBENCH_CELL_IMAGE", ""),
+        help=(
+            "Docker image for --exec docker when the task does not declare docker_image. "
+            "Defaults to OBENCH_CELL_IMAGE. A task image still wins inside run_cell."
+        ),
+    )
     parser.add_argument("--cell-meta", action="store_true",
                         help="Record host, machine, VM type ($OBENCH_VM_TYPE), runner commit, concurrency and ET start/end on each cell.")
     parser.add_argument(
@@ -2527,6 +2570,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         CELL_TIMEOUT_CAP_S = args.timeout_cap_s
     EXEC_MODE = args.exec_mode
+    DOCKER_IMAGE = (args.image or "").strip() or None
     if args.cell_meta:
         import socket
         machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]

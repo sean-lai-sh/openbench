@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from obench.adapters.pi_harness import PIN, load_proxy_totals, settings_destination
     from thesis.ab.build_pi import binary
+    from thesis.ab.proxy_bridge import cell_network, read_proxy_observed
     from thesis.ab.vertex_anthropic_proxy import start_from_env
     from obench.run import run_cell
 
@@ -114,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tasks_dir = args.tasks_dir or (repo / "data" / "packs" / "openbench-tb-hard")
     adapters = repo / "obench" / "adapters"
+    network_mode = cell_network(args.exec, [])
     records = []
     try:
         for model in models:
@@ -146,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
                 "task": TASK,
                 "wire": "anthropic-messages",
                 "openai_chat_completions": False,
+                "network_mode": network_mode,
+                "proxy_observed": read_proxy_observed(ledger, cell_id),
                 "row": row,
                 "settings": settings,
                 "totals": totals,
@@ -160,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             records.append({
                 "model": model,
                 "cell_id": cell_id,
+                "network_mode": network_mode,
                 "completed": row.get("completed"),
                 "failure_class": row.get("failure_class"),
                 "checker_exit": row.get("checker_exit"),
@@ -167,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                 "requests_cost_usd": record["requests_cost_usd"],
                 "totals_calls_all": None if totals is None else totals["all"]["calls"],
                 "totals_calls_main": None if totals is None else totals["main"]["calls"],
+                "proxy_observed": record["proxy_observed"],
             })
             print(json.dumps(records[-1]), flush=True)
     finally:

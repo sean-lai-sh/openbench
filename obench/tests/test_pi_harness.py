@@ -3,6 +3,8 @@
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -25,6 +27,9 @@ _ENV_KEYS = (
     "OBENCH_PI_PIN_FILE",
     "OBENCH_PI_MOUNT",
     "OBENCH_PI_SETTINGS_PATH",
+    "PI_NODE_PREFIX",
+    "OPENCODE_NODE_PREFIX",
+    "OBENCH_OPENCODE_MOUNT",
     "BENCH_IN_CONTAINER",
     "OBENCH_DOCKER_NETWORK",
 )
@@ -440,7 +445,8 @@ class TestDockerForwarding(unittest.TestCase):
             self.assertIn("-e", cmd)
             self.assertIn("OBENCH_DOCKER_NETWORK=bridge", cmd)
             mount_abs = os.path.abspath(mount)
-            self.assertIn(f"{mount_abs}:{mount_abs}:ro", cmd)
+            self.assertIn(f"{mount_abs}:{docker_exec.PI_CACHE_CONTAINER}:ro", cmd)
+            self.assertNotIn(f"{mount_abs}:{mount_abs}:ro", cmd)
             for name in (
                 "OBENCH_PI_HARNESS", "OBENCH_VERTEX_PROXY_URL", "OBENCH_VERTEX_CELL_ID",
                 "OBENCH_PI_BIN", "OBENCH_PI_PIN_FILE", "OBENCH_PI_MOUNT",
@@ -471,6 +477,77 @@ class TestDockerForwarding(unittest.TestCase):
         self.assertIn("OBENCH_DOCKER_NETWORK=host", cmd)
         self.assertIn("--network", cmd)
         self.assertEqual(cmd[cmd.index("--network") + 1], "host")
+
+    def test_cached_wrapper_paths_are_the_container_mounts(self):
+        with tempfile.TemporaryDirectory() as cache, tempfile.TemporaryDirectory() as node:
+            binary = Path(cache) / "bin" / "pi" / "sha" / "pi"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            pin = Path(str(binary) + ".pin")
+            pin.write_text("pin\n", encoding="utf-8")
+            updates = _cleared()
+            updates.update({
+                "OBENCH_PI_HARNESS": "1",
+                "OBENCH_VERTEX_PROXY_URL": "http://127.0.0.1:9",
+                "OBENCH_PI_BIN": str(binary),
+                "OBENCH_PI_PIN_FILE": str(pin),
+                "OBENCH_PI_MOUNT": cache,
+                "PI_NODE_PREFIX": node,
+            })
+            with _Env(**updates):
+                cmd = docker_exec.build_docker_cmd(
+                    harness="pi", workdir="/tmp/wd", model="claude-sonnet-5-5",
+                    timeout_s=2400, adapters_dir="/repo/obench/adapters",
+                    image="openbench-harness:latest", instruction_path="/tmp/instr",
+                )
+        cache_abs = os.path.abspath(cache)
+        node_abs = os.path.abspath(node)
+        self.assertIn(f"{cache_abs}:/h1/pi-src:ro", cmd)
+        self.assertIn(f"{node_abs}:/opt/node-v22.19.0:ro", cmd)
+        self.assertIn("PATH=/opt/node-v22.19.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", cmd)
+        rel_bin = Path(binary).relative_to(cache).as_posix()
+        rel_pin = Path(pin).relative_to(cache).as_posix()
+        self.assertIn(f"OBENCH_PI_BIN=/h1/pi-src/{rel_bin}", cmd)
+        self.assertIn(f"OBENCH_PI_PIN_FILE=/h1/pi-src/{rel_pin}", cmd)
+        self.assertNotIn(cache_abs, " ".join(item for item in cmd if item.startswith("OBENCH_PI_BIN=")))
+
+    def test_rewrite_loopback_runs_without_thesis(self):
+        script = textwrap.dedent(
+            """
+            import importlib.abc, os, sys
+
+            class Block(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path, target=None):
+                    if fullname == "thesis" or fullname.startswith("thesis."):
+                        raise ModuleNotFoundError(fullname)
+                    return None
+
+            sys.meta_path.insert(0, Block())
+            for name in list(sys.modules):
+                if name == "thesis" or name.startswith("thesis."):
+                    del sys.modules[name]
+            os.environ["BENCH_IN_CONTAINER"] = "1"
+            os.environ.pop("OBENCH_DOCKER_NETWORK", None)
+            from obench.adapters.pi_harness import rewrite_loopback
+            from obench.adapters.opencode import reachable_proxy_base
+            pi_url = rewrite_loopback("http://127.0.0.1:9/c/abc")
+            oc_url = reachable_proxy_base("http://127.0.0.1:9/v1")
+            assert pi_url == "http://host.docker.internal:9/c/abc", pi_url
+            assert oc_url == "http://host.docker.internal:9/v1", oc_url
+            print("ok")
+            """
+        )
+        root = Path(__file__).resolve().parents[2]
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
+        env.pop("BENCH_IN_CONTAINER", None)
+        env.pop("OBENCH_DOCKER_NETWORK", None)
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, env=env, cwd=str(root),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("ok", proc.stdout)
 
 
 if __name__ == "__main__":

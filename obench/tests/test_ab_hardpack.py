@@ -1,5 +1,7 @@
 """Opt-in hard-pack flags on thesis.ab.run_ab: defaults stay unchanged."""
 import json
+import tempfile
+import unittest
 from pathlib import Path
 
 from thesis.ab import run_ab
@@ -55,7 +57,51 @@ def test_main_dry_run_hard_pack(tmp_path, monkeypatch):
     finally:
         run_ab.CELL_TIMEOUT_CAP_S = 840
         run_ab.EXEC_MODE = "local"
+        run_ab.DOCKER_IMAGE = None
         run_ab.CELL_META = None
+
+
+class DockerImageTests(unittest.TestCase):
+    def test_docker_exec_puts_the_image_on_the_cell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            test_docker_exec_puts_the_image_on_the_cell(Path(tmp))
+
+    def test_local_exec_does_not_attach_an_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            test_local_exec_does_not_attach_an_image(Path(tmp))
+
+
+def test_docker_exec_puts_the_image_on_the_cell(tmp_path):
+    run_ab.EXEC_MODE = "docker"
+    run_ab.DOCKER_IMAGE = "h1-env:1027-strace"
+    try:
+        filled = run_ab._fill(
+            {"pr": "1", "side": "with", "task": "polyglot-rust-c", "trial": 1},
+            {"binary": "/bin/opencode", "config": {}, "permission_config": False},
+            tmp_path, str(tmp_path), str(tmp_path / "adapters"),
+            "claude-opus-5-5", 60,
+        )
+    finally:
+        run_ab.EXEC_MODE = "local"
+        run_ab.DOCKER_IMAGE = None
+    assert filled["exec_mode"] == "docker"
+    assert filled["docker_image"] == "h1-env:1027-strace"
+
+
+def test_local_exec_does_not_attach_an_image(tmp_path):
+    run_ab.EXEC_MODE = "local"
+    run_ab.DOCKER_IMAGE = "h1-env:1027-strace"
+    try:
+        filled = run_ab._fill(
+            {"pr": "1", "side": "with", "task": "polyglot-rust-c", "trial": 1},
+            {"binary": "/bin/opencode", "config": {}, "permission_config": False},
+            tmp_path, str(tmp_path), str(tmp_path / "adapters"),
+            "claude-opus-5-5", 60,
+        )
+    finally:
+        run_ab.DOCKER_IMAGE = None
+    assert "docker_image" not in filled
+    assert "exec_mode" not in filled
 
 
 def test_harbor_app_rewrite_regex_matches_checker():

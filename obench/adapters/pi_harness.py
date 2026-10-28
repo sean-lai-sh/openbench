@@ -94,15 +94,32 @@ def cell_proxy_base(base_url: str, cell_id: str) -> str:
     return f"{base}/c/{cell_id}"
 
 
+def _proxy_loopback():
+    """The mounted adapter file. ``thesis`` is not in the cell."""
+    import importlib.util
+
+    name = "obench_adapters_proxy_loopback"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_loopback.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def rewrite_loopback(url: str) -> str:
     """Point a host loopback proxy at the shared bridge origin inside a cell.
 
     The same function OpenCode uses. Host-network cells
-    (``OBENCH_DOCKER_NETWORK=host``) keep ``127.0.0.1``.
+    (``OBENCH_DOCKER_NETWORK=host``) keep ``127.0.0.1``. This does not import
+    ``thesis``: the cell only mounts ``obench/adapters`` and ``entry.py``.
     """
-    from thesis.ab.proxy_bridge import proxy_origin_for_network, runtime_network
-
-    return proxy_origin_for_network(url.strip(), runtime_network())
+    return _proxy_loopback().origin_for_this_process(url.strip())
 
 
 def call_role_for_system(system_text: str) -> str:
