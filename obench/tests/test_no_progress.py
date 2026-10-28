@@ -478,6 +478,8 @@ class ExecuteCellTests(unittest.TestCase):
         """)
         execute_cell(self._spec(root, binary))
         row = json.loads((root / "cell.json").read_text(encoding="utf-8"))
+        self.assertEqual(row["network_mode"], "local")
+        self.assertEqual(row["proxy_observed"], [])
         self.assertEqual(row["infra_reason"], "no_progress")
         self.assertEqual(row["failure_class"], "infra")
         self.assertGreaterEqual(row["no_progress_idle_s"], 0.5)

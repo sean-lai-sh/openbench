@@ -26,23 +26,58 @@ Notes / quirks:
   Parsing is defensive: shape drift yields tokens=None/turns=None + raw tail.
 """
 
+import importlib.util
 import json
 import os
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-try:
-    from obench.auth_persist import try_persist_auth_file
-    from obench import gateway_spec as _gateway_spec
-except ImportError:  # file-path / Docker mount layout
-    from auth_persist import try_persist_auth_file
-    import gateway_spec as _gateway_spec
+
+class _LazyModule:
+    """Resolve a host module on first use. Importing this adapter must not."""
+
+    def __init__(self, loader):
+        self._loader = loader
+        self._mod = None
+
+    def _get(self):
+        if self._mod is None:
+            self._mod = self._loader()
+        return self._mod
+
+    def __getattr__(self, name):
+        return getattr(self._get(), name)
+
+
+def _load_gateway():
+    try:
+        from obench import gateway_spec as mod
+        return mod
+    except ImportError:
+        import gateway_spec as mod
+        return mod
+
+
+def _load_persist():
+    try:
+        from obench.auth_persist import try_persist_auth_file as persist
+    except ImportError:
+        from auth_persist import try_persist_auth_file as persist
+    return persist
+
+
+def try_persist_auth_file(copy_path, master_path):
+    return _load_persist()(copy_path, master_path)
+
+
+_gateway_spec = _LazyModule(_load_gateway)
 
 NAME = "pi"
 ADAPTER_API_VERSION = 2
@@ -995,6 +1030,34 @@ def _vertex_spec():
     return data if isinstance(data, dict) else None
 
 
+def _proxy_loopback():
+    """Sibling module. The cell image does not install ``thesis`` or ``obench``."""
+    name = "obench_adapters_proxy_loopback"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_loopback.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _bridge_models_body(spec):
+    """Rewrite the shared proxy origin inside Pi/omp models, and nothing else."""
+    body = spec.get("models_body") or ""
+    origin = str(spec.get("proxy_url") or "").strip()
+    if not origin:
+        return body
+    updated = _proxy_loopback().origin_for_this_process(origin)
+    if updated == origin:
+        return body
+    return body.replace(origin, updated)
+
+
 def _run_vertex(instruction, workdir, timeout_s, spec):
     iso_home = tempfile.mkdtemp(prefix="pi_vertex_home_")
     stop_box = []
@@ -1009,7 +1072,7 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
         env.pop("PI_PACKAGE_DIR", None)
         filename = str(spec.get("models_filename") or "models.json")
         with open(os.path.join(agent_dir, filename), "w", encoding="utf-8") as fh:
-            fh.write(spec.get("models_body") or "")
+            fh.write(_bridge_models_body(spec))
         session_dir = str(os.environ.get("OBENCH_PI_SESSION_DIR") or "").strip()
         extra = list(spec.get("extra_args") or [])
         if session_dir:
@@ -1072,10 +1135,49 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
         shutil.rmtree(iso_home, ignore_errors=True)
 
 
+_COMPARISON_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def _comparison_env_set() -> bool:
+    """True when this cell asked for the harness-comparison Pi path.
+
+    The A/B vertex spec (``OBENCH_PI_VERTEX``) is checked first in ``run`` and
+    keeps that path. This flag only chooses the comparison adapter.
+    """
+    flag = os.environ.get("OBENCH_PI_HARNESS", "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return bool(os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip())
+
+
+def _load_comparison_harness():
+    """Load ``pi_harness`` as a package or as a sibling of this file.
+
+    Docker cells file-load this module as ``bench_adapter_pi``. ``obench`` is
+    not installed in the harness image, so the sibling is loaded by path.
+    """
+    try:
+        from obench.adapters import pi_harness
+        return pi_harness
+    except ImportError:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pi_harness.py")
+        module = sys.modules.get("pi_harness")
+        loaded = getattr(module, "__file__", None) if module is not None else None
+        if loaded and os.path.abspath(loaded) == path:
+            return module
+        spec = importlib.util.spec_from_file_location("pi_harness", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["pi_harness"] = module
+        spec.loader.exec_module(module)
+        return module
+
+
 def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     vertex = _vertex_spec()
     if model == "claude-opus-5-5" and vertex:
         return _run_vertex(instruction, workdir, timeout_s, vertex)
+    if model in _COMPARISON_MODELS and _comparison_env_set():
+        return _load_comparison_harness().run(instruction, workdir, model, timeout_s)
     if model in MODELS:
         provider = MODELS[model]["provider"]
         if not _has_subscription_auth(provider):

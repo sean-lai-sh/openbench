@@ -30,10 +30,13 @@ import shutil
 import sys
 import traceback
 
-try:
-    from obench.auth_persist import AUTH_PERSIST
-except ImportError:  # file-path / Docker mount layout
-    from auth_persist import AUTH_PERSIST
+def _auth_table():
+    """Credential allowlist. The cell image does not install the obench package."""
+    try:
+        from obench.auth_persist import AUTH_PERSIST
+    except ImportError:
+        from auth_persist import AUTH_PERSIST
+    return AUTH_PERSIST
 
 RESULT_SENTINEL = "__BENCH_RESULT__"
 # Container defaults; overridable via env so the entrypoint can be exercised
@@ -80,7 +83,7 @@ def _return_auth(harness, relatives=None):
     home = os.environ.get("HOME", "/root")
     returned = set()
     if relatives is None:
-        pairs = AUTH_PERSIST.get(harness, [])
+        pairs = _auth_table().get(harness, [])
         relatives = [relative for _master, relative in pairs]
     for relative in relatives:
         if relative in returned:
@@ -121,7 +124,14 @@ def _load_adapter(name):
         raise FileNotFoundError(f"adapter not found in container: {path}")
     spec = importlib.util.spec_from_file_location(f"bench_adapter_{name}", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Register before exec so the adapter can find itself while it loads.
+    # A cell does not install obench, so this name is the only handle.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
     if not hasattr(module, "run"):
         raise AttributeError(f"adapter '{name}' has no run() function")
     return module
@@ -248,7 +258,7 @@ def main(argv):
     try:
         relatives = None
         if os.environ.get("BENCH_AUTH_PERSIST_HARNESS"):
-            relatives = [rel for _, rel in AUTH_PERSIST.get(persist_harness, [])]
+            relatives = [rel for _, rel in _auth_table().get(persist_harness, [])]
         if (os.environ.get("BENCH_AUTH_PERSIST_CANDIDATE")
                 and candidate_obj is not None
                 and getattr(candidate_obj, "persist_auth", False)):

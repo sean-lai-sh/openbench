@@ -1709,6 +1709,8 @@ class Proxy:
         self._faults: dict[str, dict] = {}
         self._fault_lock = threading.Lock()
         self._message_index: dict[str, int] = {}
+        self._reached: set[str] = set()
+        self._bridge = None
 
     def note_message(self, cell_id: str) -> int:
         """1-based index of a ``/messages`` POST for this cell."""
@@ -1716,6 +1718,34 @@ class Proxy:
             index = self._message_index.get(cell_id, 0) + 1
             self._message_index[cell_id] = index
             return index
+
+    def note_reached(self, cell_id: str) -> None:
+        """Record that a cell's request arrived at this listener."""
+        if not cell_id:
+            return
+        with self._fault_lock:
+            self._reached.add(cell_id)
+
+    def reached(self, cell_id: str) -> bool:
+        with self._fault_lock:
+            return cell_id in self._reached
+
+    def publish_on_docker_bridge(self):
+        """Forward the loopback port on the docker bridge gateway.
+
+        Host-network and local cells do not call this. The loopback listener
+        stays the default. The forwarder refuses a wildcard bind.
+        """
+        from thesis.ab.proxy_bridge import BridgeError, publish_proxy_port
+
+        if self._bridge is not None and getattr(self._bridge, "owns_socket", False):
+            return self._bridge
+        port = int(self._httpd.server_address[1])
+        try:
+            self._bridge = publish_proxy_port(port)
+        except BridgeError as exc:
+            raise ProxyError(str(exc)) from exc
+        return self._bridge
 
     @property
     def base_url(self) -> str:
@@ -1758,6 +1788,10 @@ class Proxy:
             return kind
 
     def close(self) -> None:
+        bridge = self._bridge
+        self._bridge = None
+        if bridge is not None:
+            bridge.close()
         self._httpd.shutdown()
         self._httpd.server_close()
         self._thread.join(timeout=5)
@@ -1795,6 +1829,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
             cell, route = split_cell_path(self.path)
+            if cell:
+                holder["proxy"].note_reached(cell)
             route, query_removed = strip_beta_query(route)
             removed = list(query_removed)
             presentation = "openai" if _chat_route(route) else "anthropic"
@@ -2054,6 +2090,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
         def log_message(self, fmt, *args):
             return
 
+    # Loopback only. Bridge containers reach this port through the forwarder
+    # on the docker bridge gateway (thesis/ab/proxy_bridge.py). Host-network
+    # cells keep using this listener. Do not bind 0.0.0.0.
     httpd = Server(("127.0.0.1", 0), Handler)
     proxy = Proxy(httpd, None)
     holder["proxy"] = proxy
