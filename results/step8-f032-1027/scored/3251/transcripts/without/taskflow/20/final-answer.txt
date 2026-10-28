@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, none failing, and I didn't change any tests. I fixed seven bugs, all in `taskflow/`:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. It now returns `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. A batch must dispatch in non-increasing priority, so it now checks `current <= prev`. With the old check, the scheduler's guard marked runs `FAILED` by mistake.
+- **`config.py`:** `deep_merge` passed its arguments to the recursive call in the wrong order, so defaults overrode the task's own settings. The task's settings now win.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")` instead of `topic.startswith(prefix + ".")`. The `job.term` subscription therefore never matched, and `History` never recorded failed or skipped jobs.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never drained, which stalled the resource-limited pipelines.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.
+
+Two of these hid others, as you warned. The retry and resource failures were masked by the batch-guard and release bugs. The history failures were masked by the prefix-match bug, and the cascade bug only showed up once the history tests got that far.

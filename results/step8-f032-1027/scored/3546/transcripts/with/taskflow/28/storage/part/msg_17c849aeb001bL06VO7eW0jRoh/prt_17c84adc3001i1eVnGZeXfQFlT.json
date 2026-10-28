@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c84adc3001i1eVnGZeXfQFlT",
+  "sessionID": "ses_e837baaf3ffeFY0atdEIRkSwHQ",
+  "messageID": "msg_17c849aeb001bL06VO7eW0jRoh",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I only edited code under `taskflow/` and didn't touch the tests.\n\nI found seven root causes:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so entries ordered by insertion first. It now returns `(-priority, seq)`, which gives higher priority first and FIFO within a priority.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires each dispatched task's priority to be less than or equal to the previous one's.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. Any task with a cost above 1 leaked capacity, which stalled the resource-limited pipelines.\n- **`scheduler.py`:** `_cascade_skip` iterated over `dag.dependents()`, which are only direct children. It now uses `transitive_dependents()`, so the whole downstream chain is skipped.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested values. A task's `retry: {max_attempts: 3}` was being reset to the default.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. Prefix subscribers such as `History`'s `job.term` subscription never received `job.term.failed` or `job.term.skipped`. It now tests `topic.startswith(prefix + \".\")`.\n\nSeveral of the pipeline failures were caused by more than one of these. For example, the retry tests needed both the `deep_merge` fix and the `should_retry` fix before they passed.",
+  "time": {
+    "start": 1793090432498,
+    "end": 1793090432498
+  }
+}

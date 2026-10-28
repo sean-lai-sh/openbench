@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. There were seven separate bugs, all in the code under `taskflow/`:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested values. It now recurses as `deep_merge(result[key], value)`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity for any task costing more than 1. It now subtracts `cost`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch, but the docstring says non-increasing. It now checks `current <= prev`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children, so skips didn't propagate down a chain. It now uses `transitive_dependents`.
+- **`events.py`:** `_prefix_matches` had the prefix check backwards (`prefix.startswith(topic + ".")`), so the history never saw `job.term.*` events. It now checks `topic.startswith(prefix + ".")`.
+
+Several of these hid each other, as the task warned. The history failures (`failed_jobs`, `outcome_counts`) came from the event bus prefix match, not from `history.py`. The resource and priority tests also failed for more than one reason. The transitive-skip tests only started failing for their own cause once the other fixes were in.

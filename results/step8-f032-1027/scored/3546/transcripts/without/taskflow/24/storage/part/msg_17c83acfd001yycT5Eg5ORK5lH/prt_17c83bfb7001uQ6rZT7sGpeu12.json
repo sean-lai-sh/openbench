@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c83bfb7001uQ6rZT7sGpeu12",
+  "sessionID": "ses_e837c88ddffe6nsXxa0SpdALc4",
+  "messageID": "msg_17c83acfd001yycT5Eg5ORK5lH",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. There were seven separate defects, spread across several modules:\n\n1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the ordering is `(-priority, seq)`, so I changed it to match. Before, the queue ignored priority.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. With `max_attempts=3` it refused the retry after attempt 2. It now uses `attempts_made < max_attempts`.\n3. **`statemachine.py`**: `batch_order_ok` had its comparison reversed (`>=`). It now requires non-increasing priority within a batch (`current <= prev`), as its docstring says. Once the queue ordering was fixed, the old comparison made the scheduler reject valid dispatches and fail those runs.\n4. **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resources were never fully released, so later tasks stalled.\n5. **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It now tests `topic.startswith(prefix + \".\")`. Before, `job.term.*` events never reached `History`, so its failed, skipped and succeeded sets stayed empty.\n6. **`config.py`**: `deep_merge` recursed as `deep_merge(value, result[key])`, which swapped base and override. Task-level overrides such as `retry.max_attempts` were being overwritten by the defaults. It now recurses as `deep_merge(result[key], value)`.\n7. **`scheduler.py`**: `_cascade_skip` iterated `dag.dependents()`, which returns only direct children. It now uses `transitive_dependents()`, so a permanent failure skips every downstream task.",
+  "time": {
+    "start": 1793090371561,
+    "end": 1793090371561
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c849ffa001QcJ4rWijRB27lB",
+  "sessionID": "ses_e837b6009ffecrhW6G7j4iPfB2",
+  "role": "user",
+  "time": {
+    "created": 1793090428926
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests, and I only changed code under `taskflow/`. There were seven defects:\n\n- **`queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`. It now orders by `(-priority, seq)`, so higher priority goes first and ties go in insertion order.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `< max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed (`>=`). It now requires `current <= prev`, so priorities within an admission batch don't increase.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped (`deep_merge(value, result[key])`). That let the defaults overwrite a task's own `retry` override. The call is now `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` iterated over `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. A task that held more than one unit leaked capacity, and later tasks were never admitted.\n- **`events.py`:** `_prefix_matches` had the `startswith` operands reversed. It now uses `topic.startswith(prefix + \".\")`, so a prefix subscription such as `job.term` receives `job.term.failed`. That is what fixed the empty failed/skipped/outcome results in `History`.\n\nSeveral of the pipeline tests failed because of more than one of these at once. For example, the retry tests needed both the `deep_merge` fix and the `should_retry` fix.",
+    "diffs": []
+  }
+}

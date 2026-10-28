@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c8440270015EQNEg1abeutA5",
+  "sessionID": "ses_e837bbfdbffexoB2uQpCDwENWR",
+  "role": "user",
+  "time": {
+    "created": 1793090404394
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: all 25 tests, with no test files modified. There were seven separate bugs, each in a different module.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `_Entry.sort_key` was `(seq, -priority)`, so the queue ignored priority and ran in insertion order. | Changed to `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so the last permitted attempt never happened. | Changed to `attempts_made < max_attempts`. |\n| `taskflow/statemachine.py` | `batch_order_ok` had its comparison reversed. It required priority to be non-decreasing within a batch, but the docstring says non-increasing. Once the queue ordering was fixed, this would have failed a task that was admitted correctly. | Changed to `current <= prev`. |\n| `taskflow/resources.py` | `ResourcePool.release` always did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity and later tasks blocked forever. | Changed to subtract `cost`. |\n| `taskflow/events.py` | `_prefix_matches` had its arguments swapped, so `job.term.*` events never reached the history subscriber. | Changed to `topic.startswith(prefix + \".\")`. |\n| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children, so grandchildren stayed `PENDING`. | Switched to `transitive_dependents`. |\n| `taskflow/config.py` | `deep_merge` recursed as `deep_merge(override_child, base_child)`, so the defaults overwrote a task's own nested `retry` values. | Swapped to `deep_merge(base_child, override_child)`. |",
+    "diffs": []
+  }
+}

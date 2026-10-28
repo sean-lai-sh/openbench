@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c836c17001lFvU9qRJ5u06aB",
+  "sessionID": "ses_e837ceec4ffeMCdmtF8n0Tfr4S",
+  "messageID": "msg_17c835a980014405Jm0zxqR1F8",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven bugs, each fixed with a one-line change:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode per-task settings in nested dicts. The base is now the first argument.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity for any task costing more than 1. That is why the resource tests stalled.\n- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so I flipped the comparison. Without this, the guard failed any run admitted after a lower-priority one.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n- **`events.py`**: `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). `job.term` subscribers never received `job.term.failed` and similar topics, so `History` recorded no outcomes. It is now `topic.startswith(prefix + \".\")`.",
+  "time": {
+    "start": 1793090350160,
+    "end": 1793090350160
+  }
+}

@@ -1,0 +1,9 @@
+All 25 tests now pass. I fixed seven defects:
+
+1. `queue.py`: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority sorts first and FIFO breaks ties.
+2. `retry.py`: `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. It now uses `attempts_made < max_attempts`.
+3. `statemachine.py`: `batch_order_ok` had its comparison backwards. The docstring says priorities must be non-increasing within a batch, so it now returns `current <= prev`.
+4. `config.py`: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now recurses with `deep_merge(result[key], value)`.
+5. `resources.py`: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit tasks leaked capacity, which stalled the resource-limited runs.
+6. `scheduler.py`: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so every downstream task is skipped.
+7. `events.py`: `_prefix_matches` had its `startswith` operands reversed. The `job.term` prefix subscription therefore never matched, and `History` saw no terminal events.

@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c7f6f8f001YWEqb92N32PpBJ",
+  "sessionID": "ses_e8380907bffeKCE02WiDwX3h24",
+  "role": "user",
+  "time": {
+    "created": 1793090088852
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were eight bugs in total:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It now uses `attempts_made < max_attempts`.\n- **`events.py`:** `_prefix_matches` had its arguments the wrong way round (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch, the opposite of what its docstring says. It now requires `current <= prev`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested settings such as `retry`. It now recurses with `(base_child, override_child)`.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`, so resources leaked and later admissions stalled. It now subtracts `cost`.\n- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now skips all transitive dependents.\n\nThe queue, retry and state machine bugs were already hiding behind each other in the pipeline tests. I fixed the four small modules first, then the rest, re-running the suite after each batch.",
+    "diffs": []
+  }
+}

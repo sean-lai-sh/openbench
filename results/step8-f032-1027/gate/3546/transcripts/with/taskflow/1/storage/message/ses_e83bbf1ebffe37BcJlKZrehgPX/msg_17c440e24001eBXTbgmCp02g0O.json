@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c440e24001eBXTbgmCp02g0O",
+  "sessionID": "ses_e83bbf1ebffe37BcJlKZrehgPX",
+  "role": "user",
+  "time": {
+    "created": 1793086197289
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: all 25 tests, with no test files modified. There were seven root-cause defects:\n\n| File | Defect | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. | Changed it to `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which is off by one. | Changed it to `attempts_made < max_attempts`. |\n| `taskflow/statemachine.py` | `batch_order_ok` required priorities to be non-decreasing. Its docstring says non-increasing. | Changed `>=` to `<=`. |\n| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of releasing the task's cost. Pools never fully freed, so resource-limited pipelines stalled. | Changed it to `used -= cost`. |\n| `taskflow/scheduler.py` | `_cascade_skip` used `dag.dependents` (direct children only). | Switched to `dag.transitive_dependents`, so downstream chains and diamonds are skipped. |\n| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. | Swapped them back. |\n| `taskflow/events.py` | `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards, so `job.term` subscribers never received `job.term.failed` and similar topics. History's failed, skipped and outcome-count queries came back empty. | Changed it to `topic.startswith(prefix + \".\")`. |\n\nSeveral defects were masked by others. The retry tests only showed the config bug after the retry boundary was fixed. The resource failures were mostly the `release` bug, and the history failures were the prefix-match bug.",
+    "diffs": []
+  }
+}

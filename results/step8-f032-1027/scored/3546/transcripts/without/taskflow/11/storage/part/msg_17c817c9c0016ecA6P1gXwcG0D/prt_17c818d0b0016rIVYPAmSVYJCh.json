@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c818d0b0016rIVYPAmSVYJCh",
+  "sessionID": "ses_e837ec80affe65PheMie5Mv865",
+  "messageID": "msg_17c817c9c0016ecA6P1gXwcG0D",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven defects, each in a different module:\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.\n3. **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current <= prev`, so priorities are non-increasing within an admission batch. Fixing the queue exposed this one, because the scheduler marked out-of-order dispatches as failed.\n4. **`config.py`:** `deep_merge` recursed as `deep_merge(value, result[key])`, so the base overwrote the override. It now recurses as `deep_merge(result[key], value)`.\n5. **`events.py`:** `_prefix_matches` had the `startswith` operands swapped. Prefix subscriptions such as `job.term` therefore never fired, and `History` recorded no failed, skipped or succeeded jobs. It now checks `topic.startswith(prefix + \".\")`.\n6. **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so a failure skips everything downstream.\n7. **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Any task with a cost above 1 leaked capacity, which blocked the resource-limited pipelines.",
+  "time": {
+    "start": 1793090227517,
+    "end": 1793090227517
+  }
+}

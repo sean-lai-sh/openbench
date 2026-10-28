@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c807e2c001KH3zaZSvSSC5H8",
+  "sessionID": "ses_e837f81d6ffeU75Km2gd5FCLoK",
+  "role": "user",
+  "time": {
+    "created": 1793090158127
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: all 25 tests, with no test files modified.\n\nThere were seven root causes, in six modules:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. The docstring says `(-priority, seq)`, so it was ordering by insertion first and priority second. I swapped the order.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within a batch. The docstring requires non-increasing. Once the queue ordering was fixed, this guard started failing correctly-ordered batches outright. I changed it to `current <= prev`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the base values overrode the task's own. It now merges `(result[key], value)`.\n- **`scheduler.py`**: `_cascade_skip` iterated over `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so the whole downstream chain is skipped.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Any task with a cost above 1 leaked capacity and blocked later tasks.\n- **`events.py`**: `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`). Prefix subscribers such as `job.term` never received `job.term.failed`, which left the history empty.",
+    "diffs": []
+  }
+}

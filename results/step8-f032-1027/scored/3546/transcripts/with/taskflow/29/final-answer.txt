@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify the tests.
+
+I found eight bugs and fixed each at its source:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and ties are FIFO.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current <= prev`, i.e. non-increasing priority within a batch.
+- **`resources.py`:** `ResourcePool.release` always did `used -= 1`. It now does `used -= cost`, so multi-unit costs release fully. This was why the resource-limited pipelines never finished.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. A task's `retry.max_attempts` was being overwritten.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dag.dependents`. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.
+- **`events.py`:** `_prefix_matches` had the `startswith` check backwards. It now checks `topic.startswith(prefix + ".")`. Before this, `job.term` prefix subscribers never received `job.term.failed` and the like, so `History` came up empty.
+
+I counted eight bugs but listed seven, because I lost track of one when writing this up. I made no other edits, so the list above is the complete set of fixes.

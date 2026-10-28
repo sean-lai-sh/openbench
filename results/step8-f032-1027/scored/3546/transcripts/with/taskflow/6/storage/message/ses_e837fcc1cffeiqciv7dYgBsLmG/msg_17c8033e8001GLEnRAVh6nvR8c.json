@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c8033e8001GLEnRAVh6nvR8c",
+  "sessionID": "ses_e837fcc1cffeiqciv7dYgBsLmG",
+  "role": "user",
+  "time": {
+    "created": 1793090139115
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. I found seven bugs, one per fix below, and the tests only exercised some of them directly.\n\n- **`queue.py`:** The sort key was `(seq, -priority)`, so tasks came out in insertion order instead of priority order. It is now `(-priority, seq)`.\n- **`retry.py`:** `should_retry` allowed one retry too few. It now returns `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` swapped its arguments when recursing into nested dicts, so the defaults overrode the task's own values. A task's `retry.max_attempts` was lost this way.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 unit instead of `cost`. Multi-unit tasks leaked capacity, which stalled the resource pipelines.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It rejected the normal non-increasing priority order and failed the run.\n- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")` instead of `topic.startswith(prefix + \".\")`. `job.term.*` events never reached `History`, so its failed, skipped and succeeded sets were empty.\n\nSeveral of the pipeline test failures were side effects of these bugs, so fixing one often cleared failures in other tests.",
+    "diffs": []
+  }
+}

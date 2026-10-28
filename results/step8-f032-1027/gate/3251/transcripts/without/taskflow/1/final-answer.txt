@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests. The suite only exercises some of these paths, so I haven't checked the rest of the package.
+
+I found seven defects, each in a different place:
+
+- **`queue.py`:** `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget by one. It's now `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch. The docstring says non-increasing, so it's now `current <= prev`.
+- **`config.py`:** `deep_merge` recursed as `deep_merge(override_child, base_child)`, so the defaults overwrote a task's own values. The arguments are now in the right order.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so multi-unit tasks leaked capacity and later tasks were never admitted. It now subtracts `cost`.
+- **`events.py`:** `_prefix_matches` checked the prefix and topic the wrong way round. As a result the `job.term` subscription never received `job.term.failed` and similar events, which is why the history queries came back empty. It's now `topic.startswith(prefix + ".")`.

@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: 25 tests, no failures. I didn't touch the tests. There were seven separate defects:
+
+- **`queue.py`:** `_Entry.sort_key` sorted on `(seq, -priority)`, so insertion order beat priority. It now sorts on `(-priority, seq)`.
+- **`retry.py`:** `should_retry` was off by one, so `max_attempts=3` allowed only two attempts. It now returns `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` allowed priority to increase within an admission batch. The scheduler treated that as an ordering violation and failed the run. It now requires `current <= prev`. This one was hidden behind the queue bug.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity on multi-unit tasks and stalled the resource-limited pipelines.
+- **`config.py`:** `deep_merge` swapped its arguments when recursing, so the defaults overrode task-level values (for example `retry.max_attempts`).
+- **`events.py`:** `_prefix_matches` had the `startswith` check backwards. The `job.term` prefix subscription never matched `job.term.failed` and similar topics, so `History` recorded no terminal outcomes.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only children were skipped. It now uses `transitive_dependents`.

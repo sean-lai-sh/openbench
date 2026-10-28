@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c82aad0001Fj4AX3flCMkwfz",
+  "sessionID": "ses_e837d553bffeXmPL7D9U5dqhrH",
+  "role": "user",
+  "time": {
+    "created": 1793090300629
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven separate defects:\n\n1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority comes first and insertion order breaks ties.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which cut the retry budget by one. It now uses `attempts_made < max_attempts`.\n3. **`statemachine.py`**: `batch_order_ok` had its comparison reversed, so a batch had to run in increasing priority. It now requires non-increasing priority, as the docstring says.\n4. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. A task's `retry.max_attempts` was being replaced by the default value.\n5. **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a failure skips everything downstream.\n6. **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It now tests `topic.startswith(prefix + \".\")`. Before this, `History` never received the `job.term.*` events, so `failed_jobs`, `skipped_jobs` and `outcome_counts` were always empty.\n7. **`resources.py`**: `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost. Any task that held more than one unit leaked capacity and blocked the tasks after it.\n\nSeveral of these were masked by others. For example, the retry tests only revealed the config merge bug once `should_retry` was fixed.",
+    "diffs": []
+  }
+}

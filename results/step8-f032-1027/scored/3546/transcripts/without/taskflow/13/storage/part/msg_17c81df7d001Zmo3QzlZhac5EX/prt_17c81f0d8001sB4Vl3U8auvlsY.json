@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c81f0d8001sB4Vl3U8auvlsY",
+  "sessionID": "ses_e837e6622ffefC0lR9Fs0XUo6a",
+  "messageID": "msg_17c81df7d001Zmo3QzlZhac5EX",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files modified. I found and fixed eight defects:\n\n- **`queue.py`:** `_Entry.sort_key` sorted on `(seq, -priority)`. It now sorts on `(-priority, seq)`, so higher priority goes first and ties go FIFO.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It is now `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now requires the current priority to be less than or equal to the previous one, which is the non-increasing order its docstring describes.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. A task's `retry: {max_attempts: 3}` was being reset to 1.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never fully drained, which stalled the resource-limited pipelines.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, the reverse of what's meant. Prefix subscriptions such as `job.term` never received `job.term.failed`. That left the history empty, so its failed, skipped and outcome-count queries returned nothing.\n\nSeveral of the pipeline tests depended on more than one of these fixes. For example, the retry tests needed the config merge fix and the retry boundary fix together.",
+  "time": {
+    "start": 1793090253074,
+    "end": 1793090253074
+  }
+}

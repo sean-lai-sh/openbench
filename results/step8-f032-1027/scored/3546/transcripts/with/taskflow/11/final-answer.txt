@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven bugs, all in `taskflow/`:
+
+1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It should be `(-priority, seq)`, so higher priority goes first and insertion order only breaks ties.
+2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It now uses `attempts_made < max_attempts`, so a three-attempt budget gets all three attempts.
+3. **`statemachine.py`:** `batch_order_ok` had its comparison backwards (`>=`). Within a batch, priorities must be non-increasing, so it now checks `current <= prev`.
+4. **`resources.py`:** `ResourcePool.release` always did `used -= 1`. It now subtracts the actual `cost`, so multi-unit resources are fully released.
+5. **`scheduler.py`:** `_cascade_skip` iterated over the direct `dependents`. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped, not just its direct children.
+6. **`config.py`:** `deep_merge` recursed with the arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.
+7. **`events.py`:** `_prefix_matches` used `prefix.startswith(topic + ".")`, which is reversed. It is now `topic.startswith(prefix + ".")`. Without this, `History` never received `job.term.*` events, which caused the history failures.
+
+I found the first four by reading each module's docstrings against its code. The last three came from re-running the suite after the earlier fixes.

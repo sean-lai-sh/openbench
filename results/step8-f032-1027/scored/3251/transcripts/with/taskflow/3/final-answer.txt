@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests. There were eight defects, in these places:
+
+- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority runs first and ties go in insertion order.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`. It now uses `attempts_made < max_attempts`, which matches the docstring's boundary example.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. A batch must dispatch in non-increasing priority, so it now checks `current <= prev`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked capacity, which made resource-limited pipelines stall.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base's nested values overrode the task's. A per-task `retry.max_attempts` was being lost.
+- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + ".")` instead of `topic.startswith(prefix + ".")`. The `job.term` prefix subscription therefore never fired, and `History` recorded no failed, skipped or succeeded jobs.

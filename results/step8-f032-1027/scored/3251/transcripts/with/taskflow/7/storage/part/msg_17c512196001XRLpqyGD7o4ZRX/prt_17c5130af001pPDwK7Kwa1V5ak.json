@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c5130af001pPDwK7Kwa1V5ak",
+  "sessionID": "ses_e83af2284ffemSsWTM8FghwLZv",
+  "messageID": "msg_17c512196001XRLpqyGD7o4ZRX",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests are green. I didn't touch the tests. There were seven root causes:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison inverted. It now returns `current_priority <= prev_priority`, matching its docstring. With the queue ordering broken, this guard was failing runs outright.\n- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of `-= cost`. Multi-unit costs leaked capacity, and later tasks never got admitted.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses as `deep_merge(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so the whole downstream chain is skipped.\n- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + \".\")`, the wrong way round. It now checks `topic.startswith(prefix + \".\")`. Before this, `History` never received any `job.term.*` events, so its failed, skipped and outcome-count queries came back empty.",
+  "time": {
+    "start": 1793087058120,
+    "end": 1793087058120
+  }
+}

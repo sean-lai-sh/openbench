@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c842857001VpHxnOjH1bYXB6",
+  "sessionID": "ses_e837bd7adffeqURrxQkQxwKvQ7",
+  "role": "user",
+  "time": {
+    "created": 1793090398298
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. I fixed eight defects, each time by comparing the docstring with what the code actually did:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and FIFO breaks ties.\n- **`retry.py`**: `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`**: `batch_order_ok` had its comparison backwards. The batch guard was rejecting valid non-increasing priority orders and failing those runs. It now checks `current <= prev`.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own `retry` settings. It now recurses as `deep_merge(result[key], value)`.\n- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It now tests `topic.startswith(prefix + \".\")`. Before this, `History` never received the `job.term.*` events.\n- **`resources.py`**: `ResourcePool.release` always subtracted 1 instead of `cost`, which leaked capacity and stalled the resource-limited pipelines.\n- **`scheduler.py`**: `_cascade_skip` used the direct dependents of a failed task. It now uses `transitive_dependents`, so every downstream task is skipped, not just the immediate children.",
+    "diffs": []
+  }
+}

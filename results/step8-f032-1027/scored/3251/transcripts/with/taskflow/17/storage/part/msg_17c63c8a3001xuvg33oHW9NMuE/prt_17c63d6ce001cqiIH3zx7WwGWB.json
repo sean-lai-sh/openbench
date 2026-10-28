@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c63d6ce001cqiIH3zx7WwGWB",
+  "sessionID": "ses_e839c7fe5ffedsIjJFFGLXWhFn",
+  "messageID": "msg_17c63c8a3001xuvg33oHW9NMuE",
+  "type": "text",
+  "text": "`python3 -m unittest` now reports all 25 tests passing. I didn't touch the tests.\n\nThere were seven root-cause bugs, all in the code under `taskflow/`:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and ties go in FIFO order.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which stopped one retry early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires each admitted task's priority to be less than or equal to the previous one's.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. The task's values now win.\n- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so the whole downstream chain is skipped.\n- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`, which leaked capacity. It now subtracts `cost`.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It now tests `topic.startswith(prefix + \".\")`. This was why `History` never saw `job.term.*` events.",
+  "time": {
+    "start": 1793088280307,
+    "end": 1793088280307
+  }
+}

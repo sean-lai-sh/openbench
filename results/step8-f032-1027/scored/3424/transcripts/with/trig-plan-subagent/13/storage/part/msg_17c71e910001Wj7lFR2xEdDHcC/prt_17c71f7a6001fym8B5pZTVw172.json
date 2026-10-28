@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c71f7a6001fym8B5pZTVw172",
+  "sessionID": "ses_e838e24ceffeA6vrYN3WlWJxxf",
+  "messageID": "msg_17c71e910001Wj7lFR2xEdDHcC",
+  "type": "text",
+  "text": "**Key name:** `rate`. The key that actually exists in the settings file is the misspelled `rat`.\n\n**Where things are:**\n- **Setting defined:** `settings.json:2` has `\"rat\": 0.5`. This is the misnamed key.\n- **Loaded into `SETTINGS`:** `app/config.py:9-10` reads `settings.json` with `json.load`. It does no key validation or renaming.\n- **Looked up:** `app/pricing.py:8` runs `SETTINGS.get(\"rate\")` inside `get_rate()`. The key is missing, so `.get` returns `None`.\n- **`rate` read in report.py:** `app/report.py:8` runs `rate = pricing.get_rate()`. It reads the value through `pricing.get_rate()` and doesn't access settings directly.\n- **Crash site:** `app/report.py:9` runs `rate * count`, which is `None * 10`. That raises a `TypeError`.\n\n**Bug:** `settings.json` has a typo, `\"rat\"` instead of `\"rate\"`. `pricing.get_rate()` asks for `\"rate\"`, and `.get()` silently returns `None` instead of raising `KeyError`.\n\n**Fix:** The root-cause fix is to rename `\"rat\"` to `\"rate\"` in `settings.json:2`. Optionally, change `pricing.py:8` to `SETTINGS[\"rate\"]` so a missing key fails loudly.",
+  "time": {
+    "start": 1793089206227,
+    "end": 1793089206228
+  }
+}

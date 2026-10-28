@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c80d88d00143iaVBbzaaG63y",
+  "sessionID": "ses_e837f2776ffeS27vYBPrPxfoTZ",
+  "role": "user",
+  "time": {
+    "created": 1793090181263
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven bugs in total:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing. It now requires `current <= prev`, as the docstring says. With the queue ordering bug in place, this guard would have failed runs during admission.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Units leaked, so resource-limited pipelines stalled.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now recurses with `(base_child, override_child)`.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips every downstream task.",
+    "diffs": []
+  }
+}

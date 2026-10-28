@@ -1,0 +1,13 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify any tests.
+
+I fixed seven defects, each a one-line logic error:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and popped in insertion order. It's now `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It's now `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now checks `current <= prev`, matching the "non-increasing priority" rule in its docstring.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own settings. It now recurses with `deep_merge(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of subtracting the cost. Pools leaked capacity, so resource-limited pipelines stalled.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")` with the operands reversed. The `job.term` prefix subscription never fired, which left `History` without its failed and skipped outcomes.
+
+Several failures were symptoms of these defects, not separate problems. The retry tests failed mostly because of the `should_retry` boundary. The history tests failed because of the prefix match. The resource tests failed because of `release`. Fixing the first few also exposed the later ones, as you warned.
