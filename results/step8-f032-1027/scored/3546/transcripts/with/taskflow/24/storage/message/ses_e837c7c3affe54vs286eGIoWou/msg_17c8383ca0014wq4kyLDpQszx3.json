@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c8383ca0014wq4kyLDpQszx3",
+  "sessionID": "ses_e837c7c3affe54vs286eGIoWou",
+  "role": "user",
+  "time": {
+    "created": 1793090356173
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: 25 tests, no failures. I didn't modify any tests. I fixed seven defects in six modules.\n\n| File | Defect | Fix |\n|---|---|---|\n| `queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. | Changed it to `(-priority, seq)`. |\n| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, one attempt short. | Changed it to `attempts_made < max_attempts`. |\n| `statemachine.py` | `batch_order_ok` used `>=`, but the batch invariant is non-increasing priority. | Changed it to `<=`. Once the queue ordered correctly, this guard was failing valid dispatches as `FAILED`. |\n| `config.py` | `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own nested values. | Recurse as `deep_merge(result[key], value)`. |\n| `scheduler.py` | `_cascade_skip` used the direct `dependents`, so only immediate children were skipped. | Switched to `transitive_dependents`. |\n| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost, which leaked capacity and stalled multi-unit tasks. | Changed it to `used -= cost`. |\n| `events.py` | `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`), so `job.term` subscribers never saw `job.term.failed` and similar events. | Changed it to `topic.startswith(prefix + \".\")`. |\n\nThe pipeline tests failed for several reasons at once: retries, resources, skips and history. Fixing the queue, retry, state machine and config bugs exposed the cascade, resource and event-prefix bugs behind them.",
+    "diffs": []
+  }
+}

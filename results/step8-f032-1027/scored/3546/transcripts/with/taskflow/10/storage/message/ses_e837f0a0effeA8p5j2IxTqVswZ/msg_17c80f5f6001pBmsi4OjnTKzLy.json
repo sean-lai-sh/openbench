@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c80f5f6001pBmsi4OjnTKzLy",
+  "sessionID": "ses_e837f0a0effeA8p5j2IxTqVswZ",
+  "role": "user",
+  "time": {
+    "created": 1793090188793
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. I fixed seven defects in `taskflow/`:\n\n- **`queue.py`:** `_Entry.sort_key` sorted by `(seq, -priority)`. It now sorts by `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within a batch. The docstring says non-increasing, so I flipped the comparison to `current <= prev`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped for nested dicts, so the defaults overrode a task's own settings. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity on multi-unit tasks.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`, so skips reach the whole downstream chain.\n- **`events.py`:** `_prefix_matches` had its arguments reversed (`prefix.startswith(topic + \".\")`). Prefix subscriptions like `job.term` therefore never saw `job.term.failed` and similar topics. It now checks `topic.startswith(prefix + \".\")`.\n\nThe history test failures traced back to the last one, in the event bus.",
+    "diffs": []
+  }
+}

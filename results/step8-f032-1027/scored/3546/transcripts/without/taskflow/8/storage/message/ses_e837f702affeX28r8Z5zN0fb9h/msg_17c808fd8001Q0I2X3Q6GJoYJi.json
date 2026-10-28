@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c808fd8001Q0I2X3Q6GJoYJi",
+  "sessionID": "ses_e837f702affeX28r8Z5zN0fb9h",
+  "role": "user",
+  "time": {
+    "created": 1793090162651
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now reports all 25 tests passing. I only edited code under `taskflow/` and left the tests alone.\n\nI found seven defects:\n\n- **`queue.py`:** The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` returned `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the base values overrode the task's own. It now calls `deep_merge(result[key], value)`.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. It now requires non-increasing, as its docstring says.\n- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so the whole downstream chain is skipped.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so pools never fully drained.\n- **`events.py`:** `_prefix_matches` had the prefix check reversed. It is now `topic.startswith(prefix + \".\")`, so `job.term` receives `job.term.failed` and similar topics.\n\nThe pipeline and history failures came from several of these at once. For example, the history tests failed because of the prefix bug, and some retry tests failed because of the retry boundary.",
+    "diffs": []
+  }
+}

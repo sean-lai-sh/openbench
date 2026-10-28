@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c819ea1001Fd1ScsC7Vip8gl",
+  "sessionID": "ses_e837e6162ffeUnu9oZ8Iwc06T4",
+  "role": "user",
+  "time": {
+    "created": 1793090231971
+  },
+  "summary": {
+    "title": "Fixing failing taskflow tests",
+    "body": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't modify any tests.\n\nThere were eight defects in six files, and each fix is small:\n\n- **`queue.py`:** `sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had the comparison backwards. It now requires the current priority to be less than or equal to the previous one, as the docstring says.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges the task's values over the defaults.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`. It now tests `topic.startswith(prefix + \".\")`, so `job.term` matches `job.term.failed`. This is what left the history's failed, skipped and outcome-count queries empty.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks never freed their full allocation, so later tasks were never admitted.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.",
+    "diffs": []
+  }
+}

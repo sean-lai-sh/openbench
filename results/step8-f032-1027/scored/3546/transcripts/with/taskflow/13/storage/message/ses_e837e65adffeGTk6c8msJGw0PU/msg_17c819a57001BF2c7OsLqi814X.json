@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c819a57001BF2c7OsLqi814X",
+  "sessionID": "ses_e837e65adffeGTk6c8msJGw0PU",
+  "role": "user",
+  "time": {
+    "created": 1793090230875
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: all 25 tests, with no test files modified. There were six defects across six modules:\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in insertion order and ignored priority. It now returns `(-priority, seq)`.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt too early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It enforced non-decreasing priority within an admission batch, but the docstring says non-increasing. Once the queue ordering was fixed, this guard would have wrongly failed jobs during admission, so I corrected it too.\n- **`config.py`**: `deep_merge` recursed with its arguments swapped, so the pipeline defaults overrode a task's own `retry` settings. It now merges the task's values over the defaults.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools leaked capacity, so the run stalled with tasks left pending.\n- **`events.py`**: `_prefix_matches` had `topic` and `prefix` swapped. The history never received `job.term.*` events, so its failed and skipped job lists stayed empty.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a failed task is skipped.",
+    "diffs": []
+  }
+}

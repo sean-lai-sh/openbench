@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c81aac0001RgelLn94JegRMl",
+  "sessionID": "ses_e837e5544ffee0fSKovykuqO5v",
+  "role": "user",
+  "time": {
+    "created": 1793090235074
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: 25 tests, none modified. There were seven separate bugs, in these places:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority comes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` had an off-by-one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, which is non-increasing priority within a batch.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `result[key]` with the override value.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity.\n- **`events.py`:** `_prefix_matches` checked `prefix.startswith(topic + \".\")`, which is backwards. It now checks `topic.startswith(prefix + \".\")`, which restores `job.term.*` delivery to `History`.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dependents()` instead of `transitive_dependents()`, so only direct children were skipped.\n\nSeveral failures were symptoms of these bugs. The retry and resource pipeline tests were failing because of the queue, retry and resource-release bugs. The history tests were failing because of the event prefix match.",
+    "diffs": []
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c503aa2001AR5XLwe8278zpn",
+  "sessionID": "ses_e83b018bfffekf204IFjAJeXJK",
+  "messageID": "msg_17c502a9b0013UNN9nN9Pv66qy",
+  "type": "text",
+  "text": "All 25 tests now pass. I fixed these seven bugs, none of them in the tests:\n\n- **`queue.py`:** The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and equal priorities stay first-in-first-out.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`. It now uses `attempts_made < max_attempts`, so a job with `max_attempts=3` retries after attempts 1 and 2 and fails permanently after attempt 3.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped (`deep_merge(value, result[key])`), so the defaults overrode a task's own nested settings. It now calls `deep_merge(result[key], value)`.\n- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit resources were never fully released, which stalled runs.\n- **`statemachine.py`:** `batch_order_ok` required each dispatched task's priority to be at least the previous one's, which is backwards. It now requires it to be at most the previous one's, so a batch must be non-increasing in priority.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so skips reach the whole downstream chain.\n- **`events.py`:** `_prefix_matches` had the prefix and topic reversed (`prefix.startswith(topic + \".\")`). It now checks `topic.startswith(prefix + \".\")`, so the history's `job.term` subscription receives `job.term.failed` and the other terminal events.",
+  "time": {
+    "start": 1793086995138,
+    "end": 1793086995138
+  }
+}

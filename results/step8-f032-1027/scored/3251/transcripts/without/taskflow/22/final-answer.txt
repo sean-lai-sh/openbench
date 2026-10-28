@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: all 25 tests, no test files touched. I found seven bugs, and fixing the first two exposed a third.
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It's now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. It's now `attempts_made < max_attempts`.
+- **`events.py`**: `_prefix_matches` had the arguments reversed. It's now `topic.startswith(prefix + ".")`.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within a batch, the opposite of its docstring. It now requires non-increasing. That mattered once the queue was fixed, because the wrong guard would have failed jobs at admission.
+- **`config.py`**: `deep_merge` recursed with the base and override swapped, so the defaults overrode task settings. That explains the `retry` overrides being lost.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools never freed fully, so resource-limited pipelines stalled.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `transitive_dependents`, so grandchildren are skipped too.

@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I fixed six defects and left the tests untouched.
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. I changed it to `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, an off-by-one that cost every task its last attempt. It now uses `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the prefix and topic the wrong way round. It now checks `topic.startswith(prefix + ".")`.
+- **`statemachine.py`:** `batch_order_ok` used `>=`, but the docstring says priorities within an admission batch must be non-increasing. It now uses `<=`.
+- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. That left capacity stuck for any task costing more than 1 unit, so the resource-limited runs never finished.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own nested values. A task's `retry.max_attempts` was being overwritten by the default. It now recurses as `deep_merge(result[key], value)`.
+
+The pipeline tests failed for several reasons at once. For example, the retry pipelines needed both the `deep_merge` fix and the `should_retry` fix before they passed.

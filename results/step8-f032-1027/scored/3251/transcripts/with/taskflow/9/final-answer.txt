@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I changed only code under `taskflow/` and left the tests alone.
+
+I found seven bugs, each in a different module:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It now requires `current <= prev`, so priority doesn't rise within an admission batch.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, so pools never fully freed and later tasks stalled.
+- **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `transitive_dependents`.
+- **`config.py`:** `deep_merge` swapped its arguments when recursing, so the defaults overrode a task's own `retry` settings. It now merges `(base, override)` in the right order.
+- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is the wrong way round. It now tests `topic.startswith(prefix + ".")`, so `History` receives `job.term.*` events.

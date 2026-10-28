@@ -1,0 +1,9 @@
+`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't touch the tests. There were seven root-cause bugs, in six modules:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`. This one change accounted for most of the retry failures.
+- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now checks `current_priority <= prev_priority`, as the docstring says. Once the queue ordering was correct, the old check made the scheduler's admission guard fail jobs.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own retry settings. It now recurses with `(result[key], value)`.
+- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`. Before the fix, the `job.term` prefix subscription never received `job.term.failed` or `job.term.skipped`, so the history's failed and skipped lists stayed empty.
+- **`scheduler.py`**: `_cascade_skip` used the direct dependents of a failed task. It now uses `transitive_dependents`, so everything downstream is skipped, not just the direct children.
+- **`resources.py`**: `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Pools never fully freed, so resource-limited tasks stalled.

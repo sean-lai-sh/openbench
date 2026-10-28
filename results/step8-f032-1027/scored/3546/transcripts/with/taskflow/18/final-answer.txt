@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: all 25 tests, with no test files changed. There were seven defects, each a small logic error that contradicted its own docstring:
+
+1. **`retry.py`:** `should_retry` stopped one attempt early. It now uses `attempts_made < max_attempts`, which gives the documented 1 → True, 2 → True, 3 → False for `max_attempts == 3`.
+2. **`queue.py`:** `_Entry.sort_key` ordered by `(seq, -priority)`, so the queue was plain FIFO. It is now `(-priority, seq)`.
+3. **`statemachine.py`:** `batch_order_ok` had its comparison backwards. It required priorities to rise within a batch. It now requires them not to rise (`current <= prev`).
+4. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now calls `deep_merge(result[key], value)`.
+5. **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity on any task costing more than one unit.
+6. **`scheduler.py`:** `_cascade_skip` skipped only direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.
+7. **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. Prefix subscribers such as `job.term` therefore never received `job.term.failed` and similar events. It now tests `topic.startswith(prefix + ".")`.
+
+The retry and pipeline tests only went green once several of these were fixed together. For example, the retry tests needed both the config merge and the retry boundary corrected.

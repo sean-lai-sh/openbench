@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c803135001q58cfmtUjbaWqa",
+  "sessionID": "ses_e837fced5ffeugPg52WBPCBLqA",
+  "role": "user",
+  "time": {
+    "created": 1793090138426
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow package",
+    "body": "`python3 -m unittest` now passes: 25 tests, 0 failures. I didn't modify any tests. There were seven bugs, in six files:\n\n- **`retry.py`:** `should_retry` was off by one (`attempts_made < max_attempts - 1`). It now uses `attempts_made < max_attempts`, so `max_attempts=3` gives three attempts.\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue was plain FIFO. It now returns `(-priority, seq)`, which is priority first and FIFO within a priority.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed (`>=`). The docstring says priorities must be non-increasing within a batch, so it is now `<=`. This hid behind the queue bug.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now merges `base` with `override` on top.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. Multi-unit tasks leaked capacity and blocked later tasks.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips everything downstream.\n- **`events.py`:** `_prefix_matches` had the `startswith` reversed (`prefix.startswith(topic + \".\")`). `job.term.*` events never reached `History`, which broke the failed, skipped and outcome-count queries. It is now `topic.startswith(prefix + \".\")`.",
+    "diffs": []
+  }
+}

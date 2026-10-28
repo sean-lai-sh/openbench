@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. I fixed seven defects, and each was a one-line logic error:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, so a batch is non-increasing in priority as the docstring says.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped, so defaults overrode the task's own settings. It now calls `deep_merge(result[key], value)`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked capacity, which stalled resource-limited pipelines.
+- **`events.py`**: `_prefix_matches` tested `prefix.startswith(topic + ".")`, which is backwards. It now tests `topic.startswith(prefix + ".")`. Prefix subscribers, including the history's `job.term` subscription, had been missing events such as `job.term.failed`.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns direct children only. It now uses `dag.transitive_dependents`, so a permanent failure skips everything downstream.
+
+Several of the pipeline test failures had causes in other modules, as you warned. The retry tests failed because of the `retry.py` and `config.py` defects. The resource tests failed because of `resources.py`. The history tests failed because of `events.py`. The skip tests failed because of `scheduler.py`.

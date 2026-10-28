@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven separate defects:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. It now returns `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.
+- **`statemachine.py`:** `batch_order_ok` had its comparison backwards. Its docstring says priorities must not increase within a batch, so it now checks `current <= prev`.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. That left resources held after a task finished, which is why the resource tests failed.
+- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. That is why a task's own `retry.max_attempts` was lost. It now recurses as `deep_merge(result[key], value)`.
+- **`events.py`:** `_prefix_matches` had the `startswith` check reversed. Prefix subscribers such as `job.term` never received `job.term.failed`, so `History` recorded no terminal outcomes. It now uses `topic.startswith(prefix + ".")`.
+- **`scheduler.py`:** `_cascade_skip` used the direct dependents of a failed task. It now uses `transitive_dependents`, so grandchildren are skipped too, as its docstring says.
+
+I only ran the unittest suite. There's no lint or typecheck command in the project that I could find.

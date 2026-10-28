@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c84d42c0015wFsSdih5ur3Ss",
+  "sessionID": "ses_e837b7e41ffe66fxjQ7xYaAV6G",
+  "messageID": "msg_17c84c316001TO08pJBZ0d46uX",
+  "type": "text",
+  "text": "`python3 -m unittest` now runs all 25 tests and they pass. I didn't touch the tests. There were seven defects, and most of the 18 failures came from them in combination.\n\n1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which dropped the last allowed attempt. It now uses `attempts_made < max_attempts`.\n3. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now merges `result[key]` with the override.\n4. **`events.py`**: `_prefix_matches` had the prefix check backwards. It now tests `topic.startswith(prefix + \".\")`. Before this, the history never saw `job.term.*` events, so its failed and skipped lists came back empty.\n5. **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing, which contradicts its docstring. It now requires `current <= prev`. With the old check, admitting a lower-priority job after a higher one failed the run.\n6. **`scheduler.py`**: `_cascade_skip` walked only the direct dependents, so deeper tasks stayed `PENDING`. It now uses `dag.transitive_dependents`.\n7. **`resources.py`**: `ResourcePool.release` did `self.used -= 1` instead of subtracting `cost`. Pools never freed fully, so the resource tests stalled.\n\nFixing the first defects exposed the later ones. The retry and priority fixes uncovered the config, prefix and batch-order bugs, and the resource bug only showed up last.",
+  "time": {
+    "start": 1793090442339,
+    "end": 1793090442339
+  }
+}

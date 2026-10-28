@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c7fc9ec001MaijMzdBli7A1L",
+  "sessionID": "ses_e83803636ffeWQhvYfGXVw24oZ",
+  "role": "user",
+  "time": {
+    "created": 1793090111991
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven separate defects, each a one-line logic error:\n\n| File | Bug | Fix |\n|---|---|---|\n| `queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. | Changed it to `(-priority, seq)`. |\n| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave one retry too few. | Changed it to `attempts_made < max_attempts`. |\n| `statemachine.py` | `batch_order_ok` required priority to be non-decreasing within a batch, which is the opposite of the documented rule. | Changed it to `current <= prev`. |\n| `resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost, so multi-unit resources leaked and later tasks were blocked. | Changed it to `used -= cost`. |\n| `scheduler.py` | `_cascade_skip` used the direct `dag.dependents`, so only immediate children were skipped. | Switched to `transitive_dependents`. |\n| `events.py` | `_prefix_matches` had its arguments swapped, so `job.term` never matched `job.term.failed`. History therefore never recorded terminal outcomes. | Changed it to `topic.startswith(prefix + \".\")`. |\n| `config.py` | `deep_merge` recursed with the base and override swapped, so defaults overwrote task-level retry settings. | Changed it to `deep_merge(result[key], value)`. |\n\nSeveral failures were symptoms of these bugs, not separate problems. The retry and priority bugs were hiding the batch-order guard problem. Once priorities sorted correctly, that guard started failing runs and had to be fixed too.",
+    "diffs": []
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c8248b000130mqXRfJ0m120j",
+  "sessionID": "ses_e837e01e9ffeM1sEiwdrFRc734",
+  "messageID": "msg_17c823879001p6MPqfi1ZSsbhS",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven bugs:\n\n1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n3. **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. It now checks `current_priority <= prev_priority`.\n4. **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked capacity, which stalled resource-limited runs.\n5. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the base overrode the override. A task's own `retry` settings were lost to the defaults.\n6. **`scheduler.py`**: `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a failed task is skipped.\n7. **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + \".\")`, which is backwards. It now checks `topic.startswith(prefix + \".\")`. This is why `History` never recorded the terminal outcomes (`job.term.*`).\n\nBugs 1 and 4 were hiding bugs 2, 6 and 7, which only showed up once the earlier fixes were in.",
+  "time": {
+    "start": 1793090275548,
+    "end": 1793090275548
+  }
+}
