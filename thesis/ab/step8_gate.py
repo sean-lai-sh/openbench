@@ -106,10 +106,13 @@ def scorable(c: dict) -> bool:
     return not (c.get("strace_on") is True or c.get("gate_cell") is True)
 
 
-def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
-    """Sides to score: gate-passed PR and 30 on-route scored cells. A tagged
-    rerun (``rerun=1``) replaces its off-route original; untagged cells in a
-    rerun dir are ignored. Never padded: a short side is ``incomplete``."""
+def assemble_cells(scored_dir: str, rerun_dirs=()) -> tuple[dict, list]:
+    """Cell key -> (path, cell) after tagged-rerun replacement, plus untagged rerun paths.
+
+    A tagged rerun (``rerun=1``) replaces its off-route or missing original.
+    Untagged cells in a rerun dir are ignored. ``complete()`` and the spend
+    projection both score this map.
+    """
     cells = {}
     for f, _pr, _side in _cell_files(scored_dir):
         cells[_cell_key(f)] = (f, _load(f))
@@ -123,6 +126,28 @@ def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
             k = _cell_key(f)
             if k not in cells or not route_ok(cells[k][1]):
                 cells[k] = (f, c)
+    return cells, untagged
+
+
+def on_route_scored(cells: dict) -> dict:
+    """``(pr, side) -> [(path, cell), ...]`` that count toward the scored 30.
+
+    Same cells ``complete()`` counts: scorable, and ``route`` starting with
+    ``on:``. Off-route cells stay out.
+    """
+    grouped: dict = {}
+    for k, (f, c) in cells.items():
+        if scorable(c) and route_ok(c):
+            grouped.setdefault((str(k[0]), k[1]), []).append((f, c))
+    return grouped
+
+
+def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
+    """Sides to score: gate-passed PR and 30 on-route scored cells. A tagged
+    rerun (``rerun=1``) replaces its off-route original; untagged cells in a
+    rerun dir are ignored. Never padded: a short side is ``incomplete``."""
+    cells, untagged = assemble_cells(scored_dir, rerun_dirs)
+    eligible = on_route_scored(cells)
     split = pair_route_split([dict(pr=k[0], route=c.get("route")) for k, (f, c) in cells.items()
                               if route_ok(c)])
     ok_prs = set(gate.get("ok_prs") or [])
@@ -134,7 +159,8 @@ def complete(scored_dir: str, gate: dict, rerun_dirs=()) -> tuple[dict, int]:
     for key, rs in sorted(sides.items()):
         out["excluded_traced"] += [f for f, c in rs if not scorable(c)]
         rs = [(f, c) for f, c in rs if scorable(c)]
-        on = [f for f, c in rs if route_ok(c)]
+        pr, side = key.split("/")
+        on = [f for f, _c in eligible.get((pr, side), [])]
         why = None
         if key.split("/")[0] not in ok_prs or key in bad:
             why = "gate not passed"

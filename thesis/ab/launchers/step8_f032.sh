@@ -8,9 +8,15 @@
 # embedded (bundled provider read from the binary). >2 mismatched sides -> STOP.
 # Spend: STOP_USD (default 60) hard stop, FLAG_USD (default 50) flag file, both
 # cumulative with PRIOR_SPEND_USD (spend outside $B, counted once in spend()).
-# Projection (thesis.ab.step8_project): before the scored phase and each time a
-# PR finishes, spent + remaining cells x side gate cost x max(pooled
-# scored/gate ratio over finished PRs [1.0 before any], PR's own ratio);
+# The --max-cost-usd for a phase is stop minus prior minus cell spend OUTSIDE
+# that phase directory. run_ab.over_budget sums cells already in the directory,
+# so subtracting them here would count each resumed cell twice.
+# Projection (thesis.ab.step8_project, imported via run_module.py so a cwd of
+# ~/ob-f032 cannot shadow this checkout's thesis): before the scored phase and
+# each time a PR finishes, spent + remaining cells x side gate cost x max(pooled
+# scored/gate ratio over finished PRs [1.0 before any], PR's own ratio).
+# Completion counts the same on-route cells as step8_gate.complete (off-route
+# cost stays in spent; a tagged rerun replaces its off-route original).
 # > STOP_USD -> HOLD (before scored) or STOP (during). Log: $B/projection.log.
 # Resume: rerun with the same $B; a passed gate (GATE-DONE) is not rerun and
 # run_ab skips cells already on disk.
@@ -37,7 +43,10 @@ set -u
 B=$HOME/s8f032run; mkdir -p $B
 STOP_USD=${STOP_USD:-60}; FLAG_USD=${FLAG_USD:-50}; PRIOR_SPEND_USD=${PRIOR_SPEND_USD:-0}
 LDIR=$(cd "$(dirname "$0")/../../.." && pwd)  # launcher's checkout (may differ from runner ~/ob-f032)
-project(){ PYTHONPATH=$LDIR python3 -m thesis.ab.step8_project $B --prior $PRIOR_SPEND_USD --stop $STOP_USD --n 30 > $B/projection.json; local rc=$?
+# Import this checkout. python -m would search cwd (~/ob-f032) before PYTHONPATH
+# and load the pinned runner's thesis, which has no step8_project.
+py(){ python3 "$LDIR/thesis/ab/launchers/run_module.py" "$@"; }
+project(){ py thesis.ab.step8_project "$B" --prior "$PRIOR_SPEND_USD" --stop "$STOP_USD" --n 30 > "$B/projection.json"; local rc=$?
   echo "$(TZ=America/New_York date '+%F %T %Z') $(cat $B/projection.json)" >> $B/projection.log; return $rc; }
 pj(){ python3 -c "import json;d=json.load(open('$B/projection.json'));print(d['projected'],len(d['done_prs']))"; }
 IMG=h1-env:1027-strace
@@ -94,12 +103,12 @@ project || { echo "projected \$$(pj | cut -d' ' -f1) > \$$STOP_USD; holding befo
 log "projection: \$$(pj | cut -d' ' -f1) (stop \$$STOP_USD)"
 OK=$(python3 -c "import json;print(','.join(json.load(open('$B/gate.json'))['ok_prs']))")
 [ -z "$OK" ] && { log "no PRs passed gate"; exit 1; }
-CAP=$(python3 -c "print(round($STOP_USD-$(spend),2))")
+CAP=$(py thesis.ab.step8_project --phase-cap scored "$B" --prior "$PRIOR_SPEND_USD" --stop "$STOP_USD")
 log "start scored prs=$OK trials=30 untraced cap=\$$CAP"
 run scored $OK 30 $CAP 0
 route scored; log "scored route: $(python3 -c "import json;d=json.load(open('$B/route-scored.json'));print('rerun(infra:off_route)',len(d['rerun']),'halted',d['halted_sides'])")"
 if [ "${RERUN:-0}" = 1 ] && [ ! -e $B/STOP ] && python3 -c "import json,sys;sys.exit(0 if json.load(open('$B/route-scored.json'))['rerun'] else 1)"; then
-  CAP=$(python3 -c "print(round($STOP_USD-$(spend),2))")
+  CAP=$(py thesis.ab.step8_project --phase-cap rerun "$B" --prior "$PRIOR_SPEND_USD" --stop "$STOP_USD")
   log "start rerun of off-route cells (tagged rerun=1) cap=\$$CAP"
   run rerun $OK 30 $CAP 0 "-e OBENCH_RERUN=1 -e OBENCH_RERUN_CELLS=/o/route-scored.json"
   route rerun

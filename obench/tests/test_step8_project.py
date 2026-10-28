@@ -33,7 +33,7 @@ class Projection(unittest.TestCase):
             Path(d, "gate.json").write_text(json.dumps({"ok_prs": ["1"], "cells": [
                 {"pr": "1", "side": "with", "cost": 1.0}, {"pr": "1", "side": "without", "cost": 1.0}]}))
             f = Path(d, "scored", "1", "cells", "with", "t", "0.json"); f.parent.mkdir(parents=True)
-            f.write_text(json.dumps({"requests_cost_usd": 1.0}))
+            f.write_text(json.dumps({"requests_cost_usd": 1.0, "route": "on:provider-options"}))
             self.assertEqual(sp.main([d, "--prior", "2", "--stop", "70"]), 0)  # 3 + 59
             self.assertEqual(sp.main([d, "--prior", "2", "--stop", "60"]), 1)
 
