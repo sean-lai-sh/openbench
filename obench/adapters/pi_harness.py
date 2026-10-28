@@ -54,6 +54,14 @@ RETRY_MAX = 3
 RETRY_BASE_DELAY_MS = 2000
 PROVIDER_MAX_RETRIES = 0
 THINKING_LEVEL = "medium"
+MODEL_COMPAT = {
+    "supportsMidConvoEffort": True,
+    "supportsMidConvoSystemMessages": True,
+    "supportsMidConvoToolChanges": True,
+    "forceAdaptiveThinking": True,
+    "supportsTemperature": False,
+    "supportsStrictTools": True,
+}
 
 _SUMMARY_NEEDLE = "context summarization assistant"
 _HELPER_NEEDLE = "file a bug report about pi"
@@ -239,6 +247,11 @@ def models_document(cell_base: str, model_id: str) -> str:
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                     "contextWindow": CONTEXT_WINDOW,
                     "maxTokens": MAX_TOKENS,
+                    # Same compat the pinned pi-ai catalog ships for the
+                    # built-in claude-{opus,sonnet}-5-5. Without
+                    # forceAdaptiveThinking Pi sends thinking.type "enabled",
+                    # which Vertex rejects for these models (400).
+                    "compat": dict(MODEL_COMPAT),
                 }],
             }
         }
