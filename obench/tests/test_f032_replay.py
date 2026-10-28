@@ -1,7 +1,10 @@
 """Replay the fixed projection on the merged F03-2 run (41877c92).
 
-No model calls. The committed output is the check's record: resume at the
-$70 stop, hold at the configured $60 stop, and $58.61 total under the cap.
+No model calls. The live 03:44 HOLD came from the old flat-average projection
+(extrapolating PR 3251's cost to every cell). The fixed code also holds at $60,
+but for a different reason (its $63.94 projection exceeds $60), so this does
+not show agreement with the live decision. What the replay shows is that the
+resume was correct: $63.94 < $70 stop and $54.50 scored spend < $65.89 resume cap.
 """
 import unittest
 from pathlib import Path
@@ -23,6 +26,8 @@ class F032ReplayTests(unittest.TestCase):
         self.assertIn("final_spend_under_stop_60: yes\n", text)
         self.assertIn("scored_spend_under_resume_cap: yes\n", text)
         self.assertIn("off_route 0", text)
+        self.assertIn("does not show agreement with the live decision", text)
+        self.assertIn("$63.94 < $70 stop and $54.50 scored spend < $65.89 resume cap", text)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,13 @@
 """Replay the F03-2 projection on the merged 1027 run.
 
 Source is ``results/step8-f032-1027`` at 41877c92 (the cells and gate.json
-committed on main). No model calls. Prints the resume decision and the
-final spend against the $70 stop used for that resume and the launcher's
-configured $60 stop.
+committed on main). No model calls.
+
+The live 03:44 HOLD came from the old flat-average projection (extrapolating
+PR 3251's cost to every cell). The fixed code also holds at $60, but for a
+different reason (its $63.94 projection exceeds $60), so this does not show
+agreement with the live decision. What the replay shows is that the resume
+was correct: $63.94 < $70 stop and $54.50 scored spend < $65.89 resume cap.
 
 The resume instant is the driver.log line ``gate already passed (GATE-DONE);
 resuming`` at 2026-10-27 04:03:16 EDT. Cells with ``ended_et`` before that
@@ -150,6 +154,12 @@ def report() -> str:
             f"final_projected_usd: {_num(final['projected'])}",
             f"final_spend_under_stop_70: {'yes' if total <= STOP_RUN else 'no'}",
             f"final_spend_under_stop_60: {'yes' if total <= STOP_CONFIGURED else 'no'}",
+            "note: The live 03:44 HOLD came from the old flat-average projection "
+            "(extrapolating PR 3251's cost to every cell). The fixed code also holds "
+            "at $60, but for a different reason (its $63.94 projection exceeds $60), "
+            "so this does not show agreement with the live decision. What the replay "
+            "shows is that the resume was correct: $63.94 < $70 stop and $54.50 "
+            "scored spend < $65.89 resume cap.",
             "",
         ]
     return "\n".join(lines)
