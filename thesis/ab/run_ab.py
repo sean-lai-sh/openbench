@@ -1213,6 +1213,10 @@ PROVENANCE_CELL_FIELDS = (
 REQUIRED_CELL_FIELDS = GATE_CELL_FIELDS + PROVENANCE_CELL_FIELDS
 # Legitimately null when the run had nothing to report (no mismatch; not a rerun).
 NULLABLE_CELL_FIELDS = {"provider_loaded_mismatch"}
+# The provider probe runs only under strace. Untraced scored cells
+# (strace_on false) leave these null; that is not a missing field.
+# Traced cells, including gate cells, still require both.
+TRACE_ONLY_FIELDS = ("probe_method", "provider_loaded_version")
 
 
 def build_channel_of(binary) -> str | None:
@@ -1223,6 +1227,20 @@ def build_channel_of(binary) -> str | None:
         return None
 
 
+def fields_required(row: dict) -> tuple[str, ...]:
+    """Required keys for this cell. Probe fields apply only when strace ran."""
+    if row.get("strace_on") is False:
+        skip = set(TRACE_ONLY_FIELDS)
+        return tuple(k for k in REQUIRED_CELL_FIELDS if k not in skip)
+    return REQUIRED_CELL_FIELDS
+
+
+def missing_cell_fields(row: dict) -> list[str]:
+    """Required fields that are absent or blank on this cell."""
+    return [k for k in fields_required(row)
+            if k not in NULLABLE_CELL_FIELDS and row.get(k) in (None, "")]
+
+
 def attach_required_fields(row: dict, spec: dict) -> None:
     """Fill rerun/build_channel, then record any required field still missing."""
     if not isinstance(row, dict):
@@ -1230,13 +1248,14 @@ def attach_required_fields(row: dict, spec: dict) -> None:
     row.setdefault("rerun", 1 if os.environ.get("OBENCH_RERUN", "").strip() == "1" else 0)
     if not row.get("build_channel"):
         row["build_channel"] = build_channel_of(spec.get("binary"))
-    missing = [k for k in REQUIRED_CELL_FIELDS
-               if k not in NULLABLE_CELL_FIELDS and row.get(k) in (None, "")]
+    missing = missing_cell_fields(row)
     for k in REQUIRED_CELL_FIELDS:
         row.setdefault(k, None)
     if missing:
         row["missing_fields"] = missing
         print(f"{spec.get('pr')}/{spec.get('side')}: cell missing required fields {missing}", file=sys.stderr)
+    else:
+        row.pop("missing_fields", None)
 
 
 def attach_provider_pin(row: dict, spec: dict) -> None:

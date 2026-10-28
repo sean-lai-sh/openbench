@@ -104,6 +104,69 @@ class CellFieldCompleteness(TestPhaseTiming):
             self.assertEqual(out["ok_prs"], [])
             self.assertIn("cell missing fields", out["cells"][0]["why"])
 
+    def test_untraced_cell_may_omit_probe_fields(self):
+        """strace_on false: probe_method and provider_loaded_version are optional."""
+        with tempfile.TemporaryDirectory() as d:
+            c = self._cell(d, "with", {"OBENCH_PROVIDER_TRACE": "0", "OBENCH_GATE_CELL": "0"})
+            self.assertIs(c["strace_on"], False)
+            c.pop("probe_method", None)
+            c["provider_loaded_version"] = None
+            run_ab.attach_required_fields(c, {})
+            self.assertNotIn("missing_fields", c)
+            self.assertIsNone(c["probe_method"])
+            self.assertIsNone(c["provider_loaded_version"])
+
+    def test_traced_cell_requires_probe_fields(self):
+        """strace_on true, including gate cells: both probe fields are required."""
+        with tempfile.TemporaryDirectory() as d:
+            c = self._cell(d, "with", {"OBENCH_PROVIDER_TRACE": "1", "OBENCH_GATE_CELL": "1"})
+            c["strace_on"] = True
+            c.pop("probe_method", None)
+            c["provider_loaded_version"] = ""
+            run_ab.attach_required_fields(c, {"pr": "1", "side": "with"})
+            self.assertEqual(sorted(c["missing_fields"]), ["probe_method", "provider_loaded_version"])
+            ok, why = step8_gate.judge(c, "2.0.0")
+            self.assertFalse(ok)
+            self.assertIn("probe_method", why)
+            self.assertIn("provider_loaded_version", why)
+            filled = dict(c, probe_method="strace", provider_loaded_version="2.0.0")
+            run_ab.attach_required_fields(filled, {})
+            self.assertNotIn("missing_fields", filled)
+            self.assertTrue(step8_gate.judge(filled, "2.0.0")[0])
+
+
+ROOT = Path(__file__).resolve().parents[2]
+F032 = ROOT / "results" / "step8-f032-1027"
+
+
+class F032FieldCompleteness(unittest.TestCase):
+    """Re-check the F03-2 cells with the untraced-probe rule."""
+
+    def test_scored_cells_have_no_missing_fields_and_gate_cells_pass(self):
+        self.assertTrue((F032 / "scored").is_dir(), F032)
+        scored = sorted((F032 / "scored").glob("*/cells/*/*/*.json"))
+        self.assertEqual(len(scored), 660)
+        for path in scored:
+            row = json.loads(path.read_text())
+            self.assertIs(row.get("strace_on"), False, path)
+            fresh = dict(row)
+            run_ab.attach_required_fields(fresh, {})
+            self.assertNotIn("missing_fields", fresh, path)
+        gate_doc = json.loads((F032 / "gate.json").read_text())
+        pins = {c["cell"]: c["pin"] for c in gate_doc["cells"]}
+        gate_paths = sorted((F032 / "gate").glob("*/cells/*/*/*.json"))
+        self.assertEqual(len(gate_paths), 22)
+        self.assertEqual(len(gate_paths), len(pins))
+        for path in gate_paths:
+            rel = str(path.relative_to(F032 / "gate"))
+            row = json.loads(path.read_text())
+            self.assertIs(row.get("strace_on"), True, path)
+            fresh = dict(row)
+            run_ab.attach_required_fields(fresh, {})
+            self.assertNotIn("missing_fields", fresh, path)
+            ok, why = step8_gate.judge(fresh, pins[rel])
+            self.assertTrue(ok, (rel, why))
+
 
 if __name__ == "__main__":
     unittest.main()
