@@ -18,7 +18,12 @@ reasoning tokens the proxy saw). An empty ledger is an empty list.
 
 `python3 -m thesis.ab.run_ab --exec docker` passes `--image` (or
 `OBENCH_CELL_IMAGE`) through to `run_cell` as `docker_image`. A task that
-declares its own image still wins.
+declares its own image still wins. A missing ADC file uses the GCE metadata
+server, and a token failure exits before the cell.
+
+Cost is the proxy ledger totals (`*.totals.json`), priced with the upstream
+model's list rates. The run_cell row's `tokens_proxy_*` fields stay empty for
+this adapter.
 
 ```bash
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"

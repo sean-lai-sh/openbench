@@ -12,8 +12,11 @@ different commit).
 bash data/pi-harness-smoke/cell.sh /h2/pi-harness-smoke
 ```
 
-Requires `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`) and Application Default
-Credentials. The script unsets `OBENCH_PI_VERTEX` so the A/B adapter path
+Requires `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`). An
+`application_default_credentials.json` file is used when it exists. When it
+does not, the proxy uses the GCE metadata server (the same path as
+`OBENCH_ADC_METADATA=1`) and exits before the cell if that token cannot be
+read. The script unsets `OBENCH_PI_VERTEX` so the A/B adapter path
 does not run. Cell cap is 2400s. Transcripts stay under the output directory.
 
 Each `<model>.json` holds the `run_cell` row (checker exit included), the
