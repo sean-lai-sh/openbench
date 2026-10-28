@@ -108,6 +108,15 @@ ROW_FIELDS = (
     "model_max_tokens",
     "turn_mode",
     "turn1_exit",
+    "provider_pin_sha256",
+    "provider_versions",
+    "machine",
+    "runner_commit",
+    "pin_source",
+    "provider_loaded_version",
+    "provider_loaded_source",
+    "provider_loaded_mismatch",
+    "probe_method",
 )
 
 
@@ -1862,16 +1871,25 @@ def _apply_sdk_drift(row, result):
     The checker may already have exited. A drifted SDK is not a comparable
     trial, so the stored class stays infra even if the checker produced a
     verdict. ``class_for_report`` keeps that exclusion via ``failure_reason``.
+
+    ``provider_loaded_mismatch`` is the version the OpenCode process itself
+    resolved. When that text is non-empty it is the failure reason, ahead of
+    a cache-only ``sdk_drift`` string.
     """
     if not isinstance(result, dict):
         return row
     drift = result.get("sdk_drift")
-    if not isinstance(drift, str) or not drift.strip():
+    drift_text = drift.strip() if isinstance(drift, str) else ""
+    mismatch = result.get("provider_loaded_mismatch")
+    mismatch_text = mismatch.strip() if isinstance(mismatch, str) else ""
+    if not drift_text and not mismatch_text:
         return row
-    text = drift.strip()
-    row["sdk_drift"] = text
+    if drift_text:
+        row["sdk_drift"] = drift_text
+    if mismatch_text:
+        row["provider_loaded_mismatch"] = mismatch_text
     row["failure_class"] = "infra"
-    row["failure_reason"] = text
+    row["failure_reason"] = mismatch_text or drift_text
     row["success"] = False
     row["score"] = 0.0
     return row
@@ -2291,6 +2309,34 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         installed_sdk = result.get("installed_anthropic")
         if isinstance(installed_sdk, str) and installed_sdk.strip():
             row["installed_anthropic"] = installed_sdk.strip()
+        pin_sha = result.get("provider_pin_sha256")
+        if isinstance(pin_sha, str) and pin_sha.strip():
+            row["provider_pin_sha256"] = pin_sha.strip()
+        pin_source = result.get("pin_source")
+        if isinstance(pin_source, str) and pin_source.strip():
+            row["pin_source"] = pin_source.strip()
+        provider_versions = result.get("provider_versions")
+        if isinstance(provider_versions, dict):
+            row["provider_versions"] = {
+                str(key): str(value)
+                for key, value in provider_versions.items()
+                if isinstance(key, str) and isinstance(value, str) and key and value
+            }
+        loaded_version = result.get("provider_loaded_version")
+        if isinstance(loaded_version, str) and loaded_version.strip():
+            row["provider_loaded_version"] = loaded_version.strip()
+        loaded_source = result.get("provider_loaded_source")
+        if isinstance(loaded_source, str) and loaded_source.strip() in {
+            "preload", "strace", "embedded", "none",
+        }:
+            row["provider_loaded_source"] = loaded_source.strip()
+        # How the loaded version was proven (strace/embedded); step8_gate needs it.
+        probe_method = result.get("probe_method")
+        if isinstance(probe_method, str) and probe_method.strip() in {"strace", "embedded"}:
+            row["probe_method"] = probe_method.strip()
+        loaded_mismatch = result.get("provider_loaded_mismatch")
+        if isinstance(loaded_mismatch, str) and loaded_mismatch.strip():
+            row["provider_loaded_mismatch"] = loaded_mismatch.strip()
         full_output = result.get("full_output")
         classifier_output = full_output if full_output is not None else row["output_tail"]
         _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)

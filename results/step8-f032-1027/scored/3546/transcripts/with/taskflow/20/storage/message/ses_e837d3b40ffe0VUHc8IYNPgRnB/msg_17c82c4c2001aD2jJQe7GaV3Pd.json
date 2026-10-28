@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c82c4c2001aD2jJQe7GaV3Pd",
+  "sessionID": "ses_e837d3b40ffe0VUHc8IYNPgRnB",
+  "role": "user",
+  "time": {
+    "created": 1793090307268
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I found six defects and fixed each at its source. None of the tests were modified.\n\n| File | Bug | Fix |\n|---|---|---|\n| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. | It now returns `(-priority, seq)`. |\n| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. | It now uses `attempts_made < max_attempts`. |\n| `taskflow/events.py` | `_prefix_matches` had the arguments reversed (`prefix.startswith(topic + \".\")`), so prefix subscriptions matched the wrong topics. | It now uses `topic.startswith(prefix + \".\")`. |\n| `taskflow/statemachine.py` | `batch_order_ok` required priority to be non-decreasing. Its docstring says non-increasing. | It now checks `current <= prev`. |\n| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so multi-unit tasks leaked capacity. | It now subtracts `cost`. |\n| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own settings. A task's `retry.max_attempts` was ignored. | It now recurses as `deep_merge(result[key], value)`. |\n\nThere was also a seventh defect, in `taskflow/scheduler.py`. `_cascade_skip` used `dag.dependents`, which returns direct children only, so a permanent failure skipped only the direct children and left deeper descendants pending. It now uses `dag.transitive_dependents`.\n\nSeveral of the pipeline tests depended on more than one of these bugs, which is why they only turned green once the retry, config, resource and cascade fixes were all in.",
+    "diffs": []
+  }
+}

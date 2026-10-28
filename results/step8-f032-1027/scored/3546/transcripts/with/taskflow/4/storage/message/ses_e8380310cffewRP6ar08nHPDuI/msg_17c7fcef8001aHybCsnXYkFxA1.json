@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c7fcef8001aHybCsnXYkFxA1",
+  "sessionID": "ses_e8380310cffewRP6ar08nHPDuI",
+  "role": "user",
+  "time": {
+    "created": 1793090113275
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "All 25 tests now pass with `python3 -m unittest`. I didn't touch the tests. There were seven separate defects, and fixing some of them exposed others behind them.\n\n1. **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says the order is `(-priority, seq)`. Tasks were being dispatched in plain insertion order and priority was ignored.\n2. **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n3. **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within an admission batch. The docstring says non-increasing, so it is now `current <= prev`. Once the queue ordered tasks correctly, the old check would have failed any mixed-priority batch.\n4. **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now calls `deep_merge(result[key], value)`.\n5. **`events.py`:** `_prefix_matches` had its operands backwards (`prefix.startswith(topic + \".\")`). `job.term.*` events never reached `History`, so its failed, skipped and outcome-count queries came back empty. It is now `topic.startswith(prefix + \".\")`.\n6. **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so a permanent failure skips every downstream task.\n7. **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of `-= cost`. Any task with a cost above 1 leaked pool capacity, and the remaining tasks never got admitted.",
+    "diffs": []
+  }
+}

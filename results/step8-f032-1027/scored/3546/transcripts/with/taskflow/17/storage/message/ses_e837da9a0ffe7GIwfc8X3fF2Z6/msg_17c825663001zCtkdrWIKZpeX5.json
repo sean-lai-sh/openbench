@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c825663001zCtkdrWIKZpeX5",
+  "sessionID": "ses_e837da9a0ffe7GIwfc8X3fF2Z6",
+  "role": "user",
+  "time": {
+    "created": 1793090279014
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I fixed seven bugs, and I didn't touch the tests.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` had an off-by-one, so the last allowed attempt never ran. It now returns `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. It now requires `current_priority <= prev_priority`, as the docstring says. With the inverted check, the scheduler's admission guard marked the second task in any batch as FAILED.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values. It now calls `deep_merge(result[key], value)`.\n- **`events.py`:** `_prefix_matches` tested the prefix and topic the wrong way round. As a result, `job.term` subscribers never received `job.term.failed` and similar events, and the history's failed, skipped and outcome-count queries came back empty. It now tests `topic.startswith(prefix + \".\")`.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`, which leaked capacity and stalled the resource-limited runs. It now subtracts `cost`.\n- **`scheduler.py`:** `_cascade_skip` only skipped direct dependents. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.",
+    "diffs": []
+  }
+}

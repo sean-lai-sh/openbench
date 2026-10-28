@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c8372b5001xzuk6Cyl67pByl",
+  "sessionID": "ses_e837c8d4fffeSWDvx1QIRzP3JQ",
+  "role": "user",
+  "time": {
+    "created": 1793090351800
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests.\n\nI found seven bugs. Several were hiding others, as you warned: a failure in one module often came from a different one.\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ran in insertion order and ignored priority. It now returns `(-priority, seq)`.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `< max_attempts`, which matches the docstring.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. A batch must dispatch in non-increasing priority, so it now checks `current <= prev`. Once the queue was fixed, the old check made the scheduler fail tasks that were admitted correctly.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own nested values. A task's `retry.max_attempts` was being lost. It now merges `(base, override)` in that order.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")` instead of `topic.startswith(prefix + \".\")`. Prefix subscribers never received `job.term.*` events, so `History` showed no failed or skipped jobs and zero outcome counts.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children, instead of `transitive_dependents`. Grandchildren stayed `PENDING` instead of becoming `SKIPPED`.\n- **`resources.py`:** `ResourcePool.release` did `self.used -= 1` instead of `-= cost`. Pools never fully freed, so serialized resource-heavy tasks stalled.",
+    "diffs": []
+  }
+}

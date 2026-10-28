@@ -1,0 +1,9 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't touch the tests. There were seven separate bugs, none of them in the module the failing test was named after:
+
+- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority comes first and insertion order breaks ties.
+- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.
+- **`statemachine.py`**: `batch_order_ok` required priority to be non-decreasing within a batch. It now requires non-increasing. The reversed ordering also made the scheduler fail runs outright.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs leaked capacity, which stalled the resource-limited pipelines.
+- **`config.py`**: `deep_merge` recursed with the arguments swapped, so the defaults overrode the task's own settings. A per-task `retry.max_attempts` was being lost.
+- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+- **`events.py`**: `_prefix_matches` had the `startswith` check reversed. `job.term` subscribers never saw `job.term.failed` or `job.term.skipped`, so the history's failed, skipped and outcome-count queries came back empty.

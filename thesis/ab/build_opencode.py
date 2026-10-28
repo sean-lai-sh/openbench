@@ -23,6 +23,7 @@ from pathlib import Path
 
 from thesis.ab.durable import exclusive_lock
 from thesis.ab.errors import BuildError
+from thesis.ab.monorepo import CLI_BUILD, CLI_DIR, dist_binaries, is_monorepo_tree
 
 UPSTREAM = "https://github.com/anomalyco/opencode.git"
 FALLBACK_UPSTREAM = "https://github.com/sst/opencode.git"
@@ -57,6 +58,8 @@ def go_version(root: Path) -> str | None:
 
 def build_plan(root: Path) -> dict:
     """Describe the compile for this checkout. Does not run it."""
+    if is_monorepo_tree(root):
+        return monorepo_build_plan(root)
     script = root / "packages" / "opencode" / "script"
     build_ts = script / "build.ts"
     publish_ts = script / "publish.ts"
@@ -91,6 +94,28 @@ def build_plan(root: Path) -> dict:
         "go": None,
         "cwd": "packages/opencode",
         "args": ["bun", "run", "./src/index.ts"],
+    }
+
+
+def monorepo_build_plan(root: Path) -> dict:
+    """Compile for a post-monorepo tree (``packages/cli``, no ``packages/opencode``).
+
+    ``script/build.ts --single`` writes ``dist/cli-<os>-<arch>/bin/opencode``.
+    ``--skip-web-ui`` is passed when the script reads it; the CLI does not
+    need the web app to run a cell.
+    """
+    text = (root / CLI_BUILD).read_text(encoding="utf-8", errors="replace")
+    args = ["bun", "script/build.ts"]
+    if "--single" in text:
+        args.append("--single")
+    if "--skip-web-ui" in text:
+        args.append("--skip-web-ui")
+    return {
+        "kind": "monorepo",
+        "bun": bun_version(root),
+        "go": None,
+        "cwd": CLI_DIR,
+        "args": args,
     }
 
 
@@ -330,8 +355,9 @@ def host_libc() -> str:
 
 def _dist_target(path: Path) -> dict | None:
     name = path.parent.parent.name
-    prefix = "opencode-"
-    if not name.startswith(prefix):
+    # Monorepo builds name the target directory cli-<os>-<arch>.
+    prefix = next((item for item in ("opencode-", "cli-") if name.startswith(item)), "")
+    if not prefix:
         return None
     parts = name[len(prefix):].split("-")
     if len(parts) < 2:
@@ -490,7 +516,23 @@ def select_dist_binary(paths, *, system: str, machine: str, libc: str) -> Path:
     return chosen[0][0]
 
 
+def _find_monorepo_binary(root: Path) -> Path:
+    candidates = []
+    for path in dist_binaries(root):
+        try:
+            _ensure_exec_bit(path)
+        except OSError:
+            continue
+        candidates.append(path)
+    if not candidates:
+        raise BuildError(f"no opencode binary under {Path(root) / CLI_DIR / 'dist'}")
+    system, machine, _goarch = _host()
+    return select_dist_binary(candidates, system=system, machine=machine, libc=host_libc())
+
+
 def _find_binary(root: Path) -> Path:
+    if is_monorepo_tree(root):
+        return _find_monorepo_binary(root)
     pkg = root / "packages" / "opencode"
     found = sorted(pkg.glob("dist/**/bin/opencode"))
     candidates = []
@@ -539,7 +581,18 @@ def _build_stamp(plan: dict) -> dict:
             "minify": False,
             "tree_sitter_wasm": mode,
         }
-    return {"args": list(plan.get("args") or []), "kind": kind}
+    return {"args": list(plan.get("args") or []), "kind": kind,
+            "build_channel": build_channel()}
+
+
+def build_channel() -> str:
+    """``OPENCODE_CHANNEL`` the build saw; ``default`` when unset.
+
+    OpenCode's build script stamps the channel into the binary. A non-local
+    channel makes ``Installation.isLocal()`` false, so config load runs
+    ``bun add @opencode-ai/plugin@<stamped version>``, which is not on npm.
+    """
+    return os.environ.get("OPENCODE_CHANNEL", "").strip() or "default"
 
 
 def _read_build_stamp(published: Path) -> dict | None:
@@ -562,7 +615,7 @@ def _stamp_current(stamp: dict | None) -> bool:
             stamp.get("minify") is False
             and stamp.get("tree_sitter_wasm") in {"file-single-entry", "unchanged"}
         )
-    return kind in {"build.ts", "bun-run"}
+    return kind in {"build.ts", "bun-run", "monorepo"}
 
 
 def _write_build_stamp(published: Path, plan: dict) -> None:

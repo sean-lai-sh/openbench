@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were seven separate defects, each a logic error that contradicted its own docstring:
+
+| File | Bug | Fix |
+|---|---|---|
+| `queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so insertion order beat priority. | Changed it to `(-priority, seq)`. |
+| `retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, so the last permitted attempt never ran. | Changed it to `attempts_made < max_attempts`. |
+| `statemachine.py` | `batch_order_ok` returned `current >= prev`, the opposite of the documented non-increasing-priority rule. With the queue fixed, this wrongly failed jobs in a batch. | Changed it to `current <= prev`. |
+| `events.py` | `_prefix_matches` had its arguments swapped (`prefix.startswith(topic + ".")`), so `job.term` never matched `job.term.failed`. | Changed it to `topic.startswith(prefix + ".")`. This is what left `failed_jobs()` and `skipped_jobs()` empty. |
+| `config.py` | `deep_merge` recursed as `deep_merge(override_child, base_child)`, so defaults overrode task settings. | Swapped the arguments back. |
+| `resources.py` | `ResourcePool.release` did `used -= 1` instead of `used -= cost`, so pools leaked and later tasks stalled. | Changed it to `used -= cost`. |
+| `scheduler.py` | `_cascade_skip` used `dag.dependents`, which returns only direct children. | Switched to `dag.transitive_dependents`, so the whole downstream chain is skipped. |
+
+The retry and resource tests in `test_pipelines.py` depended on several of these at once, so they only passed after more than one fix.

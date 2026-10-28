@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c8085db001DGrY1Cbm25zVtg",
+  "sessionID": "ses_e837fd19bffeB0qg855un98PeO",
+  "messageID": "msg_17c8075ad0013Iv2mKwg7ogaZV",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't touch the tests. There were eight separate defects, in six files:\n\n- **`queue.py`:** The sort key was `(seq, -priority)`, so insertion order beat priority. It is now `(-priority, seq)`.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It is now `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison inverted. It now requires non-increasing priority, `current <= prev`. Before the queue fix, this guard would have wrongly failed jobs.\n- **`resources.py`:** `ResourcePool.release` always subtracted 1 instead of `cost`. Pools never freed fully, and runs with a resource cost stalled.\n- **`scheduler.py`:** `_cascade_skip` used the direct dependents. It now uses `transitive_dependents`, so a permanent failure skips everything downstream and not just the direct children.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, `(value, result[key])`. Defaults overwrote per-task retry settings. It now recurses with `(result[key], value)`.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")` instead of `topic.startswith(prefix + \".\")`. The `job.term` prefix subscription never matched, so the history recorded no succeeded, failed or skipped jobs.\n\nThe queue and retry defects were hiding several of the pipeline failures. The config, prefix-matching and cascade defects only showed up after those were fixed.",
+  "time": {
+    "start": 1793090160219,
+    "end": 1793090160219
+  }
+}

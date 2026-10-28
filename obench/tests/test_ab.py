@@ -623,6 +623,21 @@ class TestCellRun(unittest.TestCase):
         self.assertEqual(os.environ.get("OBENCH_OPENCODE_BIN"), saved)
 
 
+def _pinned_checkout(cache, sha, anthropic="1.2.12"):
+    """Lockfile pin so a proxy cell is not launched unpinned."""
+    checkout = Path(cache) / "worktrees" / sha
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "package.json").write_text(
+        json.dumps({"packageManager": "bun@1.2.14"}),
+        encoding="utf-8",
+    )
+    (checkout / "bun.lock").write_text(
+        json.dumps(_lock("4.3.16", "1.1.3", anthropic, "1.1.3")),
+        encoding="utf-8",
+    )
+    return checkout
+
+
 def _lock(ai_version, ai_provider, anthropic_version, anthropic_provider):
     return {
         "packages": {
@@ -963,6 +978,7 @@ class TestIncompatibleCells(unittest.TestCase):
             publish_text(Path(spec["cell_path"]), json.dumps(body))
 
         def build_fn(sha, cache, repo=""):
+            _pinned_checkout(cache, sha)
             return Path("/tmp") / sha
 
         def assess_fn(binary):
@@ -1200,6 +1216,7 @@ class TestIncompatibleCells(unittest.TestCase):
             publish_text(Path(spec["cell_path"]), json.dumps(body))
 
         def build_fn(sha, cache, repo=""):
+            _pinned_checkout(cache, sha)
             return Path("/tmp") / sha
 
         def assess_fn(binary):
@@ -1891,8 +1908,18 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertEqual(note.read_text(encoding="utf-8"), "")
         row = json.loads(dest.read_text(encoding="utf-8"))
         self.assertEqual(row["failure_class"], "infra")
-        self.assertIn("sdk drift", row["failure_reason"])
         self.assertIn("4.0.72", row["failure_reason"])
+        # A host strace records the package.json this process wrote. That
+        # loaded mismatch is the failure reason; the cache drift stays on
+        # sdk_drift. Without strace the reason is still the cache drift.
+        if row.get("provider_loaded_version"):
+            self.assertEqual(
+                row["failure_reason"],
+                "provider_pin_mismatch: loaded 4.0.72 != pin 2.0.0",
+            )
+            self.assertIn("sdk drift", row.get("sdk_drift") or "")
+        else:
+            self.assertIn("sdk drift", row["failure_reason"])
         self.assertFalse(row["success"])
         self.assertIn("--print-logs", row["cmd"])
         self.assertEqual(
@@ -2039,7 +2066,14 @@ class TestSdkDriftCell(unittest.TestCase):
         self.assertEqual(drift_note.read_text(encoding="utf-8"), "reinstalled")
         self.assertEqual(drifted["failure_class"], "infra")
         self.assertIn("4.0.74", drifted["failure_reason"])
-        self.assertIn("sdk drift", drifted["failure_reason"])
+        if drifted.get("provider_loaded_version"):
+            self.assertEqual(
+                drifted["failure_reason"],
+                "provider_pin_mismatch: loaded 4.0.74 != pin 2.0.0",
+            )
+            self.assertIn("sdk drift", drifted.get("sdk_drift") or "")
+        else:
+            self.assertIn("sdk drift", drifted["failure_reason"])
         self.assertEqual(drifted["toolchain"]["anthropic"], "4.0.74")
         self.assertEqual(drifted_tool["anthropic"], "4.0.74")
         self.assertEqual(drifted["toolchain"]["ai"], "5.0.8")

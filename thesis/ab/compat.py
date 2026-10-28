@@ -94,7 +94,7 @@ def _needs_host_sdk(binary: str) -> bool:
     return "opencode run" in text or "start opencode" in text
 
 
-def anthropic_proxy_config(base_url: str, *, include_endpoint: bool) -> dict:
+def anthropic_proxy_config(base_url: str, *, include_endpoint: bool, include_api: bool = True) -> dict:
     provider = {
         "models": {
             PROXY_MODEL_ID: {
@@ -104,7 +104,8 @@ def anthropic_proxy_config(base_url: str, *, include_endpoint: bool) -> dict:
         }
     }
     if include_endpoint:
-        provider["api"] = base_url
+        if include_api:
+            provider["api"] = base_url
         provider["options"] = {"apiKey": PROXY_API_KEY, "baseURL": base_url}
     return {"provider": {"anthropic": provider}}
 
@@ -243,10 +244,22 @@ def _proxy_assessment(config: dict, permission_ok: bool, proxy_url: str, base_ur
             "model_ref": PROXY_MODEL_REF,
             "api_key": PROXY_API_KEY,
             "base_url": sdk_base_url(proxy_url),
-            "base_url_env": base_url_env,
+            # Both routes always set: config baseURL and ANTHROPIC_BASE_URL.
+            "base_url_env": True,
+            "route": how,
             "needs_sdk": needs_sdk,
         },
     )
+
+
+FORCED_ROUTE_TRIES = 3
+
+
+def forced_route() -> str:
+    """OBENCH_FORCE_ROUTE=provider-options: only that route, no env fallback.
+    Step 8 sets it so a flaky first ``models`` probe cannot put one side of a
+    pair on base-url-env (3424/without in the 2026-10-27 gate)."""
+    return os.environ.get("OBENCH_FORCE_ROUTE", "").strip()
 
 
 def _assess_proxy(binary: str, permission_ok: bool, proxy_url: str) -> Assessment:
@@ -263,12 +276,18 @@ def _assess_proxy(binary: str, permission_ok: bool, proxy_url: str) -> Assessmen
     key_env = {"ANTHROPIC_API_KEY": PROXY_API_KEY}
     with tempfile.TemporaryDirectory(prefix="opencode-proxy-") as tmp:
         root = Path(tmp)
-        code, first = _models_text(binary, root / "full", full, key_env)
-        failed = _exec_reason(code, first)
-        if failed:
-            return _infra(failed)
-        if _model_listed(first):
-            return _proxy_assessment(full, permission_ok, proxy_url, False, "provider options", needs_sdk)
+        forced = forced_route()
+        tries = FORCED_ROUTE_TRIES if forced == "provider-options" else 1
+        for attempt in range(tries):
+            code, first = _models_text(binary, root / f"full{attempt}", full, key_env)
+            failed = _exec_reason(code, first)
+            if failed and attempt + 1 == tries:
+                return _infra(failed)
+            if not failed and _model_listed(first):
+                return _proxy_assessment(full, permission_ok, proxy_url, False, "provider options", needs_sdk)
+        if forced == "provider-options":
+            # Never fall back: both sides of a pair must take the same route.
+            return _infra(f"forced route provider-options: not listed after {tries} probes")
         models_only = _with_permission(
             anthropic_proxy_config(endpoint, include_endpoint=False), permission_ok,
         )
@@ -280,6 +299,20 @@ def _assess_proxy(binary: str, permission_ok: bool, proxy_url: str) -> Assessmen
         if failed:
             return _infra(failed)
         if _model_listed(second):
+            # Listed via the env var. Also carry options.baseURL (no ``api``
+            # key, which these builds reject) when the build accepts it, so a
+            # build that ignores ANTHROPIC_BASE_URL at run cannot go upstream.
+            both = _with_permission(
+                anthropic_proxy_config(endpoint, include_endpoint=True, include_api=False),
+                permission_ok,
+            )
+            code, third = _models_text(
+                binary, root / "both", both,
+                {**key_env, "ANTHROPIC_BASE_URL": endpoint},
+            )
+            if _exec_reason(code, third) is None and _model_listed(third):
+                return _proxy_assessment(both, permission_ok, proxy_url, True,
+                                         "ANTHROPIC_BASE_URL", needs_sdk)
             return _proxy_assessment(models_only, permission_ok, proxy_url, True, "ANTHROPIC_BASE_URL", needs_sdk)
     marker = _marked_incompatible(second) or _marked_incompatible(first) or "not listed"
     return Assessment(

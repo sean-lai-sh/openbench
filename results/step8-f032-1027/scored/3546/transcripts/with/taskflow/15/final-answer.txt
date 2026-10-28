@@ -1,0 +1,11 @@
+All 25 tests now pass under `python3 -m unittest`. I didn't touch the tests. There were seven separate bugs, each a small logic error:
+
+1. **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`. It now returns `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.
+2. **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which allowed one attempt too few. It now uses `attempts_made < max_attempts`, matching its docstring.
+3. **`config.py`**: `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own nested values. It now recurses as `deep_merge(result[key], value)`.
+4. **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Multi-unit costs were never fully returned, which stalled the resource-limited pipelines.
+5. **`statemachine.py`**: `batch_order_ok` had its comparison backwards (`>=` instead of `<=`). The guard failed any task admitted after a higher-priority one, which is the normal order.
+6. **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which only returns direct children. It now uses `transitive_dependents`, so the whole downstream chain is skipped.
+7. **`events.py`**: `_prefix_matches` used `prefix.startswith(topic + ".")`, which is the wrong way round. It now uses `topic.startswith(prefix + ".")`. Before this, the `job.term` subscription never received terminal events, so the history's failed, skipped and outcome counts came out empty.
+
+Several of these were masked by others. For example, the retry failures were caused by the `should_retry` bug, and the priority failures by the sort key combined with the batch guard.

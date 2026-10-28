@@ -1,0 +1,11 @@
+`python3 -m unittest` now passes: all 25 tests. I changed these seven places under `taskflow/` and left the tests alone.
+
+- **`queue.py`:** `sort_key` was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and insertion order breaks ties.
+- **`retry.py`:** `should_retry` was `attempts_made < max_attempts - 1`, which cut the retry budget short by one. It is now `attempts_made < max_attempts`.
+- **`events.py`:** `_prefix_matches` had the `startswith` check reversed (`prefix.startswith(topic + ".")`). It is now `topic.startswith(prefix + ".")`, so a prefix subscription matches the whole subtree.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. It now requires non-increasing (`current <= prev`), as its docstring says.
+- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. A task holding more than one unit leaked capacity, and the pipeline then stalled.
+- **`config.py`:** `deep_merge` swapped its arguments when recursing into nested dicts, so the defaults overrode the task's own values. A task's `retry` override was lost this way.
+- **`scheduler.py`:** `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so everything downstream of a permanent failure is skipped.
+
+I didn't read through the other modules (`history.py`, `model.py` and the rest) for further bugs, since the suite doesn't fail there.

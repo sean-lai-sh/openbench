@@ -1,0 +1,13 @@
+`python3 -m unittest` now passes all 25 tests. I didn't modify any tests. There were seven separate bugs, and several of them hid others, so the failing tests often pointed at the wrong module.
+
+| File | Bug | Fix |
+|---|---|---|
+| `taskflow/queue.py` | `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. | It now returns `(-priority, seq)`. |
+| `taskflow/retry.py` | `should_retry` used `attempts_made < max_attempts - 1`, one attempt short. | It now uses `attempts_made < max_attempts`. |
+| `taskflow/statemachine.py` | `batch_order_ok` had its comparison reversed, so a lower-priority task could never follow a higher one in a batch. | It now returns `current <= prev`. |
+| `taskflow/resources.py` | `ResourcePool.release` did `used -= 1` instead of subtracting the cost. | It now does `used -= cost`. |
+| `taskflow/scheduler.py` | `_cascade_skip` only skipped direct dependents. | It now uses `dag.transitive_dependents`. |
+| `taskflow/config.py` | `deep_merge` recursed with its arguments swapped, so defaults overrode task settings. | It now recurses as `deep_merge(result[key], value)`. |
+| `taskflow/events.py` | `_prefix_matches` tested `prefix.startswith(topic + ".")`, so `job.term` never matched `job.term.failed`. | It now tests `topic.startswith(prefix + ".")`. |
+
+Fixing the batch-order comparison and the retry boundary exposed the resource and retry-chain failures. The prefix-match fix cleared the last three history failures.

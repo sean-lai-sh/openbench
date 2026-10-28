@@ -1,0 +1,11 @@
+`python3 -m unittest` now reports all 25 tests passing. I didn't modify any tests. There were seven separate defects:
+
+- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`. The docstring says priority first, then insertion order, so it is now `(-priority, seq)`.
+- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which was off by one. It is now `attempts_made < max_attempts`.
+- **`config.py`:** `deep_merge` recursed with the arguments swapped, so base values overrode task overrides. It now calls `deep_merge(result[key], value)`.
+- **`scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only immediate children were skipped. It now uses `transitive_dependents`.
+- **`events.py`:** `_prefix_matches` had the prefix check reversed, so prefix subscribers like `job.term` never received events. That left `History` with empty outcome sets. It is now `topic.startswith(prefix + ".")`.
+- **`resources.py`:** `ResourcePool.release` did `used -= 1` instead of `used -= cost`. Pools leaked capacity and later tasks never got admitted.
+- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing, but the docstring and guard require non-increasing. It is now `current <= prev`. No test failed because of this one yet, but the guard would have wrongly failed correctly ordered batches.
+
+Several tests fed on more than one of these defects. For example, the retry pipeline tests needed both the config merge and the retry boundary fixed. The history tests needed the prefix matching fixed after the cascade skip.

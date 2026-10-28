@@ -224,6 +224,19 @@ class TestVertexFlags(unittest.TestCase):
         self.assertEqual(dumped["base_url"], "http://127.0.0.1:9")
         self.assertIsNone(dumped["location"])
 
+    def test_proxy_sets_base_url_env_on_the_provider_options_route_too(self):
+        res = self._run(HELP_MODERN, {
+            "OBENCH_OPENCODE_PROXY": json.dumps({
+                "model_ref": "anthropic/claude-opus-5-5",
+                "api_key": "proxy",
+                "base_url": "http://127.0.0.1:9/v1",
+                "base_url_env": False,
+                "route": "provider options",
+            }),
+        })
+        self.assertTrue(res["completed"], res.get("error"))
+        self.assertEqual(self._dump()["base_url"], "http://127.0.0.1:9/v1")
+
     def test_disable_tools_writes_mode_build_and_not_permission(self):
         res = self._run(HELP_BARE + "\n--mode\n", {
             "OBENCH_OPENCODE_MODE": "build",
@@ -480,7 +493,41 @@ class TestAssessment(unittest.TestCase):
         self.assertEqual(provider["options"]["baseURL"], "http://127.0.0.1:9/v1")
         self.assertEqual(provider["models"]["claude-opus-5-5"]["limit"], {"context": 1000000, "output": 128000})
         self.assertEqual(result.proxy["model_ref"], PROXY_MODEL_REF)
-        self.assertFalse(result.proxy["base_url_env"])
+        # Both routes always set: config baseURL and ANTHROPIC_BASE_URL.
+        self.assertTrue(result.proxy["base_url_env"])
+        self.assertEqual(result.proxy["route"], "provider options")
+
+    def test_env_route_also_carries_options_base_url_when_accepted(self):
+        from thesis.ab.compat import assess
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "opencode"
+        path.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import os, sys
+            args = sys.argv[1:]
+            if args[:2] == ["run", "--help"]:
+                sys.stdout.write("-m, --model\\n")
+                raise SystemExit(0)
+            if args[:1] == ["models"]:
+                cfg = os.environ.get("OPENCODE_CONFIG", "")
+                body = open(cfg, encoding="utf-8").read() if cfg and os.path.isfile(cfg) else ""
+                if '"api"' in body:
+                    sys.stdout.write("ConfigInvalidError Unrecognized key: 'api'")
+                elif os.environ.get("ANTHROPIC_BASE_URL"):
+                    sys.stdout.write("anthropic/claude-opus-5-5\\n")
+                raise SystemExit(0)
+        """), encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        with EnvPatch() as env:
+            env["FAKE_HELP"] = HELP_MODERN
+            result = assess(str(path), route="proxy", proxy_url="http://127.0.0.1:9")
+        self.assertEqual(result.status, "configured")
+        provider = result.config["provider"]["anthropic"]
+        self.assertNotIn("api", provider)
+        self.assertEqual(provider["options"]["baseURL"], "http://127.0.0.1:9/v1")
+        self.assertTrue(result.proxy["base_url_env"])
+        self.assertEqual(result.proxy["route"], "ANTHROPIC_BASE_URL")
 
     def test_proxy_route_falls_back_to_the_base_url_env(self):
         from thesis.ab.compat import assess
@@ -511,8 +558,10 @@ class TestAssessment(unittest.TestCase):
             env["FAKE_HELP"] = HELP_MODERN
             result = assess(str(path), route="proxy", proxy_url="http://127.0.0.1:9")
         self.assertEqual(result.status, "configured")
+        # This fake rejects any baseURL in config, so env-only remains.
         self.assertNotIn("options", result.config["provider"]["anthropic"])
         self.assertTrue(result.proxy["base_url_env"])
+        self.assertEqual(result.proxy["route"], "ANTHROPIC_BASE_URL")
         self.assertEqual(result.proxy["base_url"], "http://127.0.0.1:9/v1")
 
     def test_proxy_route_is_incompatible_when_the_model_is_absent(self):

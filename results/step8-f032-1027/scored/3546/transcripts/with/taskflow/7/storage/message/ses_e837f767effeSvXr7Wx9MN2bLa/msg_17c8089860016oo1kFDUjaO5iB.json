@@ -1,0 +1,13 @@
+{
+  "id": "msg_17c8089860016oo1kFDUjaO5iB",
+  "sessionID": "ses_e837f767effeSvXr7Wx9MN2bLa",
+  "role": "user",
+  "time": {
+    "created": 1793090161033
+  },
+  "summary": {
+    "title": "Fixing failing tests in taskflow",
+    "body": "`python3 -m unittest` now passes: all 25 tests, with no test files modified. I found seven bugs in total, and each one contradicted its own docstring:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, which ignored priority. It now returns `(-priority, seq)`.\n- **`retry.py`:** `should_retry` had an off-by-one error. It now returns `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` had its comparison reversed. A batch must dispatch in non-increasing priority order, so it now checks `current <= prev`. The old check would have rejected normal batches once the queue ordering was fixed.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity for any task that held more than one unit.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode the task's own values.\n- **`scheduler.py`:** `_cascade_skip` used `dag.dependents` (direct children only) instead of `transitive_dependents`, so tasks further down the chain were never skipped.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")` rather than `topic.startswith(prefix + \".\")`. Prefix subscribers such as `History` never received the `job.term.*` events, so its failed, skipped and outcome-count queries came back empty.",
+    "diffs": []
+  }
+}

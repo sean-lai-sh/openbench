@@ -423,46 +423,473 @@ def _materialize_hoisted_sdk(cache, pin):
         return
 
 
+def _provider_packages(proxy):
+    """Exact provider packages this cell must have on disk, or {}."""
+    if not isinstance(proxy, dict):
+        return {}
+    raw = proxy.get("provider_pins")
+    if not isinstance(raw, dict):
+        return {}
+    packages = {}
+    for name, version in raw.items():
+        package = str(name or "").strip()
+        pinned = str(version or "").strip()
+        if package and pinned:
+            packages[package] = pinned
+    return packages
+
+
+def _provider_pin_block(env, proxy):
+    """Infra reason when the cell cache is not the pin. Empty when it matches."""
+    packages = _provider_packages(proxy)
+    if not packages:
+        return ""
+    try:
+        from thesis.ab.provider_pin import mismatch_reason
+    except ImportError:
+        return "provider_pin_mismatch: pin checker unavailable"
+    cache = os.path.join(env.get("XDG_CACHE_HOME") or "", "opencode")
+    return mismatch_reason(cache, packages)
+
+
+def _provider_pin_violation(env, text):
+    """Infra reason when a pinned cell logs an @latest provider install."""
+    if not isinstance(env, dict) or not str(env.get("OBENCH_PROVIDER_PINS") or "").strip():
+        return ""
+    if not text:
+        return ""
+    try:
+        from thesis.ab.provider_pin import violation_in_text
+    except ImportError:
+        return ""
+    return violation_in_text(text, env.get("OBENCH_PROVIDER_PINS"))
+
+
+_PROBE_NAME = ".obench-provider-probe.mjs"
+_TRACE_NAME = "provider-open.trace"
+_ANTHROPIC_OPEN_MARKER = "node_modules/@ai-sdk/anthropic"
+_LOADED_SOURCES = {"preload", "strace", "embedded", "none"}
+# The return group is the openat result. A negative fd (ENOENT, EACCES, ...)
+# is a failed lookup, not evidence the package was loaded.
+_TRACE_OPEN_RE = re.compile(
+    r'openat\([^,]*,\s*"((?:\\.|[^"\\])*)"[^"]*\)\s*=\s*(-?\d+)'
+)
+_STRACE_ATTACH = None
+# Kept at import so a test that replaces subprocess.run does not count the
+# attach probe as an OpenCode invocation, and does not fake a successful attach.
+_subprocess_run = subprocess.run
+
+
+def _provider_probe_script(cache):
+    """Preload that logs the SDK version after the provider module loads.
+
+    Resolving ``package.json`` in the cache is not a load. The line is
+    printed from the load hook, and only after that module file has been
+    read. A build that never imports ``@ai-sdk/anthropic`` prints nothing.
+    """
+    cache_js = json.dumps(cache)
+    return (
+        "import { createRequire } from \"node:module\";\n"
+        "import { readFileSync } from \"node:fs\";\n"
+        "import { dirname } from \"node:path\";\n"
+        f"const cache = {cache_js};\n"
+        "const require = createRequire(import.meta.url);\n"
+        "let printed = \"\";\n"
+        "function versionOf(pkgJson) {\n"
+        "  try {\n"
+        "    const pkg = JSON.parse(readFileSync(pkgJson, \"utf8\"));\n"
+        "    return String(pkg.version || \"\");\n"
+        "  } catch {\n"
+        "    return \"\";\n"
+        "  }\n"
+        "}\n"
+        "function emit(version, dir) {\n"
+        "  if (!version || printed === version + \"\\n\" + dir) return;\n"
+        "  printed = version + \"\\n\" + dir;\n"
+        "  console.error(\n"
+        "    \"OBENCH_PROVIDER_LOADED pkg=@ai-sdk/anthropic version=\" + version +\n"
+        "      \" path=\" + dir,\n"
+        "  );\n"
+        "}\n"
+        "function loaderFor(file) {\n"
+        "  return file.endsWith(\".json\") ? \"json\" : \"js\";\n"
+        "}\n"
+        "try {\n"
+        "  if (typeof Bun !== \"undefined\" && typeof Bun.plugin === \"function\") {\n"
+        "    Bun.plugin({\n"
+        "      name: \"obench-provider-probe\",\n"
+        "      setup(build) {\n"
+        "        build.onResolve({ filter: /^@ai-sdk\\/anthropic/ }, (args) => {\n"
+        "          let resolved = \"\";\n"
+        "          try {\n"
+        "            resolved = require.resolve(args.path, {\n"
+        "              paths: [cache, args.importer || cache],\n"
+        "            });\n"
+        "          } catch {}\n"
+        "          if (!resolved) {\n"
+        "            try { resolved = Bun.resolveSync(args.path, cache); } catch {}\n"
+        "          }\n"
+        "          console.error(\n"
+        "            \"OBENCH_PROVIDER_RESOLVE pkg=@ai-sdk/anthropic path=\" +\n"
+        "              (resolved || args.path),\n"
+        "          );\n"
+        "        });\n"
+        "        build.onLoad({\n"
+        "          filter: /\\/node_modules\\/@ai-sdk\\/anthropic\\/.*\\.(?:mjs|cjs|js|json)$/,\n"
+        "        }, (args) => {\n"
+        "          const text = readFileSync(args.path, \"utf8\");\n"
+        "          const loader = loaderFor(args.path);\n"
+        "          if (loader === \"js\") {\n"
+        "            try {\n"
+        "              const pkgJson = require.resolve(\"@ai-sdk/anthropic/package.json\", {\n"
+        "                paths: [dirname(args.path), cache],\n"
+        "              });\n"
+        "              emit(versionOf(pkgJson), dirname(pkgJson));\n"
+        "            } catch {}\n"
+        "          }\n"
+        "          return { contents: text, loader };\n"
+        "        });\n"
+        "      },\n"
+        "    });\n"
+        "  }\n"
+        "} catch {}\n"
+    )
+
+
+def _append_bun_preload(env, probe):
+    """Append ``--preload`` to BUN_OPTIONS. An existing value is kept."""
+    flag = f"--preload {probe}"
+    current = str(env.get("BUN_OPTIONS") or "").strip()
+    parts = current.split()
+    if probe in parts and "--preload" in parts:
+        return
+    env["BUN_OPTIONS"] = f"{current} {flag}".strip() if current else flag
+
+
+def _arm_provider_probe(env, cache):
+    """Write the preload script next to the cell cache. Do not arm it.
+
+    ``BUN_OPTIONS`` is not set. Compiled OpenCode (bun 1.3.0 and 1.3.2
+    builds alike) passes ``BUN_OPTIONS`` tokens through to its own argv, so
+    ``--preload <probe>`` reaches yargs as an unknown option and ``opencode
+    run`` prints usage and exits 1 before any session starts (F03-2 phase 1,
+    2026-10-26). The loaded version comes from strace instead. The script is
+    still written and kept with the cell evidence.
+    """
+    if not cache:
+        return ""
+    try:
+        os.makedirs(cache, exist_ok=True)
+        probe = os.path.join(cache, _PROBE_NAME)
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write(_provider_probe_script(os.path.abspath(cache)))
+    except OSError:
+        return ""
+    return probe
+
+
+def _strace_attaches(binary):
+    """True when this strace can ptrace a trivial child. Cached per process."""
+    global _STRACE_ATTACH
+    if _STRACE_ATTACH is not None:
+        return _STRACE_ATTACH
+    try:
+        proc = _subprocess_run(
+            [binary, "-e", "trace=none", "--", "true"],
+            capture_output=True,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+        _STRACE_ATTACH = proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        _STRACE_ATTACH = False
+    return _STRACE_ATTACH
+
+
+def _provider_trace_path(env):
+    """``<cell>/provider-open.trace``, or the opencode cache when no cell root."""
+    root = ""
+    if isinstance(env, dict):
+        root = str(env.get("OBENCH_CELL_TEMP_ROOT") or "").strip()
+    if not root:
+        root = os.environ.get("OBENCH_CELL_TEMP_ROOT", "").strip()
+    if root:
+        return os.path.join(root, _TRACE_NAME)
+    cache_home = ""
+    if isinstance(env, dict):
+        cache_home = str(env.get("XDG_CACHE_HOME") or "").strip()
+    if not cache_home:
+        return ""
+    return os.path.join(cache_home, "opencode", _TRACE_NAME)
+
+
+def _allocate_trace_path(env):
+    base = str(env.get("OBENCH_PROVIDER_TRACE_FILE") or "").strip()
+    if not base:
+        base = _provider_trace_path(env)
+    if not base:
+        return ""
+    try:
+        os.makedirs(os.path.dirname(base), exist_ok=True)
+    except OSError:
+        return ""
+    env["OBENCH_PROVIDER_TRACE_FILE"] = base
+    if not os.path.exists(base):
+        return base
+    for index in range(2, 10):
+        cand = f"{base}.{index}"
+        if not os.path.exists(cand):
+            return cand
+    return base
+
+
+def _use_provider_trace():
+    """Strace when asked, or when a working strace is on PATH.
+
+    ``OBENCH_PROVIDER_TRACE=1`` wraps even if the attach probe failed, so the
+    cell output shows the strace error. The automatic path skips a strace
+    that cannot ptrace, because that would fail every cell.
+    """
+    flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()
+    if flag == "0":
+        # Scored cells run untraced; one traced gate cell per side proves
+        # the loaded provider (step-8 F03-2 launcher, Researcher 2026-10-27).
+        return ""
+    binary = shutil.which("strace") or ""
+    if not binary:
+        return ""
+    if flag == "1":
+        return binary
+    if _strace_attaches(binary):
+        return binary
+    return ""
+
+
+def _wrap_provider_trace(cmd, env):
+    """Prefix ``cmd`` with strace so the opened provider package is on disk.
+
+    ``OBENCH_PROVIDER_TRACE=1`` or a usable ``strace`` on ``PATH`` enables it.
+    The trace is ``<cell>/provider-open.trace``. A second invocation in the
+    same cell writes ``provider-open.trace.2`` and does not truncate the first.
+    """
+    if not cmd or not isinstance(env, dict):
+        return cmd
+    if os.path.basename(str(cmd[0])) == "strace":
+        return cmd
+    binary = _use_provider_trace()
+    if not binary:
+        return cmd
+    trace = _allocate_trace_path(env)
+    if not trace:
+        return cmd
+    return [
+        binary, "-f", "-qq", "-e", "trace=openat", "-o", trace, "--", *cmd,
+    ]
+
+
+def _trace_files(env):
+    base = ""
+    if isinstance(env, dict):
+        base = str(env.get("OBENCH_PROVIDER_TRACE_FILE") or "").strip()
+    if not base:
+        base = _provider_trace_path(env)
+    if not base:
+        return []
+    found = []
+    if os.path.isfile(base):
+        found.append(base)
+    for index in range(2, 10):
+        path = f"{base}.{index}"
+        if os.path.isfile(path):
+            found.append(path)
+    return found
+
+
+def _loaded_line(text):
+    """Last preload line, or None. Returns ``(version, path)``."""
+    try:
+        from thesis.ab.provider_pin import LOADED_LINE
+    except ImportError:
+        return None
+    match = None
+    for match in LOADED_LINE.finditer(text or ""):
+        pass
+    if match is None:
+        return None
+    return match.group(1), match.group(2) or ""
+
+
+def _version_from_trace_line(line):
+    match = _TRACE_OPEN_RE.search(line or "")
+    if not match:
+        return None
+    try:
+        fd = int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+    # openat returns the new fd on success and -1 (with an errno) on failure.
+    if fd < 0:
+        return None
+    try:
+        raw = bytes(match.group(1), "utf-8").decode("unicode_escape")
+    except UnicodeError:
+        raw = match.group(1)
+    if raw.endswith("..."):
+        return None
+    index = raw.find(_ANTHROPIC_OPEN_MARKER)
+    if index < 0:
+        return None
+    root = raw[: index + len(_ANTHROPIC_OPEN_MARKER)]
+    version = _installed_sdk_version(os.path.join(root, "package.json"))
+    if not version:
+        return None
+    return version, root
+
+
+def _version_from_strace(env):
+    for path in _trace_files(env):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    found = _version_from_trace_line(line)
+                    if found:
+                        return found
+        except OSError:
+            continue
+    return None
+
+
+def _loaded_provider_version(env, output_text):
+    """``(version or None, source, path)`` for the SDK this process resolved.
+
+    A preload line wins. Otherwise the first successful ``openat`` (a
+    non-negative fd) of a file under ``node_modules/@ai-sdk/anthropic``
+    whose ``package.json`` has a version. A failed open, including
+    ``ENOENT``, is not proof. Reading that file without a successful open
+    in the trace is not a result.
+    """
+    parsed = _loaded_line(output_text or "")
+    if parsed:
+        version, path = parsed
+        if version:
+            return version, "preload", path
+    traced = _version_from_strace(env)
+    if traced:
+        return traced[0], "strace", traced[1]
+    return None, "none", ""
+
+
+def _loaded_mismatch_text(pin, version, source):
+    """Infra text when the loaded SDK is not the pin.
+
+    Pin present and no proof is infra only when
+    ``OBENCH_REQUIRE_LOADED_PROOF=1``. Otherwise that case is warn-only and
+    this returns ``""``.
+    """
+    pin = str(pin or "").strip()
+    if not pin:
+        return ""
+    if source == "none" or not version:
+        if os.environ.get("OBENCH_REQUIRE_LOADED_PROOF", "").strip() == "1":
+            return "provider_pin_mismatch: loaded version unproven"
+        return ""
+    if version != pin:
+        return f"provider_pin_mismatch: loaded {version} != pin {pin}"
+    return ""
+
+
+def _attach_loaded_mismatch(row, mismatch):
+    """Same drift handling as ``_attach_sdk_drift``, for the loaded version."""
+    if not mismatch:
+        return row
+    row["provider_loaded_mismatch"] = mismatch
+    row["failure_class"] = "infra"
+    row["completed"] = False
+    error = row.get("error")
+    if error and mismatch not in str(error):
+        row["error"] = f"{error}; {mismatch}"
+    elif not error:
+        row["error"] = mismatch
+    if not row.get("sdk_drift"):
+        row["sdk_drift"] = mismatch
+    return row
+
+
+def _resolved_provider_versions(env, proxy):
+    packages = _provider_packages(proxy)
+    if not packages:
+        return None
+    try:
+        from thesis.ab.provider_pin import resolved_versions
+    except ImportError:
+        return None
+    cache = os.path.join(env.get("XDG_CACHE_HOME") or "", "opencode")
+    return resolved_versions(cache, packages)
+
+
 def _ensure_provider_sdk(env, proxy):
     pin = _anthropic_pin(proxy)
-    if not pin:
+    packages = _provider_packages(proxy)
+    if not pin and not packages:
         return ""
     # Default auth plugins (`opencode-anthropic-auth`, `opencode-copilot-auth`)
     # run `bun add --force` and re-resolve the dist-tag in package.json. That
     # upgrades a pinned @ai-sdk/anthropic to whatever "latest" is today.
     env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "1"
+    if packages:
+        env["OBENCH_PROVIDER_PINS"] = json.dumps(
+            packages, sort_keys=True, separators=(",", ":"),
+        )
     bun = _resolve_bun(proxy.get("bun"))
     if not bun:
         return ""
     cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
     os.makedirs(cache, exist_ok=True)
-    module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
-    if _installed_sdk_version(module) != pin:
-        _prepare_exact_install(cache, pin)
-        subprocess.run(
-            [
-                bun, "add", "--force", "--exact",
-                "--cwd", os.path.abspath(cache),
-                f"@ai-sdk/anthropic@{pin}",
-            ],
-            cwd=cache,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            timeout=120,
-            check=False,
-        )
+    try:
+        store = str(proxy.get("pin_store") or "").strip() if isinstance(proxy, dict) else ""
+        if store and packages:
+            try:
+                from thesis.ab.provider_pin import seed_cell_cache
+            except ImportError:
+                return ""
+            seed_cell_cache(cache, store, packages, bun, env)
+            module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
+            if pin and _installed_sdk_version(module) == pin:
+                _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
+                _write_cache_version(cache, proxy.get("cache_version"))
+            return _installed_sdk_version(module) if pin else ""
+        if not pin:
+            return ""
+        module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
         if _installed_sdk_version(module) != pin:
-            _materialize_hoisted_sdk(cache, pin)
-    # Record the skip token only when the hoisted package is the pin.
-    # Recording the pin itself makes an equality-gate binary install @latest.
-    # A second bun add against the skip token would do the same, so an
-    # already-pinned cache is left on disk.
-    if _installed_sdk_version(module) == pin:
-        _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
-    else:
-        _set_anthropic_dependency(cache, pin)
-    _write_cache_version(cache, proxy.get("cache_version"))
-    return _installed_sdk_version(module)
+            _prepare_exact_install(cache, pin)
+            subprocess.run(
+                [
+                    bun, "add", "--force", "--exact",
+                    "--cwd", os.path.abspath(cache),
+                    f"@ai-sdk/anthropic@{pin}",
+                ],
+                cwd=cache,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                timeout=120,
+                check=False,
+            )
+            if _installed_sdk_version(module) != pin:
+                _materialize_hoisted_sdk(cache, pin)
+        # Record the skip token only when the hoisted package is the pin.
+        # Recording the pin itself makes an equality-gate binary install @latest.
+        # A second bun add against the skip token would do the same, so an
+        # already-pinned cache is left on disk.
+        if _installed_sdk_version(module) == pin:
+            _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
+        else:
+            _set_anthropic_dependency(cache, pin)
+        _write_cache_version(cache, proxy.get("cache_version"))
+        return _installed_sdk_version(module)
+    finally:
+        # After bun add, so the install itself does not preload the probe.
+        _arm_provider_probe(env, cache)
 
 
 def _installed_provider_sdk(env, proxy):
@@ -566,6 +993,21 @@ def _preserve_opencode_evidence(env):
             shutil.copy2(src, os.path.join(dest_root, name))
         except OSError:
             continue
+    cache = os.path.join(env.get("XDG_CACHE_HOME") or "", "opencode")
+    _copy_evidence_file(os.path.join(cache, _PROBE_NAME), dest_root)
+    for path in _trace_files(env):
+        _copy_evidence_file(path, dest_root)
+
+
+def _copy_evidence_file(src, dest_root):
+    """Copy one evidence file. Missing sources are skipped."""
+    if not src or not os.path.isfile(src):
+        return
+    try:
+        os.makedirs(dest_root, exist_ok=True)
+        shutil.copy2(src, os.path.join(dest_root, os.path.basename(src)))
+    except OSError:
+        return
 
 
 def _is_session_db(name):
@@ -999,6 +1441,7 @@ def _kill_process_group(proc):
 
 
 def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
+    from thesis.ab.provider_pin import ProviderPinMismatch
     from thesis.ab.watch import PromptIdle, WatchdogKill, run_piped
     try:
         return run_piped(
@@ -1012,6 +1455,8 @@ def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
             prompt_re=_PROMPT_RE if watch_prompt else None,
             prompt_idle_s=_PROMPT_IDLE_S,
         )
+    except ProviderPinMismatch:
+        raise
     except PromptIdle as exc:
         raise _PromptWait(exc.output) from exc
     except WatchdogKill as exc:
@@ -1019,6 +1464,7 @@ def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
 
 
 def _invoke(cmd, cwd, env, timeout_s, watch_prompt):
+    cmd = _wrap_provider_trace(cmd, env)
     limit = _no_progress_limit()
     if limit > 0:
         return _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit)
@@ -1063,6 +1509,11 @@ def _invoke(cmd, cwd, env, timeout_s, watch_prompt):
                     last_output = now
                     if _PROMPT_RE.search("".join(chunks)):
                         prompted = True
+                    reason = _provider_pin_violation(env, "".join(chunks)[-2000:])
+                    if reason:
+                        _kill_process_group(proc)
+                        from thesis.ab.provider_pin import ProviderPinMismatch
+                        raise ProviderPinMismatch(reason, "".join(chunks))
             if prompted and now - last_output >= _PROMPT_IDLE_S:
                 _kill_process_group(proc)
                 raise _PromptWait("".join(chunks))
@@ -1255,7 +1706,20 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     env, iso_home = _isolated_env()
     installed_anthropic = ""
     proxy = None
-    observed = {"done": False, "drift": ""}
+    proc = None
+    captured = {"text": ""}
+    observed = {"done": False, "drift": "", "loaded": (None, "none", "")}
+
+    def _proc_text(process):
+        if process is None:
+            return ""
+        out = getattr(process, "stdout", None) or ""
+        err = getattr(process, "stderr", None) or ""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        return out + err
 
     def _stamp(row):
         # Prefer the version left on disk. The pre-run return value is still
@@ -1263,20 +1727,59 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         installed = observed.get("installed") or installed_anthropic
         if installed:
             row["installed_anthropic"] = installed
+        if isinstance(proxy, dict):
+            pin_sha = str(proxy.get("provider_pin_sha256") or "").strip()
+            if pin_sha:
+                row["provider_pin_sha256"] = pin_sha
+            source = str(proxy.get("pin_source") or "").strip()
+            if source:
+                row["pin_source"] = source
+        versions = observed.get("versions")
+        if isinstance(versions, dict):
+            row["provider_versions"] = versions
+        loaded = observed.get("loaded") or (None, "none", "")
+        version, loaded_source, _path = loaded
+        if loaded_source not in _LOADED_SOURCES:
+            loaded_source = "none"
+        if not version:
+            # Bundled provider: strace sees no package open, so read the
+            # version compiled into the binary.
+            from obench.provider_embedded import embedded_version
+            bundled = embedded_version(exe)
+            if bundled:
+                version, loaded_source = bundled, "embedded"
+        row["provider_loaded_source"] = loaded_source
+        row["probe_method"] = loaded_source if loaded_source in ("strace", "embedded") else ""
+        if version:
+            row["provider_loaded_version"] = version
+        pin = _anthropic_pin(proxy) if isinstance(proxy, dict) else ""
+        mismatch = _loaded_mismatch_text(pin, version, loaded_source)
+        if mismatch:
+            row = _attach_loaded_mismatch(row, mismatch)
         return row
 
-    def _observe():
+    def _observe(output_text=""):
         if observed["done"]:
             return
         observed["done"] = True
+        text = output_text or captured["text"]
+        if not text:
+            text = _proc_text(proc)
+            if text:
+                captured["text"] = text
+        observed["loaded"] = _loaded_provider_version(env, text)
         observed["drift"] = _provider_sdk_drift(env, proxy)
         observed["installed"] = _installed_provider_sdk(env, proxy)
+        observed["versions"] = _resolved_provider_versions(env, proxy)
         _preserve_opencode_evidence(env)
 
     turn_state = {"mode": None, "exit": None, "failure": None}
 
     def _finish(row):
-        _observe()
+        text = row.get("full_output") or row.get("output_tail") or ""
+        if text:
+            captured["text"] = text
+        _observe(captured["text"])
         mode = os.environ.get("OBENCH_OPENCODE_MODE", "").strip()
         if mode:
             row["agent_mode"] = mode
@@ -1288,8 +1791,17 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             row["failure_class"] = "infra"
             row["completed"] = False
             row["error"] = turn_state["failure"]
+        pin_error = row.get("error")
+        if isinstance(pin_error, str) and pin_error.startswith("provider_pin_mismatch"):
+            row["failure_class"] = "infra"
+            row["completed"] = False
+            row["error"] = pin_error
+            row["sdk_drift"] = pin_error
+            _write_agent_output(row.get("full_output") or row.get("output_tail") or "")
+            return _stamp(row)
         _write_agent_output(row.get("full_output") or row.get("output_tail") or "")
-        return _stamp(_attach_sdk_drift(row, observed["drift"]))
+        stamped = _stamp(_attach_sdk_drift(row, observed["drift"]))
+        return stamped
     exe = _exe()
     try:
         _install_global_agents(env)
@@ -1346,11 +1858,17 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             env.pop("ANTHROPIC_API_KEY", None)  # force Anthropic OAuth route
         if proxy:
             env["ANTHROPIC_API_KEY"] = str(proxy.get("api_key") or "proxy")
-            if proxy.get("base_url_env"):
-                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url") or "")
+            # Both routes: config baseURL (from compat) and the env var.
+            if proxy.get("base_url"):
+                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url"))
             else:
                 env.pop("ANTHROPIC_BASE_URL", None)
             env.pop("VERTEX_LOCATION", None)
+            # Builds from late 2025 drop any models.dev entry with an
+            # ``experimental`` key from ``run`` (provider.ts filter). Today's
+            # registry tags claude-opus-5-5 that way (fast mode), so those
+            # builds exit 1 with ProviderModelNotFoundError and print usage.
+            env["OPENCODE_ENABLE_EXPERIMENTAL_MODELS"] = "1"
             installed_anthropic = _ensure_provider_sdk(env, proxy) or ""
         elif model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
             env["VERTEX_LOCATION"] = "global"
@@ -1418,8 +1936,23 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     if _split_turns(instruction) and not two_turn:
         turn_state["mode"] = "single"
 
+    proc = None
     try:
+        from thesis.ab.provider_pin import ProviderPinMismatch
         try:
+            block = _provider_pin_block(env, proxy)
+            if block:
+                return _finish({
+                    "completed": False,
+                    "failure_class": "infra",
+                    "error": block,
+                    "output_tail": "",
+                    "full_output": "",
+                    "tokens": None,
+                    "turns": None,
+                    "cmd": cmd,
+                    **_empty_token_usage(),
+                })
             proc = _invoke(cmd, workdir, env, timeout_s, watch_prompt)
             if two_turn and len(prompts) == 2:
                 turn_state["exit"] = proc.returncode
@@ -1475,6 +2008,21 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 "cmd": cmd,
                 **_empty_token_usage(),
             })
+        except ProviderPinMismatch as e:
+            if two_turn and turn_state["mode"] is None:
+                turn_state["mode"] = "turn-failure"
+            full_output = e.output or ""
+            return _finish({
+                "completed": False,
+                "failure_class": "infra",
+                "error": e.reason or str(e),
+                "output_tail": full_output[-2000:],
+                "full_output": full_output,
+                "tokens": None,
+                "turns": None,
+                "cmd": cmd,
+                **_empty_token_usage(),
+            })
         except subprocess.TimeoutExpired as e:
             if two_turn and turn_state["mode"] is None:
                 turn_state["mode"] = "turn-failure"
@@ -1490,15 +2038,33 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 **_empty_token_usage(),
             })
     finally:
-        # The cache and session live under the temp home. Read the pin and
-        # copy storage/logs before that tree is removed.
-        _observe()
+        # The cache and session live under the temp home. Read the pin, the
+        # opened provider package, and copy storage/logs before that tree
+        # is removed. On the success path the process output is still on
+        # ``proc`` here; ``_finish`` runs after this block.
+        if not observed["done"]:
+            if not captured["text"]:
+                captured["text"] = _proc_text(proc)
+            _observe(captured["text"])
         if model in MODELS and auth_source is not None:
             isolated_auth = os.path.join(env["XDG_DATA_HOME"], "opencode", "auth.json")
             try_persist_auth_file(isolated_auth, auth_source)
         shutil.rmtree(iso_home, ignore_errors=True)
 
     combined = (proc.stdout or "") + (proc.stderr or "")
+    violation = _provider_pin_violation(env, combined)
+    if violation:
+        return _finish({
+            "completed": False,
+            "failure_class": "infra",
+            "error": violation,
+            "output_tail": combined[-2000:],
+            "full_output": combined,
+            "tokens": None,
+            "turns": None,
+            "cmd": cmd,
+            **_empty_token_usage(),
+        })
     try:
         tokens, turns, tail, token_usage = _parse_json_with_usage(proc.stdout or "")
     except Exception:  # noqa: BLE001 - never let usage parsing break a run

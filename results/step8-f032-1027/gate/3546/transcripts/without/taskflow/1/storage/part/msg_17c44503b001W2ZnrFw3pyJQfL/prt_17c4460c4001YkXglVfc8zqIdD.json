@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c4460c4001YkXglVfc8zqIdD",
+  "sessionID": "ses_e83bbf1a4ffer96xwsg8YlVoq0",
+  "messageID": "msg_17c44503b001W2ZnrFw3pyJQfL",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: 25 tests, all OK. I didn't touch the tests.\n\nThere were eight bugs, each a logic error. Some were masked by others, so the failure count fell in steps as I fixed them.\n\n- **`queue.py`**: `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority and ran in insertion order. It now returns `(-priority, seq)`.\n- **`retry.py`**: `should_retry` used `attempts_made < max_attempts - 1`, which gave up one attempt early. It now uses `attempts_made < max_attempts`.\n- **`statemachine.py`**: `batch_order_ok` required priorities to be non-decreasing, but the docstring says non-increasing. The scheduler's guard therefore marked the second job in a batch as FAILED. I flipped the comparison to `current <= prev`.\n- **`config.py`**: `deep_merge` recursed with the arguments swapped, so the defaults overrode a task's own `retry` settings. It now recurses as `deep_merge(result[key], value)`.\n- **`events.py`**: `_prefix_matches` checked `prefix.startswith(topic + \".\")`, the wrong way round. The `job.term` prefix subscription therefore never received `job.term.failed` and the other terminal events. It now checks `topic.startswith(prefix + \".\")`.\n- **`resources.py`**: `ResourcePool.release` did `used -= 1` instead of `used -= cost`, which leaked capacity. It now subtracts `cost`.\n- **`scheduler.py`**: `_cascade_skip` used `dag.dependents`, which returns only direct children. It now uses `dag.transitive_dependents`, so a failure skips everything downstream.",
+  "time": {
+    "start": 1793086218531,
+    "end": 1793086218531
+  }
+}

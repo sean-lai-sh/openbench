@@ -1,0 +1,11 @@
+All 25 tests now pass. I found seven defects, and each fix was a one-line change:
+
+- **`queue.py`**: `_Entry.sort_key` was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority dispatches first and ties go in insertion order.
+- **`retry.py`**: `should_retry` was `attempts_made < max_attempts - 1`. It is now `attempts_made < max_attempts`, so a task with 3 attempts allowed gets all 3.
+- **`statemachine.py`**: `batch_order_ok` was `current >= prev`. It is now `current <= prev`, so a batch must dispatch in non-increasing priority order.
+- **`config.py`**: `deep_merge` recursed with its arguments swapped. Task-level overrides such as `retry.max_attempts` were losing to the defaults. It now merges `(result[key], value)`.
+- **`scheduler.py`**: `_cascade_skip` used `dependents`, which only returns direct children. It now uses `transitive_dependents`.
+- **`resources.py`**: `ResourcePool.release` did `used -= 1`. It now does `used -= cost`, so multi-unit tasks no longer leak capacity and starve the tasks queued behind them.
+- **`events.py`**: `_prefix_matches` had the prefix check reversed. It is now `topic.startswith(prefix + ".")`, so `job.term` subscribers receive `job.term.failed` and the other terminal events.
+
+I didn't change the tests.

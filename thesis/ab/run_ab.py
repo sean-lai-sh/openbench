@@ -809,6 +809,8 @@ def execute_cell(spec: dict) -> None:
             )
             attach_schedule(row, spec, started_at)
             attach_cell_meta(row, spec, started_at)
+            attach_provider_pin(row, spec)
+            attach_required_fields(row, spec)
             from thesis.ab.evidence import attach_cell_metrics
             attach_cell_metrics(row, evidence if evidence else None)
             if spec.get("task") == "trig-tmpdir":
@@ -1163,6 +1165,8 @@ def mark_running(spec: dict, on: bool) -> None:
 
 def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
     """Record host, VM type, runner commit, concurrency and ET start/end (opt-in)."""
+    if isinstance(row, dict) and os.environ.get("OBENCH_RERUN", "").strip() == "1":
+        row["rerun"] = 1  # rerun of an infra (e.g. off-route) cell; same gate + route check
     meta = spec.get("cell_meta")
     if not isinstance(row, dict) or not isinstance(meta, dict):
         return
@@ -1170,7 +1174,19 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
     import socket
     et = ZoneInfo("America/New_York")
     row["host"] = socket.gethostname()
+    machine = meta.get("machine")
+    if not isinstance(machine, str) or not machine.strip():
+        machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
+    row["machine"] = machine.strip()
     row["vm_type"] = meta.get("vm_type")
+    # Cell container image tag (e.g. h1-env:1027-strace); set by the launcher.
+    row["cell_image"] = meta.get("cell_image") or os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None
+    flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()
+    row["provider_trace"] = "off" if flag == "0" or not shutil.which("strace") else "on"
+    # strace_on: this cell ran under strace. gate_cell: launcher-marked traced
+    # gate cell. Either one makes the cell unscorable (step8_gate.scorable).
+    row["strace_on"] = row["provider_trace"] == "on"
+    row["gate_cell"] = bool(meta.get("gate_cell")) or os.environ.get("OBENCH_GATE_CELL", "").strip() == "1"
     row["runner_commit"] = meta.get("runner_commit")
     row["exec_mode"] = spec.get("exec_mode") or "local"
     row["timeout_cap_s"] = meta.get("timeout_cap_s")
@@ -1182,6 +1198,78 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
         row["concurrent_cells_at_end"] = len(list(d.iterdir()))
     if spec.get("concurrent_cells_at_start") is not None:
         row["concurrent_cells_at_start"] = spec["concurrent_cells_at_start"]
+
+
+# Every field step8_gate (gate, route_check, --complete) and the step-8
+# provenance checks read from a saved cell. A field the runner cannot produce
+# is written as null and listed in ``missing_fields``: never silently absent.
+GATE_CELL_FIELDS = (
+    "route", "rerun", "probe_method", "provider_loaded_version", "provider_loaded_source",
+    "provider_loaded_mismatch", "requests_cost_usd", "started_et", "ended_et", "strace_on", "gate_cell",
+)
+PROVENANCE_CELL_FIELDS = (
+    "cell_image", "provider_trace", "opencode_cache", "lockfile_sha256", "build_channel", "runner_commit",
+)
+REQUIRED_CELL_FIELDS = GATE_CELL_FIELDS + PROVENANCE_CELL_FIELDS
+# Legitimately null when the run had nothing to report (no mismatch; not a rerun).
+NULLABLE_CELL_FIELDS = {"provider_loaded_mismatch"}
+
+
+def build_channel_of(binary) -> str | None:
+    stamp = Path(str(binary or "")).parent / "build-stamp.json"
+    try:
+        return str(json.loads(stamp.read_text()).get("build_channel") or "") or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def attach_required_fields(row: dict, spec: dict) -> None:
+    """Fill rerun/build_channel, then record any required field still missing."""
+    if not isinstance(row, dict):
+        return
+    row.setdefault("rerun", 1 if os.environ.get("OBENCH_RERUN", "").strip() == "1" else 0)
+    if not row.get("build_channel"):
+        row["build_channel"] = build_channel_of(spec.get("binary"))
+    missing = [k for k in REQUIRED_CELL_FIELDS
+               if k not in NULLABLE_CELL_FIELDS and row.get(k) in (None, "")]
+    for k in REQUIRED_CELL_FIELDS:
+        row.setdefault(k, None)
+    if missing:
+        row["missing_fields"] = missing
+        print(f"{spec.get('pr')}/{spec.get('side')}: cell missing required fields {missing}", file=sys.stderr)
+
+
+def attach_provider_pin(row: dict, spec: dict) -> None:
+    """Record the pin set this cell was seeded with.
+
+    The sha is the canonical JSON of that set. Resolved versions come from
+    the adapter when it read ``node_modules``; this fills the sha if the
+    adapter returned before stamping it.
+    """
+    if not isinstance(row, dict):
+        return
+    proxy = spec.get("proxy") if isinstance(spec.get("proxy"), dict) else {}
+    pin_sha = str(proxy.get("provider_pin_sha256") or "").strip()
+    if pin_sha and not row.get("provider_pin_sha256"):
+        row["provider_pin_sha256"] = pin_sha
+    source = str(proxy.get("pin_source") or "").strip()
+    if source and not row.get("pin_source"):
+        row["pin_source"] = source
+    for key in ("opencode_cache", "lockfile", "lockfile_sha256"):
+        if proxy.get(key) and not row.get(key):
+            row[key] = proxy[key]
+    # The side JSONL is this row. Keep the version the process resolved.
+    for key in (
+        "provider_loaded_version",
+        "provider_loaded_source",
+        "provider_loaded_mismatch",
+    ):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            row[key] = value.strip()
+    # Monorepo builds: overrides the probe source with bundled/separate_install.
+    from thesis.ab.monorepo import attach_bundled_provider
+    attach_bundled_provider(row, proxy)
 
 
 def attach_schedule(row: dict, spec: dict, started_at: str) -> None:
@@ -1313,6 +1401,8 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     row["faults_served"] = faults_served(str(ledger), str(cell))
     records = read_proxy_ledger(str(ledger), str(cell))
     ledger_path = cell_ledger_path(Path(str(ledger)), str(cell))
+    from thesis.ab.route import route_label
+    row["route"] = route_label(proxy, sum(1 for r in records or [] if isinstance(r, dict)))
     if not records:
         # An empty ledger file is a measured zero. A missing file is not.
         if ledger_path.is_file():
@@ -1610,6 +1700,45 @@ def _absorb_pr_early_stop(spec: dict, out_dir: Path, prepared: dict) -> None:
         print(f"{spec['pr']}: {reason}; skipping its remaining cells", file=sys.stderr)
 
 
+def _cell_rel(spec: dict) -> str:
+    """``<pr>/cells/<side>/<task>/<trial>.json``, the key step8_gate rerun lists use."""
+    return f"{spec['pr']}/cells/{spec['side']}/{task_component(spec['task'])}/{spec['trial']}.json"
+
+
+def rerun_cells_from_env() -> set[str] | None:
+    """OBENCH_RERUN_CELLS=<json>: a list of cell keys, or a step8_gate output
+    with a ``rerun`` list. Only those cells are scheduled."""
+    path = os.environ.get("OBENCH_RERUN_CELLS", "").strip()
+    if not path:
+        return None
+    data = json.loads(Path(path).read_text())
+    items = data.get("rerun", []) if isinstance(data, dict) else data
+    return {str(item) for item in items}
+
+
+ROUTE_HALT_MAX_OFF = 2
+
+
+def _absorb_route_halt(spec: dict, out_dir: Path, prepared: dict) -> None:
+    """OBENCH_ROUTE_HALT=1: >2 off-route cells on a side stops launching that
+    side's remaining cells at once (cells already in flight finish)."""
+    if os.environ.get("OBENCH_ROUTE_HALT", "").strip() != "1":
+        return
+    if not prepared.get(_side_key(spec), {}).get("ok", True):
+        return
+    from thesis.ab.route import off_route
+    off = sum(1 for row in _finished_rows(out_dir, spec) if off_route(row))
+    if off > ROUTE_HALT_MAX_OFF:
+        reason = f"route halt: {off} off-route cells on {spec['pr']}/{spec['side']}"
+        write_infra(out_dir, spec["pr"], spec["side"], spec["sha"], reason)
+        prepared[_side_key(spec)] = {"ok": False, "reason": reason, "status": "infra"}
+        (out_dir / spec["pr"] / f"route-halt-{spec['side']}.json").write_text(json.dumps({
+            "pr": spec["pr"], "side": spec["side"], "off_route": off, "reason": reason,
+            "halted_at": datetime.now().astimezone().isoformat(),
+        }, sort_keys=True))
+        print(f"{spec['pr']}/{spec['side']}: {reason}; not launching its remaining cells", file=sys.stderr)
+
+
 def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
     path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
     row = read_cell(path)
@@ -1640,6 +1769,7 @@ def _absorb_finished(spec: dict, out_dir: Path, prepared: dict) -> None:
                 "reason": death,
                 "status": "infra",
             }
+    _absorb_route_halt(spec, out_dir, prepared)
     project_side(out_dir, spec["pr"], spec["side"])
     _absorb_pr_early_stop(spec, out_dir, prepared)
 
@@ -1684,12 +1814,45 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     if not (checkout / "package.json").is_file():
         return state, None
     proxy = dict(proxy)
+    # Recorded on every cell so a scored (untraced) cell names the cache and
+    # lockfile its provider resolved from.
+    proxy["opencode_cache"] = str(Path(cache).resolve())
+    for lock in ("bun.lock", "bun.lockb"):
+        if (checkout / lock).is_file():
+            proxy["lockfile"] = lock
+            proxy["lockfile_sha256"] = hashlib.sha256((checkout / lock).read_bytes()).hexdigest()
+            break
     try:
         bun = bun_for_checkout(cache, checkout)
     except BuildError as exc:
         return state, f"bun: {exc}"
     if bun.is_file():
         proxy["bun"] = str(bun)
+    from thesis.ab.monorepo import (
+        bundled_provider_for_tree,
+        bundled_proxy,
+        bundled_reason,
+        is_monorepo_tree,
+    )
+    if is_monorepo_tree(checkout):
+        # Post-monorepo build: the provider is bundled, so nothing is pinned
+        # or seeded. See thesis/ab/monorepo.py.
+        provider = bundled_provider_for_tree(checkout)
+        reason = bundled_reason("monorepo", provider)
+        cache_version = cache_version_for_checkout(checkout)
+        if cache_version:
+            proxy["cache_version"] = cache_version
+        state = dict(state)
+        state["toolchain"] = toolchain_for_checkout(checkout)
+        if reason:
+            state["proxy"] = proxy
+            return state, f"monorepo: {reason}"
+        state["proxy"] = bundled_proxy(proxy, provider)
+        tool = dict(state.get("toolchain") or {})
+        tool.pop("anthropic", None)
+        tool["provider_bundled"] = f"{provider['package']}@{provider['version']}"
+        state["toolchain"] = tool
+        return state, None
     pin = anthropic_pin_for_tree(checkout)
     if pin:
         proxy["anthropic_sdk"] = pin
@@ -1704,6 +1867,115 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
     if not pin and proxy.get("needs_sdk"):
         return state, "no @ai-sdk/anthropic release matches this build's ai package"
     return state, None
+
+
+def _overlay_provider_pin(state: dict, cache: Path, spec: dict) -> dict:
+    """Attach this side's pin without mutating the shared prepared state.
+
+    The manifest wins over the lockfile pin. A missing worktree still gets
+    the manifest pin, which is the VM case where the checkout was deleted
+    and the binary would otherwise install ``@latest``.
+    """
+    proxy = state.get("proxy")
+    if not isinstance(proxy, dict) or proxy.get("provider_bundled"):
+        return state
+    from thesis.ab.provider_pin import apply_provider_pin
+    pinned = apply_provider_pin(
+        proxy,
+        cache,
+        str(spec.get("sha") or ""),
+        str(spec.get("side") or ""),
+        str(spec.get("pr") or ""),
+    )
+    tool = dict(state.get("toolchain") or {})
+    anthropic = str(pinned.get("anthropic_sdk") or "").strip()
+    if anthropic:
+        tool["anthropic"] = anthropic
+    state = dict(state)
+    state["proxy"] = pinned
+    if tool:
+        state["toolchain"] = tool
+    return state
+
+
+def _fail_closed_unpinned(state: dict, cache: Path, spec: dict) -> dict:
+    """Stop an OpenCode cell that would run with no provider pin.
+
+    A missing worktree still keeps a manifest pin. A worktree whose ``.git``
+    file points outside the mount still keeps the lockfile pin, because the
+    pin is read from ``bun.lock``. When neither resolves, the cell is infra
+    and is not launched.
+    """
+    if not state.get("ok"):
+        return state
+    harness = state.get("harness") or "opencode"
+    if harness != "opencode":
+        return state
+    proxy = state.get("proxy")
+    if not isinstance(proxy, dict) or proxy.get("provider_pins"):
+        return state
+    if proxy.get("provider_bundled"):
+        # Monorepo build: the provider ships in the binary. Not unpinned.
+        return state
+    checkout = Path(cache) / "worktrees" / str(spec.get("sha") or "").strip().lower()
+    if (checkout / "package.json").is_file():
+        reason = "provider_pin_mismatch: toolchain unresolved"
+    else:
+        reason = "provider_pin_mismatch: worktree unresolved"
+    return {
+        "ok": False,
+        "status": "infra",
+        "reason": reason,
+        "toolchain": state.get("toolchain"),
+    }
+
+
+def resolve_runner_commit(explicit: str | None = None, root: Path | None = None) -> str | None:
+    """Runner SHA for ``--cell-meta``.
+
+    ``--runner-commit`` wins, then ``OBENCH_RUNNER_COMMIT``, then
+    ``git rev-parse``. A worktree whose ``.git`` file points at a git dir
+    outside the mount uses that git dir when it is visible. A missing git
+    dir returns None so the cell stays explicit about the gap.
+    """
+    import subprocess
+    chosen = str(explicit or "").strip()
+    if not chosen:
+        chosen = os.environ.get("OBENCH_RUNNER_COMMIT", "").strip()
+    if chosen:
+        return chosen
+    repo = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+
+    def _head(argv: list[str]) -> str | None:
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        text = (proc.stdout or "").strip()
+        if text and all(char in "0123456789abcdefABCDEF" for char in text):
+            return text
+        return None
+
+    found = _head(["git", "-C", str(repo), "rev-parse", "HEAD"])
+    if found:
+        return found
+    gitfile = repo / ".git"
+    if not gitfile.is_file():
+        return None
+    try:
+        line = gitfile.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    gitdir = Path(line.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = (repo / gitdir).resolve()
+    if not gitdir.is_dir():
+        return None
+    return _head(["git", "--git-dir", str(gitdir), "rev-parse", "HEAD"])
 
 
 def _default_preflight(binary: str, state: dict) -> str | None:
@@ -1850,6 +2122,9 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         order=order,
         seed=seed,
     )
+    only = rerun_cells_from_env()
+    if only is not None:
+        scheduled = [spec for spec in scheduled if _cell_rel(spec) in only]
     for spec in scheduled:
         path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
         if read_cell(path) is not None:
@@ -1929,14 +2204,18 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                                     "toolchain": tool,
                                 }
         state = prepared[key]
+        if state.get("ok"):
+            state = _overlay_provider_pin(state, cache, spec)
+            state = _fail_closed_unpinned(state, cache, spec)
         write_toolchain(out_dir, spec["pr"], spec["side"], state.get("toolchain"))
         if not state["ok"]:
             _record_stopped(out_dir, spec, state)
             key = (spec["pr"], spec["side"], sha)
             if key not in announced:
                 announced.add(key)
+                label = "infra" if state.get("status") == "infra" else "incompatible"
                 print(
-                    f"{spec['pr']} {spec['side']} incompatible: {state['reason']}",
+                    f"{spec['pr']} {spec['side']} {label}: {state['reason']}",
                     file=sys.stderr,
                 )
             return None
@@ -2138,7 +2417,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exec", dest="exec_mode", choices=["local", "docker"], default="local",
                         help="Cell execution mode passed to obench run_cell (docker uses each task's image).")
     parser.add_argument("--cell-meta", action="store_true",
-                        help="Record host, VM type ($OBENCH_VM_TYPE), runner commit, concurrency and ET start/end on each cell.")
+                        help="Record host, machine, VM type ($OBENCH_VM_TYPE), runner commit, concurrency and ET start/end on each cell.")
+    parser.add_argument(
+        "--runner-commit",
+        default=None,
+        help=(
+            "Git SHA recorded as runner_commit when --cell-meta is set. "
+            "Overrides OBENCH_RUNNER_COMMIT. When both are unset, the runner "
+            "uses git rev-parse, then a worktree gitdir when .git is a gitfile "
+            "and that directory is visible."
+        ),
+    )
     parser.add_argument(
         "--no-progress-s",
         type=float,
@@ -2220,13 +2509,12 @@ def main(argv: list[str] | None = None) -> int:
         CELL_TIMEOUT_CAP_S = args.timeout_cap_s
     EXEC_MODE = args.exec_mode
     if args.cell_meta:
-        import subprocess
-        try:
-            commit = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
-                                    capture_output=True, text=True, timeout=10).stdout.strip() or None
-        except (OSError, subprocess.SubprocessError):
-            commit = None
-        CELL_META = {"vm_type": os.environ.get("OBENCH_VM_TYPE"), "runner_commit": commit,
+        import socket
+        machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
+        CELL_META = {"vm_type": os.environ.get("OBENCH_VM_TYPE"),
+                     "cell_image": os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None,
+                     "runner_commit": resolve_runner_commit(args.runner_commit),
+                     "machine": machine,
                      "timeout_cap_s": CELL_TIMEOUT_CAP_S,
                      "running_dir": str((Path(args.out) / ".running").resolve())}
     try:

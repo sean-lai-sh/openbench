@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c50e240001YnfLmpxleAKhTW",
+  "sessionID": "ses_e83af62baffe6S42vHCKPU83FU",
+  "messageID": "msg_17c50d2a40015vwVbi2XhSSfgZ",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes all 25 tests. I didn't modify any tests.\n\nThere were seven root causes, in six modules:\n\n- **`queue.py`:** `_Entry.sort_key` returned `(seq, -priority)`, so the queue ignored priority. It now returns `(-priority, seq)`.\n- **`retry.py`:** `should_retry` was off by one and gave up one attempt early. It now returns `attempts_made < max_attempts`.\n- **`statemachine.py`:** `batch_order_ok` required priorities to be non-decreasing within an admission batch. The docstring says non-increasing, so it now checks `current <= prev`. With the queue fixed, the old check would have failed correctly ordered batches.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so the defaults overrode a task's own `retry` settings. It now merges `result[key]` with `value`.\n- **`events.py`:** `_prefix_matches` had the prefix test backwards, so prefix subscribers like `job.term` never received `job.term.failed` and similar events. It now uses `topic.startswith(prefix + \".\")`. This is why `History`'s failed and skipped sets were empty.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`, which leaked capacity and left later tasks unable to start.\n- **`scheduler.py`:** `_cascade_skip` used the direct `dependents`, so only a failed task's children were skipped. It now uses `transitive_dependents`, so everything downstream is skipped.",
+  "time": {
+    "start": 1793087038050,
+    "end": 1793087038050
+  }
+}

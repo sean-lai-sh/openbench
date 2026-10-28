@@ -1,0 +1,11 @@
+{
+  "id": "prt_17c64cafe001BOBtQBHOrnwuCO",
+  "sessionID": "ses_e839b7daaffeSK1skdnCNiGQEb",
+  "messageID": "msg_17c64ba56001FZX4nhi0TWBYee",
+  "type": "text",
+  "text": "`python3 -m unittest` now passes: all 25 tests, with no test files changed. There were eight bugs, each in a different place:\n\n- **`queue.py`:** The sort key was `(seq, -priority)`. It is now `(-priority, seq)`, so higher priority goes first and insertion order breaks ties.\n- **`retry.py`:** `should_retry` used `attempts_made < max_attempts - 1`, which gave one attempt too few. It now uses `attempts_made < max_attempts`.\n- **`config.py`:** `deep_merge` recursed with its arguments swapped, so defaults overrode a task's own settings. It now recurses with `(result[key], value)`.\n- **`scheduler.py`:** `_cascade_skip` used the direct dependents only. It now uses `transitive_dependents`, so everything downstream of a permanent failure is skipped.\n- **`resources.py`:** `ResourcePool.release` subtracted 1 instead of `cost`. It now subtracts `cost`, which fixes the resource-limited runs that stalled.\n- **`statemachine.py`:** `batch_order_ok` required priority to be non-decreasing within a batch, the opposite of its docstring. It is now `current <= prev`.\n- **`events.py`:** `_prefix_matches` tested `prefix.startswith(topic + \".\")`, which is backwards. It is now `topic.startswith(prefix + \".\")`, so the history sees `job.term.*` events.\n\nThe batch-order guard in `statemachine.py` only showed up once the queue ordering was right. Likewise, the prefix bug in `events.py` only showed up once the scheduler bugs were fixed.\n\nI didn't run the linter or type checker, because the task didn't mention one.",
+  "time": {
+    "start": 1793088342826,
+    "end": 1793088342826
+  }
+}
