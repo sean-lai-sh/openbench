@@ -51,6 +51,7 @@ from thesis.ab.sdk_pin import (
 )
 from thesis.ab.summarize import billable_tokens, row_cost
 from thesis.ab.toolchain import bun_requirement
+from thesis.ab.proxy_bridge import cell_network, proxy_origin_for_network
 from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
 
 CHECKER_TIMEOUT_S = 120
@@ -1467,8 +1468,17 @@ def bind_cell_proxy(filled: dict, ledger_dir: Path) -> dict:
         return filled
     cell_id = secrets.token_hex(8)
     # One cell id for every base this cell posts to. OpenCode's config uses
-    # the /v1 form; Pi/omp models_body uses the bare proxy URL.
-    rewritten = {base: cell_proxy_base(base, cell_id) for base in bases}
+    # the /v1 form; Pi/omp models_body uses the bare proxy URL. Both origins
+    # go through proxy_origin_for_network, so a bridge cell gets one scheme,
+    # host, and port. Host-network and local cells stay on loopback.
+    network = cell_network(
+        str(filled.get("exec_mode") or "local"),
+        list(filled.get("docker_args") or []),
+    )
+    rewritten = {
+        base: cell_proxy_base(proxy_origin_for_network(base, network), cell_id)
+        for base in bases
+    }
     filled = dict(filled)
     config = filled.get("config")
     if isinstance(config, dict):
@@ -2143,6 +2153,15 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         except ProxyError as exc:
             raise RunError(str(exc)) from exc
         proxy_url = server.base_url
+        # Host assessment keeps this loopback URL. bind_cell_proxy rewrites
+        # bridge cells onto host.docker.internal. One forwarder on the bridge
+        # gateway serves every harness in the batch. Host-network runs leave
+        # EXEC_MODE at local and do not publish it.
+        if EXEC_MODE == "docker" and cell_network("docker", []) == "bridge":
+            try:
+                server.publish_on_docker_bridge()
+            except ProxyError as exc:
+                raise RunError(f"bridge proxy forwarder: {exc}") from exc
 
     def materialize(spec: dict) -> dict | None:
         sha = spec["sha"]

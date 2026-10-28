@@ -1075,6 +1075,40 @@ def _write_agent_output(text):
         return
 
 
+def reachable_proxy_base(url: str) -> str:
+    """Bridge origin for this process. Pi uses the same rule."""
+    from thesis.ab.proxy_bridge import proxy_origin_for_network, runtime_network
+
+    return proxy_origin_for_network(url, runtime_network())
+
+
+def _rewrite_proxy_origins(body):
+    """Rewrite only the configured proxy base, not other loopback URLs."""
+    if not isinstance(body, dict):
+        return body
+    raw = os.environ.get("OBENCH_OPENCODE_PROXY", "").strip()
+    if not raw:
+        return body
+    try:
+        proxy = json.loads(raw)
+    except json.JSONDecodeError:
+        return body
+    if not isinstance(proxy, dict):
+        return body
+    base = str(proxy.get("base_url") or "").strip()
+    if not base:
+        return body
+    updated = reachable_proxy_base(base)
+    if updated == base:
+        return body
+    try:
+        encoded = json.dumps(body).replace(base, updated)
+        parsed = json.loads(encoded)
+    except json.JSONDecodeError:
+        return body
+    return parsed if isinstance(parsed, dict) else body
+
+
 def _proxy_override():
     raw = os.environ.get("OBENCH_OPENCODE_PROXY", "").strip()
     if not raw:
@@ -1396,6 +1430,7 @@ def _provision_lsp(env, workdir):
 def _install_config(env, body):
     if not body:
         return
+    body = _rewrite_proxy_origins(body)
     cfg_dir = os.path.join(env["XDG_CONFIG_HOME"], "opencode")
     os.makedirs(cfg_dir, exist_ok=True)
     text = json.dumps(body)
@@ -1860,7 +1895,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             env["ANTHROPIC_API_KEY"] = str(proxy.get("api_key") or "proxy")
             # Both routes: config baseURL (from compat) and the env var.
             if proxy.get("base_url"):
-                env["ANTHROPIC_BASE_URL"] = str(proxy.get("base_url"))
+                env["ANTHROPIC_BASE_URL"] = reachable_proxy_base(str(proxy.get("base_url")))
             else:
                 env.pop("ANTHROPIC_BASE_URL", None)
             env.pop("VERTEX_LOCATION", None)

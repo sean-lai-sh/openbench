@@ -26,6 +26,7 @@ _ENV_KEYS = (
     "OBENCH_PI_MOUNT",
     "OBENCH_PI_SETTINGS_PATH",
     "BENCH_IN_CONTAINER",
+    "OBENCH_DOCKER_NETWORK",
 )
 
 
@@ -172,12 +173,12 @@ class TestCommandAndSettings(unittest.TestCase):
         self.assertIn("export default function", source)
 
     def test_loopback_rewritten_only_inside_the_container(self):
-        with _Env(BENCH_IN_CONTAINER=None):
+        with _Env(BENCH_IN_CONTAINER=None, OBENCH_DOCKER_NETWORK=None):
             self.assertEqual(
                 pi_harness.rewrite_loopback("http://127.0.0.1:9/c/abc"),
                 "http://127.0.0.1:9/c/abc",
             )
-        with _Env(BENCH_IN_CONTAINER="1"):
+        with _Env(BENCH_IN_CONTAINER="1", OBENCH_DOCKER_NETWORK=None):
             self.assertEqual(
                 pi_harness.rewrite_loopback("http://127.0.0.1:9/c/abc"),
                 "http://host.docker.internal:9/c/abc",
@@ -189,6 +190,11 @@ class TestCommandAndSettings(unittest.TestCase):
             self.assertEqual(
                 pi_harness.rewrite_loopback("http://10.1.2.3:9/c/abc"),
                 "http://10.1.2.3:9/c/abc",
+            )
+        with _Env(BENCH_IN_CONTAINER="1", OBENCH_DOCKER_NETWORK="host"):
+            self.assertEqual(
+                pi_harness.rewrite_loopback("http://127.0.0.1:9/c/abc"),
+                "http://127.0.0.1:9/c/abc",
             )
 
 
@@ -430,6 +436,9 @@ class TestDockerForwarding(unittest.TestCase):
                     image="openbench-harness:latest", instruction_path="/tmp/instr",
                 )
             self.assertIn("--add-host=host.docker.internal:host-gateway", cmd)
+            self.assertIn("--add-host=api.anthropic.com:0.0.0.0", cmd)
+            self.assertIn("-e", cmd)
+            self.assertIn("OBENCH_DOCKER_NETWORK=bridge", cmd)
             mount_abs = os.path.abspath(mount)
             self.assertIn(f"{mount_abs}:{mount_abs}:ro", cmd)
             for name in (
@@ -442,6 +451,26 @@ class TestDockerForwarding(unittest.TestCase):
                 self.assertNotIn("=", cmd[index])
             self.assertNotIn("http://127.0.0.1:9", cmd)
             self.assertNotIn("OBENCH_VERTEX_PROXY_URL", other)
+
+    def test_host_network_keeps_loopback_and_skips_the_bridge_hosts(self):
+        updates = _cleared()
+        updates.update({
+            "OBENCH_PI_HARNESS": "1",
+            "OBENCH_VERTEX_PROXY_URL": "http://127.0.0.1:9",
+            "OBENCH_VERTEX_CELL_ID": "cell1",
+        })
+        with _Env(**updates):
+            cmd = docker_exec.build_docker_cmd(
+                harness="pi", workdir="/tmp/wd", model="claude-sonnet-5-5",
+                timeout_s=2400, adapters_dir="/repo/obench/adapters",
+                image="openbench-harness:latest", instruction_path="/tmp/instr",
+                extra_docker_args=["--network", "host"],
+            )
+        self.assertNotIn("--add-host=host.docker.internal:host-gateway", cmd)
+        self.assertNotIn("--add-host=api.anthropic.com:0.0.0.0", cmd)
+        self.assertIn("OBENCH_DOCKER_NETWORK=host", cmd)
+        self.assertIn("--network", cmd)
+        self.assertEqual(cmd[cmd.index("--network") + 1], "host")
 
 
 if __name__ == "__main__":

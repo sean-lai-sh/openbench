@@ -471,33 +471,97 @@ _PI_COMPARISON_ENV = (
 )
 
 
-def _pi_comparison_docker_args(harness):
-    """Forward the Pi harness-comparison env into the cell container.
+_PI_VERTEX_ENV = (
+    "OBENCH_PI_VERTEX",
+    "OBENCH_PI_BIN",
+    "OBENCH_PI_SESSION_DIR",
+)
 
-    Inactive unless this is the stock ``pi`` adapter and the cell set
-    ``OBENCH_PI_HARNESS`` or ``OBENCH_VERTEX_PROXY_URL``. Values stay in the
-    client environment (bare ``-e NAME``). A loopback proxy needs
-    ``host.docker.internal``; the adapter rewrites the URL when
-    ``BENCH_IN_CONTAINER`` is set. ``OBENCH_PI_MOUNT`` is the built Pi tree,
-    mounted at the same absolute path the wrapper's ``exec`` line uses.
-    """
-    if harness != "pi":
-        return []
-    flag = os.environ.get("OBENCH_PI_HARNESS", "").strip().lower()
-    proxy = os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip()
-    if flag not in {"1", "true", "yes", "on"} and not proxy:
-        return []
-    args = []
-    for name in _PI_COMPARISON_ENV:
+_OPENCODE_PROXY_ENV = (
+    "OBENCH_OPENCODE_BIN",
+    "OBENCH_OPENCODE_CONFIG_JSON",
+    "OBENCH_OPENCODE_PERMISSION_CONFIG",
+    "OBENCH_OPENCODE_PROXY",
+    "OBENCH_OPENCODE_EVIDENCE_DIR",
+    "OBENCH_OPENCODE_MODE",
+    "OBENCH_OPENCODE_PERMISSIONS",
+    "OBENCH_OPENCODE_GLOBAL_AGENTS",
+    "OBENCH_OPENCODE_LSP",
+    "OBENCH_OPENCODE_BUN",
+    "OBENCH_OPENCODE_WEBFETCH_URL",
+    "OBENCH_OPENCODE_OUTSIDE_PATH",
+    "OBENCH_OPENCODE_DISABLE_TOOLS",
+    "OBENCH_NO_PROGRESS_S",
+    "OBENCH_CELL_LEDGER",
+)
+
+_PROXY_HARNESSES = frozenset({"pi", "opencode", "omp"})
+
+
+def _append_env(args, names):
+    present = set(args)
+    for name in names:
+        if name in present:
+            continue
         if os.environ.get(name, "").strip():
             args += ["-e", name]
-    mount = os.environ.get("OBENCH_PI_MOUNT", "").strip()
-    if mount:
-        host = os.path.abspath(mount)
-        if ":" not in host:
-            args += ["-v", f"{host}:{host}:ro"]
-    if proxy:
-        args.append("--add-host=host.docker.internal:host-gateway")
+            present.add(name)
+
+
+def _proxy_bridge_docker_args(harness, extra_docker_args):
+    """Forward the shared Vertex proxy into a Pi or OpenCode cell.
+
+    Both harnesses get the same bridge publication: ``host.docker.internal``
+    plus the Anthropic DNS sinkhole. Host-network cells (``--network host``)
+    keep loopback and do not gain either ``--add-host``. Values stay in the
+    client environment (bare ``-e NAME``). ``OBENCH_PI_MOUNT`` is the built Pi
+    tree, mounted at the path the wrapper exec uses.
+    """
+    if harness not in _PROXY_HARNESSES:
+        return []
+    args = []
+    if harness in {"pi", "omp"}:
+        flag = os.environ.get("OBENCH_PI_HARNESS", "").strip().lower()
+        proxy = os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip()
+        vertex = os.environ.get("OBENCH_PI_VERTEX", "").strip()
+        if flag in {"1", "true", "yes", "on"} or proxy:
+            _append_env(args, _PI_COMPARISON_ENV)
+        elif vertex:
+            _append_env(args, _PI_VERTEX_ENV)
+        else:
+            return []
+        if vertex:
+            _append_env(args, _PI_VERTEX_ENV)
+        mount = os.environ.get("OBENCH_PI_MOUNT", "").strip()
+        if mount:
+            host = os.path.abspath(mount)
+            if ":" not in host:
+                args += ["-v", f"{host}:{host}:ro"]
+        node_prefix = os.environ.get("PI_NODE_PREFIX", "").strip()
+        if node_prefix:
+            host = os.path.abspath(node_prefix)
+            if ":" not in host:
+                args += ["-v", f"{host}:{host}:ro"]
+                args += ["-e", (
+                    "PATH=" + host + "/bin:/usr/local/sbin:/usr/local/bin:"
+                    "/usr/sbin:/usr/bin:/sbin:/bin"
+                )]
+    else:
+        if not os.environ.get("OBENCH_OPENCODE_PROXY", "").strip():
+            return []
+        _append_env(args, _OPENCODE_PROXY_ENV)
+    from thesis.ab.proxy_bridge import cell_network, shared_proxy_port
+    port = shared_proxy_port()
+    if port is None:
+        return args
+    if cell_network("docker", extra_docker_args) == "host":
+        args += ["-e", "OBENCH_DOCKER_NETWORK=host"]
+        return args
+    args += [
+        "--add-host=host.docker.internal:host-gateway",
+        "--add-host=api.anthropic.com:0.0.0.0",
+        "-e", "OBENCH_DOCKER_NETWORK=bridge",
+    ]
     return args
 
 
@@ -605,7 +669,7 @@ def build_docker_cmd(harness, workdir, model, timeout_s, adapters_dir, image,
         if os.path.isfile(source) and target not in mounted_auth_targets:
             cmd += ["-v", f"{source}:{target}:ro"]
             mounted_auth_targets.add(target)
-    cmd += _pi_comparison_docker_args(effective_harness)
+    cmd += _proxy_bridge_docker_args(effective_harness, extra_docker_args)
     if extra_docker_args:
         cmd += list(extra_docker_args)
     cmd += [image, "python3", "/bench/entry.py", harness, model, str(timeout_s)]
@@ -733,6 +797,24 @@ def run_in_container(harness, instruction, workdir, model, timeout_s,
             container_workdir=container_workdir,
         )
         host_env_setup_s = round(time.monotonic() - env_setup_start, 3)
+        if effective_harness in _PROXY_HARNESSES:
+            from thesis.ab.proxy_bridge import (
+                BridgeError, cell_network, container_network_name,
+                ensure_forwarder_from_env,
+            )
+            if cell_network("docker", extra_docker_args) == "bridge":
+                try:
+                    ensure_forwarder_from_env(container_network_name(extra_docker_args))
+                except BridgeError as exc:
+                    return {
+                        "completed": False,
+                        "error": f"bridge proxy forwarder: {exc}",
+                        "output_tail": "",
+                        "full_output": "",
+                        "tokens": None,
+                        "turns": None,
+                        "cmd": cmd,
+                    }
 
         # The container must not outlive this call on ANY exit path — timeout,
         # crash, Ctrl-C, or a clean return where `--rm` glitched. Killing the

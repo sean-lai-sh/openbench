@@ -997,6 +997,20 @@ def _vertex_spec():
     return data if isinstance(data, dict) else None
 
 
+def _bridge_models_body(spec):
+    """Rewrite the shared proxy origin inside Pi/omp models, and nothing else."""
+    body = spec.get("models_body") or ""
+    origin = str(spec.get("proxy_url") or "").strip()
+    if not origin:
+        return body
+    from thesis.ab.proxy_bridge import proxy_origin_for_network, runtime_network
+
+    updated = proxy_origin_for_network(origin, runtime_network())
+    if updated == origin:
+        return body
+    return body.replace(origin, updated)
+
+
 def _run_vertex(instruction, workdir, timeout_s, spec):
     iso_home = tempfile.mkdtemp(prefix="pi_vertex_home_")
     stop_box = []
@@ -1011,7 +1025,7 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
         env.pop("PI_PACKAGE_DIR", None)
         filename = str(spec.get("models_filename") or "models.json")
         with open(os.path.join(agent_dir, filename), "w", encoding="utf-8") as fh:
-            fh.write(spec.get("models_body") or "")
+            fh.write(_bridge_models_body(spec))
         session_dir = str(os.environ.get("OBENCH_PI_SESSION_DIR") or "").strip()
         extra = list(spec.get("extra_args") or [])
         if session_dir:

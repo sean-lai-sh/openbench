@@ -30,6 +30,12 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _log(out: Path, line: str) -> None:
+    print(line, flush=True)
+    with (out / "smoke.log").open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
 def _write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -54,7 +60,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tasks-dir", type=Path, default=None)
     parser.add_argument("--models", default=",".join(PIN_MODELS),
                         help="comma-separated subset of the pinned smoke models")
+    parser.add_argument("--exec", choices=("local", "docker"), default="local",
+                        help="docker runs one bridge-network cell; host-network is not used")
+    parser.add_argument("--image", default=os.environ.get("OBENCH_CELL_IMAGE", ""),
+                        help="cell image for --exec docker (or OBENCH_CELL_IMAGE)")
     args = parser.parse_args(argv)
+    if args.exec == "docker" and not args.image:
+        raise SystemExit("bridge smoke needs --image or OBENCH_CELL_IMAGE")
 
     repo = _repo_root()
     os.environ.pop("OBENCH_PI_VERTEX", None)
@@ -88,6 +100,17 @@ def main(argv: list[str] | None = None) -> int:
     proxy = start_from_env(ledger_dir=ledger, thinking_mode="default", model=models[0])
     os.environ["OBENCH_VERTEX_PROXY_URL"] = proxy.base_url
     print(f"proxy {proxy.base_url} pin {PIN}", flush=True)
+    if args.exec == "docker":
+        bridge = proxy.publish_on_docker_bridge()
+        listen = bridge.listen_address
+        if listen is not None:
+            print(f"proxy-bridge {listen[0]}:{listen[1]}", flush=True)
+        from thesis.ab.proxy_bridge import bridge_egress_probe
+        egress = bridge_egress_probe(args.image)
+        _log(out, egress)
+        if "REACHABLE" in egress:
+            proxy.close()
+            return 1
 
     tasks_dir = args.tasks_dir or (repo / "data" / "packs" / "openbench-tb-hard")
     adapters = repo / "obench" / "adapters"
@@ -101,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
             row = run_cell(
                 "pi", TASK, model, 1, TIMEOUT_S,
                 str(tasks_dir), str(adapters), CHECKER_TIMEOUT_S,
-                exec_mode="local",
+                exec_mode=args.exec,
+                docker_image=args.image or None,
                 transcripts_dir=str(out / "transcripts"),
                 results_stem=model,
             )
@@ -129,6 +153,9 @@ def main(argv: list[str] | None = None) -> int:
                 "requests_cost_usd": None if totals is None else _cost(model, totals["all"]),
                 "requests_cost_main_usd": None if totals is None else _cost(model, totals["main"]),
             }
+            calls = 0 if totals is None else totals["all"]["calls"]
+            reached = "yes" if proxy.reached(cell_id) or calls else "no"
+            _log(out, f"proxy-reached cell={cell_id} reached={reached} calls={calls}")
             _write(out / f"{model}.json", record)
             records.append({
                 "model": model,

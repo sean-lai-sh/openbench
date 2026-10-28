@@ -25,7 +25,6 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 PIN = "d0aa218cb16c333c008f6aa3dcd670ac8b68383c"
 PIN_BRIEF = "d0aa218"
@@ -96,22 +95,14 @@ def cell_proxy_base(base_url: str, cell_id: str) -> str:
 
 
 def rewrite_loopback(url: str) -> str:
-    """Point a host loopback proxy at ``host.docker.internal`` inside a cell."""
-    text = url.strip()
-    if not os.environ.get("BENCH_IN_CONTAINER"):
-        return text
-    parts = urlsplit(text)
-    if parts.hostname not in {"127.0.0.1", "localhost"}:
-        return text
-    host = "host.docker.internal"
-    port = f":{parts.port}" if parts.port else ""
-    user = ""
-    if parts.username:
-        user = parts.username
-        if parts.password:
-            user += f":{parts.password}"
-        user += "@"
-    return urlunsplit((parts.scheme, f"{user}{host}{port}", parts.path, parts.query, parts.fragment))
+    """Point a host loopback proxy at the shared bridge origin inside a cell.
+
+    The same function OpenCode uses. Host-network cells
+    (``OBENCH_DOCKER_NETWORK=host``) keep ``127.0.0.1``.
+    """
+    from thesis.ab.proxy_bridge import proxy_origin_for_network, runtime_network
+
+    return proxy_origin_for_network(url.strip(), runtime_network())
 
 
 def call_role_for_system(system_text: str) -> str:
