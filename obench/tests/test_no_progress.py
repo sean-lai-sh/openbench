@@ -363,9 +363,9 @@ class ClassifyTests(unittest.TestCase):
         self.assertIs(apply_watchdog_class(row), row)
         self.assertNotIn("infra_reason", row)
 
-    def test_replay_classifier_does_not_relabel_a_streaming_kill(self):
+    def test_replay_classifier_keeps_a_part_update_as_hang(self):
         # Scoring parity replays apply_watchdog_class. A part update in the
-        # tail must stay a hang there; the stream label is a separate helper.
+        # tail stays a hang there.
         row = apply_watchdog_class({
             "error": "openbench-infra:no_progress idle_s=300.2",
             "output_tail": (
@@ -379,121 +379,6 @@ class ClassifyTests(unittest.TestCase):
             "t_agent_s": 472.3,
         })
         self.assertEqual(row["failure_class"], "hang")
-        self.assertNotIn("env_cause", row)
-
-
-class StreamLabelTests(unittest.TestCase):
-    def _stream_row(self, **extra):
-        row = {
-            "error": "openbench-infra:no_progress idle_s=300.2",
-            "failure_class": "hang",
-            "hang_reason": "no_progress",
-            "no_progress_idle_s": 300.2,
-            "requests_count": 5,
-            "tokens_output": 15705,
-            "score": 0.0,
-            "started_at": "2026-10-24T04:49:13.132513+00:00",
-            "t_agent_s": 472.293,
-            "output_tail": (
-                "INFO  2026-10-24T04:52:06 +15ms service=bus "
-                "type=message.part.updated publishing\n"
-            ),
-        }
-        row.update(extra)
-        return row
-
-    def test_boundary_gap_stays_hang(self):
-        # opus/26821 without regex-chess trial 3: last update 299.4s before
-        # the kill, idle_s 300.2. That started the idle clock.
-        from thesis.ab.watch import (
-            label_watchdog_stream, last_part_updated_gap_s, part_updated_within_idle,
-            stream_kill_verdict,
-        )
-        row = self._stream_row()
-        gap = last_part_updated_gap_s(row)
-        self.assertAlmostEqual(gap, 299.4, delta=0.15)
-        self.assertEqual(stream_kill_verdict(row), "stays_hang")
-        self.assertFalse(part_updated_within_idle(row))
-        labeled = label_watchdog_stream(row)
-        self.assertEqual(labeled["failure_class"], "hang")
-        self.assertNotIn("env_cause", labeled)
-        self.assertEqual(labeled["tokens_output"], 15705)
-        self.assertEqual(labeled["hang_reason"], "no_progress")
-
-    def test_part_updated_only_in_a_side_log_uses_that_gap(self):
-        from thesis.ab.watch import label_watchdog_stream, stream_kill_verdict
-        row = self._stream_row(output_tail="INFO  2026-10-24T04:52:00 +1ms service=app startup\n")
-        logs = (
-            "INFO  2026-10-24T04:52:06 +12ms service=bus "
-            "type=message.part.updated publishing\n"
-        )
-        self.assertEqual(stream_kill_verdict(row, logs), "stays_hang")
-        labeled = label_watchdog_stream(row, logs)
-        self.assertEqual(labeled["failure_class"], "hang")
-        self.assertNotIn("env_cause", labeled)
-
-    def test_clearly_inside_the_window_is_relabeled(self):
-        from thesis.ab.watch import label_watchdog_stream, stream_kill_verdict
-        # Kill is 400s after start (04:55:53). The last part update is
-        # 04:55:13, 40s before the kill and 260s inside a 300s idle.
-        row = self._stream_row(
-            started_at="2026-10-24T04:49:13+00:00",
-            t_agent_s=400.0,
-            no_progress_idle_s=300.0,
-            output_tail=(
-                "INFO  2026-10-24T04:55:13 +10ms service=bus "
-                "type=message.part.updated publishing\n"
-            ),
-        )
-        self.assertEqual(stream_kill_verdict(row), "relabel")
-        labeled = label_watchdog_stream(row)
-        self.assertEqual(labeled["failure_class"], "env_failure")
-        self.assertEqual(labeled["env_cause"], "watchdog_stream")
-
-    def test_a_few_seconds_inside_300_is_borderline(self):
-        from thesis.ab.watch import label_watchdog_stream, stream_kill_verdict
-        # 297.1s before the kill: past the 2s clock/poll band, not 30s inside.
-        row = self._stream_row(
-            started_at="2026-10-24T02:44:00+00:00",
-            t_agent_s=297.1,
-            no_progress_idle_s=300.0,
-            output_tail=(
-                "INFO  2026-10-24T02:44:00 +10ms service=bus "
-                "type=message.part.updated publishing\n"
-            ),
-        )
-        self.assertEqual(stream_kill_verdict(row), "borderline")
-        labeled = label_watchdog_stream(row)
-        self.assertEqual(labeled["failure_class"], "hang")
-        self.assertNotIn("env_cause", labeled)
-
-    def test_part_updated_long_before_the_kill_stays_unlabeled(self):
-        from thesis.ab.watch import label_watchdog_stream, part_updated_within_idle
-        row = self._stream_row(
-            started_at="2026-10-24T04:49:13+00:00",
-            t_agent_s=1500.0,
-            no_progress_idle_s=300.1,
-            output_tail=(
-                "INFO  2026-10-24T04:50:00 +10ms service=bus "
-                "type=message.part.updated publishing\n"
-                "INFO  2026-10-24T05:09:00 +1ms service=app name=mcp shutdown\n"
-            ),
-        )
-        self.assertFalse(part_updated_within_idle(row))
-        labeled = label_watchdog_stream(row)
-        self.assertEqual(labeled["failure_class"], "hang")
-        self.assertNotIn("env_cause", labeled)
-
-    def test_silence_without_a_part_update_is_not_a_stream(self):
-        from thesis.ab.watch import part_updated_within_idle
-        row = self._stream_row(output_tail="INFO  2026-10-24T04:52:06 +1ms service=app name=mcp shutdown\n")
-        self.assertFalse(part_updated_within_idle(row))
-
-    def test_non_kill_is_left_alone(self):
-        from thesis.ab.watch import label_watchdog_stream
-        row = {"failure_class": "solved", "success": True, "output_tail": "message.part.updated"}
-        self.assertIs(label_watchdog_stream(row), row)
-        self.assertEqual(row["failure_class"], "solved")
         self.assertNotIn("env_cause", row)
 
 

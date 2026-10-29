@@ -2,16 +2,12 @@
 
 The 52 `data/h2-deferred-1023` hangs whose saved `output_tail` contains a timestamped `message.part.updated`. Gap is seconds from that last stamp (UTC, whole seconds) to the kill (`started_at` + `t_agent_s`), shown to 0.1s. Sorted ascending.
 
-Verdicts use `stream_kill_verdict` in `thesis/ab/watch.py`. `label_watchdog_stream` relabels only `relabel`. `stays_hang` and `borderline` keep `hang` and are not in the rerun set.
-
-- **stays_hang** when gap >= 298.0s. That is 300s minus a 2.0s boundary band: OpenCode log stamps are whole seconds (the real event is up to 1.0s later), the watchdog polls every 0.2s, and recorded `idle_s` in this batch overshoots 300 by at most about 0.4s. opus/26821 without regex-chess trial 3 is gap 299.4s against `idle_s` 300.2, inside this band. The last update started the idle clock.
-- **relabel** when gap < 270.0s (`300 - 30`, and inside the cell's own idle by the same 30s). 30s is an order of magnitude past the 2s band, so the update happened while silence was already being counted. `label_watchdog_stream` sets `failure_class=env_failure` and `env_cause=watchdog_stream` only then.
-- **borderline** when 270.0s <= gap < 298.0s. Not relabeled and not a rerun.
+**Fixed rule:** relabel only if the gap is **<= 290s**. Every gap in this table is between 297.1s and 300.6s, so all 52 stay hang. They are not relabeled and they are not in the rerun set. opus/13331 without regex-chess trial 7 also stays hang.
 
 | gap_s | verdict | model | pr | side | task | trial | last message.part.updated (UTC) | kill (UTC) | idle_s | cell |
 | ---: | --- | --- | --- | --- | --- | ---: | --- | --- | ---: | --- |
-| 297.1 | borderline | opus | 13331 | without | regex-chess | 6 | 2026-10-24T02:44:00 | 2026-10-24T02:48:57.050804 | 300.0 | `opus/13331/cells/without/regex-chess/6.json` |
-| 297.8 | borderline | opus | 13090 | without | regex-chess | 1 | 2026-10-23T22:16:18 | 2026-10-23T22:21:15.833504 | 300.2 | `opus/13090/cells/without/regex-chess/1.json` |
+| 297.1 | stays_hang | opus | 13331 | without | regex-chess | 6 | 2026-10-24T02:44:00 | 2026-10-24T02:48:57.050804 | 300.0 | `opus/13331/cells/without/regex-chess/6.json` |
+| 297.8 | stays_hang | opus | 13090 | without | regex-chess | 1 | 2026-10-23T22:16:18 | 2026-10-23T22:21:15.833504 | 300.2 | `opus/13090/cells/without/regex-chess/1.json` |
 | 298.1 | stays_hang | opus | 13090 | with | regex-chess | 7 | 2026-10-24T00:07:56 | 2026-10-24T00:12:54.099522 | 300.1 | `opus/13090/cells/with/regex-chess/7.json` |
 | 298.4 | stays_hang | opus | 13331 | with | regex-chess | 6 | 2026-10-24T02:42:22 | 2026-10-24T02:47:20.409680 | 300.1 | `opus/13331/cells/with/regex-chess/6.json` |
 | 298.5 | stays_hang | opus | 13090 | without | regex-chess | 7 | 2026-10-24T00:06:20 | 2026-10-24T00:11:18.456194 | 300.2 | `opus/13090/cells/without/regex-chess/7.json` |
@@ -65,13 +61,8 @@ Verdicts use `stream_kill_verdict` in `thesis/ab/watch.py`. `label_watchdog_stre
 
 ## Counts
 
-50 stays_hang, 2 borderline, 0 relabel. The rerun set is empty.
-
-Borderline cells (not relabeled, not a rerun):
-
-- `opus/13331/cells/without/regex-chess/6.json` gap 297.1s, kill `2026-10-24T02:48:57.050804Z`, idle 300.0s
-- `opus/13090/cells/without/regex-chess/1.json` gap 297.8s, kill `2026-10-23T22:21:15.833504Z`, idle 300.2s
+52 stays_hang, 0 relabel. The rerun set is empty.
 
 ## opus/13331 without regex-chess trial 7
 
-Not in the 52. The checked-in cell has a 2000-character `output_tail` with no `message.part.updated` and no log timestamps. Idle 300.3s, kill `2026-10-24T03:09:08.590526Z`. The full log is not in this checkout: `MANIFEST-transcripts.txt` lists `opus/13331/transcripts/without/opencode_regex-chess_claude-opus-5-5_trial7.txt` and `.../regex-chess/7/agent-output.txt` on the VM, and `transcripts/` is gitignored. From the repo, this cell does not show a part update inside the idle window.
+Stays hang. It is not one of the 52: the checked-in cell has a 2000-character `output_tail` with no `message.part.updated` and no log timestamps, so there is no gap <= 290s to relabel. Idle 300.3s, kill `2026-10-24T03:09:08.590526Z`. The full log is not in this checkout (`MANIFEST-transcripts.txt` lists it on the VM; `transcripts/` is gitignored).
