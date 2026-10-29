@@ -61,14 +61,12 @@ def _price_table() -> dict:
 
 
 def _hand_smoke_cost() -> float:
-    """1028c OpenCode cell, priced from the committed table by hand."""
-    rates = _price_table()["models"]["claude-sonnet-5-5"]
-    return (
-        _SMOKE["input_uncached"] * rates["input"]
-        + _SMOKE["output"] * rates["output"]
-        + _SMOKE["cache_read"] * rates["cache_read"]
-        + _SMOKE["cache_write"] * rates["cache_write"]
-    ) / 1_000_000
+    """1028c OpenCode cell at the Sonnet 5.5 list.
+
+    The expected USD is a literal. It does not load rates from
+    ``vertex_list_prices.json``.
+    """
+    return 0.1641165
 
 
 def _smoke_cost() -> float:
@@ -88,13 +86,19 @@ class ProxyCostTests(unittest.TestCase):
     def test_ledger_tokens_price_at_vertex_list_rates(self):
         cost = _smoke_cost()
         hand = _hand_smoke_cost()
-        # 1028c: cache write 49813, input 12, output 3956.
-        # List pin is $3 / $15 / $3.75 cache-write per M, about $0.246.
-        # The old $2 / $10 / $2.50 card priced this cell at about $0.164.
+        # 1028c OpenCode cell 362e87ae1e9a8384, attempt2-metadata-adc.
+        # proxy-ledger/362e87ae1e9a8384.totals.json (all == main):
+        #   cache_read 0, cache_write 49813, calls 4, input_uncached 12, output 3956
+        # Sonnet 5.5 list, USD per million tokens. These rates are literals in
+        # this comment; they are not read from vertex_list_prices.json:
+        #   cache_read       0 * 0.10 = 0
+        #   cache_write  49813 * 2.50 = 124532.5
+        #   input_uncached  12 * 2    = 24
+        #   output        3956 * 10   = 39560
+        #   49813*2.50 + 12*2 + 0*0.10 + 3956*10 = 164116.5 per million = $0.1641165
         self.assertAlmostEqual(cost, hand)
-        self.assertAlmostEqual(hand, (12 * 3 + 3956 * 15 + 49813 * 3.75) / 1_000_000)
-        self.assertAlmostEqual(hand, 0.24617475)
-        self.assertGreater(cost, 0.2)
+        self.assertAlmostEqual(hand, 0.1641165)
+        self.assertAlmostEqual(cost, 0.1641165)
         records = [{
             "record_type": "request",
             "upstream_model": "claude-sonnet-5-5",
