@@ -76,8 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     from obench.adapters.pi_harness import PIN, load_proxy_totals, settings_destination
     from thesis.ab.build_pi import binary
     from thesis.ab.proxy_bridge import cell_network, read_proxy_observed
-    from thesis.ab.vertex_anthropic_proxy import start_from_env
-    from obench.run import run_cell
+    from thesis.ab.run_ab import PROTOCOL_LOCATION, attach_proxy_trace, proxy_trace_public
+    from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, start_from_env
+    from obench.run import read_proxy_ledger, run_cell
 
     if PIN_MODELS != ("claude-opus-5-5", "claude-sonnet-5-5"):
         raise RuntimeError("smoke models drifted")
@@ -117,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     adapters = repo / "obench" / "adapters"
     network_mode = cell_network(args.exec, [])
     records = []
+    halted = False
     try:
         for model in models:
             cell_id = secrets.token_hex(8)
@@ -141,6 +143,13 @@ def main(argv: list[str] | None = None) -> int:
                 totals = load_proxy_totals(str(ledger), cell_id)
             except (OSError, json.JSONDecodeError, ValueError) as exc:
                 totals_error = str(exc)
+            ledger_rows = read_proxy_ledger(str(ledger), cell_id)
+            attach_proxy_trace(
+                row, ledger_rows, model,
+                ledger_present=cell_ledger_path(ledger, cell_id).is_file(),
+                protocol_location=PROTOCOL_LOCATION,
+            )
+            trace = proxy_trace_public(row)
             record = {
                 "cell_id": cell_id,
                 "model": model,
@@ -157,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                 "requests_cost_usd": None if totals is None else _cost(model, totals["all"]),
                 "requests_cost_main_usd": None if totals is None else _cost(model, totals["main"]),
                 "proxy_cost_usd": None if totals is None else _cost(model, totals["all"]),
+                **trace,
             }
             calls = 0 if totals is None else totals["all"]["calls"]
             reached = "yes" if proxy.reached(cell_id) or calls else "no"
@@ -175,12 +185,22 @@ def main(argv: list[str] | None = None) -> int:
                 "totals_calls_all": None if totals is None else totals["all"]["calls"],
                 "totals_calls_main": None if totals is None else totals["main"]["calls"],
                 "proxy_observed": record["proxy_observed"],
+                **trace,
             })
             print(json.dumps(records[-1]), flush=True)
+            if row.get("off_protocol") is True:
+                halted = True
+                _log(
+                    out,
+                    "off-protocol halt "
+                    f"model={model} upstream_model={row.get('upstream_model')} "
+                    f"endpoint_location={row.get('endpoint_location')}",
+                )
+                break
     finally:
         proxy.close()
     _write(out / "summary.json", {"pin": PIN, "cells": records})
-    return 0
+    return 1 if halted else 0
 
 
 if __name__ == "__main__":
