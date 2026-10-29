@@ -56,7 +56,7 @@ from thesis.ab.proxy_bridge import (
     proxy_origin_for_network,
     read_proxy_observed,
 )
-from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
+from thesis.ab.vertex_anthropic_proxy import LOCATION, cell_ledger_path, cell_proxy_base
 
 CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
@@ -821,7 +821,18 @@ def execute_cell(spec: dict) -> None:
         installed = row.pop("installed_anthropic", None) if isinstance(row, dict) else None
         installed_text = installed if isinstance(installed, str) else None
         if isinstance(row, dict):
-            apply_cell_meter(row, spec.get("proxy"))
+            apply_cell_meter(
+                row,
+                spec.get("proxy"),
+                protocol_model=spec.get("protocol_model"),
+                protocol_location=spec.get("protocol_location") or PROTOCOL_LOCATION,
+            )
+            if harness in {"pi", "opencode"} and "proxy_requests" not in row:
+                attach_proxy_trace(
+                    row, [], spec.get("protocol_model"),
+                    ledger_present=False,
+                    protocol_location=spec.get("protocol_location") or PROTOCOL_LOCATION,
+                )
             attach_thinking(
                 row,
                 str(spec.get("thinking_mode") or "default"),
@@ -1431,10 +1442,153 @@ def attach_upstream_model(row: dict, records: list | None) -> dict:
     })
     if models:
         row["upstream_model"] = models[0] if len(models) == 1 else "+".join(models)
+        row["upstream_model_mixed"] = len(models) > 1
     return row
 
 
-def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
+# This batch's Vertex endpoint. ``start_proxy`` defaults to the same constant.
+PROTOCOL_LOCATION = LOCATION
+PROXY_TRACE_FIELDS = (
+    "proxy_requests",
+    "trace_requests",
+    "untraced_requests",
+    "requested_model",
+    "requested_model_mixed",
+    "upstream_model",
+    "upstream_model_mixed",
+    "endpoint_location",
+    "endpoint_location_mixed",
+    "protocol_model",
+    "off_protocol",
+)
+
+
+def harness_trace_requests(row: dict) -> int | None:
+    """Model calls the harness recorded in its own event stream.
+
+    OpenCode counts ``step_finish`` events. Pi counts ``turn_end`` events.
+    Both land on ``turns``. ``usage_raw`` is the same list when ``turns``
+    was not filled in.
+    """
+    if not isinstance(row, dict):
+        return None
+    turns = row.get("turns")
+    if isinstance(turns, int) and not isinstance(turns, bool):
+        return turns
+    raw = row.get("usage_raw")
+    if isinstance(raw, list):
+        return len(raw)
+    return None
+
+
+def _distinct_field(records: list | None, key: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        value = record.get(key)
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if value and value not in seen:
+            seen.add(value)
+            found.append(value)
+    return sorted(found)
+
+
+def _assign_joined(row: dict, records: list | None, key: str, mixed_key: str) -> None:
+    values = _distinct_field(records, key)
+    row[mixed_key] = len(values) > 1
+    if not values:
+        row[key] = None
+        return
+    row[key] = values[0] if len(values) == 1 else "+".join(values)
+
+
+def requests_off_protocol(
+    records: list | None,
+    protocol_model: str | None,
+    protocol_location: str | None = None,
+) -> bool:
+    """True when any ledger request left the cell's protocol model or location.
+
+    The protocol model is the batch's ``--vertex-model`` (``claude-sonnet-5-5``
+    for the Pi/OpenCode gate). The protocol location is ``global``. A request
+    with no ``endpoint_location`` is off protocol: the proxy did not record
+    that the call stayed on ``global``.
+    """
+    if not isinstance(protocol_model, str) or not protocol_model.strip():
+        return False
+    expected_model = protocol_model.strip()
+    expected_location = PROTOCOL_LOCATION
+    if isinstance(protocol_location, str) and protocol_location.strip():
+        expected_location = protocol_location.strip()
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("upstream_model") != expected_model:
+            return True
+        if record.get("endpoint_location") != expected_location:
+            return True
+    return False
+
+
+def attach_proxy_trace(
+    row: dict,
+    records: list | None,
+    protocol_model: str | None = None,
+    *,
+    ledger_present: bool = True,
+    protocol_location: str | None = None,
+) -> dict:
+    """Fold proxy-ledger and harness-trace counts onto one cell result.
+
+    ``proxy_requests`` is the ledger length. ``trace_requests`` is the
+    harness's own model-call count. ``untraced_requests`` is the difference.
+    ``requested_model`` is the id on the incoming proxy body. ``upstream_model``
+    is what the proxy sent to Vertex. ``endpoint_location`` is the Vertex
+    location on that call (``start_proxy``'s ``location``, normally ``global``).
+    More than one distinct value is joined with ``+`` and ``*_mixed`` is true.
+    ``off_protocol`` is true when any request's upstream model is not
+    ``protocol_model`` or any request's location is not ``global``.
+    """
+    if not isinstance(row, dict):
+        return row
+    counted = [record for record in records or [] if isinstance(record, dict)]
+    if ledger_present or counted:
+        row["proxy_requests"] = len(counted)
+    else:
+        row["proxy_requests"] = None
+    trace = harness_trace_requests(row)
+    row["trace_requests"] = trace
+    proxy_n = row.get("proxy_requests")
+    if isinstance(proxy_n, int) and not isinstance(proxy_n, bool) and isinstance(trace, int):
+        row["untraced_requests"] = proxy_n - trace
+    else:
+        row["untraced_requests"] = None
+    _assign_joined(row, counted, "requested_model", "requested_model_mixed")
+    _assign_joined(row, counted, "upstream_model", "upstream_model_mixed")
+    _assign_joined(row, counted, "endpoint_location", "endpoint_location_mixed")
+    model = protocol_model.strip() if isinstance(protocol_model, str) and protocol_model.strip() else None
+    row["protocol_model"] = model
+    row["off_protocol"] = requests_off_protocol(counted, model, protocol_location)
+    return row
+
+
+def proxy_trace_public(row: dict) -> dict:
+    """The trace fields smoke summaries copy onto the cell record."""
+    if not isinstance(row, dict):
+        return {key: None for key in PROXY_TRACE_FIELDS}
+    return {key: row.get(key) for key in PROXY_TRACE_FIELDS}
+
+
+def apply_cell_meter(
+    row: dict,
+    proxy: dict | None,
+    protocol_model: str | None = None,
+    protocol_location: str | None = None,
+) -> dict:
     if not isinstance(row, dict) or not isinstance(proxy, dict):
         return row
     ledger = proxy.get("ledger_dir")
@@ -1450,9 +1604,14 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     row["route"] = route_label(proxy, sum(1 for r in records or [] if isinstance(r, dict)))
     if not records:
         # An empty ledger file is a measured zero. A missing file is not.
-        if ledger_path.is_file():
+        present = ledger_path.is_file()
+        if present:
             row["requests_count"] = 0
             row["proxy_cost_usd"] = 0.0
+        attach_proxy_trace(
+            row, records, protocol_model,
+            ledger_present=present, protocol_location=protocol_location,
+        )
         return row
     apply_proxy_ledger(row, records)
     attach_upstream_model(row, records)
@@ -1471,6 +1630,12 @@ def apply_cell_meter(row: dict, proxy: dict | None) -> dict:
     ]
     row["params_stripped_requests"] = sum(1 for item in stripped if item)
     row["params_stripped"] = sorted({label for item in stripped for label in item})
+    # Count the harness trace before the ledger's usage objects are copied
+    # onto ``usage_raw``. That copy is not the harness's own trace.
+    attach_proxy_trace(
+        row, records, protocol_model,
+        ledger_present=True, protocol_location=protocol_location,
+    )
     from obench.failure_class import provider_failure_class
     kind = provider_failure_class(row, str(row.get("output_tail") or ""))
     if kind:
@@ -1775,6 +1940,36 @@ def rerun_cells_from_env() -> set[str] | None:
 
 
 ROUTE_HALT_MAX_OFF = 2
+
+
+def off_protocol_halt(out_dir: Path) -> str | None:
+    """Stop the batch when a finished cell left its protocol model or location.
+
+    One off-protocol cell is enough. Cells already in flight finish; nothing
+    further is launched. The protocol model is the cell's ``--vertex-model``.
+    The protocol location for this batch is ``global``.
+    """
+    root = Path(out_dir)
+    for path in sorted(root.glob("*/cells/*/*/*.json")):
+        row = read_cell(path)
+        if not isinstance(row, dict) or row.get("off_protocol") is not True:
+            continue
+        rel = path.relative_to(root).as_posix()
+        return (
+            "off-protocol halt: "
+            f"{rel} upstream_model={row.get('upstream_model')} "
+            f"protocol_model={row.get('protocol_model')} "
+            f"endpoint_location={row.get('endpoint_location')}; "
+            "not launching more cells"
+        )
+    return None
+
+
+def batch_exit_code(stopped: str | None) -> int:
+    """Non-zero when the batch stopped because a cell was off protocol."""
+    if isinstance(stopped, str) and stopped.startswith("off-protocol halt"):
+        return 1
+    return 0
 
 
 def _absorb_route_halt(spec: dict, out_dir: Path, prepared: dict) -> None:
@@ -2290,11 +2485,17 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         return state
 
     launched = 0
-    stopped = None
+    stopped = off_protocol_halt(out_dir)
+    if stopped:
+        print(stopped, file=sys.stderr)
 
     def take(spec):
         nonlocal stopped
         if stopped:
+            return None
+        stopped = off_protocol_halt(out_dir)
+        if stopped:
+            print(stopped, file=sys.stderr)
             return None
         stopped = over_budget(out_dir, max_cost_usd)
         if stopped:
@@ -2309,6 +2510,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
             no_progress_s=no_progress_s,
             thinking_mode=omp_thinking,
         )
+        filled["protocol_model"] = vertex_model
+        filled["protocol_location"] = PROTOCOL_LOCATION
         if server is not None:
             filled = bind_cell_proxy(filled, ledger_dir)
             fault = ""
@@ -2457,7 +2660,9 @@ def main(argv: list[str] | None = None) -> int:
         default="claude-opus-5-5",
         help=(
             "Vertex model the shared proxy calls (e.g. claude-sonnet-5-5). Harness configs keep "
-            "--model as their alias; each ledger row records upstream_model."
+            "--model as their alias; each ledger row records upstream_model. A cell whose "
+            "upstream model differs, or whose Vertex location is not global, is off_protocol "
+            "and the batch stops."
         ),
     )
     parser.add_argument(
@@ -2656,7 +2861,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"launched {launched}")
     if stopped:
         print(stopped)
-    return 0
+    return batch_exit_code(stopped)
 
 
 if __name__ == "__main__":

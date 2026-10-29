@@ -731,6 +731,8 @@ def _append_ledger(
     thinking_mode: str = "default",
     thinking_sent: str = "none",
     upstream_model: str | None = None,
+    requested_model: str | None = None,
+    endpoint_location: str | None = None,
     call_role: dict | None = None,
 ) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
@@ -753,6 +755,13 @@ def _append_ledger(
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
     if isinstance(upstream_model, str) and upstream_model:
         row["upstream_model"] = upstream_model
+    # The model id on the incoming body, before this proxy chooses the Vertex
+    # model. OpenCode's alias and the upstream id are different fields.
+    if isinstance(requested_model, str) and requested_model.strip():
+        row["requested_model"] = requested_model.strip()
+    # ``start_proxy(..., location=)``. ``LOCATION`` is ``global``.
+    if isinstance(endpoint_location, str) and endpoint_location.strip():
+        row["endpoint_location"] = endpoint_location.strip()
     if isinstance(call_role, dict) and call_role.get("call_role") in {"main", "side"}:
         row["call_role"] = call_role["call_role"]
         detail = call_role.get("call_role_detail")
@@ -1886,7 +1895,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 parsed = json.loads(raw.decode("utf-8")) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
-            requested_model = parsed.get("model") if isinstance(parsed, dict) else None
+            raw_requested = parsed.get("model") if isinstance(parsed, dict) else None
+            requested_model = raw_requested.strip() if isinstance(raw_requested, str) else None
             upstream_model = resolve_upstream_model(
                 requested_model, model, route_by_request=route_by_request,
             )
@@ -1982,6 +1992,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 cell if ledger is not None else None, kind, identity, sent,
                 presentation=presentation, call_role=call_role,
                 upstream_model_id=upstream_model,
+                requested_model=requested_model,
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -2010,7 +2021,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
 
         def _record(self, cell: str | None, usage: dict | None, status: int | None = None,
                     identity: dict | None = None, thinking_sent: str = "none",
-                    call_role: dict | None = None, upstream_model_id: str | None = None) -> None:
+                    call_role: dict | None = None, upstream_model_id: str | None = None,
+                    requested_model: str | None = None) -> None:
             # One row per messages or chat-completions POST on /c/<cell-id>/.
             # A subagent or child session that reused that base URL is included
             # in the cell total. The role tag does not change that total.
@@ -2020,25 +2032,31 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 ledger, cell, usage, status=status, identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
                 upstream_model=upstream_model_id or model,
+                requested_model=requested_model,
+                endpoint_location=location,
                 call_role=call_role,
             )
 
         def _record_error(self, cell: str | None, status: int, payload: bytes | str,
                           identity: dict | None = None, thinking_sent: str = "none",
-                          call_role: dict | None = None, upstream_model_id: str | None = None) -> None:
+                          call_role: dict | None = None, upstream_model_id: str | None = None,
+                          requested_model: str | None = None) -> None:
             if ledger is None or not cell:
                 return
             _append_ledger(
                 ledger, cell, None, status=status, error=_error_body(payload), identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
                 upstream_model=upstream_model_id or model,
+                requested_model=requested_model,
+                endpoint_location=location,
                 call_role=call_role,
             )
 
         def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str,
                      identity: dict | None = None, thinking_sent: str = "none",
                      presentation: str = "anthropic", call_role: dict | None = None,
-                     upstream_model_id: str | None = None) -> None:
+                     upstream_model_id: str | None = None,
+                     requested_model: str | None = None) -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -2069,7 +2087,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     note_cell_bytes(ledger, cell, len(payload))
                     self._record_error(
                         cell, int(exc.code), payload, identity, thinking_sent,
-                        call_role, called,
+                        call_role, called, requested_model=requested_model,
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
@@ -2080,6 +2098,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     payload = json.dumps({"error": str(exc)}).encode("utf-8")
                     self._record_error(
                         cell, 502, payload, identity, thinking_sent, call_role, called,
+                        requested_model=requested_model,
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
@@ -2116,6 +2135,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 if kind != "count":
                     self._record(
                         cell, usage, status, identity, thinking_sent, call_role, called,
+                        requested_model=requested_model,
                     )
                     recorded = True
                 if stream_tx is not None:
@@ -2130,6 +2150,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 if not recorded and kind != "count":
                     self._record(
                         cell, finish_usage(), status, identity, thinking_sent, call_role, called,
+                        requested_model=requested_model,
                     )
             finally:
                 if response is not None:

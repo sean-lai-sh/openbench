@@ -398,6 +398,8 @@ class VertexHarnessApiTests(unittest.TestCase):
         self.assertEqual(row["cache_read"], 4)
         self.assertEqual(row["cache_write"], 2)
         self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
+        self.assertEqual(row["requested_model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(row["endpoint_location"], "global")
 
     def test_openai_stream_emits_text_tool_calls_and_cache_usage(self):
         status, payload = _post(
@@ -520,6 +522,41 @@ class VertexHarnessApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertIn("/models/claude-opus-5-5:rawPredict", self.httpd.seen[-1]["path"])
+
+    def test_ledger_records_requested_model_and_vertex_location(self):
+        host, port = self.httpd.server_address
+        pinned = start_proxy(
+            "proj", model="claude-sonnet-5-5", location="global", token="tok",
+            upstream=f"http://{host}:{port}", ledger_dir=self.ledger,
+            route_by_request=False,
+        )
+        self.addCleanup(pinned.close)
+        status, _payload = _post(
+            pinned.base_url + "/c/rewrite/v1/messages",
+            {"model": "claude-opus-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("/locations/global/publishers/anthropic/models/claude-sonnet-5-5:", self.httpd.seen[-1]["path"])
+        row = json.loads((self.ledger / "rewrite.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(row["requested_model"], "claude-opus-5-5")
+        self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
+        self.assertEqual(row["endpoint_location"], "global")
+
+        shifted = start_proxy(
+            "proj", model="claude-sonnet-5-5", location="europe-west4", token="tok",
+            upstream=f"http://{host}:{port}", ledger_dir=self.ledger,
+            route_by_request=False,
+        )
+        self.addCleanup(shifted.close)
+        status, _payload = _post(
+            shifted.base_url + "/c/shifted/v1/messages",
+            {"model": "claude-sonnet-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("/locations/europe-west4/", self.httpd.seen[-1]["path"])
+        shifted_row = json.loads((self.ledger / "shifted.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(shifted_row["endpoint_location"], "europe-west4")
+        self.assertEqual(shifted_row["upstream_model"], "claude-sonnet-5-5")
 
 
 class CallRoleTests(unittest.TestCase):

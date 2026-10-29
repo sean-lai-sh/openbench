@@ -131,8 +131,9 @@ def main(argv: list[str] | None = None) -> int:
         sdk_base_url,
     )
     from thesis.ab.proxy_bridge import bridge_egress_probe, cell_network, read_proxy_observed
-    from thesis.ab.vertex_anthropic_proxy import cell_proxy_base, start_from_env
-    from obench.run import run_cell
+    from thesis.ab.run_ab import PROTOCOL_LOCATION, attach_proxy_trace, proxy_trace_public
+    from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base, start_from_env
+    from obench.run import read_proxy_ledger, run_cell
 
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -189,6 +190,13 @@ def main(argv: list[str] | None = None) -> int:
         calls = len(observed)
         reached = "yes" if proxy.reached(cell_id) or calls else "no"
         _log(out, f"proxy-reached cell={cell_id} reached={reached} calls={calls}")
+        ledger_rows = read_proxy_ledger(str(ledger), cell_id)
+        attach_proxy_trace(
+            row, ledger_rows, args.vertex_model,
+            ledger_present=cell_ledger_path(ledger, cell_id).is_file(),
+            protocol_location=PROTOCOL_LOCATION,
+        )
+        trace = proxy_trace_public(row)
         cost = requests_cost_usd(args.vertex_model, ledger, cell_id)
         record = {
             "cell_id": cell_id,
@@ -202,21 +210,24 @@ def main(argv: list[str] | None = None) -> int:
             "row": row,
             "requests_cost_usd": cost,
             "proxy_cost_usd": cost,
+            **trace,
         }
         _write(out / f"{args.vertex_model}.json", record)
+        summary_cell = {
+            "cell_id": cell_id,
+            "vertex_model": args.vertex_model,
+            "network_mode": network_mode,
+            "completed": row.get("completed"),
+            "failure_class": row.get("failure_class"),
+            "checker_exit": row.get("checker_exit"),
+            "proxy_observed": observed,
+            "requests_cost_usd": cost,
+            "proxy_cost_usd": cost,
+            **trace,
+        }
         _write(out / "summary.json", {
             "network_mode": network_mode,
-            "cells": [{
-                "cell_id": cell_id,
-                "vertex_model": args.vertex_model,
-                "network_mode": network_mode,
-                "completed": row.get("completed"),
-                "failure_class": row.get("failure_class"),
-                "checker_exit": row.get("checker_exit"),
-                "proxy_observed": observed,
-                "requests_cost_usd": cost,
-                "proxy_cost_usd": cost,
-            }],
+            "cells": [summary_cell],
         })
         print(json.dumps({
             "cell_id": cell_id,
@@ -224,7 +235,17 @@ def main(argv: list[str] | None = None) -> int:
             "completed": row.get("completed"),
             "failure_class": row.get("failure_class"),
             "proxy_observed": observed,
+            **trace,
         }), flush=True)
+        if row.get("off_protocol") is True:
+            _log(
+                out,
+                "off-protocol halt "
+                f"upstream_model={row.get('upstream_model')} "
+                f"protocol_model={row.get('protocol_model')} "
+                f"endpoint_location={row.get('endpoint_location')}",
+            )
+            return 1
     finally:
         proxy.close()
     return 0
