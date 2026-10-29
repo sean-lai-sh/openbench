@@ -11,8 +11,19 @@ send an HTTP request to Anthropic.
 `/h1/opencode-src` and `OPENCODE_NODE_PREFIX` at its `/h1/...` path, matching
 the cached wrappers.
 
-The adapter alias is `claude-opus-5-5` (that is the proxy route).
-`--vertex-model` is what the proxy calls. Each cell record stores
+The Pi vs OpenCode batch launches OpenCode as `anthropic/claude-sonnet-5-5`
+(`-m`). The adapter still enters its proxy route through `claude-opus-5-5`;
+the provider config registers `claude-sonnet-5-5`. The same config sets
+`model` and `small_model` to `anthropic/claude-sonnet-5-5`, so the pre-loop
+title call asks for Sonnet instead of OpenCode's Haiku default
+(`anthropic/claude-haiku-4-5-20251001`). That call is not disabled, and its
+tokens stay in the cell cost. Each cell records
+`small_model=anthropic/claude-sonnet-5-5`, `small_model_deviation`, and a
+note that this is a documented deviation from that Haiku default.
+`--vertex-model` is what the proxy calls.
+`--require-model-match` defaults on: a request whose model id is not that
+upstream model stops the smoke. `--no-require-model-match` is the H2 / PR
+3052 shape (ask for Opus, serve Sonnet). Each cell record stores
 `network_mode` and `proxy_observed` (thinking mode, thinking field, and
 reasoning tokens the proxy saw). An empty ledger is an empty list.
 
@@ -35,6 +46,8 @@ python3 data/opencode-harness-smoke/cell.py \
   --node "$OPENCODE_NODE_PREFIX" \
   --vertex-model claude-sonnet-5-5
 ```
+
+`--require-model-match` is already the default for this command.
 
 Stdout and `<out>/smoke.log` each get:
 
