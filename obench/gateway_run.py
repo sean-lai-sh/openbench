@@ -1138,6 +1138,8 @@ def _run_cell(
     checker_score = 0.0
     checker_stdout = ""
     checker_stderr = ""
+    checker_wall_time_s = 0.0
+    checker_timeout_s = _checker_timeout_for(task)
     agent_record: dict[str, Any] = {}
     with tempfile.TemporaryDirectory(prefix="obench_gateway_cell_") as temp:
         cell_root = Path(temp)
@@ -1226,9 +1228,12 @@ def _run_cell(
                 from .checker_venv import checker_split_enabled, prepare_checker_root
                 if checker_split_enabled():
                     checker_env["H2_CHECKER_VENV_ROOT"] = str(prepare_checker_root(cell_root))
+                checker_timeout_s = _checker_timeout_for(task)
+                checker_started = time.monotonic()
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
-                    str(task.path), str(workdir), _checker_timeout_for(task), checker_env
+                    str(task.path), str(workdir), checker_timeout_s, checker_env
                 )
+                checker_wall_time_s = round(time.monotonic() - checker_started, 3)
                 checker_score = (
                     1.0
                     if checker_exit == 0
@@ -1281,6 +1286,10 @@ def _run_cell(
             "adapter_completed": bool(adapter_result.get("completed", False)),
             "adapter_error": adapter_result.get("error"),
             "checker_exit": checker_exit,
+            "checker_wall_time_s": checker_wall_time_s,
+            "checker_timeout_s": checker_timeout_s,
+            "env_failure": checker_exit == "timeout",
+            "env_cause": "checker_timeout" if checker_exit == "timeout" else None,
         },
         "route_integrity": route_integrity,
         "proxy_metrics": {"calls": calls},

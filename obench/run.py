@@ -118,6 +118,7 @@ ROW_FIELDS = (
     "provider_loaded_mismatch",
     "probe_method",
     "checker_timeout_s",
+    "checker_wall_time_s",
     "env_failure",
     "env_cause",
     "rerun_of",
@@ -2092,6 +2093,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "replies_throttled": None,
         "paced_wait_s": None,
         "checker_timeout_s": checker_timeout_s,
+        "checker_wall_time_s": 0.0,
         "env_failure": False,
         "env_cause": None,
         "rerun_of": None,
@@ -2461,6 +2463,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             finally:
                 os.environ.pop("H2_CHECKER_VENV_ROOT", None)
                 row["t_checker_s"] = round(time.monotonic() - checker_start, 3)
+                row["checker_wall_time_s"] = row["t_checker_s"]
         except Exception:  # noqa: BLE001
             row["checker_exit"] = None
             if row["error"] is None:
@@ -2472,6 +2475,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["checker_stdout"] = scrub_checker_output(checker_stdout)
         row["checker_stderr"] = scrub_checker_output(checker_stderr)
         row["checker_exit"] = checker_exit
+        if checker_exit == "timeout":
+            row["checker_hit_cap"] = True
         from .checker_verdict import apply_explicit_verdict, expects_explicit_verdict
         if expects_explicit_verdict(task_dir):
             apply_explicit_verdict(

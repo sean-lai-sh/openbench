@@ -26,6 +26,7 @@ from obench.checker_venv import (
     run_torch_probe,
 )
 from obench.cell_columns import (
+    stamp_env_columns,
     CELL_ENV_FIELDS,
     CellWriteError,
     ENV_CAUSE_CHECKER_TIMEOUT,
@@ -189,6 +190,8 @@ class TimeoutResolutionTests(unittest.TestCase):
             row = json.loads(dest.read_text(encoding="utf-8"))
             self.assertEqual(row["checker_exit"], "timeout")
             self.assertEqual(row["checker_timeout_s"], 1)
+            self.assertGreater(row["checker_wall_time_s"], 0)
+            self.assertEqual(row["checker_wall_time_s"], row["t_checker_s"])
             self.assertTrue(row["env_failure"])
             self.assertEqual(row["env_cause"], ENV_CAUSE_CHECKER_TIMEOUT)
             self.assertEqual(row["quarantine"], "pre_fix_runner")
@@ -611,6 +614,46 @@ class AgentImageTests(unittest.TestCase):
                     os.environ[key] = value
         self.assertEqual(row["agent_image"], "h1-env:1022")
         self.assertEqual(row["agent_image_digest"], "sha256:pair")
+
+    def test_checker_cap_is_env_failure_and_wall_time_is_recorded(self):
+        from obench.run import ROW_FIELDS
+        self.assertIn("checker_wall_time_s", ROW_FIELDS)
+        self.assertIn("checker_timeout_s", ROW_FIELDS)
+        missed = stamp_env_columns({
+            "checker_exit": "timeout",
+            "checker_timeout_s": 600,
+            "success": False,
+        })
+        self.assertEqual(missed["checker_wall_time_s"], 0.0)
+        self.assertFalse(missed["env_failure"])
+        hit = stamp_env_columns({
+            "checker_exit": "timeout",
+            "checker_hit_cap": True,
+            "t_checker_s": 120.4,
+            "checker_timeout_s": 120,
+            "success": False,
+        })
+        self.assertEqual(hit["checker_wall_time_s"], 120.4)
+        self.assertEqual(hit["checker_timeout_s"], 120)
+        self.assertTrue(hit["env_failure"])
+        self.assertEqual(hit["env_cause"], "checker_timeout")
+
+    def test_proof_diff_is_empty_when_captures_match(self):
+        import importlib.util
+        path = H2ENV / "prove-agent-image.py"
+        spec = importlib.util.spec_from_file_location("prove_agent_image", path)
+        proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(proof)
+        same = "import torch: exit=1 ModuleNotFoundError\n"
+        self.assertEqual(proof.unified_diff(same, same), "")
+        drifted = proof.unified_diff(same, "import torch: exit=0 imported\n")
+        self.assertIn("agent-phase", drifted)
+        self.assertIn("h1-env:1022", drifted)
+        self.assertNotEqual(drifted, "")
+        committed = (H2ENV / "agent-phase-vs-h1.diff").read_text(encoding="utf-8")
+        self.assertTrue(committed.startswith("identical\n"), committed)
+        self.assertIn("baseline_image: h1-env:1022", committed)
+        self.assertIn("absent during capture", committed)
 
 
 if __name__ == "__main__":

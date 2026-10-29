@@ -111,6 +111,7 @@ def run_checker(task_dir, overlay_solution_flag):
     # the task image, and macOS's default /var/folders path is invisible to
     # colima's VM.
     tmp = tempfile.mkdtemp(prefix="taskcheck-", dir=docker_workdir_parent())
+    checker_parent = None
     try:
         try:
             materialize_workspace(task_dir, tmp)
@@ -143,6 +144,10 @@ def run_checker(task_dir, overlay_solution_flag):
             env.pop("OPENBENCH_SOLUTION_OVERLAY", None)
 
         timeout_s = checker_timeout_s(task_dir)
+        from .checker_venv import checker_split_enabled, prepare_checker_root
+        if checker_split_enabled():
+            checker_parent = tempfile.mkdtemp(prefix="h2-checker-", dir=docker_workdir_parent())
+            env["H2_CHECKER_VENV_ROOT"] = str(prepare_checker_root(checker_parent))
         try:
             proc = subprocess.run(
                 ["bash", checker],
@@ -161,6 +166,8 @@ def run_checker(task_dir, overlay_solution_flag):
             return 124, out, parse_score(out)
         return proc.returncode, proc.stdout, parse_score(proc.stdout)
     finally:
+        if checker_parent:
+            shutil.rmtree(checker_parent, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
 
 
