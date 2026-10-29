@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from thesis.ab.run_ab import over_budget
-from thesis.ab.summarize import row_cost
+from thesis.ab.summarize import RATES_BY_MODEL, row_cost
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELL = ROOT / "thesis/ab/launchers/step8_f032.sh"
@@ -22,15 +22,13 @@ SHELL = ROOT / "thesis/ab/launchers/step8_f032.sh"
 def _usd_cell(usd: float) -> dict:
     """A cell whose requests_cost_usd and over_budget row_cost are both ``usd``.
 
-    Sonnet 5.5 output is $10 / MTok, so ``usd`` dollars is ``usd * 100_000``
-    output tokens.
+    Output tokens are ``usd`` dollars at the Sonnet output rate in the price table.
     """
-    tokens = usd * 1_000_000 / 10.0
-    if tokens != int(tokens):
-        raise ValueError(usd)
+    output_rate = RATES_BY_MODEL["claude-sonnet-5-5"]["tokens_output"]
+    tokens = usd * 1_000_000 / output_rate
     return {
         "requests_input_uncached": 0,
-        "requests_output": int(tokens),
+        "requests_output": tokens,
         "requests_cache_read": 0,
         "requests_cache_write": 0,
         "requests_cost_usd": usd,

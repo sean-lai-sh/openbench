@@ -156,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
                 "totals_error": totals_error,
                 "requests_cost_usd": None if totals is None else _cost(model, totals["all"]),
                 "requests_cost_main_usd": None if totals is None else _cost(model, totals["main"]),
+                "proxy_cost_usd": None if totals is None else _cost(model, totals["all"]),
             }
             calls = 0 if totals is None else totals["all"]["calls"]
             reached = "yes" if proxy.reached(cell_id) or calls else "no"
@@ -170,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                 "checker_exit": row.get("checker_exit"),
                 "tokens": row.get("tokens"),
                 "requests_cost_usd": record["requests_cost_usd"],
+                "proxy_cost_usd": record["proxy_cost_usd"],
                 "totals_calls_all": None if totals is None else totals["all"]["calls"],
                 "totals_calls_main": None if totals is None else totals["main"]["calls"],
                 "proxy_observed": record["proxy_observed"],

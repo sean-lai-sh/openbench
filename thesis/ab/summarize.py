@@ -18,35 +18,57 @@ TOKEN_FIELDS = (
     "tokens_cache_read",
     "tokens_cache_write",
 )
-RATES = {
-    "tokens_input_uncached": 4.0,
-    "tokens_output": 20.0,
-    "tokens_cache_read": 0.20,
-    "tokens_cache_write": 5.0,
-}
-# Google Vertex AI list prices, Standard tier, global endpoint, USD per MTok
-# (Anthropic List Prices 2026-10-07, "Google Vertex AI" section:
-# https://assets.claude.com/1ef7a4a8e373004bc89d710b0a6f3f219323344f.pdf).
-# Cache writes use the 5-minute write rate. ``RATES`` (Opus 5.5) stays the
-# default for rows with no or unknown ``upstream_model``, an upper bound.
-RATES_BY_MODEL = {
-    "claude-opus-5-5": RATES,
-    "claude-sonnet-5-5": {
-        "tokens_input_uncached": 2.0,
-        "tokens_output": 10.0,
-        "tokens_cache_read": 0.10,
-        "tokens_cache_write": 2.50,
-    },
-}
+# Standard global list, USD per MTok. Cache writes are the 5-minute rate.
+# The file records the date it was read and the source URL. A model id that
+# is not in the file has no price: callers get None, never a made-up 0.0.
+# Rows with no ``upstream_model`` still use Opus, an upper bound for older cells.
+PRICE_TABLE_PATH = Path(__file__).with_name("vertex_list_prices.json")
+_RATE_KEYS = (
+    ("input", "tokens_input_uncached"),
+    ("output", "tokens_output"),
+    ("cache_read", "tokens_cache_read"),
+    ("cache_write", "tokens_cache_write"),
+)
 
 
-def rates_for(row: dict) -> dict:
-    """Price table for the upstream Vertex model that actually served the cell."""
+def _rates_from_table(table: dict) -> dict[str, dict[str, float]]:
+    models = table.get("models") if isinstance(table, dict) else None
+    if not isinstance(models, dict) or not models:
+        raise ValueError(f"price table {PRICE_TABLE_PATH} has no models")
+    parsed: dict[str, dict[str, float]] = {}
+    for model, rates in models.items():
+        if not isinstance(model, str) or not model or not isinstance(rates, dict):
+            raise ValueError(f"price table entry for {model!r} is incomplete")
+        try:
+            parsed[model] = {
+                field: float(rates[key])
+                for key, field in _RATE_KEYS
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"price table rates for {model} are incomplete") from exc
+    return parsed
+
+
+def load_price_table() -> dict:
+    """The committed list: date read, source URL, and per-model token rates."""
+    return json.loads(PRICE_TABLE_PATH.read_text(encoding="utf-8"))
+
+
+RATES_BY_MODEL = _rates_from_table(load_price_table())
+RATES = RATES_BY_MODEL["claude-opus-5-5"]
+
+
+def rates_for(row: dict) -> dict | None:
+    """Price table for the upstream Vertex model that actually served the cell.
+
+    None when ``upstream_model`` names a model that is not in the price table.
+    A missing model id keeps the Opus rates.
+    """
     model = row.get("upstream_model") if isinstance(row, dict) else None
     if isinstance(model, str):
-        model = model.split("@", 1)[0]
-        if model in RATES_BY_MODEL:
-            return RATES_BY_MODEL[model]
+        model = model.split("@", 1)[0].strip()
+        if model:
+            return RATES_BY_MODEL.get(model)
     return RATES
 
 
@@ -94,13 +116,72 @@ def billable_tokens(row: dict) -> dict[str, float] | None:
 
 
 def row_cost(row: dict) -> float | None:
-    """USD for one cell. None when the token split is incomplete."""
+    """USD for one cell.
+
+    None when the token split is incomplete, or when ``upstream_model`` is not
+    in the price table. An unknown model is not priced at 0.
+    """
     split = billable_tokens(row)
     if split is None:
         return None
+    rates = rates_for(row)
+    if rates is None:
+        return None
     total = 0.0
-    for field, rate in rates_for(row).items():
+    for field, rate in rates.items():
         total += (split[field] / 1_000_000.0) * rate
+    return total
+
+
+def proxy_cost_usd(
+    model: str,
+    *,
+    input_uncached: int | float = 0,
+    output: int | float = 0,
+    cache_read: int | float = 0,
+    cache_write: int | float = 0,
+) -> float | None:
+    """Vertex list price for proxy-ledger tokens. Ignores harness-reported usage.
+
+    None when ``model`` is not in the price table. Never 0 for that case.
+    """
+    return row_cost({
+        "upstream_model": model,
+        "tokens_input_uncached": input_uncached,
+        "tokens_output": output,
+        "tokens_cache_read": cache_read,
+        "tokens_cache_write": cache_write,
+    })
+
+
+def proxy_cost_from_records(records, default_model: str = "") -> float | None:
+    """Sum input, output, cache write, and cache read across proxy ledger rows.
+
+    None when any request names a model that is not in the price table.
+    An empty record list is a measured zero.
+    """
+    buckets: dict[str, dict[str, int]] = {}
+    keys = ("input_uncached", "output", "cache_read", "cache_write")
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("record_type") not in (None, "request"):
+            continue
+        model = str(record.get("upstream_model") or default_model or "")
+        bucket = buckets.setdefault(model, {key: 0 for key in keys})
+        for key in keys:
+            value = record.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            bucket[key] += int(value)
+    if not buckets:
+        return 0.0
+    total = 0.0
+    for model, bucket in buckets.items():
+        cost = proxy_cost_usd(model, **bucket)
+        if cost is None:
+            return None
+        total += cost
     return total
 
 

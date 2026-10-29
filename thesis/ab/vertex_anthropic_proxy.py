@@ -789,9 +789,29 @@ class AdcToken:
             return token
 
     def _fetch(self) -> tuple[str, float]:
-        if self.path is None and os.environ.get("OBENCH_ADC_METADATA") == "1":
-            return _metadata_token(self._now)
-        info = json.loads(self._adc_path().read_text(encoding="utf-8"))
+        if self._use_metadata():
+            try:
+                return _metadata_token(self._now)
+            except ProxyError as exc:
+                if self.path is None and adc_credentials_path() is None:
+                    raise ProxyError(
+                        "no application_default_credentials.json; "
+                        f"metadata-server ADC failed ({exc}). "
+                        "Set GOOGLE_APPLICATION_CREDENTIALS to an ADC file, or run "
+                        "where the GCE metadata server is reachable."
+                    ) from exc
+                raise
+        path = self._adc_path()
+        if not path.is_file():
+            raise ProxyError(
+                f"ADC file is missing ({path}) and OBENCH_ADC_METADATA=0 "
+                "disables the metadata server. Provide the file or unset "
+                "OBENCH_ADC_METADATA."
+            )
+        try:
+            info = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ProxyError(f"cannot read ADC file {path}: {exc}") from exc
         kind = info.get("type")
         if kind == "authorized_user":
             return _refresh_authorized_user(info, self._now)
@@ -799,17 +819,45 @@ class AdcToken:
             return _refresh_service_account(info, self._now)
         raise ProxyError(f"unsupported ADC type {kind!r}")
 
+    def _use_metadata(self) -> bool:
+        """File ADC when it exists. Otherwise the GCE metadata server.
+
+        ``OBENCH_ADC_METADATA=1`` forces the metadata server. ``=0`` forces
+        the file and fails before a cell when that file is absent.
+        """
+        if self.path is not None:
+            return False
+        flag = os.environ.get("OBENCH_ADC_METADATA", "").strip()
+        if flag == "1":
+            return True
+        if flag == "0":
+            return False
+        return adc_credentials_path() is None
+
     def _adc_path(self) -> Path:
         if self.path is not None:
             return self.path
-        env = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        env = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         if env:
             return Path(env)
         return Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
 
 
+def adc_credentials_path() -> Path | None:
+    """Existing ADC file, or None when the cell must use the metadata server."""
+    env = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if env:
+        path = Path(env)
+        return path if path.is_file() else None
+    path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    return path if path.is_file() else None
+
+
 def _metadata_token(now) -> tuple[str, float]:
-    """Opt-in (OBENCH_ADC_METADATA=1): GCE metadata-server token for the VM's service account."""
+    """GCE metadata-server token for the VM's service account.
+
+    Used when ``OBENCH_ADC_METADATA=1`` or when no ADC file exists.
+    """
     request = urllib.request.Request(
         "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
         headers={"Metadata-Flavor": "Google"},
@@ -2107,7 +2155,11 @@ def start_from_env(ledger_dir: Path | None = None, thinking_mode: str = "default
     project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
     if not project:
         raise ProxyError("GOOGLE_CLOUD_PROJECT is not set")
+    token = AdcToken()
+    # Resolve credentials before any cell. A missing ADC file uses the
+    # metadata server. A failure here does not start the agent.
+    token()
     return start_proxy(
-        project, model=model, token=AdcToken(), ledger_dir=ledger_dir,
+        project, model=model, token=token, ledger_dir=ledger_dir,
         thinking_mode=thinking_mode,
     )

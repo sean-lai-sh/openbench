@@ -57,6 +57,30 @@ def _write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def requests_cost_usd(model: str, ledger: Path, cell_id: str):
+    """Price the proxy ledger. Do not bill empty ``tokens_proxy_*`` as zero.
+
+    OpenCode's run_cell row leaves ``tokens_proxy_*`` unset. ``or 0`` made
+    ``row_cost`` see a complete zero split and report ``0.0`` while the ledger
+    held the real input, output, and cache-write tokens.
+    """
+    from obench.adapters.pi_harness import load_proxy_totals
+    from thesis.ab.summarize import proxy_cost_usd
+
+    try:
+        totals = load_proxy_totals(str(ledger), cell_id)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    bucket = totals["all"]
+    return proxy_cost_usd(
+        model,
+        input_uncached=bucket["input_uncached"],
+        output=bucket["output"],
+        cache_read=bucket["cache_read"],
+        cache_write=bucket["cache_write"],
+    )
+
+
 def _resolve_binary(cache: Path, sha: str, explicit: Path | None) -> Path:
     if explicit is not None:
         path = explicit.expanduser().resolve()
@@ -107,7 +131,6 @@ def main(argv: list[str] | None = None) -> int:
         sdk_base_url,
     )
     from thesis.ab.proxy_bridge import bridge_egress_probe, cell_network, read_proxy_observed
-    from thesis.ab.summarize import row_cost
     from thesis.ab.vertex_anthropic_proxy import cell_proxy_base, start_from_env
     from obench.run import run_cell
 
@@ -166,13 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         calls = len(observed)
         reached = "yes" if proxy.reached(cell_id) or calls else "no"
         _log(out, f"proxy-reached cell={cell_id} reached={reached} calls={calls}")
-        cost = row_cost({
-            "upstream_model": args.vertex_model,
-            "tokens_input_uncached": row.get("tokens_proxy_input_uncached") or 0,
-            "tokens_output": row.get("tokens_proxy_output") or 0,
-            "tokens_cache_read": row.get("tokens_proxy_cache_read") or 0,
-            "tokens_cache_write": row.get("tokens_proxy_cache_write") or 0,
-        }) if calls else None
+        cost = requests_cost_usd(args.vertex_model, ledger, cell_id)
         record = {
             "cell_id": cell_id,
             "harness_model": HARNESS_MODEL,
@@ -184,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
             "proxy_observed": observed,
             "row": row,
             "requests_cost_usd": cost,
+            "proxy_cost_usd": cost,
         }
         _write(out / f"{args.vertex_model}.json", record)
         _write(out / "summary.json", {
@@ -197,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 "checker_exit": row.get("checker_exit"),
                 "proxy_observed": observed,
                 "requests_cost_usd": cost,
+                "proxy_cost_usd": cost,
             }],
         })
         print(json.dumps({
