@@ -345,35 +345,154 @@ def classify_thinking(data) -> str:
 
 BLOCK_BINDING_ENV = "OBENCH_THINKING_BLOCK_BINDING"
 BLOCK_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+BLOCK_BINDING_OFF = "off"
+BLOCK_BINDING_DROP = "drop_block"
+_BLOCK_BINDING_VALUES = frozenset({BLOCK_BINDING_OFF, BLOCK_BINDING_DROP})
+_THINKING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+ENV_CAUSE_THINKING_SIGNATURE = "vertex_thinking_signature"
+_THINKING_SIGNATURE_MARK = "invalid signature in thinking block"
+
+
+def thinking_block_binding_setting() -> str:
+    """Per-run setting in effect. Unset, blank, and any other value are ``off``.
+
+    ``drop_block`` is the only opt-in. The Pi vs OpenCode batch leaves this
+    unset, so the proxy forwards history exactly as it does today.
+    """
+    mode = os.environ.get(BLOCK_BINDING_ENV, "").strip()
+    if mode == BLOCK_BINDING_DROP:
+        return BLOCK_BINDING_DROP
+    return BLOCK_BINDING_OFF
+
+
+def env_cause_for_status(status, error) -> str | None:
+    """Tag one failure: a Vertex 400 for an invalid thinking-block signature.
+
+    Any other status or body returns None. This does not classify other 400s.
+    """
+    if isinstance(status, bool) or not isinstance(status, int) or status != 400:
+        return None
+    if not isinstance(error, str) or _THINKING_SIGNATURE_MARK not in error.lower():
+        return None
+    return ENV_CAUSE_THINKING_SIGNATURE
+
+
+def _message_content_lists(data: dict):
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            yield message, content
+
+
+def _messages_have_thinking(data: dict) -> bool:
+    for _message, content in _message_content_lists(data):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in _THINKING_BLOCK_TYPES:
+                return True
+    return False
+
+
+def strip_replayed_thinking_blocks(data: dict) -> int:
+    """Remove replayed thinking blocks from ``messages``. Return how many.
+
+    ``thinking`` and ``redacted_thinking`` content blocks are dropped. A
+    message that held only those blocks is removed. String content and every
+    other block stay. The ``thinking`` field is not created or changed.
+    """
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    removed = 0
+    kept_messages = []
+    changed = False
+    for message in messages:
+        if not isinstance(message, dict):
+            kept_messages.append(message)
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            kept_messages.append(message)
+            continue
+        kept_blocks = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in _THINKING_BLOCK_TYPES:
+                removed += 1
+                continue
+            kept_blocks.append(block)
+        if len(kept_blocks) != len(content):
+            changed = True
+            if not kept_blocks:
+                continue
+            message["content"] = kept_blocks
+        kept_messages.append(message)
+    if changed:
+        data["messages"] = kept_messages
+    return removed
 
 
 def apply_block_binding(data) -> str | None:
-    """Opt-in: tell the upstream to drop thinking blocks whose prefix changed.
+    """Opt-in prefix-mismatch binding when the request already enables thinking.
 
     Sonnet 5.5 rejects a replayed ``thinking`` block when the content before it
     was rewritten (OpenCode compaction/prune does this; PR 4838's taskflow at
     context=72000 hit it on 57/60 cells). With ``OBENCH_THINKING_BLOCK_BINDING
-    =drop_block`` and at least one thinking block in ``messages``, this sets
-    ``thinking.block_binding.prefix_mismatch_behavior=drop_block`` (an absent
-    ``thinking`` field becomes ``{"type": "adaptive"}``). Returns the mode
-    applied, or None. Off by default.
+    =drop_block``, a request that already sends thinking (``enabled`` with
+    ``budget_tokens``, or ``adaptive``) and replays at least one thinking block
+    gets ``thinking.block_binding.prefix_mismatch_behavior=drop_block``.
+
+    A request with thinking disabled is not given a thinking field. Stripping
+    those blocks is ``prepare_thinking_blocks``. Returns the mode applied, or
+    None. Off by default.
     """
-    mode = os.environ.get(BLOCK_BINDING_ENV, "").strip()
-    if mode != "drop_block" or not isinstance(data, dict):
+    if thinking_block_binding_setting() != BLOCK_BINDING_DROP or not isinstance(data, dict):
         return None
-    has_thinking = any(
-        isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking")
-        for message in (data.get("messages") or []) if isinstance(message, dict)
-        for block in (message.get("content") if isinstance(message.get("content"), list) else [])
-    )
-    if not has_thinking:
+    if classify_thinking(data) == "none":
+        return None
+    if not _messages_have_thinking(data):
         return None
     thinking = data.get("thinking")
     if not isinstance(thinking, dict):
-        thinking = {"type": "adaptive"}
-    thinking["block_binding"] = {"prefix_mismatch_behavior": mode}
+        return None
+    thinking["block_binding"] = {"prefix_mismatch_behavior": BLOCK_BINDING_DROP}
     data["thinking"] = thinking
-    return mode
+    return BLOCK_BINDING_DROP
+
+
+def prepare_thinking_blocks(data) -> dict:
+    """Apply the per-run thinking-block setting. The default does not touch the body.
+
+    ``thinking_block_binding`` is the setting in effect (``off`` or
+    ``drop_block``). ``thinking_blocks_stripped`` is how many history blocks
+    were removed. ``binding`` is ``drop_block`` only when a ``block_binding``
+    field was written on an already-enabled thinking request.
+
+    ``drop_block`` and thinking disabled: strip ``thinking`` and
+    ``redacted_thinking`` blocks. The thinking field stays absent, so
+    ``thinking_sent`` stays ``none``.
+
+    ``drop_block`` and thinking enabled: the existing prefix-mismatch binding.
+    History is left in place.
+    """
+    setting = thinking_block_binding_setting()
+    out = {
+        "thinking_block_binding": setting,
+        "thinking_blocks_stripped": 0,
+        "binding": None,
+    }
+    if setting != BLOCK_BINDING_DROP or not isinstance(data, dict):
+        return out
+    if classify_thinking(data) == "none":
+        out["thinking_blocks_stripped"] = strip_replayed_thinking_blocks(data)
+        return out
+    out["binding"] = apply_block_binding(data)
+    return out
+
+
 # Upstream models that reject sampling params OpenCode still sends. Sonnet 5.5
 # on Vertex answers 400 "`temperature` is deprecated for this model"; newer
 # OpenCode trees (step 3: PR 11731 onward) send it on every request.
@@ -734,6 +853,8 @@ def _append_ledger(
     requested_model: str | None = None,
     endpoint_location: str | None = None,
     call_role: dict | None = None,
+    thinking_block_binding: str | None = None,
+    thinking_blocks_stripped: int = 0,
 ) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -753,6 +874,19 @@ def _append_ledger(
         row["cc_identity_stripped"] = identity
     row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
+    if thinking_block_binding not in _BLOCK_BINDING_VALUES:
+        thinking_block_binding = thinking_block_binding_setting()
+    row["thinking_block_binding"] = thinking_block_binding
+    if (
+        isinstance(thinking_blocks_stripped, bool)
+        or not isinstance(thinking_blocks_stripped, int)
+        or thinking_blocks_stripped < 0
+    ):
+        thinking_blocks_stripped = 0
+    row["thinking_blocks_stripped"] = thinking_blocks_stripped
+    cause = env_cause_for_status(status, error if isinstance(error, str) else "")
+    if cause:
+        row["env_cause"] = cause
     if isinstance(upstream_model, str) and upstream_model:
         row["upstream_model"] = upstream_model
     # The model id on the incoming body, before this proxy chooses the Vertex
@@ -1928,8 +2062,17 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 removed.extend(strip_cc_body(parsed))
                 sampling_removed = strip_deprecated_sampling(parsed, upstream_model)
                 raw = json.dumps(parsed).encode("utf-8")
-            binding = apply_block_binding(parsed) if _message_route(route) else None
-            if binding:
+            controls = (
+                prepare_thinking_blocks(parsed)
+                if isinstance(parsed, dict) and _message_route(route)
+                else None
+            )
+            binding = controls["binding"] if controls else None
+            block_column = (
+                controls["thinking_block_binding"] if controls else thinking_block_binding_setting()
+            )
+            blocks_stripped = controls["thinking_blocks_stripped"] if controls else 0
+            if controls and (blocks_stripped or binding):
                 raw = json.dumps(parsed).encode("utf-8")
             beta_header, header_removed = strip_cc_headers(self.headers)
             removed.extend(header_removed)
@@ -1993,6 +2136,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 presentation=presentation, call_role=call_role,
                 upstream_model_id=upstream_model,
                 requested_model=requested_model,
+                thinking_block_binding=block_column,
+                thinking_blocks_stripped=blocks_stripped,
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -2022,7 +2167,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
         def _record(self, cell: str | None, usage: dict | None, status: int | None = None,
                     identity: dict | None = None, thinking_sent: str = "none",
                     call_role: dict | None = None, upstream_model_id: str | None = None,
-                    requested_model: str | None = None) -> None:
+                    requested_model: str | None = None,
+                    thinking_block_binding: str | None = None,
+                    thinking_blocks_stripped: int = 0) -> None:
             # One row per messages or chat-completions POST on /c/<cell-id>/.
             # A subagent or child session that reused that base URL is included
             # in the cell total. The role tag does not change that total.
@@ -2035,28 +2182,40 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 requested_model=requested_model,
                 endpoint_location=location,
                 call_role=call_role,
+                thinking_block_binding=thinking_block_binding,
+                thinking_blocks_stripped=thinking_blocks_stripped,
             )
 
         def _record_error(self, cell: str | None, status: int, payload: bytes | str,
                           identity: dict | None = None, thinking_sent: str = "none",
                           call_role: dict | None = None, upstream_model_id: str | None = None,
-                          requested_model: str | None = None) -> None:
+                          requested_model: str | None = None,
+                          thinking_block_binding: str | None = None,
+                          thinking_blocks_stripped: int = 0) -> None:
             if ledger is None or not cell:
                 return
+            if isinstance(payload, bytes):
+                text = payload.decode("utf-8", "replace")
+            else:
+                text = str(payload)
             _append_ledger(
-                ledger, cell, None, status=status, error=_error_body(payload), identity=identity,
+                ledger, cell, None, status=status, error=text, identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
                 endpoint_location=location,
                 call_role=call_role,
+                thinking_block_binding=thinking_block_binding,
+                thinking_blocks_stripped=thinking_blocks_stripped,
             )
 
         def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str,
                      identity: dict | None = None, thinking_sent: str = "none",
                      presentation: str = "anthropic", call_role: dict | None = None,
                      upstream_model_id: str | None = None,
-                     requested_model: str | None = None) -> None:
+                     requested_model: str | None = None,
+                     thinking_block_binding: str | None = None,
+                     thinking_blocks_stripped: int = 0) -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -2088,6 +2247,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._record_error(
                         cell, int(exc.code), payload, identity, thinking_sent,
                         call_role, called, requested_model=requested_model,
+                        thinking_block_binding=thinking_block_binding,
+                        thinking_blocks_stripped=thinking_blocks_stripped,
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
@@ -2099,6 +2260,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._record_error(
                         cell, 502, payload, identity, thinking_sent, call_role, called,
                         requested_model=requested_model,
+                        thinking_block_binding=thinking_block_binding,
+                        thinking_blocks_stripped=thinking_blocks_stripped,
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
@@ -2136,6 +2299,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._record(
                         cell, usage, status, identity, thinking_sent, call_role, called,
                         requested_model=requested_model,
+                        thinking_block_binding=thinking_block_binding,
+                        thinking_blocks_stripped=thinking_blocks_stripped,
                     )
                     recorded = True
                 if stream_tx is not None:
@@ -2151,6 +2316,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._record(
                         cell, finish_usage(), status, identity, thinking_sent, call_role, called,
                         requested_model=requested_model,
+                        thinking_block_binding=thinking_block_binding,
+                        thinking_blocks_stripped=thinking_blocks_stripped,
                     )
             finally:
                 if response is not None:
