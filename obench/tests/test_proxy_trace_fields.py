@@ -688,5 +688,112 @@ class HaltFiresFromLedgerTests(unittest.TestCase):
         self.assertIn("model_match_reason=model_unrecorded", log)
 
 
+class OpenCodeSmallModelSetupTests(unittest.TestCase):
+    """The comparison cell records the pinned title model and still bills it."""
+
+    def test_cell_records_the_sonnet_small_model_and_bills_the_title_call(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from thesis.ab.summarize import proxy_cost_usd
+        from thesis.ab.vertex_anthropic_proxy import _write_call_totals, read_call_totals
+
+        module = _load_smoke("data/opencode-harness-smoke/cell.py", "oc_small_model_setup")
+        setup = module.small_model_setup()
+        self.assertEqual(setup["small_model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(setup["small_model_default"], "anthropic/claude-haiku-4-5-20251001")
+        self.assertIs(setup["small_model_deviation"], True)
+        self.assertIn("documented deviation", setup["small_model_note"])
+        self.assertIn("Haiku", setup["small_model_note"])
+        self.assertIn(setup["small_model_default"], setup["small_model_note"])
+        self.assertIn("cost", setup["small_model_note"])
+        pinned = module.comparison_config("http://127.0.0.1:9/v1")
+        self.assertEqual(pinned["small_model"], setup["small_model"])
+        self.assertEqual(pinned["model"], setup["small_model"])
+
+        title = {"input_uncached": 1033, "output": 20, "cache_read": 0, "cache_write": 1033}
+        main_tokens = {"input_uncached": 12, "output": 40, "cache_read": 0, "cache_write": 100}
+        out = Path(tempfile.mkdtemp())
+        binary = out / "opencode"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        def fake_run(*_args, **_kwargs):
+            proxy = json.loads(os.environ["OBENCH_OPENCODE_PROXY"])
+            cell_id = re.search(r"/c/([^/]+)", proxy["base_url"]).group(1)
+            config = json.loads(os.environ["OBENCH_OPENCODE_CONFIG_JSON"])
+            self.assertEqual(config["model"], "anthropic/claude-sonnet-5-5")
+            self.assertEqual(config["small_model"], "anthropic/claude-sonnet-5-5")
+            ledger = out / "proxy-ledger"
+            ledger.mkdir(parents=True, exist_ok=True)
+            rows = [
+                _usage_row(role="side", detail="title", **title),
+                _usage_row(role="main", detail=None, **main_tokens),
+            ]
+            (ledger / f"{cell_id}.jsonl").write_text(
+                "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            _write_call_totals(ledger, cell_id)
+            return {"turns": 3, "completed": True, "checker_exit": 0}
+
+        stdout = io.StringIO()
+        with patch("thesis.ab.vertex_anthropic_proxy.start_from_env", return_value=_FakeProxy()), \
+             patch("obench.run.run_cell", fake_run), \
+             redirect_stdout(stdout):
+            code = module.main([
+                "--out", str(out), "--binary", str(binary), "--exec", "local",
+                "--vertex-model", "claude-sonnet-5-5",
+            ])
+        self.assertEqual(code, 0)
+        saved = json.loads((out / "claude-sonnet-5-5.json").read_text(encoding="utf-8"))
+        summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))["cells"][0]
+        printed = json.loads(next(
+            line for line in reversed(stdout.getvalue().splitlines()) if line.startswith("{")
+        ))
+        for record in (saved, summary, printed):
+            self.assertEqual(record["small_model"], "anthropic/claude-sonnet-5-5")
+            self.assertEqual(record["small_model_default"], "anthropic/claude-haiku-4-5-20251001")
+            self.assertIs(record["small_model_deviation"], True)
+            self.assertEqual(record["small_model_note"], setup["small_model_note"])
+
+        totals = read_call_totals(out / "proxy-ledger", saved["cell_id"])
+        self.assertEqual(totals["all"]["calls"], 2)
+        self.assertEqual(totals["main"]["calls"], 1)
+        self.assertEqual(totals["all"]["output"], title["output"] + main_tokens["output"])
+        self.assertEqual(totals["main"]["output"], main_tokens["output"])
+        billed = {
+            "input_uncached": title["input_uncached"] + main_tokens["input_uncached"],
+            "output": title["output"] + main_tokens["output"],
+            "cache_read": 0,
+            "cache_write": title["cache_write"] + main_tokens["cache_write"],
+        }
+        all_cost = proxy_cost_usd("claude-sonnet-5-5", **billed)
+        main_cost = proxy_cost_usd("claude-sonnet-5-5", **main_tokens)
+        self.assertAlmostEqual(saved["requests_cost_usd"], all_cost)
+        self.assertAlmostEqual(saved["proxy_cost_usd"], all_cost)
+        self.assertAlmostEqual(summary["requests_cost_usd"], all_cost)
+        self.assertGreater(saved["requests_cost_usd"], main_cost)
+        self.assertFalse(saved["off_protocol"])
+
+
+def _usage_row(*, role, detail, input_uncached, output, cache_read, cache_write):
+    row = {
+        "record_type": "request",
+        "requested_model": "claude-sonnet-5-5",
+        "upstream_model": "claude-sonnet-5-5",
+        "endpoint_location": "global",
+        "status": 200,
+        "call_role": role,
+        "input_uncached": input_uncached,
+        "output": output,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
+        "usage": {"input_tokens": input_uncached, "output_tokens": output},
+    }
+    if detail:
+        row["call_role_detail"] = detail
+    return row
+
+
 if __name__ == "__main__":
     unittest.main()

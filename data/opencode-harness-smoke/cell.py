@@ -33,6 +33,13 @@ from pathlib import Path
 ADAPTER_MODEL = "claude-opus-5-5"
 MODEL_REF = "anthropic/claude-sonnet-5-5"
 MODEL_ID = "claude-sonnet-5-5"
+# OpenCode's anthropic title/side model. The comparison smoke replaces it.
+DEFAULT_SMALL_MODEL = "anthropic/claude-haiku-4-5-20251001"
+SMALL_MODEL_NOTE = (
+    "documented deviation from OpenCode's default Haiku title model "
+    f"({DEFAULT_SMALL_MODEL}); the title call stays enabled and its cost "
+    "stays in the cell total"
+)
 TASK = "polyglot-rust-c"
 TIMEOUT_S = 2400
 CHECKER_TIMEOUT_S = 120
@@ -85,6 +92,20 @@ def requests_cost_usd(model: str, ledger: Path, cell_id: str):
         cache_read=bucket["cache_read"],
         cache_write=bucket["cache_write"],
     )
+
+
+def small_model_setup() -> dict:
+    """Per-cell columns for the pinned title model.
+
+    ``small_model`` is the ref written into OpenCode's config.
+    ``small_model_deviation`` marks that this is not OpenCode's Haiku default.
+    """
+    return {
+        "small_model": MODEL_REF,
+        "small_model_default": DEFAULT_SMALL_MODEL,
+        "small_model_deviation": True,
+        "small_model_note": SMALL_MODEL_NOTE,
+    }
 
 
 def comparison_config(base_url: str) -> dict:
@@ -234,12 +255,14 @@ def main(argv: list[str] | None = None) -> int:
             require_model_match=args.require_model_match,
         )
         trace = proxy_trace_public(row)
+        setup = small_model_setup()
         cost = requests_cost_usd(args.vertex_model, ledger, cell_id)
         record = {
             "cell_id": cell_id,
             "harness_model": MODEL_REF,
             "adapter_model": ADAPTER_MODEL,
             "vertex_model": args.vertex_model,
+            **setup,
             "sha": args.sha.strip().lower(),
             "binary": str(binary),
             "task": args.task,
@@ -261,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             "proxy_observed": observed,
             "requests_cost_usd": cost,
             "proxy_cost_usd": cost,
+            **setup,
             **trace,
         }
         _write(out / "summary.json", {
@@ -273,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             "completed": row.get("completed"),
             "failure_class": row.get("failure_class"),
             "proxy_observed": observed,
+            **setup,
             **trace,
         }), flush=True)
         if row.get("off_protocol") is True:
