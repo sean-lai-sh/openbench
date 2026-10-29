@@ -2841,8 +2841,8 @@ def test_row_cost_prices_per_upstream_model():
         "requests_cache_write": 1_000_000,
     }
     assert row_cost(dict(base, upstream_model="claude-opus-5-5")) == pytest.approx(29.2)
-    # Sonnet pin: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-    assert row_cost(dict(base, upstream_model="claude-sonnet-5-5")) == pytest.approx(22.05)
+    # Sonnet 5.5: $2 in, $10 out, $0.10 cache read, $2.50 cache write.
+    assert row_cost(dict(base, upstream_model="claude-sonnet-5-5")) == pytest.approx(14.6)
     # A missing model id keeps the Opus default. A model not in the table does not.
     assert row_cost(base) == pytest.approx(29.2)
     assert row_cost(dict(base, upstream_model="claude-opus-5-5+claude-sonnet-5-5")) is None
