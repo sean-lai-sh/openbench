@@ -121,6 +121,11 @@ ROW_FIELDS = (
     # missing toolchain, docker launch failure). Exit 0 and 1 stay false.
     # Older logs omit the field; readers treat a missing value as false.
     "checker_defect",
+    # Secondary grade for polyglot-rust-c only: the same in-image checker
+    # with the only-main.rs directory check skipped. 1 or 0. Null for every
+    # other task, and when the checker did not grade. Older logs omit it;
+    # a missing value is null, not a fail. It does not change ``score``.
+    "functional_pass",
 )
 
 
@@ -2094,6 +2099,26 @@ def _cell_temp_scope(root: str):
                 os.environ[key] = value
 
 
+def _attach_functional_pass(row, task, workdir, task_dir, task_image,
+                            container_workdir, timeout_s):
+    """Fill the secondary polyglot grade. Does not change ``score``.
+
+    A failure here stays null. The primary verdict is already on the row.
+    """
+    row["functional_pass"] = None
+    if task != "polyglot-rust-c" or row.get("checker_defect"):
+        return
+    try:
+        from .functional_pass import functional_pass
+        row["functional_pass"] = functional_pass(
+            task, workdir, task_dir, task_image,
+            container_workdir=container_workdir or "/app",
+            timeout_s=timeout_s,
+        )
+    except Exception:  # noqa: BLE001 - secondary grade must not flip the cell
+        row["functional_pass"] = None
+
+
 def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
              checker_timeout_s, exec_mode="local",
              docker_image=None, docker_fallback=False, harness_version=None,
@@ -2113,7 +2138,11 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
 
     Scoring: exit 0 => success=true, score=1.0 (a SCORE line can't lower a pass).
     Nonzero exit => success=false, score = the checker's SCORE line if any, else
-    0.0. Timeout => score 0.0. Local mode stamps ``harness_version`` from the
+    0.0. Timeout => score 0.0. For polyglot-rust-c only, ``functional_pass`` is
+    a secondary grade of that same saved workspace inside the task image, with
+    the only-main.rs directory check skipped. It does not change ``score``.
+    Every other task leaves ``functional_pass`` null. Local mode stamps
+    ``harness_version`` from the
     host adapter probe; docker mode stamps it from the in-container versions
     file and records ``harness_version_source`` accordingly.
 
@@ -2223,6 +2252,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "replies_throttled": None,
         "paced_wait_s": None,
         "checker_defect": False,
+        "functional_pass": None,
     }
 
     # Namespaced tasks (e.g. terminal-bench/feal) contain "/"; keep the prefix
@@ -2590,6 +2620,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 raw_score if raw_score is not None else 0.0)
             row["failure_class"] = classify_failure(row, classifier_output, timeout_s)
             row["failure_reason"] = classify_failure_reason(row, classifier_output)
+        _attach_functional_pass(
+            row, task, workdir, task_dir, checker_image, task_workdir,
+            checker_timeout_s)
         return _apply_sdk_drift(
             _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
         )
