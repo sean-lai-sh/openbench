@@ -117,6 +117,10 @@ ROW_FIELDS = (
     "provider_loaded_source",
     "provider_loaded_mismatch",
     "probe_method",
+    # True only when the checker did not return a pass/fail grade (timeout,
+    # missing toolchain, docker launch failure). Exit 0 and 1 stay false.
+    # Older logs omit the field; readers treat a missing value as false.
+    "checker_defect",
 )
 
 
@@ -731,6 +735,69 @@ def task_docker_spec(task_dir):
     return data.get("docker_image"), data.get("docker_workdir", "/work")
 
 
+# Same /app boundary the generated Harbor checker.sh uses when it rewrites
+# tests onto the graded workspace.
+_HARBOR_APP_RE = re.compile(
+    r"(?<![A-Za-z0-9_])/app(?=/|[\"'`]|$|\s|[.,;:)])"
+)
+
+
+def align_docker_workspace(task_workdir, instruction):
+    """Return ``(container_workdir, instruction, rewritten)`` for a docker cell.
+
+    Harbor tasks tell the agent to write under ``/app``. A docker cell that
+    bind-mounts the graded workspace at ``/work`` discards those writes. When
+    the task left the workdir at the default ``/work``, mount at ``/app`` and
+    leave the instruction unchanged. A task that chose some other mount gets
+    the local-mode ``/app`` substitution aimed at that container path.
+    """
+    workdir = task_workdir or "/work"
+    text = instruction or ""
+    if not _HARBOR_APP_RE.search(text):
+        return workdir, text, False
+    if workdir == "/app":
+        return workdir, text, False
+    if workdir == "/work":
+        return "/app", text, False
+    rewritten = _HARBOR_APP_RE.sub(workdir, text)
+    return workdir, rewritten, rewritten != text
+
+
+def checker_run_was_defect(checker_exit):
+    """True when the checker did not grade the workspace.
+
+    Exit 0 (pass) and exit 1 (fail) are verdicts. A timeout, a docker launch
+    failure, or any other status means the checker itself did not score.
+    """
+    return checker_exit not in (0, 1)
+
+
+def _checker_invokes_docker(task_dir):
+    """True when checker.sh already starts a container itself.
+
+    Those checkers run on the host: they need the host docker client and host
+    paths. Wrapping them again would nest docker.
+    """
+    path = os.path.join(task_dir, "checker.sh")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    return "docker run" in text or "docker create" in text
+
+
+def _safe_container_workdir(path):
+    """Accept an absolute container path with no mount-injection characters."""
+    if not isinstance(path, str) or not path.startswith("/"):
+        return None
+    if path != os.path.normpath(path) or ".." in path.split("/"):
+        return None
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]+", path):
+        return None
+    return path
+
+
 def hydrate_image_workdir(image, container_workdir, workdir):
     """Copy a task image's native workdir into the disposable host workspace."""
     try:
@@ -1242,15 +1309,78 @@ def _close_pipe(pipe):
         pass
 
 
-def run_checker(task_dir, workdir, timeout_s, checker_env=None, task_image=None):
+def _run_checker_in_task_image(task_dir, workdir, timeout_s, checker_env,
+                                task_image, container_workdir):
+    """Run checker.sh inside ``task_image`` (``BENCH_TASK_IMAGE``).
+
+    The host often lacks the task toolchain (rustc, g++). The image has it.
+    The graded workspace is mounted at ``container_workdir`` and ``TASK_DIR``
+    points at the task directory mounted read-only inside the container.
+    Harbor checker.sh rewrites ``/app`` to its cwd, so cwd is that mount.
+    """
+    mount = _safe_container_workdir(container_workdir) or "/app"
+    task_mount = "/openbench-task"
+    name = "obench-checker-%d-%s" % (os.getpid(), os.urandom(4).hex())
+    cmd = [
+        "docker", "run", "--rm", "--name", name,
+        "-v", "%s:%s" % (os.path.abspath(workdir), mount),
+        "-v", "%s:%s:ro" % (os.path.abspath(task_dir), task_mount),
+        "-w", mount,
+        "-e", "TASK_DIR=%s" % task_mount,
+        "-e", "BENCH_TASK_IMAGE=%s" % task_image,
+        "-e", "TMPDIR=/tmp",
+        "-e", "HOME=/root",
+    ]
+    if checker_env and str(checker_env.get("OPENBENCH_SOLUTION_OVERLAY") or "") == "1":
+        cmd += ["-e", "OPENBENCH_SOLUTION_OVERLAY=1"]
+    cmd += [str(task_image), "bash", "%s/checker.sh" % task_mount]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, errors="replace",
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        subprocess.run(
+            ["docker", "rm", "-f", name], capture_output=True, text=True, timeout=30,
+        )
+        out = exc.stdout or ""
+        err = exc.stderr or ""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", errors="replace")
+        return (
+            "timeout", None,
+            truncate_checker_output(redact_environment_values(out)),
+            truncate_checker_output(redact_environment_values(err)),
+        )
+    except FileNotFoundError as exc:
+        return 127, None, "", "docker client missing: %s" % exc
+    stdout = redact_environment_values(proc.stdout or "")
+    stderr = redact_environment_values(proc.stderr or "")
+    return (
+        proc.returncode,
+        parse_score(stdout),
+        truncate_checker_output(stdout),
+        truncate_checker_output(stderr),
+    )
+
+
+def run_checker(task_dir, workdir, timeout_s, checker_env=None, task_image=None,
+                container_workdir=None):
     """Run ``<task_dir>/checker.sh`` with cwd=workdir and TASK_DIR set.
 
     ``task_image`` is exported as ``BENCH_TASK_IMAGE`` so a pinned-image task's
     checker runs in the SAME image the agent ran in, without restating the
-    digest. Checkers used to hardcode their own copy, which desynced on every
-    image rebuild: docker then refused to start the checker (exit 125) and the
-    cell was recorded as the model answering wrongly. 13 cells were corrupted
-    that way before the classifier learned to treat non-verdict exits as infra.
+    digest. When the checker does not already launch Docker, this function
+    runs checker.sh inside that image: the host has no rustc, and a host-side
+    checker records a correct answer as a wrong answer. Checkers that already
+    ``docker run`` stay on the host so they can use the host docker client.
+    Checkers used to hardcode their own copy of the digest, which desynced on
+    every image rebuild: docker then refused to start the checker (exit 125)
+    and the cell was recorded as the model answering wrongly. 13 cells were
+    corrupted that way before the classifier learned to treat non-verdict
+    exits as infra.
 
     Returns ``(checker_exit, raw_score, stdout, stderr)`` where
     ``checker_exit`` is the integer exit code (or the string ``"timeout"``) and
@@ -1258,7 +1388,14 @@ def run_checker(task_dir, workdir, timeout_s, checker_env=None, task_image=None)
     or None if it printed none. Captured stdout/stderr are bounded tails. The
     checker decides task success (exit 0 == success); the adapter never does.
     ``checker_env`` may provide a caller-owned sanitized environment.
+    ``container_workdir`` is the in-image mount for the graded workspace
+    (Harbor cells use ``/app``).
     """
+    if task_image and not _checker_invokes_docker(task_dir):
+        return _run_checker_in_task_image(
+            task_dir, workdir, timeout_s, checker_env, task_image,
+            container_workdir or "/app",
+        )
     checker = os.path.join(task_dir, "checker.sh")
     env = dict(os.environ) if checker_env is None else dict(checker_env)
     env["TASK_DIR"] = os.path.abspath(task_dir)
@@ -2011,6 +2148,11 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
     # correctly regardless of the caller's cwd or a relative --tasks-dir.
     task_dir = os.path.abspath(os.path.join(tasks_dir, task))
     task_image, task_workdir = task_docker_spec(task_dir)
+    prepared_instruction = None
+    instruction_was_rewritten = False
+    if exec_mode == "docker" and os.path.isfile(os.path.join(task_dir, "instruction.md")):
+        task_workdir, prepared_instruction, instruction_was_rewritten = align_docker_workspace(
+            task_workdir, read_instruction(task_dir))
     if exec_mode == "docker" and task_image:
         docker_image = task_image
     if os.path.exists(os.path.join(task_dir, "DROPPED.md")):
@@ -2080,6 +2222,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "replies_ok": None,
         "replies_throttled": None,
         "paced_wait_s": None,
+        "checker_defect": False,
     }
 
     # Namespaced tasks (e.g. terminal-bench/feal) contain "/"; keep the prefix
@@ -2108,7 +2251,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         # Materialize a pristine workspace into the disposable temp dir. Never
         # touch the source under tasks/ (snapshot copy or git archive export).
         # Staging runs on the host for both --exec local and --exec docker; the
-        # container bind-mounts the already-staged workdir at /work.
+        # container bind-mounts the already-staged workdir at task_workdir
+        # (/app for Harbor instructions, otherwise /work).
         try:
             if exec_mode == "docker" and task_image:
                 staged_workspace = tempfile.mkdtemp(prefix="obench_task_overlay_", dir=workdir_parent)
@@ -2135,12 +2279,16 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             return _populate_proxy_row(row, active_proxy_ctx, cell_token)
         initial_workspace_files = capture_workspace_files(workdir)
 
-        instruction = read_instruction(task_dir)
-        if exec_mode == "local" and os.environ.get("OBENCH_HARBOR_APP_REWRITE") == "1":
+        if prepared_instruction is None:
+            instruction = read_instruction(task_dir)
+        else:
+            instruction = prepared_instruction
+        if instruction_was_rewritten:
+            row["instruction_app_rewrite"] = True
+        elif exec_mode == "local" and os.environ.get("OBENCH_HARBOR_APP_REWRITE") == "1":
             # Opt-in for Harbor imports run locally: point the agent at its workspace,
             # the same /app -> cwd rewrite the generated checker.sh applies to tests.
-            rewritten = re.sub(r"(?<![A-Za-z0-9_])/app(?=/|[\"'`]|$|\s|[.,;:)])",
-                               os.path.abspath(workdir), instruction)
+            rewritten = _HARBOR_APP_RE.sub(os.path.abspath(workdir), instruction)
             if rewritten != instruction:
                 row["instruction_app_rewrite"] = True
                 instruction = rewritten
@@ -2407,12 +2555,16 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 current_workspace_files)
             checker_start = time.monotonic()
             try:
+                checker_image = task_image or (
+                    docker_image if exec_used == "docker" else None)
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
-                    task_dir, workdir, checker_timeout_s, task_image=task_image)
+                    task_dir, workdir, checker_timeout_s, task_image=checker_image,
+                    container_workdir=task_workdir)
             finally:
                 row["t_checker_s"] = round(time.monotonic() - checker_start, 3)
         except Exception:  # noqa: BLE001
             row["checker_exit"] = None
+            row["checker_defect"] = True
             if row["error"] is None:
                 row["error"] = traceback.format_exc(limit=4).strip()
             row["failure_class"] = classify_failure(row, classifier_output, timeout_s)
@@ -2422,6 +2574,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["checker_stdout"] = scrub_checker_output(checker_stdout)
         row["checker_stderr"] = scrub_checker_output(checker_stderr)
         row["checker_exit"] = checker_exit
+        row["checker_defect"] = checker_run_was_defect(checker_exit)
         from .checker_verdict import apply_explicit_verdict, expects_explicit_verdict
         if expects_explicit_verdict(task_dir):
             apply_explicit_verdict(

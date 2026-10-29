@@ -2620,6 +2620,7 @@ def load_rows(
                     "failure_reason": failure_reason,
                     "candidate_provenance": provenance,
                     "version_drift": False,
+                    "checker_defect": False,
                     "workspace_source": (
                         None
                         if item["workspace_digest"] is None
