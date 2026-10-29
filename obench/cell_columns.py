@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -387,13 +389,23 @@ def rescore_cell(
     if not os.path.isdir(task_dir):
         raise CellWriteError(f"task directory not found: {task_dir}")
     from .checker_timeout import checker_timeout_s
+    from .checker_venv import checker_split_enabled, prepare_checker_root
     from .run import run_checker
 
     timeout_s = checker_timeout_s(task, task_dir)
     started = time.monotonic()
-    checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
-        task_dir, str(work), timeout_s,
-    )
+    checker_parent = Path(tempfile.mkdtemp(prefix="h2-checker-"))
+    checker_root = None
+    if checker_split_enabled():
+        checker_root = prepare_checker_root(checker_parent)
+        os.environ["H2_CHECKER_VENV_ROOT"] = str(checker_root)
+    try:
+        checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
+            task_dir, str(work), timeout_s,
+        )
+    finally:
+        os.environ.pop("H2_CHECKER_VENV_ROOT", None)
+        shutil.rmtree(checker_parent, ignore_errors=True)
     elapsed = round(time.monotonic() - started, 3)
     new = dict(original)
     new["checker_timeout_s"] = timeout_s

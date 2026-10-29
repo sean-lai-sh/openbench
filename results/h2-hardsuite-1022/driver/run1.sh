@@ -1,5 +1,9 @@
 #!/bin/bash
-# usage (inside h2-env:1022): run1.sh <vertex-model> <out> <prs-csv-ids> <cap-usd> <jobs>
+# usage (inside unmodified h1-env:1022): run1.sh <vertex-model> <out> <prs-csv-ids> <cap-usd> <jobs>
+# Checker venvs are not in this image. The host mounts the h2-checker-venvs
+# artifact at /h2/checker-venvs and sets OBENCH_CHECKER_VENV_STAGE. The runner
+# copies that tree only after the agent phase. OBENCH_AGENT_IMAGE_DIGEST is
+# the h1-env:1022 image id, recorded on every cell.
 set -u
 export OBENCH_HARBOR_APP_REWRITE=1
 M=$1 OUT=$2 P=$3 CAP=$4 J=$5

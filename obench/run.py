@@ -124,6 +124,8 @@ ROW_FIELDS = (
     "rescored_from",
     "suspect_startup_exit",
     "quarantine",
+    "agent_image",
+    "agent_image_digest",
 )
 
 
@@ -2096,6 +2098,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "rescored_from": None,
         "suspect_startup_exit": False,
         "quarantine": None,
+        "agent_image": None,
+        "agent_image_digest": None,
     }
 
     # Namespaced tasks (e.g. terminal-bench/feal) contain "/"; keep the prefix
@@ -2225,6 +2229,27 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             watchdog_thread.start()
         elif proxy_server is not None and cell_token:
             proxy_server.register_cell(cell_token)
+        from .checker_venv import (
+            AgentEnvironmentError,
+            checker_split_enabled,
+            guard_agent_phase,
+            note_agent_image,
+        )
+        try:
+            note_agent_image(row)
+            if checker_split_enabled():
+                guard_agent_phase()
+        except AgentEnvironmentError as exc:
+            row["env_failure"] = True
+            row["env_cause"] = "agent_image_drift"
+            row["failure_class"] = "infra"
+            row["failure_reason"] = str(exc)
+            row["error"] = str(exc)
+            row["success"] = False
+            row["score"] = 0.0
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), {},
+            )
         adapter_exc = None
         try:
             result, exec_used = invoke_adapter(
@@ -2425,10 +2450,16 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             row["checker_workspace_files"] = scrub_workspace_evidence_paths(
                 current_workspace_files)
             checker_start = time.monotonic()
+            checker_root = None
             try:
+                from .checker_venv import checker_split_enabled, prepare_checker_root
+                if checker_split_enabled():
+                    checker_root = prepare_checker_root(cell_root)
+                    os.environ["H2_CHECKER_VENV_ROOT"] = str(checker_root)
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
                     task_dir, workdir, checker_timeout_s, task_image=task_image)
             finally:
+                os.environ.pop("H2_CHECKER_VENV_ROOT", None)
                 row["t_checker_s"] = round(time.monotonic() - checker_start, 3)
         except Exception:  # noqa: BLE001
             row["checker_exit"] = None

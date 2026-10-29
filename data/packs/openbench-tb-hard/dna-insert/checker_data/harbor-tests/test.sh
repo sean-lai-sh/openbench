@@ -6,7 +6,9 @@ if [ "$PWD" = "/" ]; then
 fi
 
 _h2_task="$(basename "${TASK_DIR:-}")"
-_h2_py="/opt/h2-checker-venvs/${_h2_task}/bin/python"
+# Private copy of the h2-checker-venvs artifact, set only for the checker process.
+_h2_root="${H2_CHECKER_VENV_ROOT:-/opt/h2-checker-venvs}"
+_h2_py="${_h2_root}/${_h2_task}/bin/python"
 if [ -x "${_h2_py}" ]; then
   "${_h2_py}" -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 else

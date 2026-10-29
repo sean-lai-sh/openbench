@@ -1138,6 +1138,7 @@ def _run_cell(
     checker_score = 0.0
     checker_stdout = ""
     checker_stderr = ""
+    agent_record: dict[str, Any] = {}
     with tempfile.TemporaryDirectory(prefix="obench_gateway_cell_") as temp:
         cell_root = Path(temp)
         workdir = cell_root / "workspace"
@@ -1155,20 +1156,34 @@ def _run_cell(
             infrastructure_reason = "workspace_materialization"
             adapter_result = {"completed": False, "error": str(exc)}
         else:
+            from .checker_venv import (
+                AgentEnvironmentError,
+                checker_split_enabled,
+                guard_agent_phase,
+                note_agent_image,
+            )
             try:
-                adapter_result = _invoke_local(
-                    plan_path=plan_path,
-                    instruction_path=instruction_path,
-                    workdir=workdir,
-                    proxy_base_url=proxy_base_url,
-                    token=token,
-                    timeout_s=experiment.budget.timeout_s,
-                    adapters_dir=adapters_dir,
-                    max_calls_exceeded=max_calls_event.is_set,
-                )
-            except Exception as exc:  # noqa: BLE001 - row records infra failure
-                infrastructure_reason = "adapter_entry_failure"
+                note_agent_image(agent_record)
+                if checker_split_enabled():
+                    guard_agent_phase()
+            except AgentEnvironmentError as exc:
+                infrastructure_reason = "agent_image_drift"
                 adapter_result = {"completed": False, "error": str(exc)}
+            else:
+                try:
+                    adapter_result = _invoke_local(
+                        plan_path=plan_path,
+                        instruction_path=instruction_path,
+                        workdir=workdir,
+                        proxy_base_url=proxy_base_url,
+                        token=token,
+                        timeout_s=experiment.budget.timeout_s,
+                        adapters_dir=adapters_dir,
+                        max_calls_exceeded=max_calls_event.is_set,
+                    )
+                except Exception as exc:  # noqa: BLE001 - row records infra failure
+                    infrastructure_reason = "adapter_entry_failure"
+                    adapter_result = {"completed": False, "error": str(exc)}
         try:
             seal = server.seal_cell(
                 token,
@@ -1208,6 +1223,9 @@ def _run_cell(
                     if os.environ.get(key)
                 }
                 checker_env["HOME"] = str(checker_home)
+                from .checker_venv import checker_split_enabled, prepare_checker_root
+                if checker_split_enabled():
+                    checker_env["H2_CHECKER_VENV_ROOT"] = str(prepare_checker_root(cell_root))
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
                     str(task.path), str(workdir), _checker_timeout_for(task), checker_env
                 )
@@ -1287,6 +1305,8 @@ def _run_cell(
         },
         "schedule_order": list(block.arm_ids),
         "block_attempt": attempt,
+        "agent_image": agent_record.get("agent_image"),
+        "agent_image_digest": agent_record.get("agent_image_digest"),
     }
     from .cell_columns import stamp_env_columns
     stamp_env_columns(row, checker_timeout_s=_checker_timeout_for(task))
