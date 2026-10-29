@@ -282,7 +282,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"upstream_model={row.get('upstream_model')} "
                 f"protocol_model={row.get('protocol_model')} "
                 f"endpoint_location={row.get('endpoint_location')} "
-                f"requested_model={row.get('requested_model')}",
+                f"requested_model={row.get('requested_model')} "
+                f"model_match_reason={row.get('model_match_reason')}",
             )
             return 1
     finally:

@@ -304,6 +304,8 @@ class RequireModelMatchTests(unittest.TestCase):
         attach_proxy_trace(strict, records, "claude-sonnet-5-5", require_model_match=True)
         self.assertTrue(strict["off_protocol"])
         self.assertTrue(strict["require_model_match"])
+        self.assertEqual(strict["model_match_reason"], "model_mismatch")
+        self.assertIsNone(plain["model_match_reason"])
 
     def test_provider_prefix_still_matches_the_upstream_id(self):
         row = {"turns": 1}
@@ -313,16 +315,41 @@ class RequireModelMatchTests(unittest.TestCase):
             "endpoint_location": "global",
         }], "claude-sonnet-5-5", require_model_match=True)
         self.assertFalse(row["off_protocol"])
+        self.assertIsNone(row["model_match_reason"])
         self.assertEqual(row["requested_model"], "anthropic/claude-sonnet-5-5")
         self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
 
-    def test_missing_requested_model_is_a_mismatch_when_required(self):
+    def test_both_reasons_stay_distinct_on_one_cell(self):
+        row = {"turns": 2}
+        attach_proxy_trace(row, [
+            {
+                "requested_model": "claude-opus-5-5",
+                "upstream_model": "claude-sonnet-5-5",
+                "endpoint_location": "global",
+            },
+            {
+                "upstream_model": "claude-sonnet-5-5",
+                "endpoint_location": "global",
+            },
+        ], "claude-sonnet-5-5", require_model_match=True)
+        self.assertEqual(row["model_match_reason"], "model_mismatch+model_unrecorded")
+        self.assertTrue(row["off_protocol"])
+
+    def test_missing_requested_model_is_unrecorded_not_a_mismatch(self):
         row = {"turns": 1}
         attach_proxy_trace(row, [{
             "upstream_model": "claude-sonnet-5-5",
             "endpoint_location": "global",
         }], "claude-sonnet-5-5", require_model_match=True)
         self.assertTrue(row["off_protocol"])
+        self.assertEqual(row["model_match_reason"], "model_unrecorded")
+        bare = {"turns": 1}
+        attach_proxy_trace(bare, [{
+            "requested_model": "claude-sonnet-5-5",
+            "endpoint_location": "global",
+        }], "claude-sonnet-5-5", require_model_match=True)
+        self.assertEqual(bare["model_match_reason"], "model_unrecorded")
+        self.assertNotIn("model_mismatch", bare["model_match_reason"])
 
     def test_flag_halts_the_batch_and_stays_off_by_default(self):
         def run(enabled: bool):
@@ -536,6 +563,7 @@ class HaltFiresFromLedgerTests(unittest.TestCase):
         self.assertEqual(calls, [("without", 1)])
         self.assertTrue(row["off_protocol"])
         self.assertTrue(row["require_model_match"])
+        self.assertEqual(row["model_match_reason"], "model_mismatch")
         self.assertEqual(row["requested_model"], "claude-opus-5-5")
         self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
         self.assertFalse(cell_file(out, "1", "without", "make-it-run", 2).is_file())
@@ -558,6 +586,8 @@ class HaltFiresFromLedgerTests(unittest.TestCase):
         self.assertEqual(calls, [("without", 1)])
         self.assertIsNone(row["requested_model"])
         self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
+        self.assertEqual(row["model_match_reason"], "model_unrecorded")
+        self.assertNotIn("model_mismatch", row["model_match_reason"])
         self.assertTrue(row["off_protocol"])
 
         out = Path(tempfile.mkdtemp())
@@ -565,6 +595,7 @@ class HaltFiresFromLedgerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(calls), 4)
         self.assertIsNone(row["requested_model"])
+        self.assertIsNone(row["model_match_reason"])
         self.assertFalse(row["off_protocol"])
 
     def test_opencode_smoke_halts_on_a_ledger_mismatch(self):
@@ -650,8 +681,11 @@ class HaltFiresFromLedgerTests(unittest.TestCase):
         cell = saved["cells"][0]
         self.assertIsNone(cell["requested_model"])
         self.assertEqual(cell["upstream_model"], "claude-sonnet-5-5")
+        self.assertEqual(cell["model_match_reason"], "model_unrecorded")
         self.assertTrue(cell["off_protocol"])
-        self.assertIn("requested_model=None", (out / "smoke.log").read_text(encoding="utf-8"))
+        log = (out / "smoke.log").read_text(encoding="utf-8")
+        self.assertIn("requested_model=None", log)
+        self.assertIn("model_match_reason=model_unrecorded", log)
 
 
 if __name__ == "__main__":

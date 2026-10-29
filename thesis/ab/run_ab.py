@@ -1462,6 +1462,7 @@ PROXY_TRACE_FIELDS = (
     "endpoint_location_mixed",
     "protocol_model",
     "require_model_match",
+    "model_match_reason",
     "off_protocol",
 )
 
@@ -1525,24 +1526,31 @@ def comparable_model_id(value) -> str | None:
     return text or None
 
 
-def request_model_mismatch(records: list | None) -> bool:
-    """True when a ledger request asked for a different model than Vertex served.
+def model_match_reasons(records: list | None) -> list[str]:
+    """Reasons a ledger fails ``--require-model-match``.
 
-    A missing ``requested_model`` or ``upstream_model`` is a mismatch. Older
-    proxy ledgers never stored ``requested_model``. With
-    ``--require-model-match`` those rows are ``off_protocol`` and the batch
-    stops; they are not treated as a match. With the flag off, a missing id
-    does not by itself halt, and the cell records ``requested_model`` as null.
-    An empty ledger does not mismatch.
+    ``model_mismatch``: both ids are present and they differ.
+    ``model_unrecorded``: a row has no requested id or no upstream id.
+    A missing id is not a mismatch. An empty ledger has neither reason.
     """
+    mismatch = False
+    unrecorded = False
     for record in records or []:
         if not isinstance(record, dict):
             continue
         requested = comparable_model_id(record.get("requested_model"))
         upstream = comparable_model_id(record.get("upstream_model"))
-        if requested is None or upstream is None or requested != upstream:
-            return True
-    return False
+        if requested is None or upstream is None:
+            unrecorded = True
+            continue
+        if requested != upstream:
+            mismatch = True
+    reasons = []
+    if mismatch:
+        reasons.append("model_mismatch")
+    if unrecorded:
+        reasons.append("model_unrecorded")
+    return reasons
 
 
 def requests_off_protocol(
@@ -1593,9 +1601,11 @@ def attach_proxy_trace(
     ``off_protocol`` is true when any request's upstream model is not
     ``protocol_model`` or any request's location is not ``global``.
     With ``require_model_match``, a request whose model id differs from the
-    upstream id is off protocol too. That check is off unless the caller
-    opts in, so a harness that asks for Opus while Vertex serves Sonnet
-    still scores.
+    upstream id is off protocol (``model_match_reason=model_mismatch``). A
+    row with no requested or upstream id is also off protocol, with
+    ``model_match_reason=model_unrecorded``, and is not counted as a
+    mismatch. That check is off unless the caller opts in, so a harness
+    that asks for Opus while Vertex serves Sonnet still scores.
     """
     if not isinstance(row, dict):
         return row
@@ -1617,8 +1627,10 @@ def attach_proxy_trace(
     model = protocol_model.strip() if isinstance(protocol_model, str) and protocol_model.strip() else None
     row["protocol_model"] = model
     row["require_model_match"] = bool(require_model_match)
+    reasons = model_match_reasons(counted) if require_model_match else []
+    row["model_match_reason"] = "+".join(reasons) if reasons else None
     off = requests_off_protocol(counted, model, protocol_location)
-    if require_model_match and request_model_mismatch(counted):
+    if reasons:
         off = True
     row["off_protocol"] = off
     return row
@@ -2011,7 +2023,8 @@ def off_protocol_halt(out_dir: Path) -> str | None:
             f"{rel} upstream_model={row.get('upstream_model')} "
             f"protocol_model={row.get('protocol_model')} "
             f"endpoint_location={row.get('endpoint_location')} "
-            f"requested_model={row.get('requested_model')}; "
+            f"requested_model={row.get('requested_model')} "
+            f"model_match_reason={row.get('model_match_reason')}; "
             "not launching more cells"
         )
     return None
@@ -2725,9 +2738,10 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Also mark a cell off_protocol, and halt, when the model id on the "
             "incoming request differs from the Vertex model that was served. "
-            "A ledger row with no requested_model (older proxies) is off_protocol "
-            "too: the match cannot be shown. Off by default, so H2 and PR 3052 "
-            "reruns that ask for Opus and are served Sonnet still run."
+            "A ledger row with no requested or upstream model is off_protocol "
+            "with model_match_reason=model_unrecorded, not model_mismatch. "
+            "Off by default, so H2 and PR 3052 reruns that ask for Opus and "
+            "are served Sonnet still run."
         ),
     )
     parser.add_argument(
