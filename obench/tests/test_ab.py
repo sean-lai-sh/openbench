@@ -209,7 +209,7 @@ class TestSchedule(unittest.TestCase):
         )
         self.assertEqual(calls, [1])
         self.assertEqual(launched, 1)
-        self.assertEqual(stopped, "estimated cost $29.20 reached the $10.00 cap")
+        self.assertEqual(stopped, "proxy cost $29.20 reached the $10.00 cap")
 
     def test_unmetered_row_stops_new_launches(self):
         out = Path(tempfile.mkdtemp())
@@ -2841,10 +2841,11 @@ def test_row_cost_prices_per_upstream_model():
         "requests_cache_write": 1_000_000,
     }
     assert row_cost(dict(base, upstream_model="claude-opus-5-5")) == pytest.approx(29.2)
-    assert row_cost(dict(base, upstream_model="claude-sonnet-5-5")) == pytest.approx(14.6)
-    # Unknown or missing upstream model keeps the Opus default (upper bound).
+    # Sonnet pin: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+    assert row_cost(dict(base, upstream_model="claude-sonnet-5-5")) == pytest.approx(22.05)
+    # A missing model id keeps the Opus default. A model not in the table does not.
     assert row_cost(base) == pytest.approx(29.2)
-    assert row_cost(dict(base, upstream_model="claude-opus-5-5+claude-sonnet-5-5")) == pytest.approx(29.2)
+    assert row_cost(dict(base, upstream_model="claude-opus-5-5+claude-sonnet-5-5")) is None
 
 
 def test_attach_upstream_model_from_ledger():

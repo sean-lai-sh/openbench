@@ -8,7 +8,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from thesis.ab.run_ab import apply_cell_meter, main, over_budget
-from thesis.ab.summarize import proxy_cost_from_records, proxy_cost_usd, row_cost
+from thesis.ab.summarize import (
+    PRICE_TABLE_PATH,
+    load_price_table,
+    proxy_cost_from_records,
+    proxy_cost_usd,
+    row_cost,
+)
 from thesis.ab.vertex_anthropic_proxy import AdcToken, ProxyError, adc_credentials_path
 
 
@@ -50,21 +56,89 @@ _SMOKE = {
 }
 
 
+def _price_table() -> dict:
+    return load_price_table()
+
+
+def _hand_smoke_cost() -> float:
+    """1028c OpenCode cell, priced from the committed table by hand."""
+    rates = _price_table()["models"]["claude-sonnet-5-5"]
+    return (
+        _SMOKE["input_uncached"] * rates["input"]
+        + _SMOKE["output"] * rates["output"]
+        + _SMOKE["cache_read"] * rates["cache_read"]
+        + _SMOKE["cache_write"] * rates["cache_write"]
+    ) / 1_000_000
+
+
 def _smoke_cost() -> float:
     return proxy_cost_usd("claude-sonnet-5-5", **_SMOKE)
 
 
 class ProxyCostTests(unittest.TestCase):
+    def test_price_table_records_when_it_was_read(self):
+        table = _price_table()
+        self.assertEqual(PRICE_TABLE_PATH.name, "vertex_list_prices.json")
+        self.assertRegex(table["read_on"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertTrue(str(table["source_url"]).startswith("https://"))
+        for rates in table["models"].values():
+            for key in ("input", "output", "cache_write", "cache_read"):
+                self.assertGreater(rates[key], 0)
+
     def test_ledger_tokens_price_at_vertex_list_rates(self):
         cost = _smoke_cost()
-        self.assertAlmostEqual(cost, (12 * 2 + 3956 * 10 + 49813 * 2.5) / 1_000_000)
-        self.assertGreater(cost, 0.1)
+        hand = _hand_smoke_cost()
+        # 1028c: cache write 49813, input 12, output 3956.
+        # List pin is $3 / $15 / $3.75 cache-write per M, about $0.246.
+        # The old $2 / $10 / $2.50 card priced this cell at about $0.164.
+        self.assertAlmostEqual(cost, hand)
+        self.assertAlmostEqual(hand, (12 * 3 + 3956 * 15 + 49813 * 3.75) / 1_000_000)
+        self.assertAlmostEqual(hand, 0.24617475)
+        self.assertGreater(cost, 0.2)
         records = [{
             "record_type": "request",
             "upstream_model": "claude-sonnet-5-5",
             **_SMOKE,
         }]
         self.assertAlmostEqual(proxy_cost_from_records(records), cost)
+
+    def test_unknown_model_is_not_free_and_stops_spend(self):
+        self.assertIsNone(proxy_cost_usd(
+            "claude-haiku-5-5", input_uncached=1_000_000, output=1,
+        ))
+        self.assertIsNone(row_cost({
+            "upstream_model": "claude-haiku-5-5",
+            "tokens_input_uncached": 1_000_000,
+            "tokens_output": 1,
+            "tokens_cache_read": 0,
+            "tokens_cache_write": 0,
+        }))
+        records = [{
+            "record_type": "request",
+            "upstream_model": "claude-haiku-5-5",
+            **_SMOKE,
+        }]
+        self.assertIsNone(proxy_cost_from_records(records))
+        ledger = Path(tempfile.mkdtemp())
+        cell_id = "unknown-model"
+        (ledger / f"{cell_id}.jsonl").write_text(
+            json.dumps({"record_type": "request", **records[0]}) + "\n",
+            encoding="utf-8",
+        )
+        row = {}
+        apply_cell_meter(row, {"ledger_dir": str(ledger), "cell_id": cell_id})
+        self.assertIsNone(row["proxy_cost_usd"])
+        self.assertNotEqual(row["proxy_cost_usd"], 0.0)
+        out = Path(tempfile.mkdtemp())
+        path = out / "1" / "cells" / "with" / "task" / "1.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({
+            **row,
+            "failure_class": "solved",
+        }), encoding="utf-8")
+        reason = over_budget(out, 1_000_000)
+        self.assertIsNotNone(reason)
+        self.assertIn("unmetered", reason)
 
     def test_cell_record_keeps_proxy_cost_apart_from_harness_tokens(self):
         ledger = Path(tempfile.mkdtemp())
