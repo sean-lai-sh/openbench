@@ -175,6 +175,8 @@ Stock OpenCode from v1.0.123 (PR 4838) through v1.15.2 (PR 26821) imports `@ai-s
 
 The shared proxy is `thesis/ab/vertex_anthropic_proxy.py`. It listens on a local base URL and forwards to Vertex Claude (`claude-sonnet-5-5` or `claude-opus-5-5`) on the global endpoint. A harness uses it by setting a base URL. The proxy holds the Vertex credential. Any non-empty API key is accepted and is not sent upstream. `temperature`, `top_p`, and `top_k` are dropped for these two models, because Vertex rejects them.
 
+`OBENCH_THINKING_BLOCK_BINDING` is off unless it is `drop_block`. The same switch is `--thinking-block-binding`. Off, replayed `thinking` and `redacted_thinking` blocks are forwarded as the harness sent them, which is the Pi vs OpenCode batch. `drop_block` strips those blocks from message history when that request has thinking disabled, and does not turn thinking on. When the request already enables thinking, `drop_block` still sets `thinking.block_binding.prefix_mismatch_behavior=drop_block` and leaves the history in place. Every ledger row and every result row records `thinking_block_binding` as `off` or `drop_block`, and `thinking_blocks_stripped` as how many blocks were removed. A Vertex 400 whose body says `Invalid signature in thinking block` is tagged `env_cause=vertex_thinking_signature`. No other env cause is assigned. The 3052 and 5140 filter-js reruns pass `drop_block`.
+
 | Env var | Who sets it | Effect |
 | --- | --- | --- |
 | `ANTHROPIC_BASE_URL` | Anthropic Messages harnesses (OpenCode, Pi, Oh My Pi, Claude Code) | `POST /v1/messages`, streaming and non-streaming. Tools, `tool_use`, `tool_result`, and `cache_control` are forwarded. Point this at `<proxy>/c/<cell-id>/v1` so the call is metered on that cell. `ANTHROPIC_API_KEY` can be the dummy `proxy`. |
@@ -300,6 +302,8 @@ python -m thesis.ab.build_omp <40-character-sha> --cache results/harness-src
 From Oh My Pi 14.x on, the build uses the prebuilt `@oh-my-pi/pi-natives@<version>` package when it contains this platform's `.node` file, and otherwise `@oh-my-pi/pi-natives-<platform>` (`linux-x64-modern.node` and `linux-x64-baseline.node` on x64). That path does not run cargo. When `crates/` does not match that version's tag and `packages/natives/CHANGELOG.md` has a non-empty `## [Unreleased]` section, the build installs the next published `@oh-my-pi/pi-natives` version instead. It prints `pi-natives <version>` and writes that version to `natives-version` beside the binary. A checkout with no published binary is built from source. If the host rustc is not the checkout's toolchain, the build stops and names the channel it needs (rustc 1.85.1 against `nightly-2026-03-27`, for example).
 
 `--omp-thinking` is `default`, `adaptive`, or `off`. It applies only to Oh My Pi's vertex-anthropic `models.yml`. `adaptive` pins `thinking.type` to `adaptive`. `off` sets `reasoning: false`. `default` leaves reasoning on and does not pin a type. Every proxy ledger row records that configured mode and the thinking field that request sent (`none`, `enabled+budget_tokens`, or `adaptive`). Every result row records the same configured mode and the per-request values in ledger order.
+
+`--thinking-block-binding` is `off` or `drop_block`. Leaving it unset does not change `OBENCH_THINKING_BLOCK_BINDING`, so a run that does not pass the flag stays on today's proxy behaviour. `drop_block` is the opt-in for the 3052 and 5140 filter-js full-pair reruns. Every cell records the value in effect as `thinking_block_binding`.
 
 ## Oldest OpenCode commit in the fixture
 

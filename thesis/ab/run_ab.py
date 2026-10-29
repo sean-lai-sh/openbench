@@ -1009,12 +1009,52 @@ def ledger_records(proxy: dict | None) -> list:
     return read_proxy_ledger(str(ledger), str(cell))
 
 
+def _thinking_block_binding_from(records: list | None) -> tuple[str, int, str | None]:
+    """Setting in effect, blocks stripped, and the one signature cause.
+
+    The setting is the value recorded on the ledger when a request wrote one,
+    otherwise the process setting (``off`` when the run did not opt in).
+    ``env_cause`` is ``vertex_thinking_signature`` or None. No other cause is set.
+    """
+    from thesis.ab.vertex_anthropic_proxy import (
+        BLOCK_BINDING_DROP,
+        BLOCK_BINDING_OFF,
+        ENV_CAUSE_THINKING_SIGNATURE,
+        env_cause_for_status,
+        thinking_block_binding_setting,
+    )
+    found = None
+    stripped = 0
+    cause = None
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        value = record.get("thinking_block_binding")
+        if found is None and value in {BLOCK_BINDING_OFF, BLOCK_BINDING_DROP}:
+            found = value
+        count = record.get("thinking_blocks_stripped")
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            stripped += count
+        error = record.get("error") if isinstance(record.get("error"), str) else ""
+        if (
+            record.get("env_cause") == ENV_CAUSE_THINKING_SIGNATURE
+            or env_cause_for_status(record.get("status"), error)
+        ):
+            cause = ENV_CAUSE_THINKING_SIGNATURE
+    return found or thinking_block_binding_setting(), stripped, cause
+
+
 def attach_thinking(row: dict, mode: str, records: list | None = None) -> dict:
     """Record the configured thinking mode and what each request sent.
 
     A ledger row stores one ``thinking_sent`` string (``none``,
     ``enabled+budget_tokens``, or ``adaptive``). A result row stores the
     configured mode and those per-request values in ledger order.
+
+    ``thinking_block_binding`` is the per-run setting in effect (``off`` or
+    ``drop_block``) on every cell. ``thinking_blocks_stripped`` is how many
+    replayed thinking blocks the proxy removed. A Vertex 400 for an invalid
+    thinking signature sets ``env_cause`` to ``vertex_thinking_signature``.
     """
     if not isinstance(row, dict):
         return row
@@ -1027,6 +1067,11 @@ def attach_thinking(row: dict, mode: str, records: list | None = None) -> dict:
         if value in {"none", "enabled+budget_tokens", "adaptive"}:
             sent.append(value)
     row["thinking_sent"] = sent
+    binding, stripped, cause = _thinking_block_binding_from(records)
+    row["thinking_block_binding"] = binding
+    row["thinking_blocks_stripped"] = stripped
+    if cause:
+        row["env_cause"] = cause
     return row
 
 
@@ -1602,6 +1647,11 @@ def apply_cell_meter(
     ledger_path = cell_ledger_path(Path(str(ledger)), str(cell))
     from thesis.ab.route import route_label
     row["route"] = route_label(proxy, sum(1 for r in records or [] if isinstance(r, dict)))
+    binding, stripped_blocks, cause = _thinking_block_binding_from(records)
+    row["thinking_block_binding"] = binding
+    row["thinking_blocks_stripped"] = stripped_blocks
+    if cause:
+        row["env_cause"] = cause
     if not records:
         # An empty ledger file is a measured zero. A missing file is not.
         present = ledger_path.is_file()
@@ -2588,6 +2638,27 @@ def _tasks_dir_from_discovery() -> Path:
     return Path(roots[0][1])
 
 
+def apply_thinking_block_binding_flag(flag: str | None) -> str:
+    """Install ``--thinking-block-binding`` for this process. None leaves the env.
+
+    ``off`` clears ``OBENCH_THINKING_BLOCK_BINDING``. ``drop_block`` sets it.
+    The return value is the setting the proxy will record (``off`` or ``drop_block``).
+    """
+    from thesis.ab.vertex_anthropic_proxy import (
+        BLOCK_BINDING_DROP,
+        BLOCK_BINDING_ENV,
+        BLOCK_BINDING_OFF,
+        thinking_block_binding_setting,
+    )
+    if flag == BLOCK_BINDING_DROP:
+        os.environ[BLOCK_BINDING_ENV] = BLOCK_BINDING_DROP
+    elif flag == BLOCK_BINDING_OFF:
+        os.environ.pop(BLOCK_BINDING_ENV, None)
+    elif flag is not None:
+        raise RunError(f"unknown thinking block binding {flag!r}")
+    return thinking_block_binding_setting()
+
+
 def main(argv: list[str] | None = None) -> int:
     global CELL_TIMEOUT_CAP_S, EXEC_MODE, CELL_META, DOCKER_IMAGE
     parser = argparse.ArgumentParser(description="A/B harness commits on the same tasks")
@@ -2673,6 +2744,22 @@ def main(argv: list[str] | None = None) -> int:
             "Thinking pin for Oh My Pi vertex-anthropic models.yml. "
             "default leaves reasoning on. adaptive sets thinking.type to adaptive. "
             "off sets reasoning to false. Recorded on every ledger row and result row."
+        ),
+    )
+    parser.add_argument(
+        "--thinking-block-binding",
+        choices=("off", "drop_block"),
+        default=None,
+        help=(
+            "Per-run proxy setting for replayed thinking blocks. "
+            "Unset (the default) leaves OBENCH_THINKING_BLOCK_BINDING alone, "
+            "which is off unless that variable is already drop_block. "
+            "off forces the proxy to forward history unchanged. "
+            "drop_block strips thinking and redacted_thinking blocks when the "
+            "request has thinking disabled, and keeps the prefix-mismatch "
+            "block_binding when thinking is already enabled. "
+            "Recorded on every cell as thinking_block_binding. "
+            "The 3052 and 5140 filter-js reruns pass drop_block."
         ),
     )
     parser.add_argument(
@@ -2842,16 +2929,24 @@ def main(argv: list[str] | None = None) -> int:
             cache = Path("results/harness-src")
         else:
             cache = Path("results/opencode-src")
-        plan, launched, stopped = drive(
-            prs, tasks, args.trials, args.out,
-            jobs=args.jobs, model=args.model, timeout_s=args.timeout,
-            cache=cache, max_cost_usd=spend_cap, dry_run=args.dry_run,
-            tasks_dir=tasks_dir, model_route=args.model_route,
-            transcripts_dir=args.transcripts_dir, aa=args.aa,
-            fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
-            no_progress_s=args.no_progress_s, omp_thinking=args.omp_thinking,
-            vertex_model=args.vertex_model,
-        )
+        saved_binding = os.environ.get("OBENCH_THINKING_BLOCK_BINDING")
+        try:
+            apply_thinking_block_binding_flag(args.thinking_block_binding)
+            plan, launched, stopped = drive(
+                prs, tasks, args.trials, args.out,
+                jobs=args.jobs, model=args.model, timeout_s=args.timeout,
+                cache=cache, max_cost_usd=spend_cap, dry_run=args.dry_run,
+                tasks_dir=tasks_dir, model_route=args.model_route,
+                transcripts_dir=args.transcripts_dir, aa=args.aa,
+                fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
+                no_progress_s=args.no_progress_s, omp_thinking=args.omp_thinking,
+                vertex_model=args.vertex_model,
+            )
+        finally:
+            if saved_binding is None:
+                os.environ.pop("OBENCH_THINKING_BLOCK_BINDING", None)
+            else:
+                os.environ["OBENCH_THINKING_BLOCK_BINDING"] = saved_binding
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
