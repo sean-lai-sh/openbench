@@ -2301,6 +2301,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["turns"] = result.get("turns")
         row["cmd"] = result.get("cmd")
         row["output_tail"] = result.get("output_tail") or ""
+        progress_kind = result.get("last_progress_kind")
+        if isinstance(progress_kind, str) and progress_kind:
+            row["last_progress_kind"] = progress_kind
         row["agent_mode"] = result.get("agent_mode")
         row["turn_mode"] = result.get("turn_mode")
         turn1_exit = result.get("turn1_exit")

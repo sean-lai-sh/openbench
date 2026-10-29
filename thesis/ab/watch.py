@@ -1,12 +1,15 @@
 """No-progress watchdog for one A/B cell.
 
-Progress is new stdout, growth under ``$XDG_DATA_HOME/opencode`` (logs and
+Progress is new stdout, a ``message.part.updated`` event on stdout or in
+the OpenCode logs, growth under ``$XDG_DATA_HOME/opencode`` (logs and
 storage), a larger per-cell request ledger, or a larger in-flight byte
 counter beside that ledger. The ledger is the file that records every
 finished ``/c/<cell_id>/`` request. A stream does not append that file
 until the request ends, so chunks also update the sibling ``.bytes`` file.
-A fatal ``Aborted(`` or tree-sitter wasm ENOENT line kills the process
-immediately. Silence for ``no_progress_s`` kills it as ``no_progress``.
+Either of those stream signals (a part update, or streamed bytes) resets
+the idle clock. A fatal ``Aborted(`` or tree-sitter wasm ENOENT line kills
+the process immediately. Silence for ``no_progress_s`` (``NO_PROGRESS_S``,
+300s) kills it as ``no_progress``.
 """
 
 from __future__ import annotations
@@ -17,7 +20,26 @@ import select
 import signal
 import subprocess
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Shared with run_ab, the monorepo smoke gate, and scoring-parity replay.
+# Replay classifies through apply_watchdog_class; it does not re-time the cell.
+NO_PROGRESS_S = 300.0
+PART_UPDATED = "message.part.updated"
+# Bookkeeping after SIGKILL, plus one-second log timestamps.
+_STREAM_WINDOW_SLACK_S = 5.0
+_KIND_RANK = {
+    "part_updated": 0,
+    "stream_bytes": 1,
+    "stdout": 2,
+    "log": 3,
+    "ledger": 4,
+    "storage": 5,
+}
+_LOG_TS_RE = re.compile(
+    r"(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)"
+)
 
 FATAL_RE = re.compile(
     r"failed to asynchronously prepare wasm|Aborted\(|ENOENT:[^\n]*tree-sitter[^\n]*\.wasm"
@@ -38,10 +60,11 @@ class PromptIdle(Exception):
 
 
 class WatchdogKill(Exception):
-    def __init__(self, reason: str, idle_s: float, output: str):
+    def __init__(self, reason: str, idle_s: float, output: str, last_progress_kind=None):
         self.reason = reason
         self.idle_s = float(idle_s)
         self.output = output
+        self.last_progress_kind = last_progress_kind
         super().__init__(self.marker())
 
     def marker(self) -> str:
@@ -49,10 +72,11 @@ class WatchdogKill(Exception):
 
 
 class _Done:
-    def __init__(self, returncode: int, stdout: str):
+    def __init__(self, returncode: int, stdout: str, last_progress_kind=None):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = ""
+        self.last_progress_kind = last_progress_kind
 
 
 def _file_size(path: str | Path | None) -> int | None:
@@ -167,6 +191,25 @@ def kill_process_group(proc) -> None:
             return
 
 
+def _best_kind(*kinds: str | None) -> str | None:
+    """The stream signal in this poll, if one moved; otherwise the other kind."""
+    chosen = None
+    for kind in kinds:
+        if not kind:
+            continue
+        if chosen is None or _KIND_RANK[kind] < _KIND_RANK[chosen]:
+            chosen = kind
+    return chosen
+
+
+def _text_kind(text: str, *, fallback: str) -> str | None:
+    if not text:
+        return None
+    if PART_UPDATED in text:
+        return "part_updated"
+    return fallback
+
+
 def _proxy_progress(
     *,
     bytes_path: str | None,
@@ -174,31 +217,34 @@ def _proxy_progress(
     last_bytes: int | None,
     last_ledger: int | None,
     last_stream: int | None,
-) -> tuple[bool, int | None, int | None, int | None]:
-    """Return whether the cell's proxy accounting moved, plus the new marks.
+) -> tuple[str | None, int | None, int | None, int | None]:
+    """Return which proxy file moved, plus the new marks.
 
     ``ledger_path`` is the per-cell request JSONL. A finished request appends
-    a line, so a larger file is progress. ``bytes_path``, or the ``.bytes``
-    sibling of the ledger, is the in-flight stream total. A value that does
-    not parse is ignored.
+    a line, so a larger file is progress (``ledger``). ``bytes_path``, or the
+    ``.bytes`` sibling of the ledger, is the in-flight stream total
+    (``stream_bytes``). A value that does not parse is ignored. Streamed
+    bytes outrank a ledger append in the same poll: the request row is
+    written only when the stream ends.
     """
-    progressed = False
+    kind = None
     current = read_byte_total(bytes_path)
     if current is not None and (last_bytes is None or current > last_bytes):
         last_bytes = current
-        progressed = True
+        kind = "stream_bytes"
     size = _file_size(ledger_path)
     if size is not None and (last_ledger is None or size > last_ledger):
         last_ledger = size
-        progressed = True
+        if kind is None:
+            kind = "ledger"
     stream_path = None
     if ledger_path and not bytes_path:
         stream_path = str(Path(ledger_path).with_suffix(".bytes"))
     stream = read_byte_total(stream_path)
     if stream is not None and (last_stream is None or stream > last_stream):
         last_stream = stream
-        progressed = True
-    return progressed, last_bytes, last_ledger, last_stream
+        kind = "stream_bytes"
+    return kind, last_bytes, last_ledger, last_stream
 
 
 def run_piped(
@@ -238,6 +284,7 @@ def run_piped(
     start = time.monotonic()
     last_progress = start
     last_stdout = start
+    last_kind = None
     prompted = False
     data_root = _data_root(env)
     last_sig = _tree_signature(data_root)
@@ -273,29 +320,50 @@ def run_piped(
         carry = (carry + text)[-400:]
         return bool(FATAL_RE.search(carry))
 
+    def read_stdout(wait_s: float) -> str:
+        """Read what is already buffered, after an optional short wait.
+
+        One poll can spend a long time walking a large OpenCode tree
+        (regex-chess and model-extraction sessions). Bytes that arrive
+        during that walk must still count before the idle decision.
+        """
+        pieces = []
+        timeout = wait_s
+        while len(pieces) < 8:
+            ready, _, _ = select.select([pipe], [], [], timeout)
+            timeout = 0
+            if not ready:
+                break
+            try:
+                piece = os.read(fd, 65536)
+            except BlockingIOError:
+                break
+            if not piece:
+                break
+            pieces.append(piece.decode("utf-8", "replace"))
+        return "".join(pieces)
+
+    def observe(kind: str | None) -> None:
+        nonlocal last_progress, last_kind
+        if not kind:
+            return
+        # Stamp the observation, not the start of a slow poll.
+        last_progress = time.monotonic()
+        last_kind = kind
+
     try:
         while True:
-            ready, _, _ = select.select([pipe], [], [], 0.2)
-            now = time.monotonic()
-            progressed = False
             fatal = False
-            if ready:
-                try:
-                    piece = os.read(fd, 65536)
-                except BlockingIOError:
-                    piece = b""
-                if piece:
-                    decoded = piece.decode("utf-8", "replace")
-                    fatal = note_text(decoded) or fatal
-                    last_stdout = now
-                    progressed = True
-                    reason = pin_reason(decoded) or pin_reason(carry)
-                    if reason and pin_error is not None:
-                        kill_process_group(proc)
-                        raise pin_error(reason, output())
+            decoded = read_stdout(0.2)
+            if decoded:
+                fatal = note_text(decoded) or fatal
+                last_stdout = time.monotonic()
+                reason = pin_reason(decoded) or pin_reason(carry)
+                if reason and pin_error is not None:
+                    kill_process_group(proc)
+                    raise pin_error(reason, output())
             log_text = _new_log_text(data_root, log_offsets)
             if log_text:
-                progressed = True
                 log_carry = (log_carry + log_text)[-400:]
                 reason = pin_reason(log_text) or pin_reason(log_carry)
                 if reason and pin_error is not None:
@@ -304,25 +372,60 @@ def run_piped(
                 if FATAL_RE.search(log_carry):
                     fatal = True
             signature = _tree_signature(data_root)
+            storage_kind = None
             if signature != last_sig:
                 last_sig = signature
-                progressed = True
-            moved, last_bytes, last_ledger, last_stream = _proxy_progress(
+                storage_kind = "storage"
+            proxy_kind, last_bytes, last_ledger, last_stream = _proxy_progress(
                 bytes_path=bytes_path,
                 ledger_path=ledger_path,
                 last_bytes=last_bytes,
                 last_ledger=last_ledger,
                 last_stream=last_stream,
             )
-            if moved:
-                progressed = True
+            # The tree walk above can outlast the idle window. Drain the
+            # pipe and the byte counter again so a part update or chunk
+            # that landed during the walk still resets the clock.
+            extra = read_stdout(0)
+            if extra:
+                fatal = note_text(extra) or fatal
+                last_stdout = time.monotonic()
+                decoded = decoded + extra
+                reason = pin_reason(extra) or pin_reason(carry)
+                if reason and pin_error is not None:
+                    kill_process_group(proc)
+                    raise pin_error(reason, output())
+            extra_log = _new_log_text(data_root, log_offsets)
+            if extra_log:
+                log_text = (log_text or "") + extra_log
+                log_carry = (log_carry + extra_log)[-400:]
+                reason = pin_reason(extra_log) or pin_reason(log_carry)
+                if reason and pin_error is not None:
+                    kill_process_group(proc)
+                    raise pin_error(reason, output())
+                if FATAL_RE.search(log_carry):
+                    fatal = True
+            proxy_again, last_bytes, last_ledger, last_stream = _proxy_progress(
+                bytes_path=bytes_path,
+                ledger_path=ledger_path,
+                last_bytes=last_bytes,
+                last_ledger=last_ledger,
+                last_stream=last_stream,
+            )
+            kind = _best_kind(
+                _text_kind(decoded, fallback="stdout"),
+                _text_kind(log_text, fallback="log"),
+                storage_kind,
+                proxy_kind,
+                proxy_again,
+            )
             if fatal:
+                idle = max(0.0, time.monotonic() - last_progress)
                 kill_process_group(proc)
                 raise WatchdogKill(
-                    "wasm_abort", max(0.0, now - last_progress), output()
+                    "wasm_abort", idle, output(), kind or last_kind,
                 )
-            if progressed:
-                last_progress = now
+            observe(kind)
             if proc.poll() is not None:
                 try:
                     rest = os.read(fd, 65536)
@@ -331,32 +434,39 @@ def run_piped(
                 if rest:
                     decoded = rest.decode("utf-8", "replace")
                     wasm = note_text(decoded)
+                    rest_kind = _text_kind(decoded, fallback="stdout")
                     reason = pin_reason(decoded) or pin_reason(output()[-2000:])
                     if reason and pin_error is not None:
                         kill_process_group(proc)
                         raise pin_error(reason, output())
                     if wasm:
+                        idle = max(0.0, time.monotonic() - last_progress)
                         kill_process_group(proc)
                         raise WatchdogKill(
-                            "wasm_abort", max(0.0, now - last_progress), output()
+                            "wasm_abort", idle, output(), rest_kind or last_kind,
                         )
+                    observe(rest_kind)
                 break
             if prompt_re is not None and not prompted and prompt_re.search(output()):
                 prompted = True
+            now = time.monotonic()
             if prompted and now - last_stdout >= prompt_idle_s:
                 kill_process_group(proc)
                 raise PromptIdle(output())
             if no_progress_s > 0 and now - last_progress >= no_progress_s:
                 kill_process_group(proc)
                 raise WatchdogKill(
-                    "no_progress", max(0.0, now - last_progress), output()
+                    "no_progress",
+                    max(0.0, now - last_progress),
+                    output(),
+                    last_kind,
                 )
             if now - start >= timeout_s:
                 text = output()
                 kill_process_group(proc)
                 raise subprocess.TimeoutExpired(cmd, timeout_s, output=text)
         code = proc.wait(timeout=5)
-        return _Done(code, output())
+        return _Done(code, output(), last_kind)
     finally:
         if proc.poll() is None:
             kill_process_group(proc)
@@ -420,6 +530,141 @@ def apply_watchdog_class(row: dict) -> dict:
         row["no_progress_idle_s"] = idle
     else:
         row.pop("no_progress_idle_s", None)
+    return row
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_log_ts(value: str) -> datetime | None:
+    try:
+        if "." in value:
+            parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f")
+        else:
+            parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+    return _as_utc(parsed)
+
+
+def _row_text(row: dict, logs: str | None = None) -> str:
+    parts = [str(row.get(key) or "") for key in ("error", "output_tail", "full_output")]
+    if logs:
+        parts.append(logs)
+    return "\n".join(parts)
+
+
+def _is_no_progress_kill(row: dict) -> bool:
+    if row.get("hang_reason") == "no_progress" or row.get("infra_reason") == "no_progress":
+        return True
+    match = _MARKER_RE.search(_row_text(row))
+    return bool(match and match.group(1) == "no_progress")
+
+
+def _idle_limit(row: dict) -> float:
+    value = row.get("no_progress_idle_s")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    match = _MARKER_RE.search(_row_text(row))
+    if match and match.group(1) == "no_progress":
+        return float(match.group(2))
+    return NO_PROGRESS_S
+
+
+def _kill_time(row: dict) -> datetime | None:
+    """When the watchdog fired, from the cell clock, not a re-run."""
+    started = row.get("started_at")
+    elapsed = row.get("t_agent_s")
+    if (
+        isinstance(started, str)
+        and isinstance(elapsed, (int, float))
+        and not isinstance(elapsed, bool)
+    ):
+        try:
+            start = datetime.fromisoformat(started)
+        except ValueError:
+            start = None
+        if start is not None:
+            return _as_utc(start) + timedelta(seconds=float(elapsed))
+    for key in ("ended_at", "ended_et"):
+        raw = row.get(key)
+        if not isinstance(raw, str) or "T" not in raw:
+            continue
+        try:
+            return _as_utc(datetime.fromisoformat(raw))
+        except ValueError:
+            continue
+    return None
+
+
+def part_updated_times(text: str) -> list[datetime]:
+    """Timestamps of ``message.part.updated`` lines in an OpenCode log or tail.
+
+    A line without its own timestamp uses the previous timestamped line, which
+    is how a JSON event sits under the ``--print-logs`` line that emitted it.
+    OpenCode's log clock is UTC.
+    """
+    found = []
+    last = None
+    for line in (text or "").splitlines():
+        match = _LOG_TS_RE.search(line)
+        if match:
+            parsed = _parse_log_ts(match.group("ts"))
+            if parsed is not None:
+                last = parsed
+        if PART_UPDATED in line and last is not None:
+            found.append(last)
+    return found
+
+
+def part_updated_within_idle(
+    row: dict,
+    logs: str | None = None,
+    *,
+    slack_s: float = _STREAM_WINDOW_SLACK_S,
+) -> bool:
+    """True when a no-progress kill still had part updates inside the idle window.
+
+    The window is the ``idle_s`` seconds before the kill, plus ``slack_s`` for
+    the second-resolution log clock and the time between SIGKILL and the
+    cell's recorded end. A part update that only happened long before that
+    window is a real silence, not a stream the old rule cut off.
+    """
+    if not isinstance(row, dict) or not _is_no_progress_kill(row):
+        return False
+    kill = _kill_time(row)
+    if kill is None:
+        return False
+    limit = _idle_limit(row) + float(slack_s)
+    slack = float(slack_s)
+    for event in part_updated_times(_row_text(row, logs)):
+        age = (kill - event).total_seconds()
+        if -slack <= age <= limit:
+            return True
+    return False
+
+
+def label_watchdog_stream(
+    row: dict,
+    logs: str | None = None,
+    *,
+    slack_s: float = _STREAM_WINDOW_SLACK_S,
+) -> dict:
+    """Label an old streaming kill without re-running it.
+
+    Sets ``failure_class=env_failure`` and ``env_cause=watchdog_stream`` when
+    ``part_updated_within_idle`` is true. Other rows are left as stored.
+    Scoring replay does not call this: ``apply_watchdog_class`` stays the
+    live and replay classifier.
+    """
+    if not isinstance(row, dict):
+        return row
+    if part_updated_within_idle(row, logs, slack_s=slack_s):
+        row["failure_class"] = "env_failure"
+        row["env_cause"] = "watchdog_stream"
     return row
 
 

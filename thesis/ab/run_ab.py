@@ -57,6 +57,7 @@ from thesis.ab.proxy_bridge import (
     read_proxy_observed,
 )
 from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
+from thesis.ab.watch import NO_PROGRESS_S
 
 CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
@@ -2121,7 +2122,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
           transcripts_dir=None, aa: bool = False, fixtures=None,
           order: str = "sides", seed: int | None = None, with_aa: bool = False,
-          no_progress_s: float = 300, omp_thinking: str = "default",
+          no_progress_s: float = NO_PROGRESS_S, omp_thinking: str = "default",
           vertex_model: str = "claude-opus-5-5"):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
@@ -2493,12 +2494,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-progress-s",
         type=float,
-        default=300,
+        default=NO_PROGRESS_S,
         help=(
             "Kill the agent when stdout, OpenCode logs and storage, and "
             "metered proxy bytes are all idle for this many seconds. "
-            "0 disables the watchdog. A fatal Aborted( or tree-sitter wasm "
-            "ENOENT still kills immediately while the watchdog is on."
+            "A message.part.updated event or streamed proxy bytes resets "
+            "the idle clock. 0 disables the watchdog. A fatal Aborted( or "
+            "tree-sitter wasm ENOENT still kills immediately while the "
+            "watchdog is on."
         ),
     )
     parser.add_argument("--out", type=Path, default=Path("results/ab"))

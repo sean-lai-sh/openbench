@@ -1507,10 +1507,11 @@ class _PromptWait(Exception):
 
 
 class _WatchdogKill(Exception):
-    def __init__(self, text, output):
+    def __init__(self, text, output, last_progress_kind=None):
         super().__init__(text)
         self.text = text
         self.output = output
+        self.last_progress_kind = last_progress_kind
 
 
 def _no_progress_limit():
@@ -1553,7 +1554,7 @@ def _invoke_watched(cmd, cwd, env, timeout_s, watch_prompt, limit):
     except watch.PromptIdle as exc:
         raise _PromptWait(exc.output) from exc
     except watch.WatchdogKill as exc:
-        raise _WatchdogKill(exc.marker(), exc.output) from exc
+        raise _WatchdogKill(exc.marker(), exc.output, exc.last_progress_kind) from exc
 
 
 def _invoke(cmd, cwd, env, timeout_s, watch_prompt):
@@ -1864,8 +1865,12 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         _preserve_opencode_evidence(env)
 
     turn_state = {"mode": None, "exit": None, "failure": None}
+    progress = {"kind": None}
 
     def _finish(row):
+        kind = progress["kind"]
+        if isinstance(kind, str) and kind:
+            row["last_progress_kind"] = kind
         text = row.get("full_output") or row.get("output_tail") or ""
         if text:
             captured["text"] = text
@@ -2086,6 +2091,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         except _WatchdogKill as e:
             if two_turn and turn_state["mode"] is None:
                 turn_state["mode"] = "turn-failure"
+            progress["kind"] = e.last_progress_kind
             full_output = e.output or ""
             return _finish({
                 "completed": False,
@@ -2140,6 +2146,8 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             try_persist_auth_file(isolated_auth, auth_source)
         shutil.rmtree(iso_home, ignore_errors=True)
 
+    if proc is not None:
+        progress["kind"] = getattr(proc, "last_progress_kind", None) or progress["kind"]
     combined = (proc.stdout or "") + (proc.stderr or "")
     violation = _provider_pin_violation(env, combined)
     if violation:

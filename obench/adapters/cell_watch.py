@@ -15,6 +15,16 @@ import subprocess
 import time
 from pathlib import Path
 
+PART_UPDATED = "message.part.updated"
+_KIND_RANK = {
+    "part_updated": 0,
+    "stream_bytes": 1,
+    "stdout": 2,
+    "log": 3,
+    "ledger": 4,
+    "storage": 5,
+}
+
 FATAL_RE = re.compile(
     r"failed to asynchronously prepare wasm|Aborted\(|ENOENT:[^\n]*tree-sitter[^\n]*\.wasm"
 )
@@ -51,10 +61,11 @@ class PromptIdle(Exception):
 
 
 class WatchdogKill(Exception):
-    def __init__(self, reason: str, idle_s: float, output: str):
+    def __init__(self, reason: str, idle_s: float, output: str, last_progress_kind=None):
         self.reason = reason
         self.idle_s = float(idle_s)
         self.output = output
+        self.last_progress_kind = last_progress_kind
         super().__init__(self.marker())
 
     def marker(self) -> str:
@@ -62,10 +73,11 @@ class WatchdogKill(Exception):
 
 
 class _Done:
-    def __init__(self, returncode: int, stdout: str):
+    def __init__(self, returncode: int, stdout: str, last_progress_kind=None):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = ""
+        self.last_progress_kind = last_progress_kind
 
 
 def _file_size(path: str | Path | None) -> int | None:
@@ -180,6 +192,25 @@ def kill_process_group(proc) -> None:
             return
 
 
+def _best_kind(*kinds: str | None) -> str | None:
+    """The stream signal in this poll, if one moved; otherwise the other kind."""
+    chosen = None
+    for kind in kinds:
+        if not kind:
+            continue
+        if chosen is None or _KIND_RANK[kind] < _KIND_RANK[chosen]:
+            chosen = kind
+    return chosen
+
+
+def _text_kind(text: str, *, fallback: str) -> str | None:
+    if not text:
+        return None
+    if PART_UPDATED in text:
+        return "part_updated"
+    return fallback
+
+
 def _proxy_progress(
     *,
     bytes_path: str | None,
@@ -187,31 +218,34 @@ def _proxy_progress(
     last_bytes: int | None,
     last_ledger: int | None,
     last_stream: int | None,
-) -> tuple[bool, int | None, int | None, int | None]:
-    """Return whether the cell's proxy accounting moved, plus the new marks.
+) -> tuple[str | None, int | None, int | None, int | None]:
+    """Return which proxy file moved, plus the new marks.
 
     ``ledger_path`` is the per-cell request JSONL. A finished request appends
-    a line, so a larger file is progress. ``bytes_path``, or the ``.bytes``
-    sibling of the ledger, is the in-flight stream total. A value that does
-    not parse is ignored.
+    a line, so a larger file is progress (``ledger``). ``bytes_path``, or the
+    ``.bytes`` sibling of the ledger, is the in-flight stream total
+    (``stream_bytes``). A value that does not parse is ignored. Streamed
+    bytes outrank a ledger append in the same poll: the request row is
+    written only when the stream ends.
     """
-    progressed = False
+    kind = None
     current = read_byte_total(bytes_path)
     if current is not None and (last_bytes is None or current > last_bytes):
         last_bytes = current
-        progressed = True
+        kind = "stream_bytes"
     size = _file_size(ledger_path)
     if size is not None and (last_ledger is None or size > last_ledger):
         last_ledger = size
-        progressed = True
+        if kind is None:
+            kind = "ledger"
     stream_path = None
     if ledger_path and not bytes_path:
         stream_path = str(Path(ledger_path).with_suffix(".bytes"))
     stream = read_byte_total(stream_path)
     if stream is not None and (last_stream is None or stream > last_stream):
         last_stream = stream
-        progressed = True
-    return progressed, last_bytes, last_ledger, last_stream
+        kind = "stream_bytes"
+    return kind, last_bytes, last_ledger, last_stream
 
 
 def run_piped(
@@ -251,6 +285,7 @@ def run_piped(
     start = time.monotonic()
     last_progress = start
     last_stdout = start
+    last_kind = None
     prompted = False
     data_root = _data_root(env)
     last_sig = _tree_signature(data_root)
@@ -284,29 +319,50 @@ def run_piped(
         carry = (carry + text)[-400:]
         return bool(FATAL_RE.search(carry))
 
+    def read_stdout(wait_s: float) -> str:
+        """Read what is already buffered, after an optional short wait.
+
+        One poll can spend a long time walking a large OpenCode tree
+        (regex-chess and model-extraction sessions). Bytes that arrive
+        during that walk must still count before the idle decision.
+        """
+        pieces = []
+        timeout = wait_s
+        while len(pieces) < 8:
+            ready, _, _ = select.select([pipe], [], [], timeout)
+            timeout = 0
+            if not ready:
+                break
+            try:
+                piece = os.read(fd, 65536)
+            except BlockingIOError:
+                break
+            if not piece:
+                break
+            pieces.append(piece.decode("utf-8", "replace"))
+        return "".join(pieces)
+
+    def observe(kind: str | None) -> None:
+        nonlocal last_progress, last_kind
+        if not kind:
+            return
+        # Stamp the observation, not the start of a slow poll.
+        last_progress = time.monotonic()
+        last_kind = kind
+
     try:
         while True:
-            ready, _, _ = select.select([pipe], [], [], 0.2)
-            now = time.monotonic()
-            progressed = False
             fatal = False
-            if ready:
-                try:
-                    piece = os.read(fd, 65536)
-                except BlockingIOError:
-                    piece = b""
-                if piece:
-                    decoded = piece.decode("utf-8", "replace")
-                    fatal = note_text(decoded) or fatal
-                    last_stdout = now
-                    progressed = True
-                    reason = pin_reason(decoded) or pin_reason(carry)
-                    if reason and pin_error is not None:
-                        kill_process_group(proc)
-                        raise pin_error(reason, output())
+            decoded = read_stdout(0.2)
+            if decoded:
+                fatal = note_text(decoded) or fatal
+                last_stdout = time.monotonic()
+                reason = pin_reason(decoded) or pin_reason(carry)
+                if reason and pin_error is not None:
+                    kill_process_group(proc)
+                    raise pin_error(reason, output())
             log_text = _new_log_text(data_root, log_offsets)
             if log_text:
-                progressed = True
                 log_carry = (log_carry + log_text)[-400:]
                 reason = pin_reason(log_text) or pin_reason(log_carry)
                 if reason and pin_error is not None:
@@ -315,25 +371,60 @@ def run_piped(
                 if FATAL_RE.search(log_carry):
                     fatal = True
             signature = _tree_signature(data_root)
+            storage_kind = None
             if signature != last_sig:
                 last_sig = signature
-                progressed = True
-            moved, last_bytes, last_ledger, last_stream = _proxy_progress(
+                storage_kind = "storage"
+            proxy_kind, last_bytes, last_ledger, last_stream = _proxy_progress(
                 bytes_path=bytes_path,
                 ledger_path=ledger_path,
                 last_bytes=last_bytes,
                 last_ledger=last_ledger,
                 last_stream=last_stream,
             )
-            if moved:
-                progressed = True
+            # The tree walk above can outlast the idle window. Drain the
+            # pipe and the byte counter again so a part update or chunk
+            # that landed during the walk still resets the clock.
+            extra = read_stdout(0)
+            if extra:
+                fatal = note_text(extra) or fatal
+                last_stdout = time.monotonic()
+                decoded = decoded + extra
+                reason = pin_reason(extra) or pin_reason(carry)
+                if reason and pin_error is not None:
+                    kill_process_group(proc)
+                    raise pin_error(reason, output())
+            extra_log = _new_log_text(data_root, log_offsets)
+            if extra_log:
+                log_text = (log_text or "") + extra_log
+                log_carry = (log_carry + extra_log)[-400:]
+                reason = pin_reason(extra_log) or pin_reason(log_carry)
+                if reason and pin_error is not None:
+                    kill_process_group(proc)
+                    raise pin_error(reason, output())
+                if FATAL_RE.search(log_carry):
+                    fatal = True
+            proxy_again, last_bytes, last_ledger, last_stream = _proxy_progress(
+                bytes_path=bytes_path,
+                ledger_path=ledger_path,
+                last_bytes=last_bytes,
+                last_ledger=last_ledger,
+                last_stream=last_stream,
+            )
+            kind = _best_kind(
+                _text_kind(decoded, fallback="stdout"),
+                _text_kind(log_text, fallback="log"),
+                storage_kind,
+                proxy_kind,
+                proxy_again,
+            )
             if fatal:
+                idle = max(0.0, time.monotonic() - last_progress)
                 kill_process_group(proc)
                 raise WatchdogKill(
-                    "wasm_abort", max(0.0, now - last_progress), output()
+                    "wasm_abort", idle, output(), kind or last_kind,
                 )
-            if progressed:
-                last_progress = now
+            observe(kind)
             if proc.poll() is not None:
                 try:
                     rest = os.read(fd, 65536)
@@ -342,32 +433,39 @@ def run_piped(
                 if rest:
                     decoded = rest.decode("utf-8", "replace")
                     wasm = note_text(decoded)
+                    rest_kind = _text_kind(decoded, fallback="stdout")
                     reason = pin_reason(decoded) or pin_reason(output()[-2000:])
                     if reason and pin_error is not None:
                         kill_process_group(proc)
                         raise pin_error(reason, output())
                     if wasm:
+                        idle = max(0.0, time.monotonic() - last_progress)
                         kill_process_group(proc)
                         raise WatchdogKill(
-                            "wasm_abort", max(0.0, now - last_progress), output()
+                            "wasm_abort", idle, output(), rest_kind or last_kind,
                         )
+                    observe(rest_kind)
                 break
             if prompt_re is not None and not prompted and prompt_re.search(output()):
                 prompted = True
+            now = time.monotonic()
             if prompted and now - last_stdout >= prompt_idle_s:
                 kill_process_group(proc)
                 raise PromptIdle(output())
             if no_progress_s > 0 and now - last_progress >= no_progress_s:
                 kill_process_group(proc)
                 raise WatchdogKill(
-                    "no_progress", max(0.0, now - last_progress), output()
+                    "no_progress",
+                    max(0.0, now - last_progress),
+                    output(),
+                    last_kind,
                 )
             if now - start >= timeout_s:
                 text = output()
                 kill_process_group(proc)
                 raise subprocess.TimeoutExpired(cmd, timeout_s, output=text)
         code = proc.wait(timeout=5)
-        return _Done(code, output())
+        return _Done(code, output(), last_kind)
     finally:
         if proc.poll() is None:
             kill_process_group(proc)

@@ -11,6 +11,7 @@ import textwrap
 import threading
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from thesis.ab.durable import publish_text
@@ -46,6 +47,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "no_progress")
         self.assertGreaterEqual(caught.exception.idle_s, 0.6)
         self.assertLess(time.monotonic() - started, 3)
+        self.assertIsNone(caught.exception.last_progress_kind)
         self.assertIn("openbench-infra:no_progress", caught.exception.marker())
 
     def test_finished_request_ledger_is_progress(self):
@@ -73,6 +75,7 @@ class WatchdogTests(unittest.TestCase):
             ledger_path=str(ledger),
         )
         self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.last_progress_kind, "ledger")
 
     def test_proxy_byte_file_is_progress(self):
         path = Path(tempfile.mkdtemp()) / "cell.bytes"
@@ -100,6 +103,104 @@ class WatchdogTests(unittest.TestCase):
             bytes_path=str(path),
         )
         self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.last_progress_kind, "stream_bytes")
+
+    def test_part_updated_stdout_resets_the_idle_timer(self):
+        script = (
+            "import time\n"
+            "for i in range(8):\n"
+            "    print('INFO 2026-01-01T00:00:0%d +10ms service=bus "
+            "type=message.part.updated publishing' % (i % 10), flush=True)\n"
+            "    time.sleep(0.15)\n"
+        )
+        done = run_piped(
+            [sys.executable, "-c", script],
+            None,
+            os.environ.copy(),
+            5,
+            no_progress_s=0.4,
+        )
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.last_progress_kind, "part_updated")
+
+    def test_part_updated_then_silence_is_still_no_progress(self):
+        script = (
+            "import time\n"
+            "print('INFO 2026-01-01T00:00:00 +1ms service=bus "
+            "type=message.part.updated publishing', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        started = time.monotonic()
+        with self.assertRaises(WatchdogKill) as caught:
+            run_piped(
+                [sys.executable, "-c", script],
+                None,
+                os.environ.copy(),
+                5,
+                no_progress_s=0.45,
+            )
+        self.assertEqual(caught.exception.reason, "no_progress")
+        self.assertEqual(caught.exception.last_progress_kind, "part_updated")
+        self.assertGreaterEqual(caught.exception.idle_s, 0.45)
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_part_updated_during_a_slow_tree_walk_is_not_a_kill(self):
+        import thesis.ab.watch as watch
+        real = watch._tree_signature
+
+        def slow(root):
+            time.sleep(0.55)
+            return real(root)
+
+        script = (
+            "import time\n"
+            "for i in range(6):\n"
+            "    print('{\"type\":\"message.part.updated\",\"text\":\"%d\"}' % i, flush=True)\n"
+            "    time.sleep(0.2)\n"
+        )
+        with unittest.mock.patch.object(watch, "_tree_signature", side_effect=slow):
+            done = run_piped(
+                [sys.executable, "-c", script],
+                None,
+                os.environ.copy(),
+                8,
+                no_progress_s=0.4,
+            )
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.last_progress_kind, "part_updated")
+
+    def test_part_updated_log_line_resets_the_idle_timer(self):
+        home = Path(tempfile.mkdtemp())
+        stop = threading.Event()
+
+        def write():
+            n = 0
+            while not stop.is_set():
+                n += 1
+                log = home / "opencode" / "log" / "opencode.log"
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        "INFO 2026-01-01T00:00:0%d +10ms service=bus "
+                        "type=message.part.updated publishing\n" % (n % 10)
+                    )
+                time.sleep(0.15)
+
+        thread = threading.Thread(target=write)
+        thread.start()
+        self.addCleanup(stop.set)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        env = os.environ.copy()
+        env["XDG_DATA_HOME"] = str(home)
+        done = run_piped(
+            [sys.executable, "-c", "import time; time.sleep(1.2)"],
+            None,
+            env,
+            5,
+            no_progress_s=0.45,
+        )
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.last_progress_kind, "part_updated")
 
     def test_unparsed_byte_file_is_not_progress(self):
         path = Path(tempfile.mkdtemp()) / "cell.bytes"
@@ -261,6 +362,96 @@ class ClassifyTests(unittest.TestCase):
         row = {"error": "exit 1", "score": 0.0, "success": False}
         self.assertIs(apply_watchdog_class(row), row)
         self.assertNotIn("infra_reason", row)
+
+    def test_replay_classifier_does_not_relabel_a_streaming_kill(self):
+        # Scoring parity replays apply_watchdog_class. A part update in the
+        # tail must stay a hang there; the stream label is a separate helper.
+        row = apply_watchdog_class({
+            "error": "openbench-infra:no_progress idle_s=300.2",
+            "output_tail": (
+                "INFO  2026-10-24T04:52:06 +15ms service=bus "
+                "type=message.part.updated publishing\n"
+            ),
+            "requests_count": 5,
+            "score": 0.4,
+            "success": False,
+            "started_at": "2026-10-24T04:49:13+00:00",
+            "t_agent_s": 472.3,
+        })
+        self.assertEqual(row["failure_class"], "hang")
+        self.assertNotIn("env_cause", row)
+
+
+class StreamLabelTests(unittest.TestCase):
+    def _stream_row(self, **extra):
+        row = {
+            "error": "openbench-infra:no_progress idle_s=300.2",
+            "failure_class": "hang",
+            "hang_reason": "no_progress",
+            "no_progress_idle_s": 300.2,
+            "requests_count": 5,
+            "tokens_output": 15705,
+            "score": 0.0,
+            "started_at": "2026-10-24T04:49:13.132513+00:00",
+            "t_agent_s": 472.293,
+            "output_tail": (
+                "INFO  2026-10-24T04:52:06 +15ms service=bus "
+                "type=message.part.updated publishing\n"
+            ),
+        }
+        row.update(extra)
+        return row
+
+    def test_regex_chess_shape_is_watchdog_stream(self):
+        from thesis.ab.watch import label_watchdog_stream, part_updated_within_idle
+        row = self._stream_row()
+        self.assertTrue(part_updated_within_idle(row))
+        labeled = label_watchdog_stream(row)
+        self.assertIs(labeled, row)
+        self.assertEqual(row["failure_class"], "env_failure")
+        self.assertEqual(row["env_cause"], "watchdog_stream")
+        self.assertEqual(row["tokens_output"], 15705)
+        self.assertEqual(row["hang_reason"], "no_progress")
+
+    def test_part_updated_only_in_a_side_log_counts(self):
+        from thesis.ab.watch import label_watchdog_stream
+        row = self._stream_row(output_tail="INFO  2026-10-24T04:52:00 +1ms service=app startup\n")
+        logs = (
+            "INFO  2026-10-24T04:52:06 +12ms service=bus "
+            "type=message.part.updated publishing\n"
+        )
+        labeled = label_watchdog_stream(row, logs)
+        self.assertEqual(labeled["failure_class"], "env_failure")
+        self.assertEqual(labeled["env_cause"], "watchdog_stream")
+
+    def test_part_updated_long_before_the_kill_stays_unlabeled(self):
+        from thesis.ab.watch import label_watchdog_stream, part_updated_within_idle
+        row = self._stream_row(
+            started_at="2026-10-24T04:49:13+00:00",
+            t_agent_s=1500.0,
+            no_progress_idle_s=300.1,
+            output_tail=(
+                "INFO  2026-10-24T04:50:00 +10ms service=bus "
+                "type=message.part.updated publishing\n"
+                "INFO  2026-10-24T05:09:00 +1ms service=app name=mcp shutdown\n"
+            ),
+        )
+        self.assertFalse(part_updated_within_idle(row))
+        labeled = label_watchdog_stream(row)
+        self.assertEqual(labeled["failure_class"], "hang")
+        self.assertNotIn("env_cause", labeled)
+
+    def test_silence_without_a_part_update_is_not_a_stream(self):
+        from thesis.ab.watch import part_updated_within_idle
+        row = self._stream_row(output_tail="INFO  2026-10-24T04:52:06 +1ms service=app name=mcp shutdown\n")
+        self.assertFalse(part_updated_within_idle(row))
+
+    def test_non_kill_is_left_alone(self):
+        from thesis.ab.watch import label_watchdog_stream
+        row = {"failure_class": "solved", "success": True, "output_tail": "message.part.updated"}
+        self.assertIs(label_watchdog_stream(row), row)
+        self.assertEqual(row["failure_class"], "solved")
+        self.assertNotIn("env_cause", row)
 
 
 class SummaryTests(unittest.TestCase):
@@ -486,6 +677,39 @@ class ExecuteCellTests(unittest.TestCase):
         self.assertEqual(row["score"], 0.0)
         self.assertFalse(row["success"])
         self.assertLess(row["t_agent_s"], 4)
+        self.assertNotIn("last_progress_kind", row)
+
+    def test_execute_cell_records_part_updated_progress(self):
+        from thesis.ab.run_ab import execute_cell
+        root = Path(tempfile.mkdtemp())
+        _task(root)
+        binary = root / "opencode"
+        _binary(binary, """\
+            #!/usr/bin/env python3
+            import sys
+            args = sys.argv[1:]
+            if args == ["--version"]:
+                print("cell-test")
+                raise SystemExit(0)
+            if args[:2] == ["run", "--help"]:
+                print("--auto")
+                print("-m, --model")
+                print("--format")
+                print("--dir")
+                print("--title")
+                print("--print-logs")
+                raise SystemExit(0)
+            print(
+                "INFO 2026-01-01T00:00:00 +1ms service=bus "
+                "type=message.part.updated publishing",
+                flush=True,
+            )
+        """)
+        execute_cell(self._spec(root, binary, no_progress_s=2))
+        row = json.loads((root / "cell.json").read_text(encoding="utf-8"))
+        self.assertEqual(row.get("last_progress_kind"), "part_updated")
+        self.assertNotEqual(row.get("infra_reason"), "no_progress")
+        self.assertTrue(row["success"])
 
     def test_execute_cell_treats_proxy_bytes_as_progress(self):
         from thesis.ab.run_ab import execute_cell
