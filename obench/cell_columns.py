@@ -26,6 +26,7 @@ ENV_CAUSE_CHECKER_TIMEOUT = "checker_timeout"
 
 CELL_ENV_FIELDS = (
     "checker_timeout_s",
+    "checker_wall_time_s",
     "env_failure",
     "env_cause",
     "rerun_of",
@@ -180,9 +181,19 @@ def stamp_env_columns(
         row["checker_timeout_s"] = checker_timeout_s
     elif "checker_timeout_s" not in row:
         row["checker_timeout_s"] = None
-    if checker_exit_of(row) == "timeout":
+    wall = row.get("t_checker_s")
+    if isinstance(wall, bool) or not isinstance(wall, (int, float)):
+        wall = 0.0
+        row["t_checker_s"] = 0.0
+    row["checker_wall_time_s"] = wall
+    hit_cap = row.get("checker_hit_cap") is True or (
+        checker_exit_of(row) == "timeout" and wall > 0
+    )
+    if hit_cap:
         row["env_failure"] = True
         row["env_cause"] = ENV_CAUSE_CHECKER_TIMEOUT
+    elif row.get("env_failure") is True and row.get("env_cause") == ENV_CAUSE_CHECKER_TIMEOUT:
+        pass
     else:
         cause = row.get("env_cause")
         if cause in (None, "", ENV_CAUSE_CHECKER_TIMEOUT):

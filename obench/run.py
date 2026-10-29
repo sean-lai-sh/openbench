@@ -127,6 +127,7 @@ ROW_FIELDS = (
     # a missing value is null, not a fail. It does not change ``score``.
     "functional_pass",
     "checker_timeout_s",
+    "checker_wall_time_s",
     "env_failure",
     "env_cause",
     "rerun_of",
@@ -2265,6 +2266,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "checker_defect": False,
         "functional_pass": None,
         "checker_timeout_s": checker_timeout_s,
+        "checker_wall_time_s": 0.0,
         "env_failure": False,
         "env_cause": None,
         "rerun_of": None,
@@ -2642,6 +2644,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             finally:
                 os.environ.pop("H2_CHECKER_VENV_ROOT", None)
                 row["t_checker_s"] = round(time.monotonic() - checker_start, 3)
+                row["checker_wall_time_s"] = row["t_checker_s"]
         except Exception:  # noqa: BLE001
             row["checker_exit"] = None
             row["checker_defect"] = True
@@ -2655,6 +2658,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["checker_stderr"] = scrub_checker_output(checker_stderr)
         row["checker_exit"] = checker_exit
         row["checker_defect"] = checker_run_was_defect(checker_exit)
+        if checker_exit == "timeout":
+            row["checker_hit_cap"] = True
         from .checker_verdict import apply_explicit_verdict, expects_explicit_verdict
         if expects_explicit_verdict(task_dir):
             apply_explicit_verdict(
