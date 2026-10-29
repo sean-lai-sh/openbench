@@ -83,8 +83,8 @@ def effective_score(exit_code, parsed_score):
     return 0.0
 
 
-# Match ``obench run --checker-timeout`` default so validate does not hang forever.
-CHECKER_TIMEOUT_S = 120
+# Per-task timeout (default 120s, 600s for heavy checkers). See checker_timeout.py.
+from .checker_timeout import checker_timeout_s
 
 
 def _task_docker_image(task_dir):
@@ -142,6 +142,7 @@ def run_checker(task_dir, overlay_solution_flag):
         else:
             env.pop("OPENBENCH_SOLUTION_OVERLAY", None)
 
+        timeout_s = checker_timeout_s(task_dir)
         try:
             proc = subprocess.run(
                 ["bash", checker],
@@ -150,13 +151,13 @@ def run_checker(task_dir, overlay_solution_flag):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=CHECKER_TIMEOUT_S,
+                timeout=timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
             out = exc.stdout or ""
             if isinstance(out, bytes):
                 out = out.decode("utf-8", errors="replace")
-            out = out + f"\nFAIL: checker timed out after {CHECKER_TIMEOUT_S}s\n"
+            out = out + f"\nFAIL: checker timed out after {timeout_s}s\n"
             return 124, out, parse_score(out)
         return proc.returncode, proc.stdout, parse_score(proc.stdout)
     finally:

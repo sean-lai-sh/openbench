@@ -117,6 +117,13 @@ ROW_FIELDS = (
     "provider_loaded_source",
     "provider_loaded_mismatch",
     "probe_method",
+    "checker_timeout_s",
+    "env_failure",
+    "env_cause",
+    "rerun_of",
+    "rescored_from",
+    "suspect_startup_exit",
+    "quarantine",
 )
 
 
@@ -1876,6 +1883,8 @@ def _apply_sdk_drift(row, result):
     resolved. When that text is non-empty it is the failure reason, ahead of
     a cache-only ``sdk_drift`` string.
     """
+    from .cell_columns import stamp_env_columns
+    stamp_env_columns(row)
     if not isinstance(result, dict):
         return row
     drift = result.get("sdk_drift")
@@ -2080,6 +2089,13 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "replies_ok": None,
         "replies_throttled": None,
         "paced_wait_s": None,
+        "checker_timeout_s": checker_timeout_s,
+        "env_failure": False,
+        "env_cause": None,
+        "rerun_of": None,
+        "rescored_from": None,
+        "suspect_startup_exit": False,
+        "quarantine": None,
     }
 
     # Namespaced tasks (e.g. terminal-bench/feal) contain "/"; keep the prefix
@@ -2253,7 +2269,10 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 row["failure_class"] = STALLED
             else:
                 row["failure_class"] = classify_failure(row, "", timeout_s)
-            return _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)
+            from .cell_columns import stamp_env_columns
+            return stamp_env_columns(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)
+            )
         row["wall_time_s"] = _adapter_wall_time_s(start, result, exec_used)
         row["t_agent_s"] = _agent_wall_time_s(start, result, exec_used)
         _add_host_env_setup_s(row, result, exec_used)
@@ -2480,8 +2499,12 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=2400,
                         help="per-cell adapter timeout in seconds (default: 2400)")
     parser.add_argument("--checker-timeout", type=int, default=120,
-                        help="checker.sh timeout in seconds (default: 120); "
-                             "on timeout the row records checker_exit='timeout'")
+                        help="checker.sh timeout in seconds. The default 120 "
+                             "uses the per-task budget (600 for torch-tensor, "
+                             "torch-pipeline, model-extraction, sam-cell-seg). "
+                             "Any other value overrides that budget. "
+                             "On timeout the row records checker_exit='timeout' "
+                             "and env_cause='checker_timeout'")
     parser.add_argument("--force", action="store_true",
                         help="re-run cells even if their run_id already exists")
     parser.add_argument("--results-path", default=None,
@@ -2724,10 +2747,11 @@ def main(argv=None):
                 return 2
             smoke_harness = harnesses[0]
             smoke_candidate = candidates.get(smoke_harness)
+            from .checker_timeout import effective_checker_timeout
             smoke_row = run_cell(
                 smoke_harness, smoke_task, args.model, 0, args.timeout,
                 args.tasks_dir, args.adapters_dir,
-                args.checker_timeout,
+                effective_checker_timeout(smoke_task, args.tasks_dir, args.checker_timeout),
                 exec_mode=args.exec_mode, docker_image=args.docker_image,
                 docker_fallback=args.docker_fallback,
                 harness_version=versions.get(smoke_harness),
@@ -2763,9 +2787,11 @@ def main(argv=None):
                         skipped += 1
                         print(f"SKIP {run_id}")
                         continue
+                    from .checker_timeout import effective_checker_timeout
                     row = run_cell(
                         harness, task, args.model, trial, args.timeout,
-                        args.tasks_dir, args.adapters_dir, args.checker_timeout,
+                        args.tasks_dir, args.adapters_dir,
+                        effective_checker_timeout(task, args.tasks_dir, args.checker_timeout),
                         exec_mode=args.exec_mode, docker_image=args.docker_image,
                         docker_fallback=args.docker_fallback,
                         harness_version=versions.get(harness),

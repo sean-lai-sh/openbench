@@ -58,7 +58,6 @@ from thesis.ab.proxy_bridge import (
 )
 from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, cell_proxy_base
 
-CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
 # Hard-pack runs (H1/H2) opt in to these; the defaults keep every existing run unchanged.
 EXEC_MODE = "local"
@@ -617,6 +616,32 @@ def _record_stopped(out_dir: Path, spec: dict, state: dict) -> None:
         write_incompatible(out_dir, spec["pr"], spec["side"], spec["sha"], reason)
 
 
+def _publish_cell(row: dict, spec: dict) -> None:
+    """Write the cell. A rerun or rescore goes to a new file and never replaces the original."""
+    from obench.cell_columns import (
+        folder_quarantine,
+        publish_linked_cell,
+        rerun_of_from_source,
+        stamp_env_columns,
+    )
+    source = spec.get("rerun_from")
+    dest_root = spec.get("results_dir")
+    explicit = spec.get("rerun_of")
+    if isinstance(explicit, str) and explicit.strip():
+        row["rerun_of"] = explicit.strip()
+    elif source and dest_root:
+        found = rerun_of_from_source(spec["cell_path"], dest_root, source)
+        if found:
+            row["rerun_of"] = found
+    label = folder_quarantine(Path(spec["cell_path"]))
+    stamp_env_columns(row, quarantine=label or None)
+    path = Path(spec["cell_path"])
+    if row.get("rerun_of") or row.get("rescored_from"):
+        publish_linked_cell(path, row, source_root=source)
+        return
+    publish_text(path, json.dumps(row, sort_keys=True))
+
+
 def execute_cell(spec: dict) -> None:
     """Run one cell. The process environment is restored on the way out."""
     root = Path(__file__).resolve().parents[2]
@@ -787,6 +812,7 @@ def execute_cell(spec: dict) -> None:
             def workspace_observer(workdir, dest=kept_workspace):
                 keep_cell_workspace(workdir, dest)
 
+        from obench.checker_timeout import checker_timeout_s as resolve_checker_timeout
         row = run_cell(
             harness,
             spec["task"],
@@ -795,7 +821,9 @@ def execute_cell(spec: dict) -> None:
             spec["timeout_s"],
             spec["tasks_dir"],
             spec["adapters_dir"],
-            CHECKER_TIMEOUT_S,
+            resolve_checker_timeout(
+                spec["task"], os.path.join(spec["tasks_dir"], spec["task"]),
+            ),
             exec_mode=str(spec.get("exec_mode") or "local"),
             docker_image=(str(spec.get("docker_image") or "").strip() or None),
             harness_version=harness_version,
@@ -842,7 +870,10 @@ def execute_cell(spec: dict) -> None:
         toolchain_path = spec.get("toolchain_path")
         if toolchain_path:
             publish_side_toolchain(Path(toolchain_path), spec.get("toolchain"), installed_text)
-        publish_text(Path(spec["cell_path"]), json.dumps(row, sort_keys=True))
+        if isinstance(row, dict):
+            _publish_cell(row, spec)
+        else:
+            publish_text(Path(spec["cell_path"]), json.dumps(row, sort_keys=True))
     finally:
         mark_running(spec, False)
         if png_server is not None:
@@ -1028,7 +1059,8 @@ def attach_bridge_record(row: dict, spec: dict) -> dict:
 
 def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: str,
           model: str, timeout_s: int, transcripts_root: Path | None = None,
-          no_progress_s: float = 0, thinking_mode: str = "default") -> dict:
+          no_progress_s: float = 0, thinking_mode: str = "default",
+          rerun_from: Path | None = None) -> dict:
     transcripts = cell_transcripts_dir(out_dir, spec["pr"], transcripts_root)
     filled = dict(spec)
     filled.update({
@@ -1059,7 +1091,10 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "thinking_mode": (
             thinking_mode if thinking_mode in {"default", "adaptive", "off"} else "default"
         ),
+        "results_dir": _absolute(out_dir),
     })
+    if rerun_from is not None:
+        filled["rerun_from"] = str(Path(rerun_from).resolve())
     if (
         isinstance(no_progress_s, (int, float))
         and not isinstance(no_progress_s, bool)
@@ -2122,7 +2157,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           transcripts_dir=None, aa: bool = False, fixtures=None,
           order: str = "sides", seed: int | None = None, with_aa: bool = False,
           no_progress_s: float = 300, omp_thinking: str = "default",
-          vertex_model: str = "claude-opus-5-5"):
+          vertex_model: str = "claude-opus-5-5",
+          rerun_from: Path | None = None):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -2292,6 +2328,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
             transcripts_root=transcripts_dir,
             no_progress_s=no_progress_s,
             thinking_mode=omp_thinking,
+            rerun_from=rerun_from,
         )
         if server is not None:
             filled = bind_cell_proxy(filled, ledger_dir)
@@ -2503,6 +2540,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", type=Path, default=Path("results/ab"))
     parser.add_argument(
+        "--rerun-from",
+        type=Path,
+        default=None,
+        help=(
+            "Results folder of the cells being rerun. --out must be a different "
+            "folder. Each new cell records rerun_of as the original cell id and "
+            "is refused if that path already exists. Does not modify --rerun-from."
+        ),
+    )
+    parser.add_argument(
         "--transcripts-dir",
         type=Path,
         default=None,
@@ -2558,6 +2605,16 @@ def main(argv: list[str] | None = None) -> int:
     if order == "interleave-seeded" and args.seed is None:
         print("error: --order interleave-seeded requires --seed", file=sys.stderr)
         return 2
+    if args.rerun_from is not None:
+        from obench.cell_columns import CellWriteError, assert_new_results_folder
+        if not args.rerun_from.is_dir():
+            print(f"error: --rerun-from is not a directory: {args.rerun_from}", file=sys.stderr)
+            return 2
+        try:
+            assert_new_results_folder(args.rerun_from, args.out)
+        except CellWriteError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     if args.seed is not None and order not in {"random", "interleave", "abba", "interleave-seeded"}:
         print(
             "error: --seed applies to --order random, interleave, interleave-seeded, and abba",
@@ -2611,6 +2668,7 @@ def main(argv: list[str] | None = None) -> int:
             fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
             no_progress_s=args.no_progress_s, omp_thinking=args.omp_thinking,
             vertex_model=args.vertex_model,
+            rerun_from=args.rerun_from,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
