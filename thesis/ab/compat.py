@@ -94,11 +94,24 @@ def _needs_host_sdk(binary: str) -> bool:
     return "opencode run" in text or "start opencode" in text
 
 
-def anthropic_proxy_config(base_url: str, *, include_endpoint: bool, include_api: bool = True) -> dict:
+def anthropic_proxy_config(
+    base_url: str,
+    *,
+    include_endpoint: bool,
+    include_api: bool = True,
+    model_id: str | None = None,
+    model_name: str | None = None,
+) -> dict:
+    """Anthropic provider pointed at the proxy.
+
+    ``model_id`` defaults to ``claude-opus-5-5`` so H2 and PR 3052 keep asking
+    for Opus. The Pi vs OpenCode smoke passes ``claude-sonnet-5-5``.
+    """
+    chosen = (model_id or PROXY_MODEL_ID).strip()
     provider = {
         "models": {
-            PROXY_MODEL_ID: {
-                "name": "Claude Opus 5.5",
+            chosen: {
+                "name": model_name or ("Claude Sonnet 5.5" if "sonnet" in chosen else "Claude Opus 5.5"),
                 "limit": {"context": 1000000, "output": 128000},
             }
         }

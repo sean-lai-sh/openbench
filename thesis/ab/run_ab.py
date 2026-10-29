@@ -826,12 +826,14 @@ def execute_cell(spec: dict) -> None:
                 spec.get("proxy"),
                 protocol_model=spec.get("protocol_model"),
                 protocol_location=spec.get("protocol_location") or PROTOCOL_LOCATION,
+                require_model_match=bool(spec.get("require_model_match")),
             )
             if harness in {"pi", "opencode"} and "proxy_requests" not in row:
                 attach_proxy_trace(
                     row, [], spec.get("protocol_model"),
                     ledger_present=False,
                     protocol_location=spec.get("protocol_location") or PROTOCOL_LOCATION,
+                    require_model_match=bool(spec.get("require_model_match")),
                 )
             attach_thinking(
                 row,
@@ -1459,6 +1461,7 @@ PROXY_TRACE_FIELDS = (
     "endpoint_location",
     "endpoint_location_mixed",
     "protocol_model",
+    "require_model_match",
     "off_protocol",
 )
 
@@ -1506,6 +1509,38 @@ def _assign_joined(row: dict, records: list | None, key: str, mixed_key: str) ->
     row[key] = values[0] if len(values) == 1 else "+".join(values)
 
 
+def comparable_model_id(value) -> str | None:
+    """Model id with a provider prefix and an ``@default`` suffix removed.
+
+    ``anthropic/claude-sonnet-5-5`` and ``claude-sonnet-5-5`` are the same id.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    text = text.split("@", 1)[0].strip()
+    return text or None
+
+
+def request_model_mismatch(records: list | None) -> bool:
+    """True when a ledger request asked for a different model than Vertex served.
+
+    A missing requested or upstream id counts: the match cannot be shown.
+    An empty ledger does not.
+    """
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        requested = comparable_model_id(record.get("requested_model"))
+        upstream = comparable_model_id(record.get("upstream_model"))
+        if requested is None or upstream is None or requested != upstream:
+            return True
+    return False
+
+
 def requests_off_protocol(
     records: list | None,
     protocol_model: str | None,
@@ -1541,6 +1576,7 @@ def attach_proxy_trace(
     *,
     ledger_present: bool = True,
     protocol_location: str | None = None,
+    require_model_match: bool = False,
 ) -> dict:
     """Fold proxy-ledger and harness-trace counts onto one cell result.
 
@@ -1552,6 +1588,10 @@ def attach_proxy_trace(
     More than one distinct value is joined with ``+`` and ``*_mixed`` is true.
     ``off_protocol`` is true when any request's upstream model is not
     ``protocol_model`` or any request's location is not ``global``.
+    With ``require_model_match``, a request whose model id differs from the
+    upstream id is off protocol too. That check is off unless the caller
+    opts in, so a harness that asks for Opus while Vertex serves Sonnet
+    still scores.
     """
     if not isinstance(row, dict):
         return row
@@ -1572,7 +1612,11 @@ def attach_proxy_trace(
     _assign_joined(row, counted, "endpoint_location", "endpoint_location_mixed")
     model = protocol_model.strip() if isinstance(protocol_model, str) and protocol_model.strip() else None
     row["protocol_model"] = model
-    row["off_protocol"] = requests_off_protocol(counted, model, protocol_location)
+    row["require_model_match"] = bool(require_model_match)
+    off = requests_off_protocol(counted, model, protocol_location)
+    if require_model_match and request_model_mismatch(counted):
+        off = True
+    row["off_protocol"] = off
     return row
 
 
@@ -1588,6 +1632,7 @@ def apply_cell_meter(
     proxy: dict | None,
     protocol_model: str | None = None,
     protocol_location: str | None = None,
+    require_model_match: bool = False,
 ) -> dict:
     if not isinstance(row, dict) or not isinstance(proxy, dict):
         return row
@@ -1611,6 +1656,7 @@ def apply_cell_meter(
         attach_proxy_trace(
             row, records, protocol_model,
             ledger_present=present, protocol_location=protocol_location,
+            require_model_match=require_model_match,
         )
         return row
     apply_proxy_ledger(row, records)
@@ -1635,6 +1681,7 @@ def apply_cell_meter(
     attach_proxy_trace(
         row, records, protocol_model,
         ledger_present=True, protocol_location=protocol_location,
+        require_model_match=require_model_match,
     )
     from obench.failure_class import provider_failure_class
     kind = provider_failure_class(row, str(row.get("output_tail") or ""))
@@ -1959,7 +2006,8 @@ def off_protocol_halt(out_dir: Path) -> str | None:
             "off-protocol halt: "
             f"{rel} upstream_model={row.get('upstream_model')} "
             f"protocol_model={row.get('protocol_model')} "
-            f"endpoint_location={row.get('endpoint_location')}; "
+            f"endpoint_location={row.get('endpoint_location')} "
+            f"requested_model={row.get('requested_model')}; "
             "not launching more cells"
         )
     return None
@@ -2333,7 +2381,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           transcripts_dir=None, aa: bool = False, fixtures=None,
           order: str = "sides", seed: int | None = None, with_aa: bool = False,
           no_progress_s: float = 300, omp_thinking: str = "default",
-          vertex_model: str = "claude-opus-5-5"):
+          vertex_model: str = "claude-opus-5-5",
+          require_model_match: bool = False):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -2512,6 +2561,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         )
         filled["protocol_model"] = vertex_model
         filled["protocol_location"] = PROTOCOL_LOCATION
+        filled["require_model_match"] = bool(require_model_match)
         if server is not None:
             filled = bind_cell_proxy(filled, ledger_dir)
             fault = ""
@@ -2663,6 +2713,15 @@ def main(argv: list[str] | None = None) -> int:
             "--model as their alias; each ledger row records upstream_model. A cell whose "
             "upstream model differs, or whose Vertex location is not global, is off_protocol "
             "and the batch stops."
+        ),
+    )
+    parser.add_argument(
+        "--require-model-match",
+        action="store_true",
+        help=(
+            "Also mark a cell off_protocol, and halt, when the model id on the "
+            "incoming request differs from the Vertex model that was served. "
+            "Off by default: H2 and PR 3052 reruns ask for Opus and are served Sonnet."
         ),
     )
     parser.add_argument(
@@ -2851,6 +2910,7 @@ def main(argv: list[str] | None = None) -> int:
             fixtures=fixtures, order=order, seed=args.seed, with_aa=args.with_aa,
             no_progress_s=args.no_progress_s, omp_thinking=args.omp_thinking,
             vertex_model=args.vertex_model,
+            require_model_match=args.require_model_match,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

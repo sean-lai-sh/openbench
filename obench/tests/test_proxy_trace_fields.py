@@ -49,7 +49,8 @@ def _prs(directory: Path):
     return parse_prs(path)
 
 
-def _drive(out: Path, prs, worker, *, trials: int = 1, vertex_model: str = "claude-sonnet-5-5"):
+def _drive(out: Path, prs, worker, *, trials: int = 1, vertex_model: str = "claude-sonnet-5-5",
+           require_model_match: bool = False):
     def build_fn(sha, cache, repo=""):
         return Path("/tmp") / sha
 
@@ -62,6 +63,7 @@ def _drive(out: Path, prs, worker, *, trials: int = 1, vertex_model: str = "clau
         max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
         build_fn=build_fn, assess_fn=assess_fn, worker=worker,
         vertex_model=vertex_model,
+        require_model_match=require_model_match,
     )
 
 
@@ -280,6 +282,133 @@ class OffProtocolHaltTests(unittest.TestCase):
         self.assertEqual(launched, 0)
         self.assertEqual(stopped, reason)
         self.assertEqual(batch_exit_code(stopped), 1)
+
+
+class RequireModelMatchTests(unittest.TestCase):
+    def test_opus_served_as_sonnet_is_on_protocol_until_the_flag_is_set(self):
+        records = [{
+            "requested_model": "claude-opus-5-5",
+            "upstream_model": "claude-sonnet-5-5",
+            "endpoint_location": "global",
+        }]
+        plain = {"turns": 1}
+        attach_proxy_trace(plain, records, "claude-sonnet-5-5")
+        self.assertFalse(plain["off_protocol"])
+        self.assertFalse(plain["require_model_match"])
+        strict = {"turns": 1}
+        attach_proxy_trace(strict, records, "claude-sonnet-5-5", require_model_match=True)
+        self.assertTrue(strict["off_protocol"])
+        self.assertTrue(strict["require_model_match"])
+
+    def test_provider_prefix_still_matches_the_upstream_id(self):
+        row = {"turns": 1}
+        attach_proxy_trace(row, [{
+            "requested_model": "anthropic/claude-sonnet-5-5",
+            "upstream_model": "claude-sonnet-5-5",
+            "endpoint_location": "global",
+        }], "claude-sonnet-5-5", require_model_match=True)
+        self.assertFalse(row["off_protocol"])
+        self.assertEqual(row["requested_model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
+
+    def test_missing_requested_model_is_a_mismatch_when_required(self):
+        row = {"turns": 1}
+        attach_proxy_trace(row, [{
+            "upstream_model": "claude-sonnet-5-5",
+            "endpoint_location": "global",
+        }], "claude-sonnet-5-5", require_model_match=True)
+        self.assertTrue(row["off_protocol"])
+
+    def test_flag_halts_the_batch_and_stays_off_by_default(self):
+        def run(enabled: bool):
+            out = Path(tempfile.mkdtemp())
+            calls = []
+
+            def worker(spec):
+                calls.append(spec["require_model_match"])
+                row = {"turns": 1}
+                attach_proxy_trace(row, [{
+                    "requested_model": "claude-opus-5-5",
+                    "upstream_model": spec["protocol_model"],
+                    "endpoint_location": spec["protocol_location"],
+                }], spec["protocol_model"], protocol_location=spec["protocol_location"],
+                   require_model_match=spec["require_model_match"])
+                publish_text(Path(spec["cell_path"]), json.dumps(row))
+
+            _plan, launched, stopped = _drive(
+                out, _prs(out), worker, require_model_match=enabled,
+            )
+            return calls, launched, stopped
+
+        calls, launched, stopped = run(False)
+        self.assertEqual(calls, [False, False])
+        self.assertEqual(launched, 2)
+        self.assertIsNone(stopped)
+        calls, launched, stopped = run(True)
+        self.assertEqual(calls, [True])
+        self.assertEqual(launched, 1)
+        self.assertIn("requested_model=claude-opus-5-5", stopped)
+        self.assertEqual(batch_exit_code(stopped), 1)
+
+    def test_cli_defaults_the_flag_off(self):
+        from unittest.mock import patch
+
+        from thesis.ab.run_ab import main
+
+        seen = []
+
+        def fake_drive(*_args, **kwargs):
+            seen.append(kwargs.get("require_model_match"))
+            return "plan\n", 0, None
+
+        argv = [
+            "thesis/ab/fixtures/opencode-harness-prs.csv", "--pr", "623",
+            "--task-map", "thesis/ab/fixtures/trigger-tasks.csv", "--dry-run",
+        ]
+        with patch("thesis.ab.run_ab.drive", fake_drive):
+            self.assertEqual(main(argv), 0)
+            self.assertEqual(main(argv + ["--require-model-match"]), 0)
+        self.assertEqual(seen, [False, True])
+
+    def test_comparison_smoke_launches_opencode_as_sonnet_and_requires_a_match(self):
+        import importlib.util
+
+        from thesis.ab.compat import PROXY_MODEL_ID, anthropic_proxy_config
+
+        root = Path(__file__).resolve().parents[2]
+
+        def load(relative, name):
+            path = root / relative
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+
+        opencode = load("data/opencode-harness-smoke/cell.py", "oc_model_match_smoke")
+        pi = load("data/pi-harness-smoke/cell.py", "pi_model_match_smoke")
+        self.assertEqual(opencode.MODEL_REF, "anthropic/claude-sonnet-5-5")
+        self.assertEqual(opencode.MODEL_ID, "claude-sonnet-5-5")
+        self.assertEqual(opencode.ADAPTER_MODEL, "claude-opus-5-5")
+        oc_args = opencode.argument_parser().parse_args(["--out", "out", "--sha", "a" * 40])
+        self.assertTrue(oc_args.require_model_match)
+        self.assertEqual(oc_args.vertex_model, "claude-sonnet-5-5")
+        opted_out = opencode.argument_parser().parse_args([
+            "--out", "out", "--sha", "a" * 40, "--no-require-model-match",
+        ])
+        self.assertFalse(opted_out.require_model_match)
+        pi_args = pi.argument_parser().parse_args(["--out", "out"])
+        self.assertTrue(pi_args.require_model_match)
+        pi_off = pi.argument_parser().parse_args(["--out", "out", "--no-require-model-match"])
+        self.assertFalse(pi_off.require_model_match)
+        default = anthropic_proxy_config("http://127.0.0.1:9/v1", include_endpoint=True)
+        self.assertIn(PROXY_MODEL_ID, default["provider"]["anthropic"]["models"])
+        sonnet = anthropic_proxy_config(
+            "http://127.0.0.1:9/v1", include_endpoint=True,
+            model_id=opencode.MODEL_ID, model_name="Claude Sonnet 5.5",
+        )
+        models = sonnet["provider"]["anthropic"]["models"]
+        self.assertEqual(set(models), {"claude-sonnet-5-5"})
+        self.assertEqual(models["claude-sonnet-5-5"]["name"], "Claude Sonnet 5.5")
 
 
 if __name__ == "__main__":

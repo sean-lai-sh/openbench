@@ -53,18 +53,31 @@ def _cost(model: str, bucket: dict):
     })
 
 
-def main(argv: list[str] | None = None) -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pi harness-comparison smoke, one cell per model")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--cache", type=Path, default=Path(os.environ.get("PI_HARNESS_CACHE", "/h1/pi-src")))
     parser.add_argument("--tasks-dir", type=Path, default=None)
     parser.add_argument("--models", default=",".join(PIN_MODELS),
                         help="comma-separated subset of the pinned smoke models")
+    parser.add_argument(
+        "--require-model-match",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Halt when the request model id differs from the Vertex model. "
+            "On for this Pi vs OpenCode smoke."
+        ),
+    )
     parser.add_argument("--exec", choices=("local", "docker"), default="local",
                         help="docker runs one bridge-network cell; host-network is not used")
     parser.add_argument("--image", default=os.environ.get("OBENCH_CELL_IMAGE", ""),
                         help="cell image for --exec docker (or OBENCH_CELL_IMAGE)")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argument_parser().parse_args(argv)
     if args.exec == "docker" and not args.image:
         raise SystemExit("bridge smoke needs --image or OBENCH_CELL_IMAGE")
 
@@ -148,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
                 row, ledger_rows, model,
                 ledger_present=cell_ledger_path(ledger, cell_id).is_file(),
                 protocol_location=PROTOCOL_LOCATION,
+                require_model_match=args.require_model_match,
             )
             trace = proxy_trace_public(row)
             record = {

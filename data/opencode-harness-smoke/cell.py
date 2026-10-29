@@ -12,8 +12,11 @@ at ``/h1/opencode-src`` (or the ``/h1/...`` path the host directory already
 uses) and ``OPENCODE_NODE_PREFIX`` at its ``/h1/...`` path, which is what the
 cached wrappers exec.
 
-The harness model passed to the adapter is ``claude-opus-5-5``. That is the
-adapter's proxy route. ``--vertex-model`` is what the proxy calls upstream.
+The Pi vs OpenCode batch launches this cell as ``anthropic/claude-sonnet-5-5``.
+The adapter still enters its proxy route through ``claude-opus-5-5``; the
+``-m`` value is the Sonnet ref. ``--require-model-match`` defaults on, so a
+request whose model id is not the Vertex model stops the smoke.
+``--vertex-model`` is what the proxy calls upstream.
 This module does nothing on import.
 """
 
@@ -26,7 +29,10 @@ import secrets
 from pathlib import Path
 
 
-HARNESS_MODEL = "claude-opus-5-5"
+# Adapter key that selects the proxy route. The launched ``-m`` value is MODEL_REF.
+ADAPTER_MODEL = "claude-opus-5-5"
+MODEL_REF = "anthropic/claude-sonnet-5-5"
+MODEL_ID = "claude-sonnet-5-5"
 TASK = "polyglot-rust-c"
 TIMEOUT_S = 2400
 CHECKER_TIMEOUT_S = 120
@@ -97,7 +103,7 @@ def _resolve_binary(cache: Path, sha: str, explicit: Path | None) -> Path:
     return Path(binary(sha, cache)).resolve()
 
 
-def main(argv: list[str] | None = None) -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OpenCode bridge smoke, one cell")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--cache", type=Path, default=None)
@@ -108,14 +114,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tasks-dir", type=Path, default=None)
     parser.add_argument("--task", default=TASK)
     parser.add_argument("--vertex-model", default="claude-sonnet-5-5",
-                        help="model the proxy calls; the adapter alias stays claude-opus-5-5")
+                        help="model the proxy calls upstream")
     parser.add_argument("--node", type=Path, default=None,
                         help="Node prefix to mount (or OPENCODE_NODE_PREFIX)")
     parser.add_argument("--exec", choices=("local", "docker"), default="local",
                         help="docker runs one bridge-network cell; host-network is not used")
     parser.add_argument("--image", default=os.environ.get("OBENCH_CELL_IMAGE", ""),
                         help="cell image for --exec docker (or OBENCH_CELL_IMAGE)")
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--require-model-match",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Halt when the request model id differs from the Vertex model. "
+            "On for this Pi vs OpenCode smoke. --no-require-model-match leaves "
+            "an Opus request served as Sonnet alone."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argument_parser().parse_args(argv)
     if args.exec == "docker" and not args.image:
         raise SystemExit("bridge smoke needs --image or OBENCH_CELL_IMAGE")
 
@@ -126,7 +146,6 @@ def main(argv: list[str] | None = None) -> int:
 
     from thesis.ab.compat import (
         PROXY_API_KEY,
-        PROXY_MODEL_REF,
         anthropic_proxy_config,
         sdk_base_url,
     )
@@ -165,11 +184,13 @@ def main(argv: list[str] | None = None) -> int:
     # Permission flags are read from `opencode run --help` inside the cell,
     # where the mounted Node and /h1 tree exist. Do not probe the binary on
     # the host: the cached wrapper's interpreter path is the container path.
-    config = anthropic_proxy_config(sdk, include_endpoint=True)
+    config = anthropic_proxy_config(
+        sdk, include_endpoint=True, model_id=MODEL_ID, model_name="Claude Sonnet 5.5",
+    )
     os.environ["OBENCH_OPENCODE_CONFIG_JSON"] = json.dumps(config)
     os.environ.pop("OBENCH_OPENCODE_PERMISSION_CONFIG", None)
     os.environ["OBENCH_OPENCODE_PROXY"] = json.dumps({
-        "model_ref": PROXY_MODEL_REF,
+        "model_ref": MODEL_REF,
         "base_url": sdk,
         "api_key": PROXY_API_KEY,
     })
@@ -179,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         print(f"cell {args.vertex_model} {cell_id} network_mode={network_mode}", flush=True)
         row = run_cell(
-            "opencode", args.task, HARNESS_MODEL, 1, TIMEOUT_S,
+            "opencode", args.task, ADAPTER_MODEL, 1, TIMEOUT_S,
             str(tasks_dir), str(adapters), CHECKER_TIMEOUT_S,
             exec_mode=args.exec,
             docker_image=args.image or None,
@@ -195,12 +216,14 @@ def main(argv: list[str] | None = None) -> int:
             row, ledger_rows, args.vertex_model,
             ledger_present=cell_ledger_path(ledger, cell_id).is_file(),
             protocol_location=PROTOCOL_LOCATION,
+            require_model_match=args.require_model_match,
         )
         trace = proxy_trace_public(row)
         cost = requests_cost_usd(args.vertex_model, ledger, cell_id)
         record = {
             "cell_id": cell_id,
-            "harness_model": HARNESS_MODEL,
+            "harness_model": MODEL_REF,
+            "adapter_model": ADAPTER_MODEL,
             "vertex_model": args.vertex_model,
             "sha": args.sha.strip().lower(),
             "binary": str(binary),
