@@ -4,9 +4,27 @@
 set -u
 cd ~/h2; echo "a8668fc6641bc9eeb855065688fbbc02a0d3754c0021013e5169b4b0b0b88814  hard-suite-prereg-v2.md" | sha256sum -c || exit 9
 R=$HOME/h2/h2-hardsuite-1022; mkdir -p $R
-echo "$(TZ=America/New_York date '+%F %T %Z') start H2 vm=n2-standard-16 runner=$(git -C ~/ob rev-parse HEAD) image=h2-env:1022($(sudo docker image inspect -f '{{.Id}}' h2-env:1022)) prereg_sha=a8668fc6 controls=2533,913,11731 jobs=4/model seed=1022" >> $R/driver.log
+# The agent container is unmodified h1-env:1022. Checker venvs are a separate
+# image (h2-checker-venvs), extracted to a directory and mounted at
+# /h2/checker-venvs — not at /opt/h2-checker-venvs. The runner copies that
+# tree into a cell-private directory only after the agent phase.
+AGENT_IMAGE=h1-env:1022
+AGENT_DIGEST=$(sudo docker image inspect -f '{{.Id}}' "$AGENT_IMAGE")
+STAGE=$HOME/h2/checker-venvs
+if [ ! -d "$STAGE/torch-tensor-parallelism" ]; then
+  cid=$(sudo docker create h2-checker-venvs:latest)
+  rm -rf "$STAGE"
+  sudo docker cp "$cid":/opt/h2-checker-venvs "$STAGE"
+  sudo docker rm "$cid" >/dev/null
+fi
+set +e
+sudo docker run --rm --network none --entrypoint python3 "$AGENT_IMAGE" -c 'import torch' >/tmp/h1-torch.out 2>/tmp/h1-torch.err
+h1rc=$?
+set -u
+H1_TORCH_PROBE=$(PYTHONPATH=$HOME/ob python3 -c 'from obench.checker_venv import normalize_torch_probe; import pathlib; print(normalize_torch_probe('"$h1rc"', pathlib.Path("/tmp/h1-torch.err").read_text()))')
+echo "$(TZ=America/New_York date '+%F %T %Z') start H2 vm=n2-standard-16 runner=$(git -C ~/ob rev-parse HEAD) agent_image=$AGENT_IMAGE($AGENT_DIGEST) checker_venvs=h2-checker-venvs prereg_sha=a8668fc6 controls=2533,913,11731 jobs=4/model seed=1022" >> $R/driver.log
 ( while true; do echo "$(TZ=America/New_York date '+%F %T %Z') $(cat /proc/loadavg) memfree_mb=$(free -m | awk '/Mem/{print $7}') disk_free=$(df -BG --output=avail / | tail -1)" >> $R/load.log; sleep 300; done ) & LP=$!
-run() { sudo docker run -d --name h2-$1 --network host -e OBENCH_ADC_METADATA=1 -e GOOGLE_CLOUD_PROJECT=nyu-rdg-fy26-js11531-a68d -e VERTEX_LOCATION=global -e OBENCH_VM_TYPE=n2-standard-16 -e TZ=America/New_York -v $HOME/ob:/ob -v $HOME/h1:/h1 -v $HOME/h2:/h2 h2-env:1022 /h2/run1.sh claude-$1-5-5 /h2/h2-hardsuite-1022/$1 $2 1000 4; }
+run() { sudo docker run -d --name h2-$1 --network host -e OBENCH_ADC_METADATA=1 -e GOOGLE_CLOUD_PROJECT=nyu-rdg-fy26-js11531-a68d -e VERTEX_LOCATION=global -e OBENCH_VM_TYPE=n2-standard-16 -e OBENCH_AGENT_IMAGE=$AGENT_IMAGE -e OBENCH_AGENT_IMAGE_DIGEST=$AGENT_DIGEST -e OBENCH_CHECKER_VENV_STAGE=/h2/checker-venvs -e OBENCH_H1_TORCH_PROBE="$H1_TORCH_PROBE" -e TZ=America/New_York -v $HOME/ob:/ob -v $HOME/h1:/h1 -v $HOME/h2:/h2 -v $STAGE:/h2/checker-venvs:ro $AGENT_IMAGE /h2/run1.sh claude-$1-5-5 /h2/h2-hardsuite-1022/$1 $2 1000 4; }
 run sonnet 3052,13331,26821,1109,795,2533,913,11731
 run opus 3052,13331,26821,13090,5140,913,4204
 # spend + disk watcher: combined model cost from cell records; stop both at >= $990 or disk < 15 GB

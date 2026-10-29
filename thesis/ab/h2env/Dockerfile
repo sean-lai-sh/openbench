@@ -1,9 +1,9 @@
-# H2 cell image. h1-env:1022 plus one virtualenv per hard-suite checker.
-# Harbor test.sh cold-installed torch (and numpy, MobileSAM, opencv, …) with
-# uvx at check time and was killed by the 120s checker cap. Those pins live in
-# requirements/. test.sh uses /opt/h2-checker-venvs/<task>/bin/python when it
-# is present and does not pip-install.
-FROM h1-env:1022
+# Checker-venv artifact. This is not the image the agent runs in.
+# The agent stays on unmodified h1-env:1022. The build stage uses that image
+# only so the wheels match its glibc, then the final image is the venv tree.
+# At checker time the tree is copied into a cell-private directory. It is not
+# present at /opt/h2-checker-venvs while the agent runs.
+FROM h1-env:1022 AS build
 
 ENV UV_CACHE_DIR=/opt/uvcache \
     UV_LINK_MODE=copy \
@@ -17,4 +17,7 @@ RUN apt-get update \
 COPY requirements /opt/h2-checker-requirements
 COPY install-checker-deps.sh /opt/h2-install-checker-deps.sh
 RUN bash /opt/h2-install-checker-deps.sh /opt/h2-checker-requirements \
-    && chmod -R a+rX /opt/h2-checker-venvs /opt/uvcache
+    && chmod -R a+rX /opt/h2-checker-venvs
+
+FROM scratch
+COPY --from=build /opt/h2-checker-venvs /opt/h2-checker-venvs

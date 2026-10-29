@@ -9,12 +9,22 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
 
 from obench import failure_class
+from obench.checker_venv import (
+    AGENT_IMAGE,
+    AgentEnvironmentError,
+    assert_agent_phase,
+    attach_checker_venvs,
+    normalize_torch_probe,
+    note_agent_image,
+    run_torch_probe,
+)
 from obench.cell_columns import (
     CELL_ENV_FIELDS,
     CellWriteError,
@@ -446,7 +456,12 @@ class ImagePinTests(unittest.TestCase):
     def test_image_pins_match_the_checker_uvx_lines(self):
         dockerfile = (H2ENV / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("install-checker-deps.sh", dockerfile)
-        self.assertIn("h1-env:1022", dockerfile)
+        self.assertIn("FROM h1-env:1022 AS build", dockerfile)
+        self.assertIn("FROM scratch", dockerfile)
+        self.assertNotIn("h2-env", dockerfile)
+        build = (H2ENV / "build.sh").read_text(encoding="utf-8")
+        self.assertIn("h2-checker-venvs:latest", build)
+        self.assertNotIn("h2-env:1022", build)
         script = (H2ENV / "install-checker-deps.sh").read_text(encoding="utf-8")
         self.assertIn("--index-url", script)
         self.assertIn("torch-index", script)
@@ -471,11 +486,131 @@ class ImagePinTests(unittest.TestCase):
             checker = (
                 PACK / task / "checker_data" / "harbor-tests" / "test.sh"
             ).read_text(encoding="utf-8")
-            self.assertIn("/opt/h2-checker-venvs/", checker)
+            self.assertIn("H2_CHECKER_VENV_ROOT", checker)
             self.assertIn('if [ -x "${_h2_py}" ]', checker)
             for pin in pins:
                 self.assertIn(pin, req)
                 self.assertIn(pin, checker)
+
+
+class AgentImageTests(unittest.TestCase):
+    def test_build_refuses_to_tag_the_agent_image(self):
+        for tag in ("h1-env:1022", "h2-env:1022"):
+            proc = subprocess.run(
+                ["bash", str(H2ENV / "build.sh"), tag],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 2, proc.stderr)
+            self.assertIn("agent image", proc.stderr)
+
+    def test_agent_phase_has_no_checker_venvs_and_matches_h1_torch(self):
+        h1 = normalize_torch_probe(1, "ModuleNotFoundError: No module named 'torch'\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp) / "opt" / "h2-checker-venvs"
+            assert_agent_phase(mount, (1, "ModuleNotFoundError: No module named 'torch'"), h1)
+            self.assertFalse(mount.exists())
+            mount.parent.mkdir(parents=True)
+            mount.mkdir()
+            with self.assertRaises(AgentEnvironmentError) as caught:
+                assert_agent_phase(mount, h1, h1)
+            self.assertIn("agent phase", str(caught.exception))
+            mount.rmdir()
+            with self.assertRaises(AgentEnvironmentError) as drifted:
+                assert_agent_phase(mount, "imported", h1)
+            self.assertIn("import torch", str(drifted.exception))
+            self.assertIn(AGENT_IMAGE, str(drifted.exception))
+
+    def test_checker_venvs_are_attached_only_after_the_agent_phase(self):
+        h1 = "ModuleNotFoundError:torch"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent_mount = root / "opt" / "h2-checker-venvs"
+            stage = root / "stage"
+            (stage / "torch-tensor-parallelism" / "bin").mkdir(parents=True)
+            seen = []
+
+            def agent():
+                assert_agent_phase(agent_mount, h1, h1)
+                seen.append(("agent", agent_mount.exists()))
+
+            agent()
+            self.assertEqual(seen, [("agent", False)])
+            dest = attach_checker_venvs(stage, root / "cell" / "h2-checker-venvs")
+            seen.append(("checker", dest.is_dir(), agent_mount.exists()))
+            self.assertEqual(seen[1][0], "checker")
+            self.assertTrue((dest / "torch-tensor-parallelism" / "bin").is_dir())
+            self.assertFalse(agent_mount.exists())
+            with self.assertRaises(AgentEnvironmentError):
+                attach_checker_venvs(stage, Path("/opt/h2-checker-venvs"))
+
+    def test_cell_records_the_h1_image_digest_and_hides_venvs_from_the_agent(self):
+        live = normalize_torch_probe(*run_torch_probe())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage = root / "stage"
+            (stage / "marker").mkdir(parents=True)
+            _task(root / "tasks", "demo", textwrap.dedent("""\
+                #!/bin/bash
+                if [ -e /opt/h2-checker-venvs ]; then
+                  echo baked into the agent image
+                  exit 3
+                fi
+                test -d "${H2_CHECKER_VENV_ROOT}/marker"
+                exit $?
+            """))
+            binary = root / "opencode"
+            _fake_opencode(binary)
+            dest = root / "cell.json"
+            keys = {
+                "OBENCH_AGENT_IMAGE": AGENT_IMAGE,
+                "OBENCH_AGENT_IMAGE_DIGEST": "sha256:h1-agent",
+                "OBENCH_CHECKER_VENV_STAGE": str(stage),
+                "OBENCH_H1_TORCH_PROBE": live,
+            }
+            saved = {key: os.environ.get(key) for key in keys}
+            try:
+                os.environ.update(keys)
+                execute_cell({
+                    "binary": str(binary),
+                    "config": {},
+                    "permission_config": False,
+                    "cell_path": str(dest),
+                    "tasks_dir": str(root / "tasks"),
+                    "adapters_dir": str(ROOT / "obench" / "adapters"),
+                    "model": "claude-opus-5-5",
+                    "task": "demo",
+                    "trial": 1,
+                    "timeout_s": 30,
+                })
+            finally:
+                for key, value in saved.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            row = json.loads(dest.read_text(encoding="utf-8"))
+            self.assertTrue(row["success"], row.get("checker_stdout"))
+            self.assertEqual(row["agent_image"], AGENT_IMAGE)
+            self.assertEqual(row["agent_image_digest"], "sha256:h1-agent")
+            self.assertNotEqual(row["agent_image"], "h2-checker-venvs")
+            self.assertFalse(Path("/opt/h2-checker-venvs").exists())
+
+    def test_digest_is_stamped_without_calling_docker(self):
+        saved = {key: os.environ.get(key) for key in (
+            "OBENCH_AGENT_IMAGE", "OBENCH_AGENT_IMAGE_DIGEST",
+        )}
+        try:
+            os.environ["OBENCH_AGENT_IMAGE"] = AGENT_IMAGE
+            os.environ["OBENCH_AGENT_IMAGE_DIGEST"] = "sha256:pair"
+            row = note_agent_image({})
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.assertEqual(row["agent_image"], "h1-env:1022")
+        self.assertEqual(row["agent_image_digest"], "sha256:pair")
 
 
 if __name__ == "__main__":
