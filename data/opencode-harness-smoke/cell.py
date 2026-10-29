@@ -266,7 +266,8 @@ def main(argv: list[str] | None = None) -> int:
                 "off-protocol halt "
                 f"upstream_model={row.get('upstream_model')} "
                 f"protocol_model={row.get('protocol_model')} "
-                f"endpoint_location={row.get('endpoint_location')}",
+                f"endpoint_location={row.get('endpoint_location')} "
+                f"requested_model={row.get('requested_model')}",
             )
             return 1
     finally:

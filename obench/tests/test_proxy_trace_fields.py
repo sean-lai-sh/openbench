@@ -8,19 +8,24 @@ left the batch protocol (``--vertex-model``, location ``global``).
 
 import csv
 import json
+import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from thesis.ab.compat import Assessment
 from thesis.ab.durable import publish_text
 from thesis.ab.prs import parse_prs
 from thesis.ab.run_ab import (
     PROTOCOL_LOCATION,
+    apply_cell_meter,
     attach_proxy_trace,
     batch_exit_code,
     cell_file,
     drive,
+    main,
     off_protocol_halt,
     read_cell,
 )
@@ -409,6 +414,215 @@ class RequireModelMatchTests(unittest.TestCase):
         models = sonnet["provider"]["anthropic"]["models"]
         self.assertEqual(set(models), {"claude-sonnet-5-5"})
         self.assertEqual(models["claude-sonnet-5-5"]["name"], "Claude Sonnet 5.5")
+
+
+def _ledger_row(*, requested, upstream="claude-sonnet-5-5"):
+    row = {
+        "record_type": "request",
+        "upstream_model": upstream,
+        "endpoint_location": "global",
+        "status": 200,
+    }
+    if requested is not None:
+        row["requested_model"] = requested
+    return row
+
+
+def _write_ledger(directory: Path, cell_id: str, requested, upstream="claude-sonnet-5-5") -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(_ledger_row(requested=requested, upstream=upstream), sort_keys=True)
+    (directory / f"{cell_id}.jsonl").write_text(line + "\n", encoding="utf-8")
+
+
+class _FakeProxy:
+    def __init__(self):
+        self.base_url = "http://127.0.0.1:9"
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def reached(self, _cell):
+        return True
+
+
+def _load_smoke(relative, name):
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / relative
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class HaltFiresFromLedgerTests(unittest.TestCase):
+    """The halt has to come from a ledger row, then stop the runner."""
+
+    def _run_ab(self, out: Path, *, flag: bool, requested):
+        calls = []
+
+        def worker(spec):
+            calls.append((spec["side"], spec["trial"]))
+            ledger = Path(tempfile.mkdtemp())
+            _write_ledger(ledger, "cell-1", requested)
+            row = {"turns": 1, "task": spec["task"], "trial": spec["trial"]}
+            apply_cell_meter(
+                row,
+                {"ledger_dir": str(ledger), "cell_id": "cell-1"},
+                protocol_model=spec["protocol_model"],
+                protocol_location=spec["protocol_location"],
+                require_model_match=spec["require_model_match"],
+            )
+            publish_text(Path(spec["cell_path"]), json.dumps(row))
+
+        def build_fn(sha, cache, repo=""):
+            return Path("/tmp") / sha
+
+        def assess_fn(_binary):
+            return Assessment("native", "listed", {}, False)
+
+        real_drive = drive
+
+        def wrapped(prs, tasks, trials, out_dir, **kwargs):
+            kwargs["build_fn"] = build_fn
+            kwargs["assess_fn"] = assess_fn
+            kwargs["worker"] = worker
+            kwargs["max_cost_usd"] = None
+            return real_drive(prs, tasks, trials, out_dir, **kwargs)
+
+        argv = [
+            str(out / "prs.csv"), "--pr", "1", "--tasks", "make-it-run",
+            "--trials", "2", "--jobs", "1",
+            "--vertex-model", "claude-sonnet-5-5",
+            "--out", str(out), "--cache", str(out),
+        ]
+        if flag:
+            argv.append("--require-model-match")
+        _prs(out)
+        with patch("thesis.ab.run_ab.drive", wrapped):
+            code = main(argv)
+        return code, calls, read_cell(cell_file(out, "1", "without", "make-it-run", 1))
+
+    def test_require_model_match_reads_the_ledger_and_exits_1(self):
+        out = Path(tempfile.mkdtemp())
+        code, calls, row = self._run_ab(out, flag=True, requested="claude-opus-5-5")
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, [("without", 1)])
+        self.assertTrue(row["off_protocol"])
+        self.assertTrue(row["require_model_match"])
+        self.assertEqual(row["requested_model"], "claude-opus-5-5")
+        self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
+        self.assertFalse(cell_file(out, "1", "without", "make-it-run", 2).is_file())
+
+    def test_without_the_flag_an_opus_request_served_as_sonnet_keeps_going(self):
+        out = Path(tempfile.mkdtemp())
+        code, calls, row = self._run_ab(out, flag=False, requested="claude-opus-5-5")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 4)
+        self.assertFalse(row["off_protocol"])
+        self.assertFalse(row["require_model_match"])
+
+    def test_missing_requested_model_halts_only_when_the_flag_is_on(self):
+        # Older ledgers have upstream_model and no requested_model. That is not
+        # a match. The flag-on runner stops; the flag-off runner records null
+        # and continues.
+        out = Path(tempfile.mkdtemp())
+        code, calls, row = self._run_ab(out, flag=True, requested=None)
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, [("without", 1)])
+        self.assertIsNone(row["requested_model"])
+        self.assertEqual(row["upstream_model"], "claude-sonnet-5-5")
+        self.assertTrue(row["off_protocol"])
+
+        out = Path(tempfile.mkdtemp())
+        code, calls, row = self._run_ab(out, flag=False, requested=None)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 4)
+        self.assertIsNone(row["requested_model"])
+        self.assertFalse(row["off_protocol"])
+
+    def test_opencode_smoke_halts_on_a_ledger_mismatch(self):
+        module = _load_smoke("data/opencode-harness-smoke/cell.py", "oc_halt_fire")
+        out = Path(tempfile.mkdtemp())
+        binary = out / "opencode"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        launched = []
+
+        def fake_run(*_args, **_kwargs):
+            launched.append(1)
+            proxy = json.loads(os.environ["OBENCH_OPENCODE_PROXY"])
+            cell_id = re.search(r"/c/([^/]+)", proxy["base_url"]).group(1)
+            self.assertEqual(proxy["model_ref"], "anthropic/claude-sonnet-5-5")
+            _write_ledger(out / "proxy-ledger", cell_id, "claude-opus-5-5")
+            return {"turns": 1, "completed": True, "checker_exit": 0}
+
+        with patch("thesis.ab.vertex_anthropic_proxy.start_from_env", return_value=_FakeProxy()), \
+             patch("obench.run.run_cell", fake_run):
+            code = module.main([
+                "--out", str(out), "--binary", str(binary), "--exec", "local",
+                "--require-model-match", "--vertex-model", "claude-sonnet-5-5",
+            ])
+        self.assertEqual(code, 1)
+        self.assertEqual(launched, [1])
+        saved = json.loads((out / "claude-sonnet-5-5.json").read_text(encoding="utf-8"))
+        self.assertTrue(saved["off_protocol"])
+        self.assertEqual(saved["requested_model"], "claude-opus-5-5")
+        self.assertEqual(saved["upstream_model"], "claude-sonnet-5-5")
+        self.assertEqual(saved["harness_model"], "anthropic/claude-sonnet-5-5")
+        self.assertIn("requested_model=claude-opus-5-5", (out / "smoke.log").read_text(encoding="utf-8"))
+
+    def test_pi_smoke_halts_before_the_next_model(self):
+        module = _load_smoke("data/pi-harness-smoke/cell.py", "pi_halt_fire")
+        out = Path(tempfile.mkdtemp())
+        launched = []
+
+        def fake_run(*args, **_kwargs):
+            launched.append(args[2])
+            cell_id = os.environ["OBENCH_VERTEX_CELL_ID"]
+            _write_ledger(
+                out / "proxy-ledger", cell_id, "claude-opus-5-5",
+                upstream="claude-sonnet-5-5",
+            )
+            return {"turns": 1, "completed": True, "checker_exit": 0, "tokens": 1}
+
+        with patch("thesis.ab.build_pi.binary", return_value=str(out / "pi")), \
+             patch("thesis.ab.vertex_anthropic_proxy.start_from_env", return_value=_FakeProxy()), \
+             patch("obench.run.run_cell", fake_run):
+            code = module.main([
+                "--out", str(out), "--cache", str(out), "--exec", "local",
+                "--models", "claude-sonnet-5-5,claude-opus-5-5",
+                "--require-model-match",
+            ])
+        self.assertEqual(code, 1)
+        self.assertEqual(launched, ["claude-sonnet-5-5"])
+        saved = json.loads((out / "claude-sonnet-5-5.json").read_text(encoding="utf-8"))
+        self.assertTrue(saved["off_protocol"])
+        self.assertFalse((out / "claude-opus-5-5.json").is_file())
+
+    def test_smoke_missing_requested_model_does_not_count_as_a_match(self):
+        module = _load_smoke("data/opencode-harness-smoke/cell.py", "oc_missing_request")
+        out = Path(tempfile.mkdtemp())
+        binary = out / "opencode"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        def fake_run(*_args, **_kwargs):
+            proxy = json.loads(os.environ["OBENCH_OPENCODE_PROXY"])
+            cell_id = re.search(r"/c/([^/]+)", proxy["base_url"]).group(1)
+            _write_ledger(out / "proxy-ledger", cell_id, None)
+            return {"turns": 1, "completed": True, "checker_exit": 0}
+
+        with patch("thesis.ab.vertex_anthropic_proxy.start_from_env", return_value=_FakeProxy()), \
+             patch("obench.run.run_cell", fake_run):
+            code = module.main([
+                "--out", str(out), "--binary", str(binary), "--exec", "local",
+            ])
+        self.assertEqual(code, 1)
+        saved = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+        cell = saved["cells"][0]
+        self.assertIsNone(cell["requested_model"])
+        self.assertEqual(cell["upstream_model"], "claude-sonnet-5-5")
+        self.assertTrue(cell["off_protocol"])
+        self.assertIn("requested_model=None", (out / "smoke.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -1528,8 +1528,12 @@ def comparable_model_id(value) -> str | None:
 def request_model_mismatch(records: list | None) -> bool:
     """True when a ledger request asked for a different model than Vertex served.
 
-    A missing requested or upstream id counts: the match cannot be shown.
-    An empty ledger does not.
+    A missing ``requested_model`` or ``upstream_model`` is a mismatch. Older
+    proxy ledgers never stored ``requested_model``. With
+    ``--require-model-match`` those rows are ``off_protocol`` and the batch
+    stops; they are not treated as a match. With the flag off, a missing id
+    does not by itself halt, and the cell records ``requested_model`` as null.
+    An empty ledger does not mismatch.
     """
     for record in records or []:
         if not isinstance(record, dict):
@@ -2721,7 +2725,9 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Also mark a cell off_protocol, and halt, when the model id on the "
             "incoming request differs from the Vertex model that was served. "
-            "Off by default: H2 and PR 3052 reruns ask for Opus and are served Sonnet."
+            "A ledger row with no requested_model (older proxies) is off_protocol "
+            "too: the match cannot be shown. Off by default, so H2 and PR 3052 "
+            "reruns that ask for Opus and are served Sonnet still run."
         ),
     )
     parser.add_argument(
