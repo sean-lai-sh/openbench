@@ -20,12 +20,19 @@ from thesis.ab.vertex_anthropic_proxy import (
     prepare_thinking_blocks,
     start_proxy,
     thinking_block_binding_setting,
+    translate_body,
 )
 
 USAGE = b'{"id":"msg","usage":{"input_tokens":4,"output_tokens":5}}'
 SIGNATURE = (
     b'{"type":"error","error":{"type":"invalid_request_error",'
     b'"message":"Invalid signature in thinking block"}}'
+)
+# Wording on the committed Opus cells (backticks around the two words).
+SIGNATURE_LIVE = (
+    b'{"type":"error","error":{"type":"invalid_request_error",'
+    b'"message":"messages.3.content.0: Invalid `signature` in `thinking` block. '
+    b'The block is bound to a different conversation."}}'
 )
 OTHER_400 = b'{"type":"error","error":{"type":"invalid_request_error","message":"temperature is deprecated"}}'
 
@@ -165,23 +172,18 @@ class BlockBindingTests(unittest.TestCase):
             self.assertEqual(prepare_thinking_blocks(body)["thinking_blocks_stripped"], 1)
             self.assertEqual(body["messages"], [{"role": "user", "content": "q"}])
 
-    def test_drop_block_keeps_history_when_thinking_is_enabled(self):
+    def test_drop_block_does_not_touch_a_thinking_on_body(self):
         with mock.patch.dict(os.environ, {BLOCK_BINDING_ENV: "drop_block"}):
             body = _body(thinking={"type": "adaptive", "x": 1}, redacted=True)
+            original = json.loads(json.dumps(body))
             prepared = prepare_thinking_blocks(body)
-            self.assertEqual(prepared["binding"], "drop_block")
+            self.assertIsNone(prepared["binding"])
             self.assertEqual(prepared["thinking_blocks_stripped"], 0)
-            self.assertEqual(body["thinking"], {
-                "type": "adaptive",
-                "x": 1,
-                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
-            })
-            self.assertEqual(_types(body)[1], ["redacted_thinking", "thinking", "text"])
+            self.assertEqual(body, original)
             budget = _body(thinking={"type": "enabled", "budget_tokens": 128})
-            self.assertEqual(apply_block_binding(budget), "drop_block")
-            self.assertEqual(budget["thinking"]["budget_tokens"], 128)
-            self.assertIn("block_binding", budget["thinking"])
-            self.assertEqual(_types(budget)[1], ["thinking", "text"])
+            before = json.loads(json.dumps(budget))
+            self.assertIsNone(prepare_thinking_blocks(budget)["binding"])
+            self.assertEqual(budget, before)
 
     def test_enabled_without_history_thinking_is_untouched(self):
         with mock.patch.dict(os.environ, {BLOCK_BINDING_ENV: "drop_block"}):
@@ -193,6 +195,10 @@ class BlockBindingTests(unittest.TestCase):
     def test_signature_cause_is_only_that_400(self):
         self.assertEqual(
             env_cause_for_status(400, SIGNATURE.decode()),
+            ENV_CAUSE_THINKING_SIGNATURE,
+        )
+        self.assertEqual(
+            env_cause_for_status(400, SIGNATURE_LIVE.decode()),
             ENV_CAUSE_THINKING_SIGNATURE,
         )
         self.assertIsNone(env_cause_for_status(400, OTHER_400.decode()))
@@ -251,26 +257,35 @@ class ThinkingBlockProxyTests(unittest.TestCase):
         self.assertEqual(row["thinking_blocks_stripped"], 2)
         self.assertEqual(row["thinking_sent"], "none")
 
-    def test_drop_block_leaves_an_enabled_thinking_request_bound(self):
+    def test_drop_block_thinking_on_forwards_the_incoming_body(self):
+        """Thinking-on + drop_block does not rewrite the body. Strip is thinking-off only."""
+        body = _body(thinking={"type": "adaptive", "x": 1}, redacted=True)
+        incoming = json.dumps(body).encode("utf-8")
         with mock.patch.dict(os.environ, {BLOCK_BINDING_ENV: "drop_block"}):
             proxy = self._proxy()
-            body = _body(thinking={"type": "adaptive", "x": 1}, redacted=True)
-            status, _payload = _post(proxy.base_url + "/c/on/v1/messages", body)
+            request = urllib.request.Request(
+                proxy.base_url + "/c/on/v1/messages",
+                data=incoming,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                status = response.status
+                response.read()
         self.assertEqual(status, 200)
-        forwarded = json.loads(self.httpd.seen[-1]["body"])
-        self.assertEqual(forwarded["thinking"]["type"], "adaptive")
-        self.assertEqual(forwarded["thinking"]["x"], 1)
-        self.assertEqual(
-            forwarded["thinking"]["block_binding"],
-            {"prefix_mismatch_behavior": "drop_block"},
-        )
-        self.assertEqual(_types(forwarded)[1], ["redacted_thinking", "thinking", "text"])
-        self.assertIn("thinking-binding-controls-2026-08-01", self.httpd.seen[-1]["beta"])
+        forwarded = self.httpd.seen[-1]["body"]
+        _kind, expected = translate_body("/v1/messages", incoming)
+        self.assertEqual(forwarded, expected)
+        parsed = json.loads(forwarded)
+        self.assertEqual(parsed["messages"], body["messages"])
+        self.assertEqual(parsed["thinking"], body["thinking"])
+        self.assertNotIn("block_binding", forwarded.decode())
+        self.assertNotIn("thinking-binding", self.httpd.seen[-1]["beta"] or "")
         row = _rows(self.ledger, "on")[0]
         self.assertEqual(row["thinking_block_binding"], "drop_block")
         self.assertEqual(row["thinking_blocks_stripped"], 0)
         self.assertEqual(row["thinking_sent"], "adaptive")
-        self.assertEqual(row["cc_identity_stripped"]["thinking_block_binding"], "drop_block")
+        self.assertNotIn("thinking_block_binding", row["cc_identity_stripped"])
 
     def test_signature_400_is_tagged_and_another_400_is_not(self):
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -418,6 +433,91 @@ class ThinkingBlockFlagTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
             main([str(csv_path), "--thinking-block-binding", "strip"])
         self.assertEqual(caught.exception.code, 2)
+
+
+class RerunPairBindingTests(unittest.TestCase):
+    def test_drop_block_rerun_requires_both_sides_and_rejects_a_mix(self):
+        from thesis.ab.prs import parse_prs
+        from thesis.ab.run_ab import (
+            RunError,
+            cell_file,
+            drive,
+            mixed_thinking_block_binding,
+            rerun_pair_binding_gap,
+            rerun_replaces_cell,
+            saved_rerun_rows,
+        )
+        with_key = "3052/cells/with/video-processing/2.json"
+        without_key = "3052/cells/without/video-processing/2.json"
+        self.assertIsNone(rerun_pair_binding_gap({with_key, without_key}, "drop_block"))
+        self.assertIsNone(rerun_pair_binding_gap({with_key}, "off"))
+        gap = rerun_pair_binding_gap({with_key}, "drop_block")
+        self.assertIn(without_key, gap)
+        self.assertIsNone(mixed_thinking_block_binding([
+            {"pr": "3052", "side": "with", "task": "video-processing", "trial": 2,
+             "thinking_block_binding": "drop_block"},
+            {"pr": "3052", "side": "without", "task": "video-processing", "trial": 2,
+             "thinking_block_binding": "drop_block"},
+        ]))
+        mixed = mixed_thinking_block_binding([
+            {"pr": "3052", "side": "with", "task": "video-processing", "trial": 2,
+             "thinking_block_binding": "drop_block"},
+            {"pr": "3052", "side": "without", "task": "video-processing", "trial": 2,
+             "thinking_block_binding": "off"},
+        ])
+        self.assertIn("without=off", mixed)
+        self.assertIn("with=drop_block", mixed)
+        self.assertIsNone(mixed_thinking_block_binding([
+            {"pr": "3052", "side": "with", "task": "video-processing", "trial": 2,
+             "thinking_block_binding": "drop_block"},
+        ]))
+        self.assertFalse(rerun_replaces_cell(
+            {"thinking_block_binding": "off"}, {with_key, without_key},
+        ))
+        with mock.patch.dict(os.environ, {BLOCK_BINDING_ENV: "drop_block"}):
+            self.assertFalse(rerun_replaces_cell(
+                {"thinking_block_binding": "drop_block"}, {with_key, without_key},
+            ))
+            self.assertTrue(rerun_replaces_cell(
+                {"thinking_block_binding": "off"}, {with_key, without_key},
+            ))
+            self.assertFalse(rerun_replaces_cell(
+                {"thinking_block_binding": "off"}, None,
+            ))
+
+        saved = Path(tempfile.mkdtemp()) / "run"
+        for side, binding in (("with", "drop_block"), ("without", "off")):
+            path = cell_file(saved, "3052", side, "video-processing", 2)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"thinking_block_binding": binding}), encoding="utf-8")
+        saved_mixed = mixed_thinking_block_binding(
+            saved_rerun_rows(saved, {with_key, without_key}),
+        )
+        self.assertIn("without=off", saved_mixed)
+        self.assertIn("with=drop_block", saved_mixed)
+
+        out = Path(tempfile.mkdtemp())
+        listed = out / "rerun.json"
+        listed.write_text(json.dumps([with_key]), encoding="utf-8")
+        prs_path = out / "prs.jsonl"
+        prs_path.write_text(json.dumps({
+            "pr": "3052",
+            "after_sha": "b" * 40,
+            "before_sha": "a" * 40,
+        }) + "\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {
+            BLOCK_BINDING_ENV: "drop_block",
+            "OBENCH_RERUN_CELLS": str(listed),
+        }):
+            with self.assertRaises(RunError) as caught:
+                drive(
+                    parse_prs(prs_path), ("video-processing",), 2, out / "run",
+                    jobs=1, model="claude-opus-5-5", timeout_s=30,
+                    cache=out / "cache", max_cost_usd=None, dry_run=False,
+                    tasks_dir=out,
+                    worker=lambda spec: (_ for _ in ()).throw(AssertionError("launched")),
+                )
+        self.assertIn(without_key, str(caught.exception))
 
 
 if __name__ == "__main__":

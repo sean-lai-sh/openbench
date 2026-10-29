@@ -368,11 +368,15 @@ def thinking_block_binding_setting() -> str:
 def env_cause_for_status(status, error) -> str | None:
     """Tag one failure: a Vertex 400 for an invalid thinking-block signature.
 
-    Any other status or body returns None. This does not classify other 400s.
+    The live text is ``Invalid `signature` in `thinking` block``. Backticks
+    are ignored so that wording matches the same cause. Any other status or
+    body returns None. This does not classify other 400s.
     """
     if isinstance(status, bool) or not isinstance(status, int) or status != 400:
         return None
-    if not isinstance(error, str) or _THINKING_SIGNATURE_MARK not in error.lower():
+    if not isinstance(error, str):
+        return None
+    if _THINKING_SIGNATURE_MARK not in error.lower().replace("`", ""):
         return None
     return ENV_CAUSE_THINKING_SIGNATURE
 
@@ -436,18 +440,13 @@ def strip_replayed_thinking_blocks(data: dict) -> int:
 
 
 def apply_block_binding(data) -> str | None:
-    """Opt-in prefix-mismatch binding when the request already enables thinking.
+    """Prefix-mismatch binding for a request that already enables thinking.
 
-    Sonnet 5.5 rejects a replayed ``thinking`` block when the content before it
-    was rewritten (OpenCode compaction/prune does this; PR 4838's taskflow at
-    context=72000 hit it on 57/60 cells). With ``OBENCH_THINKING_BLOCK_BINDING
-    =drop_block``, a request that already sends thinking (``enabled`` with
-    ``budget_tokens``, or ``adaptive``) and replays at least one thinking block
-    gets ``thinking.block_binding.prefix_mismatch_behavior=drop_block``.
-
-    A request with thinking disabled is not given a thinking field. Stripping
-    those blocks is ``prepare_thinking_blocks``. Returns the mode applied, or
-    None. Off by default.
+    Not used on the proxy path. ``prepare_thinking_blocks`` strips history
+    only when thinking is disabled, and leaves a thinking-enabled body
+    unchanged. This helper still writes
+    ``thinking.block_binding.prefix_mismatch_behavior=drop_block`` when called
+    directly. Returns the mode applied, or None. Off by default.
     """
     if thinking_block_binding_setting() != BLOCK_BINDING_DROP or not isinstance(data, dict):
         return None
@@ -468,15 +467,16 @@ def prepare_thinking_blocks(data) -> dict:
 
     ``thinking_block_binding`` is the setting in effect (``off`` or
     ``drop_block``). ``thinking_blocks_stripped`` is how many history blocks
-    were removed. ``binding`` is ``drop_block`` only when a ``block_binding``
-    field was written on an already-enabled thinking request.
+    were removed. ``binding`` stays None: a thinking-enabled request is not
+    rewritten, so the bytes forwarded to Vertex match the body this proxy
+    would have sent with the setting off.
 
     ``drop_block`` and thinking disabled: strip ``thinking`` and
     ``redacted_thinking`` blocks. The thinking field stays absent, so
     ``thinking_sent`` stays ``none``.
 
-    ``drop_block`` and thinking enabled: the existing prefix-mismatch binding.
-    History is left in place.
+    ``drop_block`` and thinking enabled: the body is left exactly as it
+    arrived. Strip does not run.
     """
     setting = thinking_block_binding_setting()
     out = {
@@ -486,10 +486,9 @@ def prepare_thinking_blocks(data) -> dict:
     }
     if setting != BLOCK_BINDING_DROP or not isinstance(data, dict):
         return out
-    if classify_thinking(data) == "none":
-        out["thinking_blocks_stripped"] = strip_replayed_thinking_blocks(data)
+    if classify_thinking(data) != "none":
         return out
-    out["binding"] = apply_block_binding(data)
+    out["thinking_blocks_stripped"] = strip_replayed_thinking_blocks(data)
     return out
 
 

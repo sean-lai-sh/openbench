@@ -1989,6 +1989,134 @@ def rerun_cells_from_env() -> set[str] | None:
     return {str(item) for item in items}
 
 
+def _pair_cell_parts(cell_key: str) -> tuple[str, str, str, str] | None:
+    """``(pr, side, task, trial)`` for a without/with cell key.
+
+    Keys look like ``3052/cells/with/video-processing/2.json``. Other sides
+    (``aa-1``, ``aa-2``) are not a harness pair and return None.
+    """
+    parts = str(cell_key or "").strip().split("/")
+    if len(parts) != 5 or parts[1] != "cells" or parts[2] not in {"without", "with"}:
+        return None
+    trial = parts[4]
+    if trial.endswith(".json"):
+        trial = trial[:-5]
+    if not trial:
+        return None
+    return parts[0], parts[2], parts[3], trial
+
+
+def mate_cell_key(cell_key: str) -> str | None:
+    """The other side of a without/with cell, or None when it is not a pair."""
+    parsed = _pair_cell_parts(cell_key)
+    if parsed is None:
+        return None
+    pr, side, task, trial = parsed
+    other = "without" if side == "with" else "with"
+    return f"{pr}/cells/{other}/{task}/{trial}.json"
+
+
+def rerun_pair_binding_gap(keys, setting: str | None = None) -> str | None:
+    """Refuse a drop_block rerun that names one side of a pair and not the other.
+
+    The setting is applied to the process, so every cell this rerun launches
+    gets the same ``thinking_block_binding``. Leaving the mate off the list
+    keeps that side on whatever binding it already has.
+    """
+    if setting is None:
+        from thesis.ab.vertex_anthropic_proxy import thinking_block_binding_setting
+        setting = thinking_block_binding_setting()
+    if setting != "drop_block":
+        return None
+    missing = []
+    for key in sorted({str(item) for item in (keys or set())}):
+        mate = mate_cell_key(key)
+        if mate is None or mate in keys or str(mate) in {str(item) for item in keys}:
+            continue
+        missing.append(mate)
+    if not missing:
+        return None
+    return (
+        "rerun pair must apply thinking_block_binding=drop_block to both sides; missing "
+        + ", ".join(missing)
+    )
+
+
+def mixed_thinking_block_binding(rows) -> str | None:
+    """Error when a without/with pair recorded two different bindings.
+
+    A side with no ``thinking_block_binding`` is ``off``. One side of a pair
+    is not a mix. ``aa-1`` and ``aa-2`` are not compared.
+    """
+    groups: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        side = row.get("side")
+        if side not in {"without", "with"}:
+            continue
+        pr = str(row.get("pr") or "")
+        task = str(row.get("task") or "")
+        trial = str(row.get("trial") or "")
+        if not pr or not task or not trial:
+            continue
+        value = row.get("thinking_block_binding")
+        if value not in {"off", "drop_block"}:
+            value = "off"
+        groups.setdefault((pr, task, trial), {})[str(side)] = value
+    bad = []
+    for (pr, task, trial), sides in sorted(groups.items()):
+        if "without" in sides and "with" in sides and sides["without"] != sides["with"]:
+            bad.append(
+                f"{pr} {task} trial {trial}: "
+                f"without={sides['without']} with={sides['with']}"
+            )
+    if not bad:
+        return None
+    return "mixed thinking_block_binding: " + "; ".join(bad)
+
+
+def saved_rerun_rows(out_dir: Path, keys) -> list[dict]:
+    """Cell rows for a rerun list, with pair identity taken from the key.
+
+    Saved result rows do not always repeat ``pr`` / ``side`` / ``task`` /
+    ``trial``. The key is that identity, so a binding mix can be checked
+    after the cells land.
+    """
+    rows = []
+    root = Path(out_dir)
+    for key in keys or []:
+        parsed = _pair_cell_parts(str(key))
+        if parsed is None:
+            continue
+        pr, side, task, trial = parsed
+        row = read_cell(cell_file(root, pr, side, task, trial))
+        if not isinstance(row, dict):
+            continue
+        stamped = dict(row)
+        stamped["pr"] = pr
+        stamped["side"] = side
+        stamped["task"] = task
+        stamped["trial"] = trial
+        rows.append(stamped)
+    return rows
+
+
+def rerun_replaces_cell(existing: dict | None, rerun_keys) -> bool:
+    """A drop_block rerun rewrites a saved cell whose binding is not drop_block.
+
+    Both sides of the pair are launched under the same setting. A cell that
+    already recorded ``drop_block`` stays. Any other saved binding would make
+    the pair mixed, so that file is not treated as done.
+    """
+    if rerun_keys is None or not isinstance(existing, dict):
+        return False
+    from thesis.ab.vertex_anthropic_proxy import thinking_block_binding_setting
+    if thinking_block_binding_setting() != "drop_block":
+        return False
+    return existing.get("thinking_block_binding") != "drop_block"
+
+
 ROUTE_HALT_MAX_OFF = 2
 
 
@@ -2427,10 +2555,14 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     )
     only = rerun_cells_from_env()
     if only is not None:
+        gap = rerun_pair_binding_gap(only)
+        if gap:
+            raise RunError(gap)
         scheduled = [spec for spec in scheduled if _cell_rel(spec) in only]
     for spec in scheduled:
         path = cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"])
-        if read_cell(path) is not None:
+        existing = read_cell(path)
+        if existing is not None and not rerun_replaces_cell(existing, only):
             _absorb_finished(spec, out_dir, prepared)
             continue
         pending.append(spec)
@@ -2588,6 +2720,10 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                 worker(filled)
                 launched += 1
                 _absorb_finished(spec, out_dir, prepared)
+            if only is not None:
+                mixed = mixed_thinking_block_binding(saved_rerun_rows(out_dir, only))
+                if mixed:
+                    raise RunError(mixed)
             return plan, launched, stopped
 
         import multiprocessing
@@ -2625,6 +2761,10 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                     submit_more()
         if errors:
             raise errors[0]
+        if only is not None:
+            mixed = mixed_thinking_block_binding(saved_rerun_rows(out_dir, only))
+            if mixed:
+                raise RunError(mixed)
         return plan, launched, stopped
     finally:
         if server is not None:
@@ -2759,7 +2899,9 @@ def main(argv: list[str] | None = None) -> int:
             "request has thinking disabled, and keeps the prefix-mismatch "
             "block_binding when thinking is already enabled. "
             "Recorded on every cell as thinking_block_binding. "
-            "The 3052 and 5140 filter-js reruns pass drop_block."
+            "A drop_block rerun must name both sides of each without/with pair. "
+            "The 3052 video-processing and sam-cell-seg reruns, and the 5140 "
+            "filter-js rerun, pass drop_block."
         ),
     )
     parser.add_argument(
