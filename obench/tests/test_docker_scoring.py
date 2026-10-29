@@ -107,7 +107,8 @@ class AlignDockerWorkspaceTests(unittest.TestCase):
         self.assertTrue(checker_run_was_defect(125))
         self.assertTrue(checker_run_was_defect(None))
         self.assertIn("checker_defect", ROW_FIELDS)
-        self.assertEqual(ROW_FIELDS[-1], "checker_defect")
+        self.assertEqual(ROW_FIELDS[-2], "checker_defect")
+        self.assertEqual(ROW_FIELDS[-1], "functional_pass")
 
 
 class CheckerDefectColumnTests(unittest.TestCase):
