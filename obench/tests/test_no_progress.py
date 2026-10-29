@@ -402,27 +402,70 @@ class StreamLabelTests(unittest.TestCase):
         row.update(extra)
         return row
 
-    def test_regex_chess_shape_is_watchdog_stream(self):
-        from thesis.ab.watch import label_watchdog_stream, part_updated_within_idle
+    def test_boundary_gap_stays_hang(self):
+        # opus/26821 without regex-chess trial 3: last update 299.4s before
+        # the kill, idle_s 300.2. That started the idle clock.
+        from thesis.ab.watch import (
+            label_watchdog_stream, last_part_updated_gap_s, part_updated_within_idle,
+            stream_kill_verdict,
+        )
         row = self._stream_row()
-        self.assertTrue(part_updated_within_idle(row))
+        gap = last_part_updated_gap_s(row)
+        self.assertAlmostEqual(gap, 299.4, delta=0.15)
+        self.assertEqual(stream_kill_verdict(row), "stays_hang")
+        self.assertFalse(part_updated_within_idle(row))
         labeled = label_watchdog_stream(row)
-        self.assertIs(labeled, row)
-        self.assertEqual(row["failure_class"], "env_failure")
-        self.assertEqual(row["env_cause"], "watchdog_stream")
-        self.assertEqual(row["tokens_output"], 15705)
-        self.assertEqual(row["hang_reason"], "no_progress")
+        self.assertEqual(labeled["failure_class"], "hang")
+        self.assertNotIn("env_cause", labeled)
+        self.assertEqual(labeled["tokens_output"], 15705)
+        self.assertEqual(labeled["hang_reason"], "no_progress")
 
-    def test_part_updated_only_in_a_side_log_counts(self):
-        from thesis.ab.watch import label_watchdog_stream
+    def test_part_updated_only_in_a_side_log_uses_that_gap(self):
+        from thesis.ab.watch import label_watchdog_stream, stream_kill_verdict
         row = self._stream_row(output_tail="INFO  2026-10-24T04:52:00 +1ms service=app startup\n")
         logs = (
             "INFO  2026-10-24T04:52:06 +12ms service=bus "
             "type=message.part.updated publishing\n"
         )
+        self.assertEqual(stream_kill_verdict(row, logs), "stays_hang")
         labeled = label_watchdog_stream(row, logs)
+        self.assertEqual(labeled["failure_class"], "hang")
+        self.assertNotIn("env_cause", labeled)
+
+    def test_clearly_inside_the_window_is_relabeled(self):
+        from thesis.ab.watch import label_watchdog_stream, stream_kill_verdict
+        # Kill is 400s after start (04:55:53). The last part update is
+        # 04:55:13, 40s before the kill and 260s inside a 300s idle.
+        row = self._stream_row(
+            started_at="2026-10-24T04:49:13+00:00",
+            t_agent_s=400.0,
+            no_progress_idle_s=300.0,
+            output_tail=(
+                "INFO  2026-10-24T04:55:13 +10ms service=bus "
+                "type=message.part.updated publishing\n"
+            ),
+        )
+        self.assertEqual(stream_kill_verdict(row), "relabel")
+        labeled = label_watchdog_stream(row)
         self.assertEqual(labeled["failure_class"], "env_failure")
         self.assertEqual(labeled["env_cause"], "watchdog_stream")
+
+    def test_a_few_seconds_inside_300_is_borderline(self):
+        from thesis.ab.watch import label_watchdog_stream, stream_kill_verdict
+        # 297.1s before the kill: past the 2s clock/poll band, not 30s inside.
+        row = self._stream_row(
+            started_at="2026-10-24T02:44:00+00:00",
+            t_agent_s=297.1,
+            no_progress_idle_s=300.0,
+            output_tail=(
+                "INFO  2026-10-24T02:44:00 +10ms service=bus "
+                "type=message.part.updated publishing\n"
+            ),
+        )
+        self.assertEqual(stream_kill_verdict(row), "borderline")
+        labeled = label_watchdog_stream(row)
+        self.assertEqual(labeled["failure_class"], "hang")
+        self.assertNotIn("env_cause", labeled)
 
     def test_part_updated_long_before_the_kill_stays_unlabeled(self):
         from thesis.ab.watch import label_watchdog_stream, part_updated_within_idle

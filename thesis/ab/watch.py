@@ -27,8 +27,19 @@ from pathlib import Path
 # Replay classifies through apply_watchdog_class; it does not re-time the cell.
 NO_PROGRESS_S = 300.0
 PART_UPDATED = "message.part.updated"
-# Bookkeeping after SIGKILL, plus one-second log timestamps.
-_STREAM_WINDOW_SLACK_S = 5.0
+# Last part update at least this close to 300s is the event that started the
+# idle clock, not a stream that continued through it.
+# OpenCode log stamps are whole seconds, so the real event is up to 1.0s
+# after the stamp and a computed gap is up to 1.0s too large. The watchdog
+# polls on a 0.2s select, and recorded idle_s in the deferred batch overshoots
+# 300 by at most about 0.4s. opus/26821 without regex-chess trial 3 is
+# gap 299.4s against idle_s 300.2 (0.8s inside the recorded idle). A 2.0s
+# band around 300 covers that clock and poll error.
+STREAM_BOUNDARY_S = 2.0
+# Relabel only when the last update is this far inside the idle limit.
+# 30s is an order of magnitude past the 2s boundary band, so the event
+# happened while the watchdog was already counting silence.
+STREAM_CLEAR_INSIDE_S = 30.0
 _KIND_RANK = {
     "part_updated": 0,
     "stream_bytes": 1,
@@ -620,49 +631,67 @@ def part_updated_times(text: str) -> list[datetime]:
     return found
 
 
-def part_updated_within_idle(
-    row: dict,
-    logs: str | None = None,
-    *,
-    slack_s: float = _STREAM_WINDOW_SLACK_S,
-) -> bool:
-    """True when a no-progress kill still had part updates inside the idle window.
+def last_part_updated_gap_s(row: dict, logs: str | None = None) -> float | None:
+    """Seconds from the last ``message.part.updated`` to the kill.
 
-    The window is the ``idle_s`` seconds before the kill, plus ``slack_s`` for
-    the second-resolution log clock and the time between SIGKILL and the
-    cell's recorded end. A part update that only happened long before that
-    window is a real silence, not a stream the old rule cut off.
+    None when the row is not a no-progress kill, the kill time is unknown,
+    or the logs have no part-update timestamp. The gap uses the latest
+    event only: an earlier update does not count once a later one exists.
     """
     if not isinstance(row, dict) or not _is_no_progress_kill(row):
-        return False
+        return None
     kill = _kill_time(row)
     if kill is None:
-        return False
-    limit = _idle_limit(row) + float(slack_s)
-    slack = float(slack_s)
-    for event in part_updated_times(_row_text(row, logs)):
-        age = (kill - event).total_seconds()
-        if -slack <= age <= limit:
-            return True
-    return False
+        return None
+    times = part_updated_times(_row_text(row, logs))
+    if not times:
+        return None
+    return (kill - max(times)).total_seconds()
 
 
-def label_watchdog_stream(
-    row: dict,
-    logs: str | None = None,
-    *,
-    slack_s: float = _STREAM_WINDOW_SLACK_S,
-) -> dict:
+def stream_kill_verdict(row: dict, logs: str | None = None) -> str | None:
+    """``relabel``, ``stays_hang``, or ``borderline`` for a measured gap.
+
+    ``stays_hang`` when the last update is at least ``NO_PROGRESS_S`` before
+    the kill, or within ``STREAM_BOUNDARY_S`` of that (gap >= 298s). That
+    update started the idle clock. ``relabel`` when the gap is clearly
+    inside the window: more than ``STREAM_CLEAR_INSIDE_S`` (30s) before
+    both 300s and the cell's recorded idle. Anything between those two
+    cuts is ``borderline`` and is not relabeled.
+    """
+    gap = last_part_updated_gap_s(row, logs)
+    if gap is None:
+        return None
+    if gap >= NO_PROGRESS_S - STREAM_BOUNDARY_S:
+        return "stays_hang"
+    idle = _idle_limit(row)
+    clear_before = min(idle, NO_PROGRESS_S) - STREAM_CLEAR_INSIDE_S
+    if 0 <= gap < clear_before:
+        return "relabel"
+    return "borderline"
+
+
+def part_updated_within_idle(row: dict, logs: str | None = None) -> bool:
+    """True when the last part update is clearly inside the idle window.
+
+    That is ``stream_kill_verdict`` == ``relabel``. A last update within
+    ``STREAM_BOUNDARY_S`` of 300s stays a hang.
+    """
+    return stream_kill_verdict(row, logs) == "relabel"
+
+
+def label_watchdog_stream(row: dict, logs: str | None = None) -> dict:
     """Label an old streaming kill without re-running it.
 
-    Sets ``failure_class=env_failure`` and ``env_cause=watchdog_stream`` when
-    ``part_updated_within_idle`` is true. Other rows are left as stored.
+    Sets ``failure_class=env_failure`` and ``env_cause=watchdog_stream``
+    only when ``stream_kill_verdict`` is ``relabel``. A boundary gap
+    (``stays_hang``) and a ``borderline`` gap keep the stored class.
     Scoring replay does not call this: ``apply_watchdog_class`` stays the
     live and replay classifier.
     """
     if not isinstance(row, dict):
         return row
-    if part_updated_within_idle(row, logs, slack_s=slack_s):
+    if stream_kill_verdict(row, logs) == "relabel":
         row["failure_class"] = "env_failure"
         row["env_cause"] = "watchdog_stream"
     return row
