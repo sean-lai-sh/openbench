@@ -414,6 +414,32 @@ class RequireModelMatchTests(unittest.TestCase):
         models = sonnet["provider"]["anthropic"]["models"]
         self.assertEqual(set(models), {"claude-sonnet-5-5"})
         self.assertEqual(models["claude-sonnet-5-5"]["name"], "Claude Sonnet 5.5")
+        pinned = opencode.comparison_config("http://127.0.0.1:9/v1")
+        self.assertEqual(pinned["model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(pinned["small_model"], "anthropic/claude-sonnet-5-5")
+        self.assertNotIn("title", pinned)
+        from obench.adapters.opencode import _config_body
+        keys = (
+            "OBENCH_OPENCODE_CONFIG_JSON",
+            "OBENCH_OPENCODE_PERMISSION_CONFIG",
+            "OBENCH_OPENCODE_PERMISSIONS",
+            "OBENCH_OPENCODE_LSP",
+            "OBENCH_OPENCODE_DISABLE_TOOLS",
+        )
+        saved = {key: os.environ.get(key) for key in keys}
+        os.environ["OBENCH_OPENCODE_CONFIG_JSON"] = json.dumps(pinned)
+        for key in keys[1:]:
+            os.environ.pop(key, None)
+        try:
+            written = _config_body(False)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.assertEqual(written["model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(written["small_model"], "anthropic/claude-sonnet-5-5")
 
 
 def _ledger_row(*, requested, upstream="claude-sonnet-5-5"):
@@ -553,6 +579,9 @@ class HaltFiresFromLedgerTests(unittest.TestCase):
             proxy = json.loads(os.environ["OBENCH_OPENCODE_PROXY"])
             cell_id = re.search(r"/c/([^/]+)", proxy["base_url"]).group(1)
             self.assertEqual(proxy["model_ref"], "anthropic/claude-sonnet-5-5")
+            config = json.loads(os.environ["OBENCH_OPENCODE_CONFIG_JSON"])
+            self.assertEqual(config["model"], "anthropic/claude-sonnet-5-5")
+            self.assertEqual(config["small_model"], "anthropic/claude-sonnet-5-5")
             _write_ledger(out / "proxy-ledger", cell_id, "claude-opus-5-5")
             return {"turns": 1, "completed": True, "checker_exit": 0}
 

@@ -87,6 +87,24 @@ def requests_cost_usd(model: str, ledger: Path, cell_id: str):
     )
 
 
+def comparison_config(base_url: str) -> dict:
+    """OpenCode config for the Pi vs OpenCode smoke.
+
+    ``model`` and ``small_model`` are both ``anthropic/claude-sonnet-5-5``.
+    The pre-loop title call stays enabled; this only changes the model id
+    that call sends. OpenCode's default small model is Haiku, which the
+    proxy then serves as Sonnet and ``--require-model-match`` rejects.
+    """
+    from thesis.ab.compat import anthropic_proxy_config
+
+    config = anthropic_proxy_config(
+        base_url, include_endpoint=True, model_id=MODEL_ID, model_name="Claude Sonnet 5.5",
+    )
+    config["model"] = MODEL_REF
+    config["small_model"] = MODEL_REF
+    return config
+
+
 def _resolve_binary(cache: Path, sha: str, explicit: Path | None) -> Path:
     if explicit is not None:
         path = explicit.expanduser().resolve()
@@ -146,7 +164,6 @@ def main(argv: list[str] | None = None) -> int:
 
     from thesis.ab.compat import (
         PROXY_API_KEY,
-        anthropic_proxy_config,
         sdk_base_url,
     )
     from thesis.ab.proxy_bridge import bridge_egress_probe, cell_network, read_proxy_observed
@@ -184,9 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     # Permission flags are read from `opencode run --help` inside the cell,
     # where the mounted Node and /h1 tree exist. Do not probe the binary on
     # the host: the cached wrapper's interpreter path is the container path.
-    config = anthropic_proxy_config(
-        sdk, include_endpoint=True, model_id=MODEL_ID, model_name="Claude Sonnet 5.5",
-    )
+    config = comparison_config(sdk)
     os.environ["OBENCH_OPENCODE_CONFIG_JSON"] = json.dumps(config)
     os.environ.pop("OBENCH_OPENCODE_PERMISSION_CONFIG", None)
     os.environ["OBENCH_OPENCODE_PROXY"] = json.dumps({

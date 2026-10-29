@@ -13,12 +13,15 @@ the cached wrappers.
 
 The Pi vs OpenCode batch launches OpenCode as `anthropic/claude-sonnet-5-5`
 (`-m`). The adapter still enters its proxy route through `claude-opus-5-5`;
-the provider config registers `claude-sonnet-5-5`. `--vertex-model` is what
-the proxy calls. `--require-model-match` defaults on: a request whose model
-id is not that upstream model stops the smoke. `--no-require-model-match`
-is the H2 / PR 3052 shape (ask for Opus, serve Sonnet). Each cell record
-stores `network_mode` and `proxy_observed` (thinking mode, thinking field,
-and reasoning tokens the proxy saw). An empty ledger is an empty list.
+the provider config registers `claude-sonnet-5-5`. The same config sets
+`model` and `small_model` to `anthropic/claude-sonnet-5-5`, so the pre-loop
+title call asks for Sonnet instead of OpenCode's Haiku default. That call
+is not disabled. `--vertex-model` is what the proxy calls.
+`--require-model-match` defaults on: a request whose model id is not that
+upstream model stops the smoke. `--no-require-model-match` is the H2 / PR
+3052 shape (ask for Opus, serve Sonnet). Each cell record stores
+`network_mode` and `proxy_observed` (thinking mode, thinking field, and
+reasoning tokens the proxy saw). An empty ledger is an empty list.
 
 `python3 -m thesis.ab.run_ab --exec docker` passes `--image` (or
 `OBENCH_CELL_IMAGE`) through to `run_cell` as `docker_image`. A task that
