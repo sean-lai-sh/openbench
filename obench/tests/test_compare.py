@@ -45,6 +45,8 @@ class CompareTestCase(unittest.TestCase):
             "tokens_input_uncached": 100,
             "tokens_cache_read": 20,
             "tokens_output": 30,
+            # Ordinary fixture cells are not the startup-exit exclusion.
+            "suspect_startup_exit": False,
             "harness_version": "1.0",
             "timeout_s": 2400,
         }

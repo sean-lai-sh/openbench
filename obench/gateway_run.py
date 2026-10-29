@@ -29,12 +29,17 @@ from datetime import datetime, timezone
 
 from . import proxy, results, gateway_profiles, gateway_spec
 from .adapters import pi
+from .checker_timeout import checker_timeout_s as resolve_checker_timeout
 from .publish import task_content_digest
 from .run import read_instruction, run_checker
 from .workspace import WorkspaceError, materialize_workspace
 
 
-CHECKER_TIMEOUT_S = 120
+def _checker_timeout_for(task: TaskProvenance) -> int:
+    """Per-task checker budget recorded on the cell identity."""
+    return resolve_checker_timeout(task.name, task.path)
+
+
 FROZEN_PRICES_ENV = "OPENBENCH_GATEWAY_FROZEN_PRICES_JSON"
 ADAPTERS_DIR_ENV = "OPENBENCH_GATEWAY_ADAPTERS_DIR"
 LOCAL_LANE = "local-exploratory-route-isolation"
@@ -397,7 +402,7 @@ def _identity(
         budget_max_output_tokens=experiment.budget.max_output_tokens,
         budget_usd_cap=experiment.budget.usd_cap,
         adapter_timeout_s=experiment.budget.timeout_s,
-        checker_timeout_s=CHECKER_TIMEOUT_S,
+        checker_timeout_s=_checker_timeout_for(task),
         window_id=block.window_id,
         repetition=block.repetition,
         block_id=block_id,
@@ -1204,7 +1209,7 @@ def _run_cell(
                 }
                 checker_env["HOME"] = str(checker_home)
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
-                    str(task.path), str(workdir), CHECKER_TIMEOUT_S, checker_env
+                    str(task.path), str(workdir), _checker_timeout_for(task), checker_env
                 )
                 checker_score = (
                     1.0
@@ -1283,6 +1288,8 @@ def _run_cell(
         "schedule_order": list(block.arm_ids),
         "block_attempt": attempt,
     }
+    from .cell_columns import stamp_env_columns
+    stamp_env_columns(row, checker_timeout_s=_checker_timeout_for(task))
     results.result_cell_id(row)
     return row
 

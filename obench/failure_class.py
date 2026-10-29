@@ -739,6 +739,13 @@ def class_for_report(row):
     arm was throttled.
     """
     row = row or {}
+    # Checker timeouts, short startup exits, and a folder quarantine are not
+    # capability results. The stored failure_class stays as written; scoring
+    # reads this override so a wrong_answer label cannot put them in the rate.
+    from .cell_columns import scoring_override_class
+    override = scoring_override_class(row)
+    if override:
+        return override
     stored = row.get("failure_class")
     if stored in FAILURE_CLASSES:
         # A checker that could not run its verifier container never reached a
