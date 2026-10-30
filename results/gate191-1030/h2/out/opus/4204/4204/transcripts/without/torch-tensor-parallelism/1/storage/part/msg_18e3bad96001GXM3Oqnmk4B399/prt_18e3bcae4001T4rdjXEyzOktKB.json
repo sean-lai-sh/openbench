@@ -1,0 +1,11 @@
+{
+  "id": "prt_18e3bcae4001T4rdjXEyzOktKB",
+  "sessionID": "ses_e71c4f6d4ffeDs5iAvmCGNHnnD",
+  "messageID": "msg_18e3bad96001GXM3Oqnmk4B399",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I tested them against a regular `torch.nn.Linear` using the gloo backend with world_size 1, 2 and 4. On every rank the outputs, the weight and bias gradients, and the input gradients all matched the reference.\n\n`master_weight` is expected in `nn.Linear` layout, shaped `(out_features, in_features)`.\n\n**`ColumnParallelLinear`**\n- **Weight:** each rank keeps rows `[rank*n:(rank+1)*n]` of `master_weight`, where `n = out_features / world_size`. This is a column split in the math form `Y = XA`.\n- **Bias:** set to zero and split the same way, so each rank holds `n` values.\n- **Forward:** computes `F.linear` on the local slice, then gathers every rank's output along the last dimension.\n- **Backward:** each rank keeps its own slice of the incoming gradient. The input gradient is summed across ranks, so it comes out correct when every rank gets the same input.\n\n**`RowParallelLinear`**\n- **Weight:** each rank keeps columns `[:, rank*n:(rank+1)*n]` of `master_weight`, where `n = in_features / world_size`.\n- **Bias:** full length on every rank, set to zero, and added after the partial outputs are summed.\n- **Input:** if the input's last dimension is `in_features`, the layer takes this rank's chunk itself; in backward, the chunks' gradients are gathered back into a full input gradient. If the input is already split (last dimension `in_features / world_size`), it is used as-is.\n- **Forward:** partial outputs from all ranks are summed. In backward, the gradient passes through unchanged.\n\nThings to know:\n- `out_features` (column layer) and `in_features` (row layer) must divide evenly by world_size; otherwise an assert fails.\n- The communication steps are written as custom autograd functions, so gradients flow correctly through the gather and sum.\n- With world_size 1, or if `torch.distributed` hasn't been initialised, all communication is skipped and the layers behave like a plain linear layer.",
+  "time": {
+    "start": 1793387645719,
+    "end": 1793387645719
+  }
+}
