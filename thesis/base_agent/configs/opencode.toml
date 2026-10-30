@@ -1,41 +1,40 @@
-# OpenCode on the base agent, built from the sheet's OpenCode pin
-# (sst/opencode @ c10134729d, 1.x).
-#
-# Note: the #196 OpenCode real arm ran binary ba54cee55e18 (an older
-# build, provider @ai-sdk/anthropic 2.0.58), not c10134729d. The parity real
-# arm must be the build this config targets, or this config must be rebuilt
-# against ba54cee5. See the PR's spec questions.
+# OpenCode on the base agent, build ba54cee5 (sst/opencode, 2026-02-12;
+# embedded @ai-sdk/anthropic 2.0.58): the build the #196 OpenCode real arm
+# ran. Researcher ruling 2026-10-30 moved this config off the sheet's
+# c10134729d to ba54cee5.
 #
 # [rows.N] cite the sheet (prereg/harness-components-2026-10-24.csv):
-#   sheet  = the sheet's `opencode` cell
-#   source = the sheet's `opencode_src` cell (plus SC-1 where it corrected it)
+#   sheet  = the sheet's `opencode` cell (written for c10134729d)
+#   source = the sheet's `opencode_src` cell, then "ba54cee5:" and the path
+#            at the build this config reproduces, or the capture
 # The sheet column for every row is opencode_src.
 
 schema = 1
 name = "opencode"
 harness = "opencode"
-harness_pin = "c10134729dd2ce00beb18604ec91f10319f59a78"
-description = "OpenCode build agent on Claude: anthropic.txt prompt, 11 tools, todowrite, task subagents, title call, overflow compaction."
+harness_pin = "ba54cee55e18b47fb70badc84ae2cbac7c83d258"
+description = "OpenCode ba54cee5 build agent on Claude: anthropic.txt prompt, 11 tools, todowrite, task subagents, Sonnet-pinned title call, overflow compaction."
 
 [modules.M1]
 impl = "opencode"
-params = { provider_id = "anthropic", context_files = true }
+params = { provider_id = "anthropic", context_files = false }
 
-# Registry order (tool/registry.ts:231-247) after the Claude filter:
-# question (cli client), bash, read, glob, grep, edit, write, task, webfetch,
-# todowrite, skill. websearch is off for the anthropic provider and
-# apply_patch is GPT-only. `invalid` is assumed not to be sent; the AC3
-# capture confirms or corrects this.
+# Tool list and order as the real ba54cee5 capture sends them
+# (captures/opencode/): question, bash, read, glob, grep, edit, write, task,
+# webfetch, todowrite, skill. No `invalid`, websearch or apply_patch.
 [modules.M2]
 impl = "catalog"
 params = { family = "opencode", tools = ["question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "skill"] }
 
 [modules.M3]
 impl = "anthropic"
-params = { system = 2, tools = false, messages = 2 }
+params = { system = 1, tools = false, messages = 2 }
 
+# #189: small_model pinned to Sonnet 5.5 (not OpenCode's Haiku default);
+# the row records small_model_deviation = true.
 [modules.M5]
 impl = "opencode_title"
+params = { model = "claude-sonnet-5-5" }
 
 [modules.M6]
 impl = "summarize"
@@ -58,45 +57,45 @@ impl = "opencode_task"
 impl = "basic"
 params = { hooks = ["doom_loop"], doom_threshold = 3, doom_action = "log" }
 
-# Parity arm only. Must be replaced with the values the real OpenCode request
-# carries (max_tokens / temperature / thinking), read from the AC3 capture.
+# OpenCode's own sampling, read from the real capture: max_tokens 32000, no
+# temperature, thinking off. Row 9 ruling 2026-10-30.
 [parity.M4]
 impl = "fixed"
 params = { max_tokens = 32000 }
 
 # --- citations: every swappable row ----------------------------------------
 [rows.1]
-value = "M1 opencode: anthropic.txt (8.2 KB, vendored) + environment block"
+value = "M1 opencode: anthropic.txt (8.2 KB, vendored; identical at ba54cee5) + the ba54cee5 environment block; the Claude Code identity header is left out (criterion 1)"
 sheet = "Per-model-family full base prompt picked by model ID: anthropic.txt 8.2 KB for Claude, gemini.txt 15.4 KB, default.txt 8.5 KB (others: gpt/codex/beast/kimi/meta/trinity 4-14 KB) + env/AGENTS.md instructions"
-source = "packages/opencode/src/session/system.ts:6-50; session/prompt/*.txt"
+source = "packages/opencode/src/session/system.ts:6-50; session/prompt/*.txt; ba54cee5: session/system.ts, session/llm.ts:67-96"
 
 [rows.2]
-value = "M1 opencode: AGENTS.md/CLAUDE.md walk-up appended as 'Instructions from:' sections"
+value = "M1 opencode: no instruction files (task repos carry none; context_files off)"
 sheet = "Base prompt fixed per model family; instruction files (AGENTS.md/CLAUDE.md, config.instructions) appended; agent prompt for subagents"
 source = "packages/opencode/src/session/instruction.ts:61-160; session/system.ts"
 
 [rows.3]
-value = "M2 catalog family=opencode: 11 tools after the Claude filter (no websearch, no apply_patch)"
+value = "M2 catalog family=opencode: the 11 tools the ba54cee5 capture sends (no websearch, no apply_patch)"
 sheet = "12 built-in by default (shell, read, glob, grep, edit, write, task, webfetch, todo, websearch, skill, apply_patch) + question in cli/app/desktop clients; lsp, plan, code-mode execute behind flags; plus MCP/plugin tools"
 source = "packages/opencode/src/tool/registry.ts:207-249"
 
 [rows.4]
-value = "Derived from rows 3 and 5; measured at the proxy by the AC3 build check"
+value = "Derived from rows 3 and 5; measured at the proxy by the AC3 build check (captures/opencode/)"
 sheet = "Not measured; deferred to proxy capture"
-source = ""
+source = "derived; measured at AC3"
 
 [rows.5]
-value = "JSON Schema transcribed from Effect Schema; descriptions from the vendored tool/*.txt"
+value = "zod -> JSON Schema as ba54cee5 sends it: assets/opencode/tools.json from the real capture"
 sheet = "Effect Schema -> JSON Schema with per-tool .txt descriptions; optional code-mode execute tool"
-source = "packages/opencode/src/tool/json-schema.ts; tool/*.txt; tool/code-mode.ts"
+source = "packages/opencode/src/tool/json-schema.ts; tool/*.txt; tool/code-mode.ts; ba54cee5: captures/opencode/real.requests.jsonl"
 
 [rows.8]
-value = "M3 anthropic: first 2 system blocks + last 2 messages"
+value = "M3 anthropic: the system block + last 2 messages (the real build marks both its system blocks; the identity block is not sent)"
 sheet = "Explicit ephemeral cacheControl breakpoints for Anthropic/Bedrock/OpenRouter/Copilot; promptCacheKey = sessionID for OpenAI-style providers"
 source = "packages/opencode/src/provider/transform.ts:364-379,1321,1368; SC-1: transform.ts:358-380 (system[0:2] + last 2 non-system msgs)"
 
 [rows.10]
-value = "M5 opencode_title: one title call per session (title.txt), tagged side:title"
+value = "M5 opencode_title: one title call per session (title.txt), small_model pinned to claude-sonnet-5-5 with small_model_deviation=true (#189), tagged side:title"
 sheet = "Title agent call per session; compaction and summary agents also run as separate model calls"
 source = "packages/opencode/src/session/prompt.ts:216-252; agent/agent.ts:220-260"
 
@@ -106,7 +105,7 @@ sheet = "grep (ripgrep) + glob; lsp tool only behind experimental flag"
 source = "packages/opencode/src/tool/grep.ts; tool/glob.ts; tool/registry.ts:247"
 
 [rows.12]
-value = "opencode:read offset/limit, 2000 lines, 50 KB, numbered lines (2000 chars/line cap not reproduced)"
+value = "opencode:read offset/limit, 2000 lines, 50 KB (ba54cee5 tool/truncation.ts:10-11), numbered lines"
 sheet = "offset/limit, default 2000 lines, 2000 chars/line, 50 KB cap"
 source = "packages/opencode/src/tool/read.ts:13-16"
 
@@ -121,7 +120,7 @@ sheet = "Exact-string replace (oldString/newString, replaceAll) + apply_patch + 
 source = "packages/opencode/src/tool/edit.ts; tool/apply_patch.ts; tool/write.ts"
 
 [rows.16]
-value = "M8 shell: default 120 s; per-call timeout in milliseconds"
+value = "M8 shell: default 120 s (ba54cee5 tool/bash.ts:22); per-call timeout in milliseconds"
 sheet = "shell; default 2 min (flag-overridable), per-call timeout param"
 source = "packages/opencode/src/tool/shell.ts:347,618"
 
@@ -136,7 +135,7 @@ sheet = "todowrite tool; plan agent (read-only primary)"
 source = "packages/opencode/src/tool/todo.ts; tool/todowrite.txt; agent/agent.ts:157"
 
 [rows.22]
-value = "M10 opencode_task: fresh-context subagent, calls tagged side:subagent (task_id resume and background not reproduced)"
+value = "M10 opencode_task: fresh-context subagent, calls tagged side:subagent (task_id resume not reproduced)"
 sheet = "task tool: subagent (general/explore) in fresh session unless task_id resumes; optional background mode"
 source = "packages/opencode/src/tool/task.ts:26-49; agent/agent.ts:183-216"
 

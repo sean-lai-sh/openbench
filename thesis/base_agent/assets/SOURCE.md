@@ -1,21 +1,18 @@
-# Vendored harness text
+# Vendored harness text and captured tool specs
 
-Prompt and tool-description text that the Pi and OpenCode configs send. Both
-upstreams are MIT-licensed. Each directory keeps its upstream `LICENSE`.
+Pi and OpenCode are MIT-licensed. Each directory keeps its upstream
+`LICENSE`. No Claude Code text is used anywhere. OpenCode's own Claude Code
+identity header is deliberately left out (see `harness_opencode.py`).
 
-## opencode/ (sst/opencode @ c10134729dd2ce00beb18604ec91f10319f59a78)
+## opencode/ (sst/opencode build ba54cee55e18b47fb70badc84ae2cbac7c83d258)
 
-This is the sheet's OpenCode pin (`prereg/harness-components-2026-10-24.md`).
-Files are copied byte for byte from `packages/opencode/src/`:
+This is the build the #196 OpenCode cells ran (Researcher ruling, 2026-10-30).
 
-| File here | Upstream path |
+| File here | Source |
 |---|---|
-| `anthropic.txt` | `session/prompt/anthropic.txt` |
-| `title.txt` | `agent/prompt/title.txt` |
-| `explore.txt` | `agent/prompt/explore.txt` |
-| `tool-<name>.txt` | `tool/<name>.txt` (read, glob, grep, edit, write, task, webfetch, todowrite, skill, question) |
-| `tool-shell.txt` | `tool/shell/shell.txt` (a template; `harness_opencode.py` fills it the way `tool/shell/prompt.ts` does) |
-| `tool-shell-command.txt` | the `bashCommandSection` template literal in `tool/shell/prompt.ts`, with `` \` `` unescaped and `${limits.maxLines}` / `${limits.maxBytes}` renamed `${maxLines}` / `${maxBytes}` |
+| `anthropic.txt` | `packages/opencode/src/session/prompt/anthropic.txt`. Byte-identical at ba54cee5 and at the sheet's c10134729d. |
+| `title.txt` | `packages/opencode/src/agent/prompt/title.txt`. Byte-identical at both pins. |
+| `tools.json` | The `tools` array of the main request that the real ba54cee5 binary sent to a loopback stub (`thesis.ab.step8_stub_ready --capture`; no model was called), with `cache_control` removed. The capture itself (`captures/opencode/real.requests.jsonl`, sha256 `2c6d6fe9…`) is committed in the AC3 PR, together with a test that checks this file against it. |
 
 ## pi/ (badlogic/pi-mono @ d0aa218cb16c333c008f6aa3dcd670ac8b68383c)
 
@@ -23,5 +20,3 @@ Pi builds its prompt and tool descriptions in TypeScript, not in text files.
 The strings live in `harness_pi.py`, copied from
 `packages/coding-agent/src/core/system-prompt.ts` and `core/tools/{read,bash,edit,write}.ts`.
 This directory holds only Pi's `LICENSE`.
-
-No Claude Code text is used anywhere.

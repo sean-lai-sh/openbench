@@ -57,22 +57,28 @@ class _RoleClient(ModelClient):
 
 class Agent:
     def __init__(self, resolved: dict, version: dict, client: ModelClient, model: str,
-                 workdir: str, instruction: str, depth: int = 0):
+                 workdir: str, instruction: str, depth: int = 0, env: dict | None = None):
+        """``env`` overrides environment facts modules read from
+        ``RunContext.env`` (platform, date, is_git, pi_install_root, ...).
+        It describes where the agent runs, like ``workdir``, and is not part
+        of the version hash."""
         self.resolved, self.version = resolved, version
-        self.model, self.depth = model, depth
+        self.model, self.depth, self.env_overrides = model, depth, dict(env or {})
         self.m = {slot: modules.build(slot, spec["impl"], spec["params"])
                   for slot, spec in resolved["modules"].items()}
         self.ctx = RunContext(workdir=workdir, instruction=instruction, model=model, client=client,
-                              executor=self.m["M8"], env=modules.environment(workdir), depth=depth)
+                              executor=self.m["M8"], env={**modules.environment(workdir), **self.env_overrides},
+                              depth=depth)
         self.ctx.spawn = self._spawn
 
     @classmethod
     def from_config(cls, name: str, arm: str, client: ModelClient, model: str, workdir: str,
-                    instruction: str, fixed: dict | None = None) -> "Agent":
+                    instruction: str, fixed: dict | None = None, env: dict | None = None) -> "Agent":
         cfg = C.load_config(name)
         fixed = fixed if fixed is not None else C.load_fixed()
         resolved = C.resolve(cfg, fixed, arm)
-        return cls(resolved, C.version_record(cfg, fixed, resolved), client, model, workdir, instruction)
+        return cls(resolved, C.version_record(cfg, fixed, resolved), client, model, workdir, instruction,
+                   env=env)
 
     def _spawn(self, description: str, prompt: str) -> str:
         """Run a child agent with the same modules minus planner, delegation
@@ -83,7 +89,7 @@ class Agent:
         sub_m2 = child["modules"]["M2"]["params"]
         sub_m2["tools"] = [t for t in sub_m2.get("tools", []) if t in self.subagent_tools()]
         agent = Agent(child, self.version, _RoleClient(self.ctx.client, "side:subagent"), self.model,
-                      self.ctx.workdir, prompt, depth=self.depth + 1)
+                      self.ctx.workdir, prompt, depth=self.depth + 1, env=self.env_overrides)
         result = agent.run()
         self.ctx.event("subagent", description=description, stop=result["stop"],
                        steps=result["steps"], model_calls=result["model_calls"])
@@ -173,4 +179,14 @@ class Agent:
             messages.append({"role": "user", "content": turn})
         return {"stop": stop, "steps": steps, "model_calls": calls, "final_text": final_text,
                 "usage": usage, "tool_calls": tool_counts, "events": ctx.events,
-                "version": self.version, "messages": messages}
+                "version": self.version, "row": self.row_fields(), "messages": messages}
+
+    def row_fields(self) -> dict:
+        """Fields for the result row: the version record plus whatever a
+        module declares (``row_fields()``), e.g. the title model pin."""
+        out = dict(self.version)
+        for slot in sorted(self.m, key=lambda s: int(s[1:])):
+            fn = getattr(self.m[slot], "row_fields", None)
+            if fn:
+                out.update(fn())
+        return out

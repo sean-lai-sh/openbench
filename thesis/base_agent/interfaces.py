@@ -38,9 +38,11 @@ class Tool:
     input_schema: dict
     handler: Callable[[dict, "RunContext"], str]
     slot: str = "M2"  # module that contributed it
+    extra: dict = field(default_factory=dict)  # other request keys (strict, defer_loading, ...)
 
     def spec(self) -> dict:
-        return {"name": self.name, "description": self.description, "input_schema": self.input_schema}
+        return {"name": self.name, "description": self.description, "input_schema": self.input_schema,
+                **self.extra}
 
 
 @dataclass

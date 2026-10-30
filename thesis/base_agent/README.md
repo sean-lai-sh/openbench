@@ -85,7 +85,7 @@ Any change to code, a prompt asset, a fixed row, a config or the arm changes
 | Config | Pin | First request (system / tools bytes, stub run) |
 |---|---|---|
 | `pi` | badlogic/pi-mono `d0aa218` (the sheet's pin and the #196 Pi pin) | ~2.7 KB / ~2.8 KB, 4 tools |
-| `opencode` | sst/opencode `c10134729d` (the sheet's pin) | ~8.8 KB / ~21.9 KB, 11 tools |
+| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | ~8.6 KB / ~36.1 KB, 11 tools |
 
 Each `[rows.N]` entry holds three fields. `value` is what the module
 reproduces. `sheet` is the sheet's cell, copied exactly. `source` is the

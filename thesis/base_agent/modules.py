@@ -78,6 +78,17 @@ def build(slot: str, impl: str, params: dict | None = None):
     return cls(**(params or {}))
 
 
+def captured_tools(path: Path) -> dict[str, dict]:
+    """Tool specs, by name, from a JSON list taken from a real-harness capture
+    (assets/<harness>/tools.json; see assets/SOURCE.md)."""
+    return {t["name"]: t for t in json.loads(Path(path).read_text(encoding="utf-8"))}
+
+
+def tool_from_spec(spec: dict, handler, slot: str = "M2") -> Tool:
+    extra = {k: v for k, v in spec.items() if k not in ("name", "description", "input_schema")}
+    return Tool(spec["name"], spec.get("description", ""), spec.get("input_schema") or {}, handler, slot, extra)
+
+
 def find_context_files(workdir: str, names=("AGENTS.md", "CLAUDE.md"), stop_at_git: bool = True) -> list[dict]:
     """Walk from ``workdir`` up to the repo root (or filesystem root) and
     return instruction files, outermost first."""
@@ -220,8 +231,9 @@ class AnthropicBreakpoints(CachePolicy):
         if isinstance(request.get("system"), list):
             for block in request["system"][:self.system]:
                 self._mark(block)
-        if self.tools and request.get("tools"):
-            self._mark(request["tools"][-1])
+        live = [t for t in request.get("tools") or [] if not t.get("defer_loading")]
+        if self.tools and live:  # deferred tools are not part of the cached prefix
+            self._mark(live[-1])
         for msg in (request.get("messages") or [])[-self.messages:] if self.messages else []:
             content = msg.get("content")
             if isinstance(content, str):
@@ -233,16 +245,27 @@ class AnthropicBreakpoints(CachePolicy):
 # --- M4 SamplingPolicy (fixed) ---------------------------------------------
 @register("M4", "fixed", ORIGINAL)
 class FixedSampling(SamplingPolicy):
+    """``thinking`` is sent verbatim (e.g. ``{"type": "adaptive"}``);
+    ``thinking_budget`` is shorthand for ``{"type": "enabled", ...}``.
+    ``extra`` holds other top-level request fields (e.g. ``output_config``)."""
+
     def __init__(self, max_tokens: int = 32000, temperature: float | None = None,
-                 thinking_budget: int | None = None):
+                 thinking_budget: int | None = None, thinking: dict | None = None, extra: dict | None = None):
+        if thinking and thinking_budget:
+            raise ValueError("M4: set thinking or thinking_budget, not both")
         self.max_tokens, self.temperature, self.thinking_budget = max_tokens, temperature, thinking_budget
+        self.thinking, self.extra = thinking, extra or {}
 
     def apply(self, request):
         request["max_tokens"] = self.max_tokens
         if self.temperature is not None:
             request["temperature"] = self.temperature
-        if self.thinking_budget:
+        if self.thinking:
+            request["thinking"] = json.loads(json.dumps(self.thinking))
+        elif self.thinking_budget:
             request["thinking"] = {"type": "enabled", "budget_tokens": self.thinking_budget}
+        for k, v in self.extra.items():
+            request[k] = json.loads(json.dumps(v))
 
 
 # --- M5 SideCalls ---------------------------------------------------------

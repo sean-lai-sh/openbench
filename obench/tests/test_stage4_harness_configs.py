@@ -40,13 +40,22 @@ class Citations(unittest.TestCase):
                     if src:
                         self.assertTrue(cite["source"].startswith(src), cite["source"])
 
-    def test_pins_match_the_sheet_brief(self):
+    def test_pins(self):
+        """Pi stays on the sheet's pin. OpenCode follows the build the #196
+        cells ran (ba54cee5, Researcher ruling 2026-10-30), not the sheet's
+        c10134729d."""
         brief = (REPO / "prereg" / "harness-components-2026-10-24.md").read_text()
         self.assertIn("d0aa218", brief)
         self.assertTrue(C.load_config("pi")["harness_pin"].startswith("d0aa218"))
-        self.assertIn("c10134729d", brief)
-        self.assertTrue(C.load_config("opencode")["harness_pin"].startswith("c10134729d"))
+        self.assertTrue(C.load_config("opencode")["harness_pin"].startswith("ba54cee5"))
         self.assertEqual(OC.PIN, C.load_config("opencode")["harness_pin"])
+        notes = (REPO / "results" / "pi-vs-oc-180-1029").glob("*/opencode/claude-sonnet-5-5.json")
+        for f in notes:
+            self.assertEqual(json.loads(f.read_text())["sha"], OC.PIN)
+
+    def test_row_4_source(self):
+        for h in HARNESSES:
+            self.assertEqual(C.load_config(h)["rows"]["4"]["source"], "derived; measured at AC3")
 
 
 class Provenance(unittest.TestCase):
@@ -87,11 +96,10 @@ class Assets(unittest.TestCase):
             lic = (OC.ASSETS.parent / d / "LICENSE").read_text()
             self.assertTrue(lic.startswith("MIT License"), d)
 
-    def test_shell_description_is_fully_rendered(self):
-        desc = OC.shell_description()
-        self.assertNotRegex(desc, r"\$\{\w+\}")
-        self.assertIn("commands will time out after 120000ms", desc)
-        self.assertIn("If the output exceeds 2000 lines or 51200 bytes", desc)
+    def test_opencode_text_assets_are_upstream_files(self):
+        self.assertTrue(OC.asset("anthropic.txt").startswith("You are OpenCode"))
+        self.assertNotIn("Claude Code", OC.asset("anthropic.txt"))
+        self.assertIn("title", OC.asset("title.txt").lower())
 
 
 class Resolution(unittest.TestCase):
@@ -159,10 +167,17 @@ class OpenCodeEpisode(unittest.TestCase):
             roles = [r for r, _ in client.requests]
             self.assertEqual(roles, ["side:title", "main", "main", "side:subagent", "side:subagent", "main", "main"])
             main = client.requests[1][1]
-            self.assertEqual(len(main["system"]), 2)
+            self.assertEqual(len(main["system"]), 1)
             self.assertTrue(main["system"][0]["text"].startswith("You are OpenCode"))
-            self.assertTrue(all("cache_control" in b for b in main["system"]))
-            self.assertIn("The exact model ID is anthropic/claude-test", main["system"][1]["text"])
+            self.assertNotIn("Claude Code", main["system"][0]["text"])
+            self.assertIn("cache_control", main["system"][0])
+            self.assertIn("The exact model ID is anthropic/claude-test", main["system"][0]["text"])
+            self.assertNotIn("thinking", main)  # row 9 ruling: OpenCode thinking off
+            self.assertEqual(client.requests[0][1]["model"], "claude-sonnet-5-5")  # #189 small_model pin
+            self.assertIs(res["row"]["small_model_deviation"], True)
+            self.assertEqual(res["row"]["small_model"], "anthropic/claude-sonnet-5-5")
+            self.assertEqual(res["row"]["small_model_default"], "anthropic/claude-haiku-4-5-20251001")
+            self.assertEqual(res["row"]["base_agent_version"], res["version"]["base_agent_version"])
             sub_tools = [t["name"] for t in client.requests[3][1]["tools"]]
             self.assertNotIn("task", sub_tools)
             self.assertNotIn("todowrite", sub_tools)
