@@ -253,6 +253,30 @@ def render(rep: dict) -> str:
     return "\n".join(lines)
 
 
+CAPTURES = Path(__file__).resolve().parent / "captures"
+
+
+def gate(cfg: dict, capture_dir: Path, tolerance: float = TOLERANCE) -> dict:
+    """The AC3 gate for one harness config: ``capture_dir`` holds the real
+    harness's ``real.requests.jsonl`` and ``capture.toml``. Replays the
+    capture's model, instruction and workdir through the base agent (parity
+    arm) and compares. Raises ``ValueError`` when the capture is missing or
+    was taken from another build than the config's ``harness_pin``."""
+    real, meta_path = Path(capture_dir) / "real.requests.jsonl", Path(capture_dir) / "capture.toml"
+    if not (real.is_file() and meta_path.is_file()):
+        raise ValueError(f"no real-harness capture for {cfg['name']}: commit {real} and {meta_path} "
+                         "(see thesis/base_agent/captures/README.md)")
+    meta = C.load_toml(meta_path)
+    if meta.get("harness_pin") != cfg.get("harness_pin"):
+        raise ValueError(f"{cfg['name']}: capture pin {meta.get('harness_pin')} != config pin {cfg.get('harness_pin')}")
+    reqs, version = capture_base(cfg["name"], "parity", meta["model"], meta.get("workdir"),
+                                 meta.get("instruction", DEFAULT_INSTRUCTION))
+    base_m = measure(_body(main_request(reqs)))
+    real_m = measure(_body(main_request(load_requests(real))))
+    return {"config": cfg["name"], "version": version, "capture": meta,
+            "comparison": compare(base_m, real_m, tolerance)}
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)

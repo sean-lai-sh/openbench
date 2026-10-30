@@ -194,11 +194,12 @@ def fixed_projection(resolved: dict, fixed: dict) -> dict:
 
 
 def framework_files() -> list[Path]:
-    """Code and prompt assets; configs are hashed separately."""
+    """Code and prompt assets. Configs are hashed separately; captures are
+    evidence, not framework."""
     out = []
     for p in sorted(PKG.rglob("*")):
         rel = p.relative_to(PKG)
-        if p.is_file() and rel.parts[0] != "configs" and "__pycache__" not in rel.parts and p.suffix != ".pyc" \
+        if p.is_file() and rel.parts[0] not in ("configs", "captures") and "__pycache__" not in rel.parts and p.suffix != ".pyc" \
                 and p.name != "README.md":
             out.append(p)
     return out

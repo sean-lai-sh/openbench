@@ -24,6 +24,7 @@ Python standard library only, like the rest of the repo. Requires Python 3.11+
 | `harness_pi.py`, `harness_opencode.py` | Harness-specific modules: prompt assemblers, tool schemas, editor, todo, subagent, title call. |
 | `assets/` | Vendored MIT prompt and tool text with its upstream licences. `assets/SOURCE.md` gives the pins and upstream paths. |
 | `build_check.py` | AC3 build check: captures the first request at a loopback stub and compares system and tool bytes against a real-harness capture. |
+| `captures/` | Real-harness stub captures that the AC3 gate test checks configs against. See `captures/README.md`. |
 | `run.py` | Headless entry point: `python -m thesis.base_agent.run`. |
 
 ## Slots
@@ -145,6 +146,15 @@ report also shows:
 - the config's version record, so a posted report is tied to one
   `base_agent_version`.
 
+**Enforced by a test.** `obench/tests/test_stage4_build_gate.py` runs
+`build_check.gate()` for every harness config against
+`captures/<config>/real.requests.jsonl` plus `capture.toml`; the format is in
+`captures/README.md`. The gate replays the capture's model, instruction and
+workdir through the base agent, and requires a PASS. It also requires that
+the capture's `harness_pin` equals the config's. **It fails until a real
+capture is committed for each harness**: a config does not count as built
+before that.
+
 Pi has no stub-capture runner yet. `step8_stub_ready` drives only the
 OpenCode adapter. A Pi capture needs the same thing for `obench.adapters.pi`:
 point Pi's provider base URL at `build_check.CaptureStub` and save
@@ -163,6 +173,7 @@ Code code or prompt text is used.
 ```bash
 python3 -m unittest obench.tests.test_stage4_base_agent obench.tests.test_stage4_harness_configs \
     obench.tests.test_stage4_build_check -v
+python3 -m unittest obench.tests.test_stage4_build_gate -v   # red until real captures are committed
 ```
 
 The tests use a scripted model. They make no paid or live model calls.
