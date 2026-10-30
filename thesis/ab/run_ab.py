@@ -58,7 +58,6 @@ from thesis.ab.proxy_bridge import (
 )
 from thesis.ab.vertex_anthropic_proxy import LOCATION, cell_ledger_path, cell_proxy_base
 
-CHECKER_TIMEOUT_S = 120
 CELL_TIMEOUT_CAP_S = 15 * 60 - 60
 # Hard-pack runs (H1/H2) opt in to these; the defaults keep every existing run unchanged.
 EXEC_MODE = "local"
@@ -629,6 +628,32 @@ def _record_stopped(out_dir: Path, spec: dict, state: dict) -> None:
         write_incompatible(out_dir, spec["pr"], spec["side"], spec["sha"], reason)
 
 
+def _publish_cell(row: dict, spec: dict) -> None:
+    """Write the cell. A rerun or rescore goes to a new file and never replaces the original."""
+    from obench.cell_columns import (
+        folder_quarantine,
+        publish_linked_cell,
+        rerun_of_from_source,
+        stamp_env_columns,
+    )
+    source = spec.get("rerun_from")
+    dest_root = spec.get("results_dir")
+    explicit = spec.get("rerun_of")
+    if isinstance(explicit, str) and explicit.strip():
+        row["rerun_of"] = explicit.strip()
+    elif source and dest_root:
+        found = rerun_of_from_source(spec["cell_path"], dest_root, source)
+        if found:
+            row["rerun_of"] = found
+    label = folder_quarantine(Path(spec["cell_path"]))
+    stamp_env_columns(row, quarantine=label or None)
+    path = Path(spec["cell_path"])
+    if row.get("rerun_of") or row.get("rescored_from"):
+        publish_linked_cell(path, row, source_root=source)
+        return
+    publish_text(path, json.dumps(row, sort_keys=True))
+
+
 def execute_cell(spec: dict) -> None:
     """Run one cell. The process environment is restored on the way out."""
     root = Path(__file__).resolve().parents[2]
@@ -799,6 +824,7 @@ def execute_cell(spec: dict) -> None:
             def workspace_observer(workdir, dest=kept_workspace):
                 keep_cell_workspace(workdir, dest)
 
+        from obench.checker_timeout import checker_timeout_s as resolve_checker_timeout
         row = run_cell(
             harness,
             spec["task"],
@@ -807,7 +833,9 @@ def execute_cell(spec: dict) -> None:
             spec["timeout_s"],
             spec["tasks_dir"],
             spec["adapters_dir"],
-            CHECKER_TIMEOUT_S,
+            resolve_checker_timeout(
+                spec["task"], os.path.join(spec["tasks_dir"], spec["task"]),
+            ),
             exec_mode=str(spec.get("exec_mode") or "local"),
             docker_image=(str(spec.get("docker_image") or "").strip() or None),
             harness_version=harness_version,
@@ -867,7 +895,10 @@ def execute_cell(spec: dict) -> None:
         toolchain_path = spec.get("toolchain_path")
         if toolchain_path:
             publish_side_toolchain(Path(toolchain_path), spec.get("toolchain"), installed_text)
-        publish_text(Path(spec["cell_path"]), json.dumps(row, sort_keys=True))
+        if isinstance(row, dict):
+            _publish_cell(row, spec)
+        else:
+            publish_text(Path(spec["cell_path"]), json.dumps(row, sort_keys=True))
     finally:
         mark_running(spec, False)
         if png_server is not None:
@@ -1053,7 +1084,8 @@ def attach_bridge_record(row: dict, spec: dict) -> dict:
 
 def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: str,
           model: str, timeout_s: int, transcripts_root: Path | None = None,
-          no_progress_s: float = 0, thinking_mode: str = "default") -> dict:
+          no_progress_s: float = 0, thinking_mode: str = "default",
+          rerun_from: Path | None = None) -> dict:
     transcripts = cell_transcripts_dir(out_dir, spec["pr"], transcripts_root)
     filled = dict(spec)
     filled.update({
@@ -1084,7 +1116,10 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         "thinking_mode": (
             thinking_mode if thinking_mode in {"default", "adaptive", "off"} else "default"
         ),
+        "results_dir": _absolute(out_dir),
     })
+    if rerun_from is not None:
+        filled["rerun_from"] = str(Path(rerun_from).resolve())
     if (
         isinstance(no_progress_s, (int, float))
         and not isinstance(no_progress_s, bool)
@@ -1274,11 +1309,95 @@ NULLABLE_CELL_FIELDS = {"provider_loaded_mismatch"}
 
 
 def build_channel_of(binary) -> str | None:
+    """``build_channel`` from the binary's build-stamp.json.
+    Stamps written before build_channel existed carry only ``kind`` (e.g.
+    ``build.ts``); those are local source builds, recorded as ``local:<kind>``.
+    """
     stamp = Path(str(binary or "")).parent / "build-stamp.json"
     try:
-        return str(json.loads(stamp.read_text()).get("build_channel") or "") or None
-    except (OSError, ValueError, AttributeError):
+        data = json.loads(stamp.read_text())
+    except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
+    channel = str(data.get("build_channel") or "").strip()
+    if channel:
+        return channel
+    kind = str(data.get("kind") or "").strip()
+    return f"local:{kind}" if kind else None
+
+
+def attach_binary_provenance(row: dict, spec: dict) -> None:
+    """sha256 of the harness binary as found on disk after the cell ran."""
+    binary = str(spec.get("binary") or "").strip()
+    if not binary or row.get("binary_sha256"):
+        return
+    try:
+        h = hashlib.sha256()
+        with open(binary, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return
+    row["binary_path"] = binary
+    row["binary_sha256"] = h.hexdigest()
+    row["binary_hash_source"] = "post_hoc_disk"
+    row["binary_source"] = os.environ.get("OBENCH_BINARY_SOURCE", "").strip() or None
+
+
+PROVIDER_VERSIONS_TOML = Path(__file__).with_name("provider_versions.toml")
+
+
+def proven_provider_versions(path=None) -> dict:
+    """binary sha256 -> {"version", "source"} from captured provider loads."""
+    import tomllib
+    try:
+        data = tomllib.loads(Path(path or PROVIDER_VERSIONS_TOML).read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for sha, entry in (data.get("binary") or {}).items():
+        if isinstance(entry, dict) and entry.get("provider_version"):
+            out[str(sha).lower()] = {"version": str(entry["provider_version"]),
+                                     "source": str(entry.get("source") or "capture")}
+    return out
+
+
+def fill_provenance_fallbacks(row: dict, spec: dict, versions_path=None) -> None:
+    """Fill provenance the adapter or launcher left empty, from what the runner can see.
+
+    A traced (strace/embedded) load is proven. Otherwise a binary whose sha256
+    is in provider_versions.toml takes the captured version (proven, source
+    capture). Failing both, the installed manifest version is recorded as
+    provider_manifest_version only, never as the loaded version.
+    """
+    method = str(row.get("probe_method") or "")
+    if method in ("strace", "embedded") and row.get("provider_loaded_version"):
+        row.setdefault("provider_version_source", method)
+        row.setdefault("provider_version_proven", True)
+    else:
+        pv = row.get("provider_versions")
+        installed = pv.get("@ai-sdk/anthropic") if isinstance(pv, dict) else None
+        if isinstance(installed, str) and installed.strip():
+            row["provider_manifest_version"] = installed.strip()
+        known = proven_provider_versions(versions_path).get(str(row.get("binary_sha256") or "").lower())
+        if known:
+            row["probe_method"] = method or "capture"
+            row["provider_loaded_version"] = known["version"]
+            row["provider_version_source"] = "capture"
+            row["provider_version_ref"] = known["source"]
+            row["provider_version_proven"] = True
+        elif row.get("provider_manifest_version"):
+            row["probe_method"] = method or "manifest"
+            row["provider_loaded_version"] = None
+            row["provider_version_source"] = "manifest"
+            row["provider_version_proven"] = False
+    if not row.get("cell_image"):
+        row["cell_image"] = (os.environ.get("OBENCH_CELL_IMAGE", "").strip()
+                             or os.environ.get("OBENCH_AGENT_IMAGE", "").strip()
+                             or row.get("agent_image") or None)
+    if not row.get("runner_commit"):
+        row["runner_commit"] = resolve_runner_commit()
 
 
 def attach_required_fields(row: dict, spec: dict) -> None:
@@ -1286,10 +1405,16 @@ def attach_required_fields(row: dict, spec: dict) -> None:
     if not isinstance(row, dict):
         return
     row.setdefault("rerun", 1 if os.environ.get("OBENCH_RERUN", "").strip() == "1" else 0)
+    attach_binary_provenance(row, spec)
+    fill_provenance_fallbacks(row, spec)
     if not row.get("build_channel"):
         row["build_channel"] = build_channel_of(spec.get("binary"))
+    nullable = set(NULLABLE_CELL_FIELDS)
+    if row.get("provider_version_source") == "manifest":
+        # Unproven by design: the manifest version lives in provider_manifest_version.
+        nullable.add("provider_loaded_version")
     missing = [k for k in REQUIRED_CELL_FIELDS
-               if k not in NULLABLE_CELL_FIELDS and row.get(k) in (None, "")]
+               if k not in nullable and row.get(k) in (None, "")]
     for k in REQUIRED_CELL_FIELDS:
         row.setdefault(k, None)
     if missing:
@@ -2399,7 +2524,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           order: str = "sides", seed: int | None = None, with_aa: bool = False,
           no_progress_s: float = 300, omp_thinking: str = "default",
           vertex_model: str = "claude-opus-5-5",
-          require_model_match: bool = False):
+          require_model_match: bool = False,
+          rerun_from: Path | None = None):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -2575,6 +2701,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
             transcripts_root=transcripts_dir,
             no_progress_s=no_progress_s,
             thinking_mode=omp_thinking,
+            rerun_from=rerun_from,
         )
         filled["protocol_model"] = vertex_model
         filled["protocol_location"] = PROTOCOL_LOCATION
@@ -2803,6 +2930,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", type=Path, default=Path("results/ab"))
     parser.add_argument(
+        "--rerun-from",
+        type=Path,
+        default=None,
+        help=(
+            "Results folder of the cells being rerun. --out must be a different "
+            "folder. Each new cell records rerun_of as the original cell id and "
+            "is refused if that path already exists. Does not modify --rerun-from."
+        ),
+    )
+    parser.add_argument(
         "--transcripts-dir",
         type=Path,
         default=None,
@@ -2877,6 +3014,16 @@ def main(argv: list[str] | None = None) -> int:
     if order == "interleave-seeded" and args.seed is None:
         print("error: --order interleave-seeded requires --seed", file=sys.stderr)
         return 2
+    if args.rerun_from is not None:
+        from obench.cell_columns import CellWriteError, assert_new_results_folder
+        if not args.rerun_from.is_dir():
+            print(f"error: --rerun-from is not a directory: {args.rerun_from}", file=sys.stderr)
+            return 2
+        try:
+            assert_new_results_folder(args.rerun_from, args.out)
+        except CellWriteError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     if args.seed is not None and order not in {"random", "interleave", "abba", "interleave-seeded"}:
         print(
             "error: --seed applies to --order random, interleave, interleave-seeded, and abba",
@@ -2931,6 +3078,7 @@ def main(argv: list[str] | None = None) -> int:
             no_progress_s=args.no_progress_s, omp_thinking=args.omp_thinking,
             vertex_model=args.vertex_model,
             require_model_match=args.require_model_match,
+            rerun_from=args.rerun_from,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

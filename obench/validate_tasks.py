@@ -83,8 +83,8 @@ def effective_score(exit_code, parsed_score):
     return 0.0
 
 
-# Match ``obench run --checker-timeout`` default so validate does not hang forever.
-CHECKER_TIMEOUT_S = 120
+# Per-task timeout (default 120s, 600s for heavy checkers). See checker_timeout.py.
+from .checker_timeout import checker_timeout_s
 
 
 def _task_docker_image(task_dir):
@@ -111,6 +111,7 @@ def run_checker(task_dir, overlay_solution_flag):
     # the task image, and macOS's default /var/folders path is invisible to
     # colima's VM.
     tmp = tempfile.mkdtemp(prefix="taskcheck-", dir=docker_workdir_parent())
+    checker_parent = None
     try:
         try:
             materialize_workspace(task_dir, tmp)
@@ -142,6 +143,14 @@ def run_checker(task_dir, overlay_solution_flag):
         else:
             env.pop("OPENBENCH_SOLUTION_OVERLAY", None)
 
+        timeout_s = checker_timeout_s(task_dir)
+        from .checker_venv import checker_split_enabled, prepare_checker_root
+        if checker_split_enabled():
+            checker_parent = tempfile.mkdtemp(prefix="h2-checker-", dir=docker_workdir_parent())
+            checker_root = prepare_checker_root(checker_parent)
+            from .checker_env import verify_split_checker_venv
+            verify_split_checker_venv(checker_root, task_dir)
+            env["H2_CHECKER_VENV_ROOT"] = str(checker_root)
         try:
             proc = subprocess.run(
                 ["bash", checker],
@@ -150,16 +159,18 @@ def run_checker(task_dir, overlay_solution_flag):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=CHECKER_TIMEOUT_S,
+                timeout=timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
             out = exc.stdout or ""
             if isinstance(out, bytes):
                 out = out.decode("utf-8", errors="replace")
-            out = out + f"\nFAIL: checker timed out after {CHECKER_TIMEOUT_S}s\n"
+            out = out + f"\nFAIL: checker timed out after {timeout_s}s\n"
             return 124, out, parse_score(out)
         return proc.returncode, proc.stdout, parse_score(proc.stdout)
     finally:
+        if checker_parent:
+            shutil.rmtree(checker_parent, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
 
 

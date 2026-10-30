@@ -28,6 +28,7 @@ class ReportPageTest(unittest.TestCase):
                "failure_class": "solved" if success else "wrong_answer",
                "wall_time_s": 10, "tokens_input_uncached": 100,
                "tokens_output": 20, "tokens_cache_read": 50,
+               "suspect_startup_exit": False,
                "tokens": 999999,  # vendor aggregate must never drive dashboard totals
                "token_basis": "vendor_split", "harness_version": "1", "timeout_s": 60}
         row.update(extra)
