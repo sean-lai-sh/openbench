@@ -10,6 +10,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from thesis.base_agent import build_check as B
+from thesis.base_agent import config as C
 
 
 def req(body, role=None, path="/v1/messages"):
@@ -105,6 +106,48 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(rep["verdict"], "FAIL")
         self.assertEqual(rep["comparison"]["tool_names"]["extra_in_base"], ["edit", "write"])
         self.assertEqual(len(rep["base"]["sha256"]), 64)
+
+    def write_capture(self, name, body_edit=None, pin=None):
+        cfg = C.load_config(name)
+        d = self.dir / name
+        reqs, _ = B.capture_base(name, "parity", "claude-test", str(self.dir), "Reply with ok.")
+        if body_edit:
+            main = B.main_request(reqs)
+            body = json.loads(main["body"])
+            body_edit(body)
+            main["body"] = json.dumps(body)
+        B.write_requests(d / "real.requests.jsonl", reqs)
+        (d / "capture.toml").write_text(
+            f'harness = "{name}"\nharness_pin = "{pin or cfg["harness_pin"]}"\nmodel = "claude-test"\n'
+            f'instruction = "Reply with ok."\nworkdir = "{self.dir}"\n')
+        return cfg, d
+
+    def test_gate_passes_on_a_matching_capture(self):
+        for name in ("pi", "opencode"):
+            cfg, d = self.write_capture(name)
+            self.assertTrue(B.gate(cfg, d)["comparison"]["pass"], name)
+
+    def test_gate_fails_on_drift_missing_capture_or_wrong_pin(self):
+        cfg, d = self.write_capture("opencode", lambda b: b["system"].append({"type": "text", "text": "x" * 2000}))
+        res = B.gate(cfg, d)
+        self.assertFalse(res["comparison"]["pass"])
+        self.assertFalse(res["comparison"]["system"]["pass"])
+        with self.assertRaisesRegex(ValueError, "no real-harness capture"):
+            B.gate(cfg, self.dir / "nothing")
+        cfg, d = self.write_capture("pi", pin="ba54cee55e18b47fb70badc84ae2cbac7c83d258")
+        with self.assertRaisesRegex(ValueError, "capture pin"):
+            B.gate(cfg, d)
+
+    def test_captures_do_not_change_the_framework_hash(self):
+        before = C.framework_hash()
+        d = B.CAPTURES / "zz-test-tmp"
+        try:
+            d.mkdir(parents=True)
+            (d / "real.requests.jsonl").write_text("{}\n")
+            self.assertEqual(C.framework_hash(), before)
+        finally:
+            (d / "real.requests.jsonl").unlink(missing_ok=True)
+            d.rmdir()
 
     def test_cli_capture_and_compare(self):
         base = self.dir / "pi.requests.jsonl"
