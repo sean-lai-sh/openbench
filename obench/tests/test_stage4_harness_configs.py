@@ -109,8 +109,9 @@ class Resolution(unittest.TestCase):
         return [t.name for t in a.tools()]
 
     def test_tool_lists(self):
-        self.assertEqual(self.tools("pi", "parity"), ["read", "bash", "edit", "write"])
-        self.assertEqual(self.tools("pi", "swap"), ["read", "bash", "edit", "write"])
+        pi = ["read", "bash", "edit", "write", "__pi_deferred_placeholder__"]
+        self.assertEqual(self.tools("pi", "parity"), pi)
+        self.assertEqual(self.tools("pi", "swap"), pi)
         oc = ["question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "skill"]
         self.assertEqual(self.tools("opencode", "parity"), oc)
         self.assertEqual(self.tools("opencode", "swap"), [t for t in oc if t != "webfetch"])
@@ -145,7 +146,10 @@ class PiEpisode(unittest.TestCase):
             for tag in ("<tools>", "<rules>", "<docs>", "<cwd>"):
                 self.assertIn(tag, system)
             self.assertIn("- Use bash for file operations like ls, rg, find", system)
-            self.assertIn("cache_control", req["tools"][-1])
+            self.assertIn("cache_control", req["tools"][-2])  # last non-deferred tool (write)
+            self.assertNotIn("cache_control", req["tools"][-1])
+            self.assertEqual(req["thinking"]["type"], "adaptive")  # row 9 ruling
+            self.assertEqual(req["max_tokens"], 128000)
             self.assertEqual(res["version"]["harness"], "pi")
 
 

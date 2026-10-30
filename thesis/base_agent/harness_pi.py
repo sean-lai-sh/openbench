@@ -1,21 +1,27 @@
 """Pi (badlogic/pi-mono @ d0aa218, MIT) re-expressed as base-agent modules.
 
-Prompt and tool strings are copied from packages/coding-agent/src/core/
-system-prompt.ts and core/tools/{read,bash,edit,write}.ts at that pin; see
-assets/SOURCE.md and assets/pi/LICENSE. Only Pi's default tool set
-(read, bash, edit, write; settings-manager.ts:85) is reproduced.
+Sources (review criterion 1):
+* system prompt: strings copied from packages/coding-agent/src/core/
+  system-prompt.ts and core/tools/*.ts (snippets, guidelines) at the pin;
+* tool specs (name, description, schema, strict / eager_input_streaming /
+  defer_loading): assets/pi/tools.json, taken verbatim from the real Pi
+  capture in captures/pi/ (see assets/SOURCE.md). Pi's pi-ai layer rewrites
+  its TypeBox schemas for strict mode (every property required, optional
+  ones nullable) and adds a deferred placeholder tool, so the wire form is
+  read from the capture rather than transcribed.
 
-Known gaps, to be measured by the AC3 build check rather than guessed:
-* how pi-ai joins prompt sections (assumed "\\n\\n");
-* whether pi-ai sends the read tool's outputSchema to Anthropic (not sent here);
-* the docs paths, which depend on where Pi is installed in the runner image
-  (``install_root``).
+Only Pi's default tool set (read, bash, edit, write; settings-manager.ts:85)
+is reproduced. The docs paths in the prompt depend on where Pi is installed;
+``RunContext.env["pi_install_root"]`` overrides ``install_root`` the way the
+workdir overrides cwd.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from thesis.base_agent import tools as T
-from thesis.base_agent.interfaces import Editor, PromptAssembler, Tool, ToolError
-from thesis.base_agent.modules import find_context_files, register, tool
+from thesis.base_agent.interfaces import Editor, PromptAssembler, ToolError
+from thesis.base_agent.modules import captured_tools, find_context_files, register, tool, tool_from_spec
 
 PIN = "d0aa218cb16c333c008f6aa3dcd670ac8b68383c"
 SRC = f"badlogic/pi-mono@{PIN}:packages/coding-agent/src/core/"  # module sources (modules.register)
@@ -88,7 +94,7 @@ class PiPrompt(PromptAssembler):
         sections = {
             "tools": f"{tool_lines}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.",
             "rules": _rules(names),
-            "docs": _docs(self.root),
+            "docs": _docs(ctx.env.get("pi_install_root", self.root)),
         }
         if self.context_files:
             files = find_context_files(ctx.workdir)
@@ -101,19 +107,20 @@ class PiPrompt(PromptAssembler):
         return [self.joiner.join(parts)]
 
 
-def _obj(props: dict, required: list[str]) -> dict:
-    return {"type": "object", "properties": props, "required": required}
+ASSETS = Path(__file__).resolve().parent / "assets" / "pi"
+SPECS = captured_tools(ASSETS / "tools.json")
+
+
+def _nullable(v):
+    return None if v is None else v
 
 
 @tool("pi", "read", SRC + "tools/read.ts")
 def _read(p):
     def run(a, ctx):
-        return T.read_file(ctx.workdir, a.get("path"), a.get("offset"), a.get("limit"), MAX_LINES, MAX_BYTES)
-    return Tool("read",
-                f"Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to {MAX_LINES} lines or {MAX_BYTES // 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
-                _obj({"path": {"description": "Path to the file to read (relative or absolute)", "type": "string"},
-                      "offset": {"description": "Line number to start reading from (1-indexed)", "type": "number"},
-                      "limit": {"description": "Maximum number of lines to read", "type": "number"}}, ["path"]), run)
+        return T.read_file(ctx.workdir, a.get("path"), _nullable(a.get("offset")), _nullable(a.get("limit")),
+                           MAX_LINES, MAX_BYTES)
+    return tool_from_spec(SPECS["read"], run)
 
 
 @tool("pi", "bash", SRC + "tools/bash.ts")
@@ -121,22 +128,20 @@ def _bash(p):
     def run(a, ctx):
         if not isinstance(a.get("command"), str):
             raise ToolError("command is required")
-        return ctx.executor.format(ctx.executor.run(a["command"], ctx.workdir, a.get("timeout")))
-    return Tool("bash",
-                f"Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last {MAX_LINES} lines or {MAX_BYTES // 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
-                _obj({"command": {"description": "Shell command to execute", "type": "string"},
-                      "timeout": {"description": "Timeout in seconds (optional, no default timeout)", "type": "number"}},
-                     ["command"]), run)
+        return ctx.executor.format(ctx.executor.run(a["command"], ctx.workdir, _nullable(a.get("timeout"))))
+    return tool_from_spec(SPECS["bash"], run)
 
 
 @tool("pi", "write", SRC + "tools/write.ts")
 def _write(p):
-    return Tool("write",
-                "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
-                _obj({"path": {"description": "Path to the file to write (relative or absolute)", "type": "string"},
-                      "content": {"description": "Content to write to the file", "type": "string"}},
-                     ["path", "content"]),
-                lambda a, ctx: T.write_file(ctx.workdir, a.get("path"), a.get("content")))
+    return tool_from_spec(SPECS["write"], lambda a, ctx: T.write_file(ctx.workdir, a.get("path"), a.get("content")))
+
+
+@tool("pi", "__pi_deferred_placeholder__", SRC + "tools/index.ts")
+def _placeholder(p):
+    def run(a, ctx):
+        raise ToolError("This tool is a reserved placeholder and is never available.")
+    return tool_from_spec(SPECS["__pi_deferred_placeholder__"], run)
 
 
 @register("M7", "pi_edit", SRC + "tools/edit.ts")
@@ -145,14 +150,5 @@ class PiEdit(Editor):
     each unique and non-overlapping in the original file."""
 
     def tools(self, ctx):
-        schema = _obj({
-            "path": {"description": "Path to the file to edit (relative or absolute)", "type": "string"},
-            "edits": {"description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
-                      "type": "array",
-                      "items": _obj({"oldText": {"description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.", "type": "string"},
-                                     "newText": {"description": "Replacement text for this targeted edit.", "type": "string"}},
-                                    ["oldText", "newText"])},
-        }, ["path", "edits"])
-        return [Tool("edit",
-                     "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
-                     schema, lambda a, c: T.replace_many(c.workdir, a.get("path"), a.get("edits")))]
+        return [tool_from_spec(SPECS["edit"], lambda a, c: T.replace_many(c.workdir, a.get("path"), a.get("edits")),
+                               slot="M7")]
