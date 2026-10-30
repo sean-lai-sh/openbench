@@ -6,6 +6,7 @@ import io
 import json
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -158,6 +159,15 @@ class EndToEnd(unittest.TestCase):
         finally:
             (d / "real.requests.jsonl").unlink(missing_ok=True)
             d.rmdir()
+
+    def test_capture_pi_cli_needs_one_binary_source(self):
+        from thesis.base_agent import capture_pi
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as cm, \
+                unittest.mock.patch("sys.stderr", io.StringIO()):
+            capture_pi.main(["--out", str(self.dir)])
+        self.assertEqual(cm.exception.code, 2)  # argparse: --cache or --binary required
+        with self.assertRaisesRegex(SystemExit, "no Pi binary"):
+            capture_pi.main(["--binary", str(self.dir / "missing-pi"), "--out", str(self.dir)])
 
     def test_cli_capture_and_compare(self):
         base = self.dir / "pi.requests.jsonl"

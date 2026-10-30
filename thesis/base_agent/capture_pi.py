@@ -9,6 +9,10 @@ proxy URL pointed at ``build_check.CaptureStub``. The stub answers end_turn
     python -m thesis.base_agent.capture_pi --cache results/harness-src \\
         --model claude-sonnet-5-5 --out thesis/base_agent/captures/pi
 
+    # or with a prebuilt Pi (e.g. the #196 binary on the thesis VM):
+    python -m thesis.base_agent.capture_pi --binary ~/h1/harness-src/bin/pi/<pin>/pi \\
+        --model claude-sonnet-5-5 --out thesis/base_agent/captures/pi
+
 Writes ``real.requests.jsonl`` and ``capture.toml`` (see captures/README.md).
 """
 from __future__ import annotations
@@ -65,12 +69,16 @@ def main(argv=None) -> int:
     from thesis.ab.build_pi import binary as build_binary
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--cache", type=Path, required=True, help="thesis.ab.build_pi cache")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--cache", type=Path, help="thesis.ab.build_pi cache; builds the pinned Pi on a miss")
+    src.add_argument("--binary", type=Path, help="an existing Pi binary built at the pin (skips the build)")
     p.add_argument("--model", default="claude-sonnet-5-5")
     p.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
     p.add_argument("--out", type=Path, required=True)
     a = p.parse_args(argv)
-    binary = Path(build_binary(PIN, a.cache.resolve()))
+    binary = a.binary.expanduser().resolve() if a.binary else Path(build_binary(PIN, a.cache.resolve()))
+    if not binary.is_file():
+        raise SystemExit(f"no Pi binary at {binary}")
     got = capture(binary, PIN, a.model, a.instruction)
     if not got["requests"]:
         raise SystemExit(f"no request reached the stub: {json.dumps(got['row'], default=str)[:500]}")
