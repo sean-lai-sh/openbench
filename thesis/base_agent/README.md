@@ -97,7 +97,7 @@ Any change to code, a prompt asset, a fixed row, a config or the arm changes
 | Config | Pin | First request (system / tools bytes, stub run) |
 |---|---|---|
 | `pi` | badlogic/pi-mono `d0aa218` (the sheet's pin and the #196 Pi pin) | 3009 / 3348 bytes, 5 tools: exact match with the real capture |
-| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | 8610 / 36071 bytes, 11 tools. System bytes are −1.33% against the capture because the Claude Code identity header is left out. Tool bytes match exactly. |
+| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | 8558 / 35967 bytes, 11 tools, measured against the capture of the Linux binary #196 ran. System bytes are −1.33% because the Claude Code identity header is left out. Tool bytes match exactly. |
 
 Each `[rows.N]` entry holds three fields. `value` is what the module
 reproduces. `sheet` is the sheet's cell, copied exactly. `source` is the
@@ -176,7 +176,7 @@ does the same for Pi. It runs the pinned Pi binary through
 section, is recorded under `[env]` in `capture.toml` and replayed the same
 way as the workdir.
 
-Both captures were taken on 2026-10-30 at zero cost. With both committed,
+Both captures were taken on 2026-10-30 at zero cost. The OpenCode one comes from the Linux ba54cee5 binary #196 ran (thesis-h1-cpu). The Pi one was taken on the Mac mini. With both committed,
 the gate passes.
 
 ## Implementation basis
