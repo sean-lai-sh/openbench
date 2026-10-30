@@ -1309,11 +1309,59 @@ NULLABLE_CELL_FIELDS = {"provider_loaded_mismatch"}
 
 
 def build_channel_of(binary) -> str | None:
+    """``build_channel`` from the binary's build-stamp.json.
+    Stamps written before build_channel existed carry only ``kind`` (e.g.
+    ``build.ts``); those are local source builds, recorded as ``local:<kind>``.
+    """
     stamp = Path(str(binary or "")).parent / "build-stamp.json"
     try:
-        return str(json.loads(stamp.read_text()).get("build_channel") or "") or None
-    except (OSError, ValueError, AttributeError):
+        data = json.loads(stamp.read_text())
+    except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
+    channel = str(data.get("build_channel") or "").strip()
+    if channel:
+        return channel
+    kind = str(data.get("kind") or "").strip()
+    return f"local:{kind}" if kind else None
+
+
+def attach_binary_provenance(row: dict, spec: dict) -> None:
+    """sha256 of the harness binary as found on disk after the cell ran."""
+    binary = str(spec.get("binary") or "").strip()
+    if not binary or row.get("binary_sha256"):
+        return
+    try:
+        h = hashlib.sha256()
+        with open(binary, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return
+    row["binary_path"] = binary
+    row["binary_sha256"] = h.hexdigest()
+    row["binary_hash_source"] = "post_hoc_disk"
+    row["binary_source"] = os.environ.get("OBENCH_BINARY_SOURCE", "").strip() or None
+
+
+def fill_provenance_fallbacks(row: dict, spec: dict) -> None:
+    """Fill provenance the adapter or launcher left empty, from what the runner can see."""
+    if not row.get("probe_method") and not row.get("provider_loaded_version"):
+        versions = row.get("provider_versions")
+        installed = versions.get("@ai-sdk/anthropic") if isinstance(versions, dict) else None
+        if isinstance(installed, str) and installed.strip():
+            # No strace in the image and nothing bundled: the version comes from
+            # the installed package manifest, not a traced load. step8_gate
+            # still treats "manifest" as unproven.
+            row["probe_method"] = "manifest"
+            row["provider_loaded_version"] = installed.strip()
+    if not row.get("cell_image"):
+        row["cell_image"] = (os.environ.get("OBENCH_CELL_IMAGE", "").strip()
+                             or os.environ.get("OBENCH_AGENT_IMAGE", "").strip()
+                             or row.get("agent_image") or None)
+    if not row.get("runner_commit"):
+        row["runner_commit"] = resolve_runner_commit()
 
 
 def attach_required_fields(row: dict, spec: dict) -> None:
@@ -1321,6 +1369,8 @@ def attach_required_fields(row: dict, spec: dict) -> None:
     if not isinstance(row, dict):
         return
     row.setdefault("rerun", 1 if os.environ.get("OBENCH_RERUN", "").strip() == "1" else 0)
+    fill_provenance_fallbacks(row, spec)
+    attach_binary_provenance(row, spec)
     if not row.get("build_channel"):
         row["build_channel"] = build_channel_of(spec.get("binary"))
     missing = [k for k in REQUIRED_CELL_FIELDS

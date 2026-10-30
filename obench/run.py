@@ -133,6 +133,8 @@ ROW_FIELDS = (
     "env_failure",
     "env_cause",
     "free_disk_gb",
+    "lock_wait_s",
+    "checker_lock",
     "rerun_of",
     "rescored_from",
     "suspect_startup_exit",
@@ -1384,6 +1386,64 @@ def _run_checker_in_task_image(task_dir, workdir, timeout_s, checker_env,
     )
 
 
+
+# Checkers for tasks whose tests bind a fixed local port (torch.distributed
+# MASTER_PORT) cannot run concurrently on a shared network namespace. A
+# host-wide flock serializes them; agent phases stay parallel. Put the lock
+# file on a path every container on the host mounts (OBENCH_CHECKER_LOCK).
+CHECKER_LOCK_DEFAULT = "/tmp/obench-checker.lock"
+_PORT_BINDING_MARKERS = (b"MASTER_PORT", b"init_process_group")
+
+
+def checker_binds_port(task_dir) -> bool:
+    forced = os.environ.get("OBENCH_CHECKER_LOCK_TASKS", "").strip()
+    name = os.path.basename(os.path.normpath(str(task_dir)))
+    if forced:
+        return name in {t.strip() for t in forced.split(",") if t.strip()}
+    for root, _dirs, files in os.walk(os.path.join(str(task_dir), "checker_data")):
+        for fn in files:
+            if not fn.endswith((".py", ".sh")):
+                continue
+            try:
+                with open(os.path.join(root, fn), "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            if any(m in data for m in _PORT_BINDING_MARKERS):
+                return True
+    return False
+
+
+class CheckerLock:
+    """Exclusive flock held for the checker phase; no-op when ``path`` is None."""
+
+    def __init__(self, path):
+        self.path = path
+        self._fh = None
+
+    def __enter__(self):
+        if self.path:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self._fh = open(self.path, "a")
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                self._fh.close()
+                self._fh = None
+        return False
+
+
+def checker_lock_for(task_dir) -> CheckerLock:
+    if not checker_binds_port(task_dir):
+        return CheckerLock(None)
+    return CheckerLock(os.environ.get("OBENCH_CHECKER_LOCK", "").strip() or CHECKER_LOCK_DEFAULT)
+
+
 def run_checker(task_dir, workdir, timeout_s, checker_env=None, task_image=None,
                 container_workdir=None):
     """Run ``<task_dir>/checker.sh`` with cwd=workdir and TASK_DIR set.
@@ -2321,6 +2381,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "env_failure": False,
         "env_cause": None,
         "free_disk_gb": None,
+        "lock_wait_s": None,
+        "checker_lock": None,
         "rerun_of": None,
         "rescored_from": None,
         "suspect_startup_exit": False,
@@ -2715,6 +2777,12 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                     row["final_workspace_tar_sha256"] = None
                     row["final_workspace_tar_bytes"] = None
                     row["final_workspace_skip_reason"] = saved["skipped"]
+            checker_lock = checker_lock_for(task_dir)
+            lock_wait_start = time.monotonic()
+            checker_lock.__enter__()
+            row["lock_wait_s"] = round(time.monotonic() - lock_wait_start, 3)
+            row["checker_lock"] = checker_lock.path
+            # The checker timeout and t_checker_s start only once the lock is held.
             checker_start = time.monotonic()
             checker_root = None
             try:
@@ -2733,6 +2801,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 os.environ.pop("H2_CHECKER_VENV_ROOT", None)
                 row["t_checker_s"] = round(time.monotonic() - checker_start, 3)
                 row["checker_wall_time_s"] = row["t_checker_s"]
+                checker_lock.__exit__(None, None, None)
         except CheckerEnvError as exc:
             row["checker_exit"] = None
             mark_env_failure(row, exc.cause, str(exc))
