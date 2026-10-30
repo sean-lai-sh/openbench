@@ -23,6 +23,7 @@ Python standard library only, like the rest of the repo. Requires Python 3.11+
 | `configs/pi.toml`, `configs/opencode.toml` | Harness configs. Each one cites the sheet cell and source column for every swappable row. |
 | `harness_pi.py`, `harness_opencode.py` | Harness-specific modules: prompt assemblers, tool schemas, editor, todo, subagent, title call. |
 | `assets/` | Vendored MIT prompt and tool text with its upstream licences. `assets/SOURCE.md` gives the pins and upstream paths. |
+| `build_check.py` | AC3 build check: captures the first request at a loopback stub and compares system and tool bytes against a real-harness capture. |
 | `run.py` | Headless entry point: `python -m thesis.base_agent.run`. |
 
 ## Slots
@@ -98,6 +99,57 @@ Each file's module docstring lists what the config does not reproduce yet
 full-output files). The AC3 build check measures the request-side gaps
 against a real-harness capture.
 
+## Build check (AC3)
+
+Brief section 1.6: the system-prompt and tool-schema bytes at the proxy must
+be within 5% of the real harness's captured request. This is posted before any
+scored cell.
+
+Both sides are captured at a loopback stub that stands in for the counting
+proxy and answers every request with end_turn "ok". No model is called and
+nothing is billed. The capture format is the existing `*.requests.jsonl`
+(`{method, path, headers, body}` per line).
+
+```bash
+# 1. Real OpenCode: the existing stub-readiness tool runs the real binary
+#    through the cell adapter (prompt "Reply with ok.", model claude-opus-5-5).
+python -m thesis.ab.step8_stub_ready --bin-root BIN_ROOT --cache CACHE \
+    --binary oc-real=BIN_ROOT/<sha>/opencode=<sha> \
+    --capture results/ac3/real --out results/ac3/real
+
+# 2. Base config: same prompt and model.
+python -m thesis.base_agent.build_check capture --config opencode --arm parity \
+    --model claude-opus-5-5 --out results/ac3/base/opencode.requests.jsonl
+
+# 3. Compare. Exits 0 on PASS, 1 on FAIL.
+python -m thesis.base_agent.build_check compare --config opencode --arm parity \
+    --base results/ac3/base/opencode.requests.jsonl \
+    --real results/ac3/real/oc-real.requests.jsonl --out results/ac3/opencode-report.json
+```
+
+Each side's first main-loop request is used: the first `/messages` request
+that carries tools and is not tagged as a side call. The check measures:
+
+- **system**: UTF-8 bytes of all system text.
+- **tools**: bytes of the tools array as canonical JSON, with sorted keys,
+  no whitespace and `cache_control` removed.
+
+A config passes when **system and tools are each** within 5% of the real
+harness. The combined figure is reported but does not decide the result. The
+report also shows:
+
+- tool-name differences and whether the tool order matches;
+- the sampling fields (`max_tokens`, temperature, thinking). Copy the real
+  values into the config's `[parity.M4]`;
+- the sha256 of both captures;
+- the config's version record, so a posted report is tied to one
+  `base_agent_version`.
+
+Pi has no stub-capture runner yet. `step8_stub_ready` drives only the
+OpenCode adapter. A Pi capture needs the same thing for `obench.adapters.pi`:
+point Pi's provider base URL at `build_check.CaptureStub` and save
+`stub.requests`.
+
 ## Implementation basis
 
 Written from scratch. mini-swe-agent (github.com/SWE-agent/mini-swe-agent) is
@@ -109,7 +161,8 @@ Code code or prompt text is used.
 ## Tests
 
 ```bash
-python3 -m unittest obench.tests.test_stage4_base_agent obench.tests.test_stage4_harness_configs -v
+python3 -m unittest obench.tests.test_stage4_base_agent obench.tests.test_stage4_harness_configs \
+    obench.tests.test_stage4_build_check -v
 ```
 
 The tests use a scripted model. They make no paid or live model calls.
