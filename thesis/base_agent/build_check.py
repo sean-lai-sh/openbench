@@ -50,7 +50,8 @@ DEFAULT_INSTRUCTION = "Reply with ok."
 # --- capture ----------------------------------------------------------------
 class CaptureStub:
     """Loopback Messages endpoint that records each request and replies
-    end_turn "ok" (non-streaming, or a minimal SSE stream when asked)."""
+    end_turn "ok": JSON, or a minimal SSE stream when the request sets
+    ``stream``."""
 
     _REPLY = {"id": "msg_stub", "type": "message", "role": "assistant", "model": "stub",
               "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
@@ -70,6 +71,18 @@ class CaptureStub:
                 stub.requests.append({"method": "POST", "path": self.path,
                                       "headers": dict(self.headers.items()),
                                       "body": raw.decode("utf-8", "replace")})
+                try:
+                    streaming = bool(json.loads(raw or b"{}").get("stream"))
+                except ValueError:
+                    streaming = False
+                if streaming:
+                    payload = stub._sse()
+                    self.send_response(200)
+                    self.send_header("content-type", "text/event-stream")
+                    self.send_header("content-length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 payload = json.dumps(stub._REPLY).encode()
                 self.send_response(200)
                 self.send_header("content-type", "application/json")
@@ -80,6 +93,22 @@ class CaptureStub:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def _sse(cls) -> bytes:
+        msg = {**cls._REPLY, "content": [], "stop_reason": None}
+        events = [
+            ("message_start", {"type": "message_start", "message": msg}),
+            ("content_block_start", {"type": "content_block_start", "index": 0,
+                                     "content_block": {"type": "text", "text": ""}}),
+            ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                     "delta": {"type": "text_delta", "text": "ok"}}),
+            ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                               "usage": {"output_tokens": 1}}),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+        return "".join(f"event: {n}\ndata: {json.dumps(d)}\n\n" for n, d in events).encode()
 
     def close(self):
         self.server.shutdown()
