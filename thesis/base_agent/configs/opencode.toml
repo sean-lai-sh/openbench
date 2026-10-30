@@ -17,7 +17,12 @@ description = "OpenCode ba54cee5 build agent on Claude: anthropic.txt prompt, 11
 
 [modules.M1]
 impl = "opencode"
-params = { provider_id = "anthropic", context_files = false }
+# header: the Claude Code identity line OpenCode ba54cee5 sends for the
+# anthropic provider (sst/opencode ba54cee5:
+# packages/opencode/src/session/prompt/anthropic_spoof.txt, via
+# session/system.ts header() and session/llm.ts): its own system block, then
+# the prefix of the main block. PM go 2026-10-30.
+params = { provider_id = "anthropic", context_files = false, header = "anthropic_spoof.txt" }
 
 # Tool list and order as the real ba54cee5 capture sends them
 # (captures/opencode/): question, bash, read, glob, grep, edit, write, task,
@@ -28,7 +33,7 @@ params = { family = "opencode", tools = ["question", "bash", "read", "glob", "gr
 
 [modules.M3]
 impl = "anthropic"
-params = { system = 1, tools = false, messages = 2 }
+params = { system = 2, tools = false, messages = 2 }
 
 # #189: small_model pinned to Sonnet 5.5 (not OpenCode's Haiku default);
 # the row records small_model_deviation = true.
@@ -65,9 +70,9 @@ params = { max_tokens = 32000 }
 
 # --- citations: every swappable row ----------------------------------------
 [rows.1]
-value = "M1 opencode: anthropic.txt (8.2 KB, vendored; identical at ba54cee5) + the ba54cee5 environment block; the Claude Code identity header is left out (criterion 1)"
+value = "M1 opencode: anthropic.txt (8.2 KB, vendored; identical at ba54cee5) + the ba54cee5 environment block, after the ba54cee5 Claude Code identity header (anthropic_spoof.txt: own block + prefix of the main block)"
 sheet = "Per-model-family full base prompt picked by model ID: anthropic.txt 8.2 KB for Claude, gemini.txt 15.4 KB, default.txt 8.5 KB (others: gpt/codex/beast/kimi/meta/trinity 4-14 KB) + env/AGENTS.md instructions"
-source = "packages/opencode/src/session/system.ts:6-50; session/prompt/*.txt; ba54cee5: session/system.ts, session/llm.ts:67-96"
+source = "packages/opencode/src/session/system.ts:6-50; session/prompt/*.txt; ba54cee5: session/system.ts, session/llm.ts:67-96, session/prompt/anthropic_spoof.txt"
 
 [rows.2]
 value = "M1 opencode: no instruction files (task repos carry none; context_files off)"
@@ -90,7 +95,7 @@ sheet = "Effect Schema -> JSON Schema with per-tool .txt descriptions; optional 
 source = "packages/opencode/src/tool/json-schema.ts; tool/*.txt; tool/code-mode.ts; ba54cee5: captures/opencode/real.requests.jsonl"
 
 [rows.8]
-value = "M3 anthropic: the system block + last 2 messages (the real build marks both its system blocks; the identity block is not sent)"
+value = "M3 anthropic: both system blocks (identity + main, as the real build marks them) + last 2 messages"
 sheet = "Explicit ephemeral cacheControl breakpoints for Anthropic/Bedrock/OpenRouter/Copilot; promptCacheKey = sessionID for OpenAI-style providers"
 source = "packages/opencode/src/provider/transform.ts:364-379,1321,1368; SC-1: transform.ts:358-380 (system[0:2] + last 2 non-system msgs)"
 

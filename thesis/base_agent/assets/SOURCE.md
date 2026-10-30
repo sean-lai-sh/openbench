@@ -11,6 +11,7 @@ This is the build the #196 OpenCode cells ran (Researcher ruling, 2026-10-30).
 | File here | Source |
 |---|---|
 | `anthropic.txt` | `packages/opencode/src/session/prompt/anthropic.txt`. Byte-identical at ba54cee5 and at the sheet's c10134729d. |
+| `anthropic_spoof.txt` | `packages/opencode/src/session/prompt/anthropic_spoof.txt` at ba54cee5 (sst/opencode). The Claude Code identity header OpenCode sends for the anthropic provider; matches both system blocks of the real ba54cee5 capture. |
 | `title.txt` | `packages/opencode/src/agent/prompt/title.txt`. Byte-identical at both pins. |
 | `tools.json` | The `tools` array of the main request that the real ba54cee5 Linux binary (the one #196 ran, on thesis-h1-cpu) sent to a loopback stub (`thesis.ab.step8_stub_ready --capture`; no model was called). `cache_control` is removed, and the capture's working directory is replaced by `{{workdir}}`: the bash tool names its default directory, and `Agent.tools()` fills in the run's. The capture itself (`captures/opencode/real.requests.jsonl`, sha256 `e40ab22d…`) is committed in `captures/opencode/`. A test checks this file against it. |
 

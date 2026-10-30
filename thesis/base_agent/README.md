@@ -97,7 +97,7 @@ Any change to code, a prompt asset, a fixed row, a config or the arm changes
 | Config | Pin | First request (system / tools bytes, stub run) |
 |---|---|---|
 | `pi` | badlogic/pi-mono `d0aa218` (the sheet's pin and the #196 Pi pin) | 3009 / 3348 bytes, 5 tools: exact match with the real capture |
-| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | 8558 / 35967 bytes, 11 tools, measured against the capture of the Linux binary #196 ran. System bytes are −1.33% because the Claude Code identity header is left out. Tool bytes match exactly. |
+| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | 8673 / 35967 bytes, 11 tools, measured against the capture of the Linux binary #196 ran. System and tool bytes both match exactly (0%): the config sends ba54cee5's Claude Code identity header as the real build does (assets/opencode/anthropic_spoof.txt). |
 
 Each `[rows.N]` entry holds three fields. `value` is what the module
 reproduces. `sheet` is the sheet's cell, copied exactly. `source` is the
