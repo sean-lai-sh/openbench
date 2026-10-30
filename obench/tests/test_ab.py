@@ -1808,6 +1808,18 @@ class TestTreeSitterWasm(unittest.TestCase):
 
 
 class TestSdkDriftCell(unittest.TestCase):
+    def setUp(self):
+        from obench.tests.test_sdk_preinstall import make_pin_root
+        pins = Path(tempfile.mkdtemp())
+        for version in ("2.0.0", "2.0.77"):
+            make_pin_root(pins, version)
+        saved = os.environ.get("OBENCH_PROVIDER_PIN_ROOT")
+        os.environ["OBENCH_PROVIDER_PIN_ROOT"] = str(pins)
+        self.addCleanup(
+            lambda: os.environ.pop("OBENCH_PROVIDER_PIN_ROOT", None) if saved is None
+            else os.environ.__setitem__("OBENCH_PROVIDER_PIN_ROOT", saved)
+        )
+
     def test_cell_is_infra_when_the_provider_sdk_drifts(self):
         from thesis.ab.run_ab import execute_cell
         root = Path(tempfile.mkdtemp())
