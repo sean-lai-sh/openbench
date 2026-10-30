@@ -68,13 +68,34 @@ class ProvenanceFallbackTest(unittest.TestCase):
             self.assertNotIn("cell missing required fields", err.getvalue())
             self.assertNotIn("missing_fields", row)
             self.assertEqual(row["probe_method"], "manifest")
-            self.assertEqual(row["provider_loaded_version"], "2.0.0")
+            self.assertIsNone(row["provider_loaded_version"])
+            self.assertEqual(row["provider_manifest_version"], "2.0.0")
+            self.assertEqual(row["provider_version_source"], "manifest")
+            self.assertIs(row["provider_version_proven"], False)
             self.assertEqual(row["cell_image"], "h1-env:1022")
             self.assertEqual(row["build_channel"], "local:build.ts")
             self.assertEqual(row["runner_commit"], "deadbeef")
             self.assertEqual(row["binary_hash_source"], "post_hoc_disk")
             self.assertEqual(row["binary_source"], "original")
             self.assertEqual(len(row["binary_sha256"]), 64)
+
+    def test_captured_binary_sha_fills_proven_version(self):
+        with tempfile.TemporaryDirectory() as d:
+            toml = os.path.join(d, "pv.toml")
+            with open(toml, "w") as fh:
+                fh.write('[binary.abc123]\nprovider_version = "2.0.58"\nsource = "capture:#201"\n')
+            row = self._row(); row["binary_sha256"] = "ABC123"
+            run_ab.fill_provenance_fallbacks(row, {}, versions_path=toml)
+            self.assertEqual(row["provider_loaded_version"], "2.0.58")
+            self.assertEqual(row["provider_version_source"], "capture")
+            self.assertEqual(row["provider_version_ref"], "capture:#201")
+            self.assertIs(row["provider_version_proven"], True)
+            self.assertEqual(row["provider_manifest_version"], "2.0.0")
+
+    def test_seeded_map_has_ba54cee5(self):
+        m = run_ab.proven_provider_versions()
+        self.assertEqual(m["53398f0fcf8c3cfe70814723fb1bd7c8f80c7d6e6abfc858c9d17b9670e2a67e"],
+                         {"version": "2.0.58", "source": "capture:#201"})
 
     def test_traced_probe_is_not_overwritten(self):
         row = self._row(); row.update(probe_method="strace", provider_loaded_version="2.0.1")

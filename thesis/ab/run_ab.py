@@ -1345,17 +1345,53 @@ def attach_binary_provenance(row: dict, spec: dict) -> None:
     row["binary_source"] = os.environ.get("OBENCH_BINARY_SOURCE", "").strip() or None
 
 
-def fill_provenance_fallbacks(row: dict, spec: dict) -> None:
-    """Fill provenance the adapter or launcher left empty, from what the runner can see."""
-    if not row.get("probe_method") and not row.get("provider_loaded_version"):
-        versions = row.get("provider_versions")
-        installed = versions.get("@ai-sdk/anthropic") if isinstance(versions, dict) else None
+PROVIDER_VERSIONS_TOML = Path(__file__).with_name("provider_versions.toml")
+
+
+def proven_provider_versions(path=None) -> dict:
+    """binary sha256 -> {"version", "source"} from captured provider loads."""
+    import tomllib
+    try:
+        data = tomllib.loads(Path(path or PROVIDER_VERSIONS_TOML).read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for sha, entry in (data.get("binary") or {}).items():
+        if isinstance(entry, dict) and entry.get("provider_version"):
+            out[str(sha).lower()] = {"version": str(entry["provider_version"]),
+                                     "source": str(entry.get("source") or "capture")}
+    return out
+
+
+def fill_provenance_fallbacks(row: dict, spec: dict, versions_path=None) -> None:
+    """Fill provenance the adapter or launcher left empty, from what the runner can see.
+
+    A traced (strace/embedded) load is proven. Otherwise a binary whose sha256
+    is in provider_versions.toml takes the captured version (proven, source
+    capture). Failing both, the installed manifest version is recorded as
+    provider_manifest_version only, never as the loaded version.
+    """
+    method = str(row.get("probe_method") or "")
+    if method in ("strace", "embedded") and row.get("provider_loaded_version"):
+        row.setdefault("provider_version_source", method)
+        row.setdefault("provider_version_proven", True)
+    else:
+        pv = row.get("provider_versions")
+        installed = pv.get("@ai-sdk/anthropic") if isinstance(pv, dict) else None
         if isinstance(installed, str) and installed.strip():
-            # No strace in the image and nothing bundled: the version comes from
-            # the installed package manifest, not a traced load. step8_gate
-            # still treats "manifest" as unproven.
-            row["probe_method"] = "manifest"
-            row["provider_loaded_version"] = installed.strip()
+            row["provider_manifest_version"] = installed.strip()
+        known = proven_provider_versions(versions_path).get(str(row.get("binary_sha256") or "").lower())
+        if known:
+            row["probe_method"] = method or "capture"
+            row["provider_loaded_version"] = known["version"]
+            row["provider_version_source"] = "capture"
+            row["provider_version_ref"] = known["source"]
+            row["provider_version_proven"] = True
+        elif row.get("provider_manifest_version"):
+            row["probe_method"] = method or "manifest"
+            row["provider_loaded_version"] = None
+            row["provider_version_source"] = "manifest"
+            row["provider_version_proven"] = False
     if not row.get("cell_image"):
         row["cell_image"] = (os.environ.get("OBENCH_CELL_IMAGE", "").strip()
                              or os.environ.get("OBENCH_AGENT_IMAGE", "").strip()
@@ -1369,12 +1405,16 @@ def attach_required_fields(row: dict, spec: dict) -> None:
     if not isinstance(row, dict):
         return
     row.setdefault("rerun", 1 if os.environ.get("OBENCH_RERUN", "").strip() == "1" else 0)
-    fill_provenance_fallbacks(row, spec)
     attach_binary_provenance(row, spec)
+    fill_provenance_fallbacks(row, spec)
     if not row.get("build_channel"):
         row["build_channel"] = build_channel_of(spec.get("binary"))
+    nullable = set(NULLABLE_CELL_FIELDS)
+    if row.get("provider_version_source") == "manifest":
+        # Unproven by design: the manifest version lives in provider_manifest_version.
+        nullable.add("provider_loaded_version")
     missing = [k for k in REQUIRED_CELL_FIELDS
-               if k not in NULLABLE_CELL_FIELDS and row.get(k) in (None, "")]
+               if k not in nullable and row.get(k) in (None, "")]
     for k in REQUIRED_CELL_FIELDS:
         row.setdefault(k, None)
     if missing:
