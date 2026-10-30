@@ -1,0 +1,152 @@
+# OpenCode on the base agent, build ba54cee5 (sst/opencode, 2026-02-12;
+# embedded @ai-sdk/anthropic 2.0.58): the build the #196 OpenCode real arm
+# ran. Researcher ruling 2026-10-30 moved this config off the sheet's
+# c10134729d to ba54cee5.
+#
+# [rows.N] cite the sheet (prereg/harness-components-2026-10-24.csv):
+#   sheet  = the sheet's `opencode` cell (written for c10134729d)
+#   source = the sheet's `opencode_src` cell, then "ba54cee5:" and the path
+#            at the build this config reproduces, or the capture
+# The sheet column for every row is opencode_src.
+
+schema = 1
+name = "opencode"
+harness = "opencode"
+harness_pin = "ba54cee55e18b47fb70badc84ae2cbac7c83d258"
+description = "OpenCode ba54cee5 build agent on Claude: anthropic.txt prompt, 11 tools, todowrite, task subagents, Sonnet-pinned title call, overflow compaction."
+
+[modules.M1]
+impl = "opencode"
+params = { provider_id = "anthropic", context_files = false }
+
+# Tool list and order as the real ba54cee5 capture sends them
+# (captures/opencode/): question, bash, read, glob, grep, edit, write, task,
+# webfetch, todowrite, skill. No `invalid`, websearch or apply_patch.
+[modules.M2]
+impl = "catalog"
+params = { family = "opencode", tools = ["question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "skill"] }
+
+[modules.M3]
+impl = "anthropic"
+params = { system = 1, tools = false, messages = 2 }
+
+# #189: small_model pinned to Sonnet 5.5 (not OpenCode's Haiku default);
+# the row records small_model_deviation = true.
+[modules.M5]
+impl = "opencode_title"
+params = { model = "claude-sonnet-5-5" }
+
+[modules.M6]
+impl = "summarize"
+params = { context_window = 200000, reserve_tokens = 20000 }
+
+[modules.M7]
+impl = "opencode_edit"
+
+[modules.M8]
+impl = "shell"
+params = { default_timeout_s = 120, timeout_unit = "ms", max_lines = 2000, max_bytes = 51200, keep = "head" }
+
+[modules.M9]
+impl = "opencode_todowrite"
+
+[modules.M10]
+impl = "opencode_task"
+
+[modules.M11]
+impl = "basic"
+params = { hooks = ["doom_loop"], doom_threshold = 3, doom_action = "log" }
+
+# OpenCode's own sampling, read from the real capture: max_tokens 32000, no
+# temperature, thinking off. Row 9 ruling 2026-10-30.
+[parity.M4]
+impl = "fixed"
+params = { max_tokens = 32000 }
+
+# --- citations: every swappable row ----------------------------------------
+[rows.1]
+value = "M1 opencode: anthropic.txt (8.2 KB, vendored; identical at ba54cee5) + the ba54cee5 environment block; the Claude Code identity header is left out (criterion 1)"
+sheet = "Per-model-family full base prompt picked by model ID: anthropic.txt 8.2 KB for Claude, gemini.txt 15.4 KB, default.txt 8.5 KB (others: gpt/codex/beast/kimi/meta/trinity 4-14 KB) + env/AGENTS.md instructions"
+source = "packages/opencode/src/session/system.ts:6-50; session/prompt/*.txt; ba54cee5: session/system.ts, session/llm.ts:67-96"
+
+[rows.2]
+value = "M1 opencode: no instruction files (task repos carry none; context_files off)"
+sheet = "Base prompt fixed per model family; instruction files (AGENTS.md/CLAUDE.md, config.instructions) appended; agent prompt for subagents"
+source = "packages/opencode/src/session/instruction.ts:61-160; session/system.ts"
+
+[rows.3]
+value = "M2 catalog family=opencode: the 11 tools the ba54cee5 capture sends (no websearch, no apply_patch)"
+sheet = "12 built-in by default (shell, read, glob, grep, edit, write, task, webfetch, todo, websearch, skill, apply_patch) + question in cli/app/desktop clients; lsp, plan, code-mode execute behind flags; plus MCP/plugin tools"
+source = "packages/opencode/src/tool/registry.ts:207-249"
+
+[rows.4]
+value = "Derived from rows 3 and 5; measured at the proxy by the AC3 build check (captures/opencode/)"
+sheet = "Not measured; deferred to proxy capture"
+source = "derived; measured at AC3"
+
+[rows.5]
+value = "zod -> JSON Schema as ba54cee5 sends it: assets/opencode/tools.json from the real capture"
+sheet = "Effect Schema -> JSON Schema with per-tool .txt descriptions; optional code-mode execute tool"
+source = "packages/opencode/src/tool/json-schema.ts; tool/*.txt; tool/code-mode.ts; ba54cee5: captures/opencode/real.requests.jsonl"
+
+[rows.8]
+value = "M3 anthropic: the system block + last 2 messages (the real build marks both its system blocks; the identity block is not sent)"
+sheet = "Explicit ephemeral cacheControl breakpoints for Anthropic/Bedrock/OpenRouter/Copilot; promptCacheKey = sessionID for OpenAI-style providers"
+source = "packages/opencode/src/provider/transform.ts:364-379,1321,1368; SC-1: transform.ts:358-380 (system[0:2] + last 2 non-system msgs)"
+
+[rows.10]
+value = "M5 opencode_title: one title call per session (title.txt), small_model pinned to claude-sonnet-5-5 with small_model_deviation=true (#189), tagged side:title"
+sheet = "Title agent call per session; compaction and summary agents also run as separate model calls"
+source = "packages/opencode/src/session/prompt.ts:216-252; agent/agent.ts:220-260"
+
+[rows.11]
+value = "opencode:grep (ripgrep when present) + opencode:glob; no lsp tool"
+sheet = "grep (ripgrep) + glob; lsp tool only behind experimental flag"
+source = "packages/opencode/src/tool/grep.ts; tool/glob.ts; tool/registry.ts:247"
+
+[rows.12]
+value = "opencode:read offset/limit, 2000 lines, 50 KB (ba54cee5 tool/truncation.ts:10-11), numbered lines"
+sheet = "offset/limit, default 2000 lines, 2000 chars/line, 50 KB cap"
+source = "packages/opencode/src/tool/read.ts:13-16"
+
+[rows.13]
+value = "M6 summarize at context_window - 20000 (reserve = min(20k, max output)); pruning off, as at the pin"
+sheet = "Overflow-triggered auto compaction (input limit minus reserved = min(20k, max output)); prune old tool outputs beyond 40k protected tokens (min 20k pruned); config compaction.auto/reserved"
+source = "packages/opencode/src/session/overflow.ts:8-18; session/compaction.ts:28-31,271-308; SC-1: compaction.ts:275 (prune off unless compaction.prune)"
+
+[rows.15]
+value = "M7 opencode_edit: oldString/newString/replaceAll exact replace + opencode:write (apply_patch is GPT-only)"
+sheet = "Exact-string replace (oldString/newString, replaceAll) + apply_patch + write"
+source = "packages/opencode/src/tool/edit.ts; tool/apply_patch.ts; tool/write.ts"
+
+[rows.16]
+value = "M8 shell: default 120 s (ba54cee5 tool/bash.ts:22); per-call timeout in milliseconds"
+sheet = "shell; default 2 min (flag-overridable), per-call timeout param"
+source = "packages/opencode/src/tool/shell.ts:347,618"
+
+[rows.17]
+value = "M8 shell: first 2000 lines / 50 KB (full-output file not reproduced)"
+sheet = "2000 lines / 50 KB, full output saved to file; configurable via tool_output"
+source = "packages/opencode/src/tool/truncate.ts:14-81"
+
+[rows.21]
+value = "M9 opencode_todowrite"
+sheet = "todowrite tool; plan agent (read-only primary)"
+source = "packages/opencode/src/tool/todo.ts; tool/todowrite.txt; agent/agent.ts:157"
+
+[rows.22]
+value = "M10 opencode_task: fresh-context subagent, calls tagged side:subagent (task_id resume not reproduced)"
+sheet = "task tool: subagent (general/explore) in fresh session unless task_id resumes; optional background mode"
+source = "packages/opencode/src/tool/task.ts:26-49; agent/agent.ts:183-216"
+
+[rows.25]
+value = "M11 doom_loop hook, 3 identical calls, action log (headless auto-approve approves the doom_loop ask); LSP diagnostics not reproduced"
+sheet = "Doom-loop detection (3 identical tool calls -> doom_loop permission, ask); LSP diagnostics appended after edits"
+source = "packages/opencode/src/session/processor.ts:29,356-373; tool/edit.ts:198-200"
+
+# --- harness values for fixed rows (recorded, not applied in the swap arm) --
+[harness_fixed_values]
+row_9 = "per-model temperature defaults + reasoning variants (provider/transform.ts:527,777)"
+row_19 = "webfetch tool present (permission allow in the real runs)"
+row_23 = "agent.steps ?? Infinity (session/prompt.ts:1178-1179)"
+row_24 = "exponential backoff, 2 s initial, honours retry headers (session/retry.ts:26-80)"

@@ -20,6 +20,9 @@ Python standard library only, like the rest of the repo. Requires Python 3.11+
 | `config.py` | Config loading, arm resolution, validation, version hashing. |
 | `configs/fixed.toml` | Every fixed and infra row, pinned once. Fully fixed slots (M4, M12, M13) are defined only here. |
 | `configs/base.toml` | The neutral base-agent defaults. This is the named swap baseline, not a real harness. |
+| `configs/pi.toml`, `configs/opencode.toml` | Harness configs. Each one cites the sheet cell and source column for every swappable row. |
+| `harness_pi.py`, `harness_opencode.py` | Harness-specific modules: prompt assemblers, tool schemas, editor, todo, subagent, title call. |
+| `assets/` | Vendored MIT prompt and tool text with its upstream licences. `assets/SOURCE.md` gives the pins and upstream paths. |
 | `run.py` | Headless entry point: `python -m thesis.base_agent.run`. |
 
 ## Slots
@@ -77,6 +80,24 @@ every result as `version`.
 Any change to code, a prompt asset, a fixed row, a config or the arm changes
 `base_agent_version`.
 
+## Harness configs (AC2)
+
+| Config | Pin | First request (system / tools bytes, stub run) |
+|---|---|---|
+| `pi` | badlogic/pi-mono `d0aa218` (the sheet's pin and the #196 Pi pin) | ~2.7 KB / ~2.8 KB, 4 tools |
+| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | ~8.6 KB / ~36.1 KB, 11 tools |
+
+Each `[rows.N]` entry holds three fields. `value` is what the module
+reproduces. `sheet` is the sheet's cell, copied exactly. `source` is the
+sheet's `*_src` cell, or the SC-1 addendum where SC-1 resolved a "not found"
+cell. A test checks every swappable row against
+`prereg/harness-components-2026-10-24.csv`.
+
+Each file's module docstring lists what the config does not reproduce yet
+(for example Pi's `keepRecentTokens`, OpenCode's LSP diagnostics and
+full-output files). The AC3 build check measures the request-side gaps
+against a real-harness capture.
+
 ## Implementation basis
 
 Written from scratch. mini-swe-agent (github.com/SWE-agent/mini-swe-agent) is
@@ -88,7 +109,7 @@ Code code or prompt text is used.
 ## Tests
 
 ```bash
-python3 -m unittest obench.tests.test_stage4_base_agent -v
+python3 -m unittest obench.tests.test_stage4_base_agent obench.tests.test_stage4_harness_configs -v
 ```
 
 The tests use a scripted model. They make no paid or live model calls.
