@@ -97,6 +97,7 @@ ROW_FIELDS = (
     "usage_ranking_exclusion_reason",
     "tokens_fresh", "turns", "cmd", "checker_exit", "exec_mode", "score", "harness_version",
     "harness_version_source", "failure_class", "failure_reason", "agent_mode", "workspace_changed", "checker_stdout", "checker_stderr", "checker_workspace_files",
+    "final_workspace_tar", "final_workspace_tar_sha256", "final_workspace_tar_bytes",
     "image_digest", "candidate_provenance", "version_drift", "timeout_s",
     "workspace_source",
     "last_activity_age_s",
@@ -1681,6 +1682,46 @@ def transcript_path(transcripts_dir, results_stem, run_id):
     return os.path.join(transcripts_dir, results_stem, safe + ".txt")
 
 
+FINAL_WORKSPACE_MAX_BYTES = int(os.environ.get(
+    "OBENCH_FINAL_WORKSPACE_MAX_BYTES", str(2 * 1024 ** 3)))
+
+
+def final_workspace_tar_path(transcripts_dir, results_stem, run_id):
+    """Local path for a cell's final-workspace tarball, next to its transcript."""
+    base = transcript_path(transcripts_dir, results_stem, run_id)
+    return base[:-len(".txt")] + ".workspace.tar.gz"
+
+
+def save_final_workspace(workdir, dest, max_bytes=None):
+    """Tar the workspace the checker will see, so the cell can be re-checked.
+
+    Returns ``{"path", "sha256", "bytes"}``, or ``{"skipped": reason}`` when
+    the workspace is larger than ``max_bytes`` (uncompressed regular files).
+    Symlinks are stored as links, never followed.
+    """
+    import tarfile
+    limit = FINAL_WORKSPACE_MAX_BYTES if max_bytes is None else max_bytes
+    total = 0
+    for root, dirs, files in os.walk(workdir, followlinks=False):
+        for name in files:
+            fp = os.path.join(root, name)
+            if os.path.isfile(fp) and not os.path.islink(fp):
+                total += os.path.getsize(fp)
+    if total > limit:
+        return {"skipped": f"workspace {total} bytes > limit {limit}"}
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".partial"
+    with tarfile.open(tmp, "w:gz") as tf:
+        tf.add(workdir, arcname="workspace", recursive=True)
+    digest = hashlib.sha256()
+    with open(tmp, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    os.replace(tmp, dest)
+    return {"path": dest, "sha256": digest.hexdigest(),
+            "bytes": os.path.getsize(dest)}
+
+
 def write_transcript(path, row, body):
     """Write one cell's full agent transcript to ``path`` (creating dirs).
 
@@ -2253,6 +2294,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "checker_stdout": None,
         "checker_stderr": None,
         "checker_workspace_files": None,
+        "final_workspace_tar": None,
+        "final_workspace_tar_sha256": None,
+        "final_workspace_tar_bytes": None,
         "image_digest": None,
         "candidate_provenance": candidate.provenance if candidate is not None else None,
         "version_drift": bool(version_drift),
@@ -2645,6 +2689,21 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             row["workspace_changed"] = current_workspace_files != initial_workspace_files
             row["checker_workspace_files"] = scrub_workspace_evidence_paths(
                 current_workspace_files)
+            if transcripts_dir:
+                try:
+                    saved = save_final_workspace(workdir, final_workspace_tar_path(
+                        transcripts_dir, results_stem, run_id))
+                except Exception as exc:  # noqa: BLE001 - never fail a cell on this
+                    saved = {"skipped": f"save_failed: {type(exc).__name__}"}
+                if "path" in saved:
+                    row["final_workspace_tar"] = saved["path"]
+                    row["final_workspace_tar_sha256"] = saved["sha256"]
+                    row["final_workspace_tar_bytes"] = saved["bytes"]
+                else:
+                    row["final_workspace_tar"] = None
+                    row["final_workspace_tar_sha256"] = None
+                    row["final_workspace_tar_bytes"] = None
+                    row["final_workspace_tar_skipped"] = saved["skipped"]
             checker_start = time.monotonic()
             checker_root = None
             try:

@@ -349,6 +349,26 @@ def write_rerun_cell(source_cell, source_root, dest_root, row: dict | None = Non
     return dest
 
 
+def extract_final_workspace(tar_path: Path, expected_sha256=None) -> Path:
+    """Unpack a saved final-workspace tarball into a temp dir; verify sha256."""
+    import hashlib
+    import tarfile
+    if expected_sha256:
+        got = hashlib.sha256(Path(tar_path).read_bytes()).hexdigest()
+        if got != expected_sha256:
+            raise CellWriteError(f"final workspace tarball sha256 mismatch: {tar_path}")
+    dest = Path(tempfile.mkdtemp(prefix="obench-final-ws-"))
+    with tarfile.open(tar_path, "r:gz") as tf:
+        try:
+            tf.extractall(dest, filter="data")
+        except TypeError:  # Python without extraction filters
+            tf.extractall(dest)
+    path = dest / "workspace"
+    if not path.is_dir():
+        raise CellWriteError(f"final workspace tarball has no workspace/: {tar_path}")
+    return path
+
+
 def resolve_saved_workspace(row: dict, source_cell: Path, workspace=None) -> Path:
     """Agent workspace to re-check: explicit path, ``final_workspace``, or sibling."""
     if workspace is not None:
@@ -364,6 +384,9 @@ def resolve_saved_workspace(row: dict, source_cell: Path, workspace=None) -> Pat
     sibling = Path(source_cell).parent / Path(source_cell).stem / "workspace"
     if sibling.is_dir():
         return sibling
+    tar = row.get("final_workspace_tar") if isinstance(row, dict) else None
+    if isinstance(tar, str) and tar.strip() and Path(tar).is_file():
+        return extract_final_workspace(Path(tar), row.get("final_workspace_tar_sha256"))
     raise CellWriteError(
         "no saved workspace for this cell (final_workspace or <trial>/workspace)"
     )
