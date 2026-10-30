@@ -80,7 +80,9 @@ def build(slot: str, impl: str, params: dict | None = None):
 
 def captured_tools(path: Path) -> dict[str, dict]:
     """Tool specs, by name, from a JSON list taken from a real-harness capture
-    (assets/<harness>/tools.json; see assets/SOURCE.md)."""
+    (assets/<harness>/tools.json; see assets/SOURCE.md). The capture's
+    working directory is stored as ``{{workdir}}``; ``Agent.tools()`` fills
+    in the run's."""
     return {t["name"]: t for t in json.loads(Path(path).read_text(encoding="utf-8"))}
 
 

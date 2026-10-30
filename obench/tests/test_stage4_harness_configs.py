@@ -178,6 +178,9 @@ class OpenCodeEpisode(unittest.TestCase):
             self.assertEqual(res["row"]["small_model"], "anthropic/claude-sonnet-5-5")
             self.assertEqual(res["row"]["small_model_default"], "anthropic/claude-haiku-4-5-20251001")
             self.assertEqual(res["row"]["base_agent_version"], res["version"]["base_agent_version"])
+            bash = next(t for t in main["tools"] if t["name"] == "bash")
+            self.assertIn(f"All commands run in {wd} by default", bash["description"])
+            self.assertNotIn("{{workdir}}", json.dumps(main["tools"]))
             sub_tools = [t["name"] for t in client.requests[3][1]["tools"]]
             self.assertNotIn("task", sub_tools)
             self.assertNotIn("todowrite", sub_tools)

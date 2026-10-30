@@ -12,7 +12,7 @@ This is the build the #196 OpenCode cells ran (Researcher ruling, 2026-10-30).
 |---|---|
 | `anthropic.txt` | `packages/opencode/src/session/prompt/anthropic.txt`. Byte-identical at ba54cee5 and at the sheet's c10134729d. |
 | `title.txt` | `packages/opencode/src/agent/prompt/title.txt`. Byte-identical at both pins. |
-| `tools.json` | The `tools` array of the main request that the real ba54cee5 binary sent to a loopback stub (`thesis.ab.step8_stub_ready --capture`; no model was called), with `cache_control` removed. The capture itself (`captures/opencode/real.requests.jsonl`, sha256 `2c6d6fe9…`) is committed in the AC3 PR, together with a test that checks this file against it. |
+| `tools.json` | The `tools` array of the main request that the real ba54cee5 Linux binary (the one #196 ran, on thesis-h1-cpu) sent to a loopback stub (`thesis.ab.step8_stub_ready --capture`; no model was called). `cache_control` is removed, and the capture's working directory is replaced by `{{workdir}}`: the bash tool names its default directory, and `Agent.tools()` fills in the run's. The capture itself (`captures/opencode/real.requests.jsonl`, sha256 `e40ab22d…`) is committed in the AC3 PR, together with a test that checks this file against it. |
 
 ## pi/ (badlogic/pi-mono @ d0aa218cb16c333c008f6aa3dcd670ac8b68383c)
 

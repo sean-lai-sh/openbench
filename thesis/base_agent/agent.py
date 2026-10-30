@@ -19,6 +19,7 @@ from thesis.base_agent.interfaces import ModelClient, ModelError, RunContext, To
 
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
 CALL_ROLE_HEADER = "X-OB-Call-Role"  # thesis/ab/vertex_anthropic_proxy.py
+WORKDIR_PLACEHOLDER = "{{workdir}}"  # in captured tool specs, see assets/SOURCE.md
 
 
 class HttpModelClient(ModelClient):
@@ -108,7 +109,22 @@ class Agent:
                     raise ValueError(f"tool {t.name} contributed twice")
                 t.slot = slot
                 contributed[t.name] = t
-        return self.m["M2"].tools(self.ctx, contributed)
+        return [self._fill(t) for t in self.m["M2"].tools(self.ctx, contributed)]
+
+    def _fill(self, tool):
+        """Captured tool specs mark the capture's working directory as
+        ``{{workdir}}`` (OpenCode's bash tool names its default directory);
+        fill in this run's."""
+        def sub(x):
+            if isinstance(x, str):
+                return x.replace(WORKDIR_PLACEHOLDER, self.ctx.workdir)
+            if isinstance(x, dict):
+                return {k: sub(v) for k, v in x.items()}
+            if isinstance(x, list):
+                return [sub(v) for v in x]
+            return x
+        tool.description, tool.input_schema = sub(tool.description), sub(tool.input_schema)
+        return tool
 
     def build_request(self, messages: list[dict], tools) -> dict:
         system = [{"type": "text", "text": b} for b in self.m["M1"].system_blocks(self.ctx, tools)]
