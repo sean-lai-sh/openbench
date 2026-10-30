@@ -1,0 +1,18 @@
+{
+  "id": "msg_18ec01f30001yoR483MYzKOBRw",
+  "sessionID": "ses_e713fe0ecffeY28xTw5RZMTnga",
+  "role": "user",
+  "time": {
+    "created": 1793396318000
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with both classes. I ran it at world sizes 1, 2 and 4 using the `gloo` backend and compared each against a plain `nn.Linear` given the same weight and a zero bias. Outputs, weight and bias gradients, and input gradients all matched at every size.\n\n- **`ColumnParallelLinear`**: each rank keeps its slice of the output rows of `master_weight` (`[out/ws, in]`) and the matching slice of the bias, initialised to zero. Each rank computes its local output, and the results are combined with `all_gather` and joined along the last dimension. In the backward pass, each rank takes just its slice of the output gradient. The input gradient is summed across ranks with `all_reduce`.\n- **`RowParallelLinear`**: each rank keeps its slice of the input columns (`[out, in/ws]`) and a full zero bias. You can pass either the full input, which it splits itself, or an already-split one. The partial outputs are summed with `all_reduce`, and the bias is added once after the sum. In the backward pass, the gradient passes through unchanged, and the input gradient is gathered back to full size if the layer did the split.\n\n`all_gather` and `all_reduce` don't pass gradients back through on their own, so the file wraps them in small custom autograd functions. That's what makes the gradients come out right.\n\nTwo other behaviours you might notice:\n- Both layers assert that the relevant dimension divides evenly by world size, and that `master_weight` has shape `(out_features, in_features)`.\n- If `torch.distributed` isn't initialised, they behave as if world size is 1.\n\nMy test script was a temporary file, and I deleted it after the run.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}
