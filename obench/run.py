@@ -119,15 +119,6 @@ ROW_FIELDS = (
     "provider_loaded_source",
     "provider_loaded_mismatch",
     "probe_method",
-    # True only when the checker did not return a pass/fail grade (timeout,
-    # missing toolchain, docker launch failure). Exit 0 and 1 stay false.
-    # Older logs omit the field; readers treat a missing value as false.
-    "checker_defect",
-    # Secondary grade for polyglot-rust-c only: the same in-image checker
-    # with the only-main.rs directory check skipped. 1 or 0. Null for every
-    # other task, and when the checker did not grade. Older logs omit it;
-    # a missing value is null, not a fail. It does not change ``score``.
-    "functional_pass",
     "checker_timeout_s",
     "checker_wall_time_s",
     "env_failure",
@@ -141,6 +132,15 @@ ROW_FIELDS = (
     "quarantine",
     "agent_image",
     "agent_image_digest",
+    # True only when the checker did not return a pass/fail grade (timeout,
+    # missing toolchain, docker launch failure). Exit 0 and 1 stay false.
+    # Older logs omit the field; readers treat a missing value as false.
+    "checker_defect",
+    # Secondary grade for polyglot-rust-c only: the same in-image checker
+    # with the only-main.rs directory check skipped. 1 or 0. Null for every
+    # other task, and when the checker did not grade. Older logs omit it;
+    # a missing value is null, not a fail. It does not change ``score``.
+    "functional_pass",
 )
 
 
