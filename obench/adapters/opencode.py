@@ -2097,13 +2097,15 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                 "cmd": cmd,
                 **_empty_token_usage(),
             })
-        except ProviderPinMismatch as e:
+        except _provider_pin().ProviderPinMismatch as e:
             if two_turn and turn_state["mode"] is None:
                 turn_state["mode"] = "turn-failure"
             full_output = e.output or ""
             return _finish({
                 "completed": False,
                 "failure_class": "infra",
+                "env_failure": True,
+                "env_cause": "provider_pin_mismatch",
                 "error": e.reason or str(e),
                 "output_tail": full_output[-2000:],
                 "full_output": full_output,
