@@ -1,0 +1,94 @@
+# Stage 4 base agent
+
+One run loop with 13 interchangeable module slots. Each open-source harness is
+expressed as a config, which picks an implementation for each slot, and is
+checked against its real harness before any swap result counts. Spec:
+[`briefs/stage4-prereg-base-agent.md`](../../briefs/stage4-prereg-base-agent.md).
+
+Python standard library only, like the rest of the repo. Requires Python 3.11+
+(`tomllib`).
+
+## Layout
+
+| File | What it holds |
+|---|---|
+| `slots.py` | M1-M13 and the 34 sheet rows mapped to them, with each row's status (swappable, fixed, infra) from section 2 of the brief. A test checks the rows against `prereg/harness-components-2026-10-24.csv`. |
+| `interfaces.py` | One abstract class per slot, plus `Tool`, `RunContext`, `ModelClient`. |
+| `modules.py` | Implementations, registered by `(slot, name)`, and the M2 tool catalog, keyed by `(family, name)`. |
+| `tools.py` | File and shell primitives shared by every tool schema. |
+| `agent.py` | The loop and an HTTP client for the counting proxy (`POST /v1/messages`, `X-OB-Call-Role` header). |
+| `config.py` | Config loading, arm resolution, validation, version hashing. |
+| `configs/fixed.toml` | Every fixed and infra row, pinned once. Fully fixed slots (M4, M12, M13) are defined only here. |
+| `configs/base.toml` | The neutral base-agent defaults. This is the named swap baseline, not a real harness. |
+| `run.py` | Headless entry point: `python -m thesis.base_agent.run`. |
+
+## Slots
+
+| Slot | Interface | Sheet rows |
+|---|---|---|
+| M1 | PromptAssembler | 1, 2, 14 (fixed: memory off) |
+| M2 | ToolRegistry | 3, 4, 5, 11, 12, 19 (fixed: web off), 20 (fixed: MCP off) |
+| M3 | CachePolicy | 8 |
+| M4 | SamplingPolicy | 9 (fixed) |
+| M5 | SideCalls | 10 |
+| M6 | ContextManager | 13 |
+| M7 | Editor | 15 |
+| M8 | Executor | 16, 17 |
+| M9 | Planner | 21 |
+| M10 | Delegation | 22 |
+| M11 | LoopController | 23 (fixed: global cap), 25 |
+| M12 | RetryPolicy | 24 (fixed) |
+| M13 | Permissions | 26-29 (fixed) |
+
+Infra rows 6, 7, 18 and 30-34 have no knob in the agent. Their pinned values
+are recorded in `fixed.toml`.
+
+M7, M9 and M10 contribute tools. M2 decides the order in which every tool
+appears in the request, so a config can reproduce a harness's exact tool
+order.
+
+## Arms
+
+`resolve(config, fixed, arm)`:
+
+- **swap**: every fixed row in `fixed.toml` applies.
+- **parity**: rows marked `parity = "harness"` keep the harness's own value,
+  so the config reproduces the real harness for the parity gate. These are
+  row 9 (sampling, through `[parity.M4]` in the harness config) and row 19
+  (web tool schemas). Rows marked `enforce` apply in both arms: memory off,
+  MCP off, the global step cap, retries, and permissions.
+
+## Version record
+
+`config.version_record()` returns the following. `Agent.run()` puts it in
+every result as `version`.
+
+- `base_agent_version`: 16 hex characters from a hash of the framework and
+  the resolved config.
+- `framework_hash`: sha256 over every code and prompt-asset file in this
+  directory except `configs/` and this README.
+- `config_hash`, `fixed_hash`, `resolved_hash`: canonical JSON with sorted
+  keys and no whitespace.
+- `arm`, `harness`, `harness_pin`, `harness_values_kept`.
+- `provisional_fixed_rows`: fixed values the Researcher has not ruled on
+  yet: row 9 (sampling), row 23 (step cap) and row 24 (retries). These must
+  be pinned before any scored cell.
+
+Any change to code, a prompt asset, a fixed row, a config or the arm changes
+`base_agent_version`.
+
+## Implementation basis
+
+Written from scratch. mini-swe-agent (github.com/SWE-agent/mini-swe-agent) is
+MIT-licensed; we checked the licence through the GitHub API on 2026-10-30.
+We kept its ideas: a small linear loop, and model and environment settings
+kept out of the agent config. No mini-swe-agent code is copied. No Claude
+Code code or prompt text is used.
+
+## Tests
+
+```bash
+python3 -m unittest obench.tests.test_stage4_base_agent -v
+```
+
+The tests use a scripted model. They make no paid or live model calls.
