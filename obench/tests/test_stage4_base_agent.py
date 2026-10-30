@@ -179,6 +179,17 @@ class FixedRowsAcrossConfigs(unittest.TestCase):
             self.assertEqual(set(fully_fixed_slots()) - set(p), set())
             self.assertEqual(p["row19"]["still_exposed"], [])
 
+    def test_parity_projection_leaves_out_harness_rows_even_when_not_overridden(self):
+        fixed = C.load_fixed()
+        cfg = C.load_config("base")
+        with_override = copy.deepcopy(cfg)
+        with_override["parity"] = {"M4": {"impl": "fixed", "params": {"max_tokens": 1}}}
+        a = C.fixed_projection(C.resolve(cfg, fixed, "parity"), fixed)
+        b = C.fixed_projection(C.resolve(with_override, fixed, "parity"), fixed)
+        self.assertEqual(a, b)
+        self.assertNotIn("M4", a)
+        self.assertNotIn("row19", a)
+
     def test_a_config_that_overrides_a_fixed_value_is_caught(self):
         fixed = C.load_fixed()
         cfg = C.load_config("base")

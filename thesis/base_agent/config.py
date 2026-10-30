@@ -172,14 +172,14 @@ def fixed_projection(resolved: dict, fixed: dict) -> dict:
     (``parity = "harness"``) are left out of the parity projection. Infra rows
     contribute their pinned text.
     """
-    kept = set(resolved["harness_values_kept"])
+    parity = resolved["arm"] == "parity"
     mods = resolved["modules"]
     out: dict = {}
-    for slot in sorted(fixed["slots"]):
-        if slot not in kept:
+    for slot, spec in sorted(fixed["slots"].items()):
+        if not (parity and spec.get("parity") == "harness"):
             out[slot] = mods[slot]
     for n, spec in sorted(_rows(fixed).items()):
-        if str(n) in kept:
+        if parity and spec.get("parity") == "harness":
             continue
         entry: dict = {"value": spec["value"]}
         slot = spec.get("slot")
