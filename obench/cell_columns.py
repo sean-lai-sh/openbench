@@ -407,13 +407,20 @@ def rescore_cell(
     started = time.monotonic()
     checker_parent = Path(tempfile.mkdtemp(prefix="h2-checker-"))
     checker_root = None
-    if checker_split_enabled():
-        checker_root = prepare_checker_root(checker_parent)
-        os.environ["H2_CHECKER_VENV_ROOT"] = str(checker_root)
+    from .checker_env import CheckerEnvError, classify_checker_output, verify_split_checker_venv
+    venv_error = None
     try:
+        if checker_split_enabled():
+            checker_root = prepare_checker_root(checker_parent)
+            verify_split_checker_venv(checker_root, task_dir)
+            os.environ["H2_CHECKER_VENV_ROOT"] = str(checker_root)
         checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
             task_dir, str(work), timeout_s,
         )
+    except CheckerEnvError as exc:
+        # Fail closed: the checker never runs against a missing/mismatched venv.
+        venv_error = exc
+        checker_exit, raw_score, checker_stdout, checker_stderr = None, None, "", str(exc)
     finally:
         os.environ.pop("H2_CHECKER_VENV_ROOT", None)
         shutil.rmtree(checker_parent, ignore_errors=True)
@@ -430,9 +437,14 @@ def rescore_cell(
     )
     new["rescored_from"] = original_id
     new["rerun_of"] = None
+    infra_cause = venv_error.cause if venv_error is not None else classify_checker_output(
+        checker_exit, checker_stdout, checker_stderr, checker_split_enabled())
     if checker_exit == "timeout":
         new["env_failure"] = True
         new["env_cause"] = ENV_CAUSE_CHECKER_TIMEOUT
+    elif infra_cause:
+        new["env_failure"] = True
+        new["env_cause"] = infra_cause
     else:
         new["env_failure"] = False
         new["env_cause"] = None
@@ -440,6 +452,11 @@ def rescore_cell(
 
     new["failure_class"] = classify_failure(new, new.get("output_tail") or "", None)
     new["failure_reason"] = classify_failure_reason(new, new.get("output_tail") or "")
+    if infra_cause:
+        new["success"] = False
+        new["score"] = 0.0
+        new["failure_class"] = "infra"
+        new["failure_reason"] = f"checker infrastructure failure: {infra_cause}"
     stamp_env_columns(
         new,
         checker_timeout_s=timeout_s,

@@ -206,7 +206,32 @@ def attach_checker_venvs(stage, dest) -> Path:
             f"refusing to attach checker venvs at {AGENT_VENV_PATH} on the agent image"
         )
     shutil.copytree(stage, dest, symlinks=True)
+    relocate_venvs(dest)
     return dest
+
+
+def relocate_venvs(dest) -> None:
+    """Point the copied venvs at the interpreter copied alongside them.
+
+    The artifact is built at ``/opt/h2-checker-venvs`` with its uv-managed
+    interpreter under ``.uv-python``. Venv ``bin/python`` symlinks and
+    ``pyvenv.cfg`` ``home`` are absolute, so rewrite every one that points
+    under the build path to the same place under ``dest``. Links pointing
+    anywhere else are left alone; ``verify_checker_venv`` rejects them if
+    they do not resolve.
+    """
+    dest = Path(dest)
+    prefix = AGENT_VENV_PATH.rstrip("/") + "/"
+    for path in sorted(dest.rglob("*")):
+        if path.is_symlink():
+            target = os.readlink(path)
+            if target.startswith(prefix):
+                path.unlink()
+                os.symlink(str(dest / target[len(prefix):]), path)
+        elif path.name == "pyvenv.cfg" and path.is_file():
+            text = path.read_text(encoding="utf-8")
+            if prefix in text:
+                path.write_text(text.replace(prefix, str(dest) + "/"), encoding="utf-8")
 
 
 def stage_dir() -> Path | None:

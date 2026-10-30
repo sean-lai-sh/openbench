@@ -569,6 +569,8 @@ class AgentImageTests(unittest.TestCase):
                 "OBENCH_AGENT_IMAGE_DIGEST": "sha256:h1-agent",
                 "OBENCH_CHECKER_VENV_STAGE": str(stage),
                 "OBENCH_H1_TORCH_PROBE": live,
+                # Host disk is not under test here; the floor has its own tests.
+                "OBENCH_MIN_FREE_DISK_GB": "0",
             }
             saved = {key: os.environ.get(key) for key in keys}
             try:

@@ -130,6 +130,7 @@ ROW_FIELDS = (
     "checker_wall_time_s",
     "env_failure",
     "env_cause",
+    "free_disk_gb",
     "rerun_of",
     "rescored_from",
     "suspect_startup_exit",
@@ -2269,6 +2270,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "checker_wall_time_s": 0.0,
         "env_failure": False,
         "env_cause": None,
+        "free_disk_gb": None,
         "rerun_of": None,
         "rescored_from": None,
         "suspect_startup_exit": False,
@@ -2415,6 +2417,20 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             guard_agent_phase,
             note_agent_image,
         )
+        from .checker_env import (
+            CheckerEnvError, check_free_disk, free_disk_gb, mark_env_failure, min_free_gb,
+        )
+        try:
+            row["free_disk_gb"] = check_free_disk(
+                cell_root, min_free_gb(checker_split_enabled()))
+        except CheckerEnvError as exc:
+            # Stop before the agent: no model spend on a cell that cannot be checked.
+            row["free_disk_gb"] = free_disk_gb(cell_root)
+            mark_env_failure(row, exc.cause, str(exc))
+            row["error"] = str(exc)
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), {},
+            )
         try:
             note_agent_image(row)
             if checker_split_enabled():
@@ -2637,6 +2653,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 from .checker_venv import checker_split_enabled, prepare_checker_root
                 if checker_split_enabled():
                     checker_root = prepare_checker_root(cell_root)
+                    from .checker_env import verify_split_checker_venv
+                    verify_split_checker_venv(checker_root, task_dir)
                     os.environ["H2_CHECKER_VENV_ROOT"] = str(checker_root)
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
                     task_dir, workdir, checker_timeout_s, task_image=checker_image,
@@ -2645,6 +2663,13 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 os.environ.pop("H2_CHECKER_VENV_ROOT", None)
                 row["t_checker_s"] = round(time.monotonic() - checker_start, 3)
                 row["checker_wall_time_s"] = row["t_checker_s"]
+        except CheckerEnvError as exc:
+            row["checker_exit"] = None
+            mark_env_failure(row, exc.cause, str(exc))
+            row["error"] = row["error"] or str(exc)
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
+            )
         except Exception:  # noqa: BLE001
             row["checker_exit"] = None
             row["checker_defect"] = True
@@ -2678,6 +2703,12 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         _attach_functional_pass(
             row, task, workdir, task_dir, checker_image, task_workdir,
             checker_timeout_s)
+        from .checker_env import classify_checker_output
+        from .checker_venv import checker_split_enabled
+        infra_cause = classify_checker_output(
+            checker_exit, checker_stdout, checker_stderr, checker_split_enabled())
+        if infra_cause:
+            mark_env_failure(row, infra_cause, f"checker infrastructure failure: {infra_cause}")
         return _apply_sdk_drift(
             _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
         )

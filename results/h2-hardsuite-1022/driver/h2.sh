@@ -17,6 +17,9 @@ if [ ! -d "$STAGE/torch-tensor-parallelism" ]; then
   sudo docker cp "$cid":/opt/h2-checker-venvs "$STAGE"
   sudo docker rm "$cid" >/dev/null
 fi
+# Spend-monitor self-test on a known-nonzero fixture (#198 gate cells, $0.3708).
+# A spend stop only counts once this passes; abort the launch otherwise.
+python3 ~/ob/thesis/ab/h2env/spend_monitor.py --self-test || { echo "spend monitor self-test failed; not launching" >&2; exit 8; }
 set +e
 sudo docker run --rm --network none --entrypoint python3 "$AGENT_IMAGE" -c 'import torch' >/tmp/h1-torch.out 2>/tmp/h1-torch.err
 h1rc=$?
@@ -29,9 +32,9 @@ run sonnet 3052,13331,26821,1109,795,2533,913,11731
 run opus 3052,13331,26821,13090,5140,913,4204
 # spend + disk watcher: combined model cost from cell records; stop both at >= $990 or disk < 15 GB
 ( while sudo docker ps -q -f name=h2- | grep -q .; do
-    C=$(python3 -c "import json,glob;print(round(sum((json.load(open(f)).get('requests_cost_usd') or 0) for f in glob.glob('$R/*/*/cells/*/*/*.json')),2))")
+    C=$(python3 ~/ob/thesis/ab/h2env/spend_monitor.py "$R" | sed -n 's/^spend=\([0-9.]*\).*/\1/p')
     F=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
-    echo "$(TZ=America/New_York date '+%F %T %Z') spend=\$$C free=${F}G cells=$(ls $R/*/*/cells/*/*/*.json 2>/dev/null | wc -l)" >> $R/spend.log
+    echo "$(TZ=America/New_York date '+%F %T %Z') spend=\$$C free=${F}G cells=$(find $R -path '*/cells/*' -name '*.json' 2>/dev/null | wc -l)" >> $R/spend.log
     if python3 -c "import sys;sys.exit(0 if $C>=985 else 1)"; then echo "STOP spend $C" > $R/STOPPED; sudo docker stop -t 30 h2-sonnet h2-opus; fi
     if [ $F -lt 15 ]; then echo "STOP disk ${F}G" > $R/STOPPED; sudo docker stop -t 30 h2-sonnet h2-opus; fi
     sleep 60; done ) & WP=$!

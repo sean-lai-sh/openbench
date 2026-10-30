@@ -1226,8 +1226,11 @@ def _run_cell(
                 }
                 checker_env["HOME"] = str(checker_home)
                 from .checker_venv import checker_split_enabled, prepare_checker_root
+                from .checker_env import verify_split_checker_venv
                 if checker_split_enabled():
-                    checker_env["H2_CHECKER_VENV_ROOT"] = str(prepare_checker_root(cell_root))
+                    checker_root = prepare_checker_root(cell_root)
+                    verify_split_checker_venv(checker_root, task.path)
+                    checker_env["H2_CHECKER_VENV_ROOT"] = str(checker_root)
                 checker_timeout_s = _checker_timeout_for(task)
                 checker_started = time.monotonic()
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
@@ -1241,7 +1244,15 @@ def _run_cell(
                 )
                 if checker_exit == "timeout":
                     infrastructure_reason = infrastructure_reason or "checker_timeout"
+                from .checker_env import classify_checker_output
+                infra_cause = classify_checker_output(
+                    checker_exit, checker_stdout, checker_stderr, checker_split_enabled())
+                if infra_cause:
+                    infrastructure_reason = infrastructure_reason or infra_cause
             except Exception as exc:  # noqa: BLE001
+                from .checker_env import CheckerEnvError
+                if isinstance(exc, CheckerEnvError):
+                    infrastructure_reason = infrastructure_reason or exc.cause
                 infrastructure_reason = infrastructure_reason or "checker_failure"
                 checker_stderr = str(exc)
     duration = time.monotonic() - started

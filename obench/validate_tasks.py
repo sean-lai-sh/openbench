@@ -147,7 +147,10 @@ def run_checker(task_dir, overlay_solution_flag):
         from .checker_venv import checker_split_enabled, prepare_checker_root
         if checker_split_enabled():
             checker_parent = tempfile.mkdtemp(prefix="h2-checker-", dir=docker_workdir_parent())
-            env["H2_CHECKER_VENV_ROOT"] = str(prepare_checker_root(checker_parent))
+            checker_root = prepare_checker_root(checker_parent)
+            from .checker_env import verify_split_checker_venv
+            verify_split_checker_venv(checker_root, task_dir)
+            env["H2_CHECKER_VENV_ROOT"] = str(checker_root)
         try:
             proc = subprocess.run(
                 ["bash", checker],

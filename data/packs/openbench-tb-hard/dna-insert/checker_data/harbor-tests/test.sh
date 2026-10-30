@@ -12,6 +12,11 @@ _h2_py="${_h2_root}/${_h2_task}/bin/python"
 if [ -x "${_h2_py}" ]; then
   "${_h2_py}" -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 else
+  if [ -n "${H2_CHECKER_VENV_ROOT:-}" ]; then
+    # Split checker venvs are configured: never install, fail closed.
+    echo "OBENCH_ENV_FAILURE: checker_venv_missing ${_h2_py} is not executable"
+    exit 1
+  fi
   apt-get update
   apt-get install -y curl primer3
 
