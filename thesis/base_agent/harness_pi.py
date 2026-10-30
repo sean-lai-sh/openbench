@@ -18,6 +18,7 @@ from thesis.base_agent.interfaces import Editor, PromptAssembler, Tool, ToolErro
 from thesis.base_agent.modules import find_context_files, register, tool
 
 PIN = "d0aa218cb16c333c008f6aa3dcd670ac8b68383c"
+SRC = f"badlogic/pi-mono@{PIN}:packages/coding-agent/src/core/"  # module sources (modules.register)
 MAX_LINES, MAX_BYTES = 2000, 50 * 1024  # core/tools/truncate.ts:11-12
 
 PREAMBLE = ("You are an expert coding assistant operating inside pi, a coding agent harness. "
@@ -71,7 +72,7 @@ def _rules(names: list[str]) -> str:
     return "\n".join(f"- {r}" for r in rules)
 
 
-@register("M1", "pi")
+@register("M1", "pi", SRC + "system-prompt.ts")
 class PiPrompt(PromptAssembler):
     """system-prompt.ts buildSystemPromptSections: preamble, then tagged
     tools / rules / docs / project_context / cwd sections."""
@@ -104,7 +105,7 @@ def _obj(props: dict, required: list[str]) -> dict:
     return {"type": "object", "properties": props, "required": required}
 
 
-@tool("pi", "read")
+@tool("pi", "read", SRC + "tools/read.ts")
 def _read(p):
     def run(a, ctx):
         return T.read_file(ctx.workdir, a.get("path"), a.get("offset"), a.get("limit"), MAX_LINES, MAX_BYTES)
@@ -115,7 +116,7 @@ def _read(p):
                       "limit": {"description": "Maximum number of lines to read", "type": "number"}}, ["path"]), run)
 
 
-@tool("pi", "bash")
+@tool("pi", "bash", SRC + "tools/bash.ts")
 def _bash(p):
     def run(a, ctx):
         if not isinstance(a.get("command"), str):
@@ -128,7 +129,7 @@ def _bash(p):
                      ["command"]), run)
 
 
-@tool("pi", "write")
+@tool("pi", "write", SRC + "tools/write.ts")
 def _write(p):
     return Tool("write",
                 "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
@@ -138,7 +139,7 @@ def _write(p):
                 lambda a, ctx: T.write_file(ctx.workdir, a.get("path"), a.get("content")))
 
 
-@register("M7", "pi_edit")
+@register("M7", "pi_edit", SRC + "tools/edit.ts")
 class PiEdit(Editor):
     """core/tools/edit.ts: one file, edits[] of exact oldText/newText pairs,
     each unique and non-overlapping in the original file."""

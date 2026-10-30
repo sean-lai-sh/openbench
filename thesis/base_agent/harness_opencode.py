@@ -22,6 +22,7 @@ from thesis.base_agent.interfaces import Delegation, Editor, Planner, PromptAsse
 from thesis.base_agent.modules import TitleCall, find_context_files, register, tool
 
 PIN = "c10134729dd2ce00beb18604ec91f10319f59a78"
+SRC = f"sst/opencode@{PIN}:packages/opencode/src/"  # module sources (modules.register)
 ASSETS = Path(__file__).resolve().parent / "assets" / "opencode"
 MAX_LINES, MAX_BYTES = 2000, 50 * 1024  # tool/truncate.ts:14-15
 DEFAULT_TIMEOUT_MS = 2 * 60 * 1000  # tool/shell.ts:347
@@ -31,7 +32,7 @@ def asset(name: str) -> str:
     return (ASSETS / name).read_text(encoding="utf-8")
 
 
-@register("M1", "opencode")
+@register("M1", "opencode", SRC + "session/system.ts")
 class OpenCodePrompt(PromptAssembler):
     """session/system.ts: the per-family provider prompt (anthropic.txt for a
     model id containing "claude") as block 1; environment, skills and
@@ -94,7 +95,7 @@ def shell_description(platform: str = "linux", shell: str = "bash", tmp: str = "
     return re.sub(r"\$\{(\w+)\}", lambda m: values[m.group(1)], asset("tool-shell.txt"))
 
 
-@tool("opencode", "bash")
+@tool("opencode", "bash", SRC + "tool/shell.ts")
 def _bash(p):
     def run(a, ctx):
         if not isinstance(a.get("command"), str):
@@ -108,7 +109,7 @@ def _bash(p):
                      ["command"]), run)
 
 
-@tool("opencode", "read")
+@tool("opencode", "read", SRC + "tool/read.ts")
 def _read(p):
     def run(a, ctx):
         return T.read_file(ctx.workdir, a.get("filePath"), a.get("offset"), a.get("limit"),
@@ -119,7 +120,7 @@ def _read(p):
                       "limit": _nonneg("The maximum number of lines to read (defaults to 2000)")}, ["filePath"]), run)
 
 
-@tool("opencode", "glob")
+@tool("opencode", "glob", SRC + "tool/glob.ts")
 def _glob(p):
     return Tool("glob", asset("tool-glob.txt"),
                 _obj({"pattern": _s("The glob pattern to match files against"),
@@ -128,7 +129,7 @@ def _glob(p):
                 lambda a, ctx: T.glob_files(ctx.workdir, a.get("pattern"), a.get("path")))
 
 
-@tool("opencode", "grep")
+@tool("opencode", "grep", SRC + "tool/grep.ts")
 def _grep(p):
     return Tool("grep", asset("tool-grep.txt"),
                 _obj({"pattern": _s("The regex pattern to search for in file contents"),
@@ -138,7 +139,7 @@ def _grep(p):
                 lambda a, ctx: T.grep_files(ctx.workdir, a.get("pattern"), a.get("path"), a.get("include")))
 
 
-@tool("opencode", "write")
+@tool("opencode", "write", SRC + "tool/write.ts")
 def _write(p):
     return Tool("write", asset("tool-write.txt"),
                 _obj({"content": _s("The content to write to the file"),
@@ -147,7 +148,7 @@ def _write(p):
                 lambda a, ctx: T.write_file(ctx.workdir, a.get("filePath"), a.get("content")))
 
 
-@tool("opencode", "webfetch")
+@tool("opencode", "webfetch", SRC + "tool/webfetch.ts")
 def _webfetch(p):
     def run(a, ctx):
         url = a.get("url") or ""
@@ -168,7 +169,7 @@ def _webfetch(p):
                      ["url", "format"]), run)
 
 
-@tool("opencode", "skill")
+@tool("opencode", "skill", SRC + "tool/skill.ts")
 def _skill(p):
     def run(a, ctx):
         raise ToolError(f"Skill \"{a.get('name')}\" not found. No skills are available.")
@@ -176,7 +177,7 @@ def _skill(p):
                 _obj({"name": _s("The name of the skill from available_skills")}, ["name"]), run)
 
 
-@tool("opencode", "question")
+@tool("opencode", "question", SRC + "tool/question.ts")
 def _question(p):
     def run(a, ctx):
         raise ToolError("The user dismissed this question (headless run: no user is available).")
@@ -192,7 +193,7 @@ def _question(p):
                      ["questions"]), run)
 
 
-@register("M7", "opencode_edit")
+@register("M7", "opencode_edit", SRC + "tool/edit.ts")
 class OpenCodeEdit(Editor):
     """tool/edit.ts: one exact oldString -> newString replacement, or every
     occurrence with replaceAll."""
@@ -208,7 +209,7 @@ class OpenCodeEdit(Editor):
                                                   a.get("newString"), bool(a.get("replaceAll"))))]
 
 
-@register("M9", "opencode_todowrite")
+@register("M9", "opencode_todowrite", SRC + "tool/todo.ts")
 class OpenCodeTodo(Planner):
     """tool/todo.ts: the model rewrites the whole todo list each call."""
 
@@ -230,7 +231,7 @@ class OpenCodeTodo(Planner):
                      run)]
 
 
-@register("M10", "opencode_task")
+@register("M10", "opencode_task", SRC + "tool/task.ts")
 class OpenCodeTask(Delegation):
     """tool/task.ts: run a subagent in a fresh context and return its final
     text. ``subagent_type`` and ``background`` are accepted; every subagent
@@ -265,7 +266,7 @@ class OpenCodeTask(Delegation):
         return [Tool("task", description, schema, run)]
 
 
-@register("M5", "opencode_title")
+@register("M5", "opencode_title", SRC + "session/prompt.ts")
 class OpenCodeTitle(TitleCall):
     """session/prompt.ts:216-252: one title request per session with the
     title agent's prompt (agent/prompt/title.txt). The real runs pin

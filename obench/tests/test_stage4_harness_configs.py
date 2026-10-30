@@ -49,6 +49,37 @@ class Citations(unittest.TestCase):
         self.assertEqual(OC.PIN, C.load_config("opencode")["harness_pin"])
 
 
+class Provenance(unittest.TestCase):
+    """Review criteria 1 and 2: every module cites an open-source harness at
+    the config's pin (or is original), and nothing is tuned on the hard pack."""
+
+    HARD_PACK = ("dna-insert", "filter-js-from-html", "model-extraction-relu-logits", "polyglot-rust-c",
+                 "regex-chess", "sam-cell-seg", "torch-pipeline-parallelism", "torch-tensor-parallelism",
+                 "video-processing")
+
+    def test_harness_modules_cite_the_config_pin(self):
+        from thesis.base_agent import modules
+        fixed = C.load_fixed()
+        for h in HARNESSES:
+            cfg = C.load_config(h)
+            resolved = C.resolve(cfg, fixed, "parity")
+            cited = [modules.SOURCES[f"{slot}:{spec['impl']}"] for slot, spec in resolved["modules"].items()]
+            m2 = resolved["modules"]["M2"]["params"]
+            cited += [modules.SOURCES[f"tool:{m2['family']}:{t}"] for t in m2["tools"]
+                      if (m2["family"], t) in modules.TOOLS]
+            for src in cited:
+                with self.subTest(harness=h, source=src):
+                    self.assertTrue(src == modules.ORIGINAL or f"@{cfg['harness_pin']}:" in src)
+
+    def test_no_hard_pack_task_named_in_configs_or_modules(self):
+        pkg = C.PKG
+        files = list((pkg / "configs").glob("*.toml")) + list(pkg.glob("*.py")) + list((pkg / "assets").rglob("*.txt"))
+        for f in files:
+            body = f.read_text(encoding="utf-8")
+            for task in self.HARD_PACK:
+                self.assertNotIn(task, body, f"{f.name} names hard-pack task {task}")
+
+
 class Assets(unittest.TestCase):
     def test_vendored_text_and_licences(self):
         self.assertEqual(len((OC.ASSETS / "anthropic.txt").read_bytes()), 8212)  # sheet: 8.2 KB
