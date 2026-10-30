@@ -2729,10 +2729,13 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         # LSP was requested and the worktree config could not be written.
         # That is infra: do not let a later checker turn it into a wrong answer.
         if not row["completed"] and result.get("failure_class") == "infra":
-            row["failure_class"] = "infra"
-            row["failure_reason"] = str(result.get("error") or "infra")
-            row["success"] = False
-            row["score"] = 0.0
+            # Adapter infra (for example a provider pin mismatch) is an
+            # unscored env failure, never an agent fail. Rerun it.
+            from .checker_env import mark_env_failure
+            mark_env_failure(
+                row, str(result.get("env_cause") or "adapter_infra"),
+                str(result.get("error") or "infra"),
+            )
             row["checker_exit"] = None
             return _apply_sdk_drift(
                 _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
