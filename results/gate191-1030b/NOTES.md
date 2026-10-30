@@ -48,3 +48,6 @@ Total spend was **$0.4651**, under the $5 stop. The spend watcher tracked the ce
 - `out/`: cells, transcripts and workspace tarballs. No file is over 50 MB, so there is no MANIFEST.
 - `driver/`: the driver, run1.sh, driver.log (spend log inline), build.log, preflight.log, selftest.log.
 - `compile/`: researcher check (b). Contains the `uv pip compile` outputs per batch date and lockfiles read from the dist-info METADATA in the image venvs.
+
+## Off-protocol marking (2026-10-30, 5:25 PM ET)
+Both rows (`gate-row.json` and the two cell JSONs) are marked `off_protocol=true` with `gate_fail_reason=port_collision`. The two checkers ran at the same time on host networking and both used torch.distributed port 12355. The `without` checker hit EADDRINUSE and the `with` checker timed out. Neither verdict counts.
