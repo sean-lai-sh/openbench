@@ -1,0 +1,18 @@
+{
+  "id": "msg_18e9f267b0018duzAmWP0VriE6",
+  "sessionID": "ses_e7160d99cffeh8SSO03COoWk5u",
+  "role": "user",
+  "time": {
+    "created": 1793394157179
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with both layers. I tested them with world sizes 1, 2 and 4 against a plain `nn.Linear`: outputs, input gradients and the gradients for each rank's weight and bias slices all matched.\n\n**Assumptions to check against your tests**\n- **Weight shape:** `master_weight` must be `(out_features, in_features)`, the same layout `nn.Linear` uses. The layer refuses any other shape.\n- **\"Columns\" and \"rows\":** these refer to the transposed weight that the input is multiplied by. So `ColumnParallelLinear` splits the stored weight along its first dimension, and `RowParallelLinear` splits it along its second. If your tests split the stored tensor directly by its columns and rows, the two layers will shard the wrong way round.\n- **Even splits:** both feature counts that get split must divide evenly by the world size, or the layer stops with an error.\n\n**How each layer works**\n- **`ColumnParallelLinear`:** each rank keeps an equal share of the output features, plus the matching share of the bias (set to zero). Each rank computes its share of the output, and the shares are joined along the last dimension with `all_gather`.\n- **`RowParallelLinear`:** each rank keeps an equal share of the input features, and the bias stays full on every rank (set to zero). It takes the full input, uses its own slice, and the partial outputs are summed with `all_reduce`. The bias is added once, after the sum.\n\n**Gradients:** the gather and sum steps have their backward passes written out, so gradients for the input, weights and bias come out the same as for an unsplit `nn.Linear`.\n\n**Things I added that you didn't ask for**\n- `RowParallelLinear` also accepts input that is already split, detected by its last dimension having the per-rank size.\n- If `torch.distributed` hasn't been initialised, both layers behave as a single process (world size 1).\n\nThe test script is at `/tmp/tp_test.py`, outside the project folder, and uses the `gloo` backend.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

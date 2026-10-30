@@ -1,0 +1,11 @@
+{
+  "id": "prt_18ea00416001Ea7ldoCf8J1SUO",
+  "sessionID": "ses_e7160c03dffeYKPS58R2hLRcgO",
+  "messageID": "msg_18e9fe706001yXkjCkdPpnuIQA",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. A multi-process test with world sizes 1, 2 and 4 compared them to a regular `torch.nn.Linear` given the same weight, and everything matched: outputs and the gradients for weights, bias and input.\n\n**`ColumnParallelLinear`**\n- The full weight is stored the usual PyTorch way, as `(out_features, in_features)`. Each rank keeps its own block of `out_features // world_size` rows, which is a column block of the transposed matrix that the layer actually multiplies by.\n- The bias is split the same way and starts at zero.\n- In the forward pass, each rank computes its share of the output and the shares are joined along the last dimension, like `all_gather`.\n- In the backward pass, each rank takes its own slice of the output gradient. Input gradients are summed across ranks, like `all_reduce`.\n\n**`RowParallelLinear`**\n- Each rank keeps a block of `in_features // world_size` columns of the full weight.\n- The bias is kept in full on every rank and starts at zero.\n- In the forward pass, each rank computes a partial result and these are summed across ranks, like `all_reduce`. The bias is added after the sum, so it's only counted once.\n- The forward pass accepts either the full input, which it splits itself, or an input that has already been split per rank. It tells them apart by the size of the last dimension. In the backward pass, a split input's gradient is joined back together across ranks.\n\nThe communication steps are written as custom autograd functions, so gradients flow correctly through them. With world size 1 they do nothing.\n\nThings that could matter for the tests:\n- `out_features` (column version) and `in_features` (row version) must divide evenly by the world size, or it fails an assertion.\n- `master_weight` must have shape `(out_features, in_features)`, also checked by an assertion.\n- If the tests expect the weight transposed, as `(in_features, out_features)`, the slicing would need to change.",
+  "time": {
+    "start": 1793394213977,
+    "end": 1793394213977
+  }
+}
