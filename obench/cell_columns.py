@@ -233,6 +233,9 @@ def excluded_from_scoring(row: dict) -> bool:
         return False
     if row.get("env_failure") is True:
         return True
+    # Adapter infra (pin mismatch, harness crash) is an env failure: unscored.
+    if row.get("failure_class") == "infra":
+        return True
     if is_suspect_startup_exit(row):
         return True
     return False
