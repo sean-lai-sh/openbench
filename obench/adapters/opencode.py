@@ -438,54 +438,6 @@ def _set_anthropic_dependency(cache, version):
         json.dump(parsed, fh)
 
 
-def _prepare_exact_install(cache, pin):
-    """Make ``bun add`` resolve this pin into the hoisted cache path.
-
-    An existing dist-tag in ``package.json`` is concatenated onto the new
-    spec (``@2.0.0@latest``). A parent ``package.json`` above ``cwd`` is
-    what ``--cwd`` stops bun from walking to. The hoisted linker is the
-    path the drift check reads.
-    """
-    _set_anthropic_dependency(cache, pin)
-    with open(os.path.join(cache, "bunfig.toml"), "w", encoding="utf-8") as fh:
-        fh.write('[install]\nexact = true\nlinker = "hoisted"\n')
-    for name in ("bun.lock", "bun.lockb", "package-lock.json"):
-        try:
-            os.unlink(os.path.join(cache, name))
-        except OSError:
-            pass
-
-
-def _materialize_hoisted_sdk(cache, pin):
-    """Copy a pin left in Bun's isolated store up to the hoisted path.
-
-    Bundled-provider builds (PR 13331, PR 26821) never call ``BunProc.install``
-    for ``@ai-sdk/anthropic``. If ``bun add`` only fills
-    ``node_modules/.bun``, the drift check reports the package missing.
-    """
-    root = os.path.join(cache, "node_modules", ".bun")
-    if not os.path.isdir(root):
-        return
-    prefix = f"@ai-sdk+anthropic@{pin}"
-    try:
-        names = os.listdir(root)
-    except OSError:
-        return
-    dest = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic")
-    for name in names:
-        if name != prefix and not name.startswith(prefix + "+"):
-            continue
-        store = os.path.join(root, name, "node_modules", "@ai-sdk", "anthropic")
-        if _installed_sdk_version(os.path.join(store, "package.json")) != pin:
-            continue
-        try:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copytree(store, dest, dirs_exist_ok=True)
-        except OSError:
-            return
-        return
-
-
 def _provider_packages(proxy):
     """Exact provider packages this cell must have on disk, or {}."""
     if not isinstance(proxy, dict):
@@ -874,7 +826,60 @@ def _resolved_provider_versions(env, proxy):
     return _provider_pin().resolved_versions(cache, packages)
 
 
+# Read-only cache of pre-installed ``@ai-sdk/anthropic`` versions, one
+# ``<root>/<version>/node_modules`` tree per pin, written by
+# ``thesis/ab/provision_provider_pins.py`` with a sha256 ``manifest.json``.
+# Cells copy from it and never run ``bun add`` for the anthropic pin.
+PIN_ROOT_ENV = "OBENCH_PROVIDER_PIN_ROOT"
+DEFAULT_PIN_ROOT = "~/h1/opencode-src/provider-pins"
+ENV_CAUSE_SDK_DRIFT = "provider_sdk_drift"
+
+
+def _pin_root(proxy):
+    raw = ""
+    if isinstance(proxy, dict):
+        raw = str(proxy.get("pin_root") or "").strip()
+    raw = raw or os.environ.get(PIN_ROOT_ENV, "").strip() or DEFAULT_PIN_ROOT
+    return os.path.abspath(os.path.expanduser(raw))
+
+
+def _make_writable(root):
+    # The source tree is read-only; the cell copy must stay deletable.
+    for base, dirs, files in os.walk(root):
+        for name in dirs + files:
+            path = os.path.join(base, name)
+            if os.path.islink(path):
+                continue
+            try:
+                os.chmod(path, os.stat(path).st_mode | 0o200)
+            except OSError:
+                pass
+
+
+def _seed_anthropic_pin(cache, pin, root):
+    """Copy ``root/<pin>/node_modules`` into the cell cache. No network.
+
+    Returns True when the pre-installed tree exists and is the pin.
+    """
+    src = os.path.join(root, pin, "node_modules")
+    if _installed_sdk_version(os.path.join(src, "@ai-sdk", "anthropic", "package.json")) != pin:
+        return False
+    dest = os.path.join(cache, "node_modules")
+    try:
+        shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
+    except (OSError, shutil.Error):
+        return False
+    _make_writable(dest)
+    return True
+
+
 def _ensure_provider_sdk(env, proxy):
+    """Seed the pinned SDK into the cell cache from the read-only pin root.
+
+    There is no runtime ``bun add`` for ``@ai-sdk/anthropic`` and no
+    fallback to a dist-tag. When the pin is not on disk afterwards,
+    ``_provider_sdk_drift`` fails the cell before the agent starts.
+    """
     pin = _anthropic_pin(proxy)
     packages = _provider_packages(proxy)
     if not pin and not packages:
@@ -887,52 +892,54 @@ def _ensure_provider_sdk(env, proxy):
         env["OBENCH_PROVIDER_PINS"] = json.dumps(
             packages, sort_keys=True, separators=(",", ":"),
         )
-    bun = _resolve_bun(proxy.get("bun"))
-    if not bun:
-        return ""
     cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
     os.makedirs(cache, exist_ok=True)
+    module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
     try:
+        if pin and _installed_sdk_version(module) != pin:
+            _seed_anthropic_pin(cache, pin, _pin_root(proxy))
+        others = {k: v for k, v in packages.items() if k != "@ai-sdk/anthropic"}
         store = str(proxy.get("pin_store") or "").strip() if isinstance(proxy, dict) else ""
-        if store and packages:
-            _provider_pin().seed_cell_cache(cache, store, packages, bun, env)
-            module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
-            if pin and _installed_sdk_version(module) == pin:
-                _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
-                _write_cache_version(cache, proxy.get("cache_version"))
-            return _installed_sdk_version(module) if pin else ""
+        if store and packages and (others or not pin):
+            # Non-anthropic provider pins still come from the shared,
+            # lock-published store template. An anthropic-only pin never
+            # reaches bun: it is seeded from the pin root or the cell fails.
+            _provider_pin().seed_cell_cache(
+                cache, store, packages, _resolve_bun(proxy.get("bun")) or "", env,
+            )
         if not pin:
             return ""
-        module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
-        if _installed_sdk_version(module) != pin:
-            _prepare_exact_install(cache, pin)
-            subprocess.run(
-                [
-                    bun, "add", "--force", "--exact",
-                    "--cwd", os.path.abspath(cache),
-                    f"@ai-sdk/anthropic@{pin}",
-                ],
-                cwd=cache,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                timeout=120,
-                check=False,
-            )
-            if _installed_sdk_version(module) != pin:
-                _materialize_hoisted_sdk(cache, pin)
         # Record the skip token only when the hoisted package is the pin.
-        # Recording the pin itself makes an equality-gate binary install @latest.
-        # A second bun add against the skip token would do the same, so an
-        # already-pinned cache is left on disk.
+        # Recording the pin itself makes an equality-gate binary install
+        # @latest, so a missing pin leaves package.json alone and the
+        # preflight stops the cell instead.
         if _installed_sdk_version(module) == pin:
             _set_anthropic_dependency(cache, _cache_dependency_record(proxy))
-        else:
-            _set_anthropic_dependency(cache, pin)
-        _write_cache_version(cache, proxy.get("cache_version"))
+            _write_cache_version(cache, proxy.get("cache_version"))
         return _installed_sdk_version(module)
     finally:
-        # After bun add, so the install itself does not preload the probe.
         _arm_provider_probe(env, cache)
+
+
+def _sdk_preflight_failure(env, proxy, cmd):
+    """Env-failure row when the seeded SDK is not the pin. No model call."""
+    drift = _provider_sdk_drift(env, proxy)
+    if not drift:
+        return None
+    return {
+        "completed": False,
+        "failure_class": "infra",
+        "env_failure": True,
+        "env_cause": ENV_CAUSE_SDK_DRIFT,
+        "error": f"preflight {drift}",
+        "sdk_drift": drift,
+        "output_tail": "",
+        "full_output": "",
+        "tokens": None,
+        "turns": None,
+        "cmd": cmd,
+        **_empty_token_usage(),
+    }
 
 
 def _installed_provider_sdk(env, proxy):
@@ -943,7 +950,7 @@ def _installed_provider_sdk(env, proxy):
     in place of a version that never ran.
     """
     if not _anthropic_pin(proxy):
-        return ""
+        return _installed_sdk_version(_provider_module(env))
     return _installed_sdk_version(_provider_module(env)) or "missing"
 
 
@@ -2029,6 +2036,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
     proc = None
     try:
         try:
+            preflight = _sdk_preflight_failure(env, proxy, cmd) if isinstance(proxy, dict) else None
+            if preflight is not None:
+                return _finish(preflight)
             block = _provider_pin_block(env, proxy)
             if block:
                 return _finish({

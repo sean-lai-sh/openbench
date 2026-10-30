@@ -635,6 +635,30 @@ def _provider_failure(row, adapter_output=""):
     return None, ""
 
 
+# Anthropic 400 for a replayed ``thinking`` block whose signature does not
+# match (``invalid_request_error`` ``messages.N.content.M``). The harness
+# builds that request, so it is an agent fail, not the environment. Request
+# bodies were not logged; the ruling rests on transcripts. A row only leaves
+# this bucket when ``request_mangled`` records a trace that the proxy or SDK
+# changed the request.
+THINKING_SIGNATURE_REPLAY = "thinking_signature_replay"
+_THINKING_SIGNATURE_RE = re.compile(
+    r"invalid\W{0,3}signature\W{0,3}in\W{0,3}thinking\W{0,3}block", re.IGNORECASE,
+)
+
+
+def is_thinking_signature_replay(row, adapter_output=""):
+    """True for the signature-400 that stays a scored agent fail."""
+    row = row or {}
+    if row.get("request_mangled") is True:
+        return False
+    for blob in (adapter_output, row.get("provider_error"), row.get("error"),
+                 row.get("failure_reason"), row.get("output_tail"), row.get("full_output")):
+        if blob and _THINKING_SIGNATURE_RE.search(str(blob)):
+            return True
+    return False
+
+
 def provider_failure_class(row, adapter_output=""):
     """Infra or rate_limited when the provider itself failed, else None."""
     kind, _message = _provider_failure(row, adapter_output)
@@ -652,6 +676,9 @@ def classify_failure(row, adapter_output="", timeout_s=None):
     if provider_kind:
         if provider_message and not row.get("provider_error"):
             row["provider_error"] = provider_message
+        if provider_kind == "infra" and not row.get("success") and is_thinking_signature_replay(row, adapter_output):
+            row["failure_subclass"] = THINKING_SIGNATURE_REPLAY
+            return "wrong_answer"
         return provider_kind
     combined = _text(
         adapter_output,

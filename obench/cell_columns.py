@@ -231,6 +231,8 @@ def excluded_from_scoring(row: dict) -> bool:
         return True
     if row.get("success") is True:
         return False
+    if is_scored_signature_replay(row):
+        return False
     if row.get("env_failure") is True:
         return True
     # Adapter infra (pin mismatch, harness crash) is an env failure: unscored.
@@ -241,6 +243,20 @@ def excluded_from_scoring(row: dict) -> bool:
     return False
 
 
+def is_scored_signature_replay(row: dict) -> bool:
+    """Signature-400 rows stay scored agent fails (Researcher ruling, #206).
+
+    Only an adapter-infra env flag is overridden. A checker timeout, venv
+    fault or other recorded env cause still wins.
+    """
+    if not isinstance(row, dict):
+        return False
+    if row.get("env_failure") is True and row.get("env_cause") not in (None, "", "adapter_infra"):
+        return False
+    from .failure_class import is_thinking_signature_replay
+    return is_thinking_signature_replay(row)
+
+
 def scoring_override_class(row: dict) -> str | None:
     """Report class that keeps these cells out of the wrong-answer bucket."""
     if not isinstance(row, dict):
@@ -248,6 +264,8 @@ def scoring_override_class(row: dict) -> str | None:
     if quarantine_label(row):
         return "infra"
     if row.get("success") is True:
+        return None
+    if is_scored_signature_replay(row):
         return None
     if row.get("env_failure") is True or is_suspect_startup_exit(row):
         return "infra"

@@ -116,6 +116,8 @@ ROW_FIELDS = (
     "runner_commit",
     "pin_source",
     "provider_loaded_version",
+    "installed_anthropic",
+    "failure_subclass",
     "provider_loaded_source",
     "provider_loaded_mismatch",
     "probe_method",
@@ -2380,6 +2382,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "checker_wall_time_s": 0.0,
         "env_failure": False,
         "env_cause": None,
+        "installed_anthropic": None,
+        "failure_subclass": None,
         "free_disk_gb": None,
         "lock_wait_s": None,
         "checker_lock": None,
@@ -2659,8 +2663,11 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         if isinstance(turn1_exit, int) and not isinstance(turn1_exit, bool):
             row["turn1_exit"] = turn1_exit
         installed_sdk = result.get("installed_anthropic")
+        # Every row records the SDK on disk; "missing" when pinned but absent.
         if isinstance(installed_sdk, str) and installed_sdk.strip():
             row["installed_anthropic"] = installed_sdk.strip()
+        elif row.get("installed_anthropic") is None:
+            row["installed_anthropic"] = "none"
         pin_sha = result.get("provider_pin_sha256")
         if isinstance(pin_sha, str) and pin_sha.strip():
             row["provider_pin_sha256"] = pin_sha.strip()
@@ -2729,6 +2736,19 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         # LSP was requested and the worktree config could not be written.
         # That is infra: do not let a later checker turn it into a wrong answer.
         if not row["completed"] and result.get("failure_class") == "infra":
+            from .failure_class import THINKING_SIGNATURE_REPLAY, is_thinking_signature_replay
+            if not result.get("env_cause") and is_thinking_signature_replay(result):
+                # Signature-400 on a replayed thinking block: the harness built
+                # that request, so it stays a scored agent fail.
+                row["failure_class"] = "wrong_answer"
+                row["failure_subclass"] = THINKING_SIGNATURE_REPLAY
+                row["failure_reason"] = str(result.get("error") or THINKING_SIGNATURE_REPLAY)
+                row["success"] = False
+                row["score"] = 0.0
+                row["checker_exit"] = None
+                return _apply_sdk_drift(
+                    _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
+                )
             # Adapter infra (for example a provider pin mismatch) is an
             # unscored env failure, never an agent fail. Rerun it.
             from .checker_env import mark_env_failure
