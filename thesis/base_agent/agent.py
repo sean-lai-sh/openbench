@@ -75,11 +75,11 @@ class Agent:
         return cls(resolved, C.version_record(cfg, fixed, resolved), client, model, workdir, instruction)
 
     def _spawn(self, description: str, prompt: str) -> str:
-        """Run a child agent with the same modules minus delegation and side
-        calls. Its calls are tagged ``side:subagent``."""
+        """Run a child agent with the same modules minus planner, delegation
+        and side calls. Its calls are tagged ``side:subagent``."""
         child = copy.deepcopy(self.resolved)
-        child["modules"]["M10"] = {"impl": "none", "params": {}}
-        child["modules"]["M5"] = {"impl": "none", "params": {}}
+        for slot in ("M5", "M9", "M10"):
+            child["modules"][slot] = {"impl": "none", "params": {}}
         sub_m2 = child["modules"]["M2"]["params"]
         sub_m2["tools"] = [t for t in sub_m2.get("tools", []) if t in self.subagent_tools()]
         agent = Agent(child, self.version, _RoleClient(self.ctx.client, "side:subagent"), self.model,

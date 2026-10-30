@@ -1,0 +1,145 @@
+# Pi on the base agent. Parity target: the real Pi arm (badlogic/pi-mono
+# @ d0aa218, the pin of both the sheet and the #196 Pi cells).
+#
+# [rows.N] cite the sheet (prereg/harness-components-2026-10-24.csv):
+#   value  = what the module reproduces
+#   sheet  = the sheet's `pi` cell
+#   source = the sheet's `pi_src` cell, or the SC-1 addendum
+#            (briefs/stage4-slot-contract-SC1-addendum-2026-10-26.csv) where
+#            the sheet cell was "not found" / "not traced" and SC-1 resolved it.
+# The sheet column for every row is pi_src.
+
+schema = 1
+name = "pi"
+harness = "pi"
+harness_pin = "d0aa218cb16c333c008f6aa3dcd670ac8b68383c"
+description = "Pi default coding agent: read, bash, edit (edits[]), write; no planner, subagents, side calls; compaction at reserve 16384."
+
+[modules.M1]
+impl = "pi"
+params = { context_files = true }
+
+[modules.M2]
+impl = "catalog"
+params = { family = "pi", tools = ["read", "bash", "edit", "write"] }
+
+[modules.M3]
+impl = "anthropic"
+params = { system = 1, tools = true, messages = 1 }
+
+[modules.M5]
+impl = "none"
+
+[modules.M6]
+impl = "summarize"
+params = { context_window = 200000, reserve_tokens = 16384 }
+
+[modules.M7]
+impl = "pi_edit"
+
+[modules.M8]
+impl = "shell"
+params = { timeout_unit = "s", max_lines = 2000, max_bytes = 51200, keep = "tail" }
+
+[modules.M9]
+impl = "none"
+
+[modules.M10]
+impl = "none"
+
+[modules.M11]
+impl = "basic"
+params = { hooks = [] }
+
+# Parity arm only. Must be replaced with the values the real Pi request
+# carries (max_tokens / temperature / thinking), read from the AC3 capture.
+[parity.M4]
+impl = "fixed"
+params = { max_tokens = 32000 }
+
+# --- citations: every swappable row ----------------------------------------
+[rows.1]
+value = "M1 pi: preamble + <tools>/<rules>/<docs>/<project_context>/<cwd> sections built as system-prompt.ts does"
+sheet = "Assembled in code (system-prompt.ts 10 KB source) + tool guidelines + AGENTS/CLAUDE.md + optional .pi/SYSTEM.md/APPEND_SYSTEM.md"
+source = "core/system-prompt.ts; core/resource-loader.ts:212; docs/security.md"
+
+[rows.2]
+value = "M1 pi: AGENTS.md/CLAUDE.md walk-up into <project_context>; tool list and rules follow the enabled tools"
+sheet = "Varies with cwd context files and enabled tools"
+source = "core/resource-loader.ts"
+
+[rows.3]
+value = "M2 catalog family=pi: read, bash, edit, write (grep/find/ls are off by default)"
+sheet = "7 core: read, bash, edit, write (+ grep, find, ls); minimal by design"
+source = "core/tools/index.ts; SC-1: pi@d0aa218:packages/coding-agent/src/core/settings-manager.ts:84-85"
+
+[rows.4]
+value = "Derived from rows 3 and 5; measured at the proxy by the AC3 build check"
+sheet = "Smallest of the five (not measured)"
+source = ""
+
+[rows.5]
+value = "TypeBox-style JSON Schema objects with per-property descriptions"
+sheet = "TypeBox JSON Schema"
+source = "core/tools/edit.ts:23"
+
+[rows.8]
+value = "M3 anthropic: system block, last tool, last message"
+sheet = "Anthropic cache_control on system prompt, last tool def, last msg; cacheRetention option"
+source = "ai/src/providers/compat-schema.ts:323; SC-1: pi@d0aa218:packages/ai/src/api/anthropic-messages.ts:1228-1244,1529-1550"
+
+[rows.10]
+value = "M5 none"
+sheet = "not found in this pass"
+source = "SC-1: pi@d0aa218:packages/coding-agent/src (grep generateTitle/autoName: 0 hits)"
+
+[rows.11]
+value = "No search tools; search goes through bash (rule 'Use bash for file operations like ls, rg, find')"
+sheet = "grep, find, ls tools"
+source = "core/tools/grep.ts; SC-1: settings-manager.ts:85 (not in default set)"
+
+[rows.12]
+value = "pi:read offset/limit, 2000 lines / 50 KB head truncation"
+sheet = "offset/limit; truncate 2000 lines / 50 KB"
+source = "core/tools/read.ts:16; core/tools/truncate.ts:11"
+
+[rows.13]
+value = "M6 summarize at context_window - reserve 16384 (keepRecentTokens 20000 not reproduced: whole history is summarized)"
+sheet = "reserveTokens / keepRecentTokens; branch summarization"
+source = "core/compaction/compaction.ts:122; SC-1: pi@d0aa218:packages/coding-agent/src/core/compaction/compaction.ts:126-130,269"
+
+[rows.15]
+value = "M7 pi_edit: edits[] of unique, non-overlapping oldText/newText in one file"
+sheet = "Multi-edit exact replace (edits[].oldText unique)"
+source = "core/tools/edit.ts:23"
+
+[rows.16]
+value = "M8 shell: no default timeout; optional timeout in seconds"
+sheet = "bash; no default timeout (optional arg)"
+source = "core/tools/bash.ts:27"
+
+[rows.17]
+value = "M8 shell: keep last 2000 lines / 50 KB"
+sheet = "2000 lines / 50 KB"
+source = "core/tools/truncate.ts:11"
+
+[rows.21]
+value = "M9 none"
+sheet = "none built-in (example extension)"
+source = "docs/extensions.md:263"
+
+[rows.22]
+value = "M10 none"
+sheet = "none built-in (OMP adds task subagents)"
+source = "oh-my-pi README"
+
+[rows.25]
+value = "M11 basic, no hooks"
+sheet = "none built-in"
+source = ""
+
+# --- harness values for fixed rows (recorded, not applied in the swap arm) --
+[harness_fixed_values]
+row_9 = "thinkingLevel setting (core/settings-schema.ts); temperature only when set (SC-1: packages/agent/src/proxy.ts:49,92)"
+row_23 = "no step cap (SC-1: packages/agent/src grep maxTurns/maxSteps: 0 hits)"
+row_24 = "maxRetries 3, baseDelay 2000 ms (SC-1: core/settings-defaults.ts:18-21)"

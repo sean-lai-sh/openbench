@@ -30,7 +30,7 @@ TOOLS: dict[tuple[str, str], Callable[[dict], Tool]] = {}
 SOURCES: dict[str, str] = {}  # "M7:pi_edit" / "tool:pi:read" -> source
 ORIGINAL = "original: thesis/base_agent"
 
-HARNESS_MODULES = ()  # filled in as harness files are added
+HARNESS_MODULES = ("thesis.base_agent.harness_pi", "thesis.base_agent.harness_opencode")
 
 
 def _check_source(source: str, what: str) -> None:
@@ -203,19 +203,23 @@ class NoCache(CachePolicy):
 
 @register("M3", "anthropic", ORIGINAL)
 class AnthropicBreakpoints(CachePolicy):
-    """``cache_control: ephemeral`` on the last system block, the last tool,
-    and the last ``messages`` messages (at most 4 breakpoints in total)."""
+    """``cache_control: ephemeral`` on the first ``system`` system blocks,
+    the last tool (``tools``), and the last block of each of the last
+    ``messages`` messages. Anthropic allows at most 4 breakpoints."""
 
-    def __init__(self, system: bool = True, tools: bool = False, messages: int = 2):
-        self.system, self.tools, self.messages = system, tools, messages
+    def __init__(self, system: int = 1, tools: bool = False, messages: int = 2):
+        if int(system) + int(bool(tools)) + int(messages) > 4:
+            raise ValueError("M3: more than 4 cache breakpoints")
+        self.system, self.tools, self.messages = int(system), tools, messages
 
     @staticmethod
     def _mark(block: dict) -> None:
         block["cache_control"] = {"type": "ephemeral"}
 
     def apply(self, request):
-        if self.system and isinstance(request.get("system"), list) and request["system"]:
-            self._mark(request["system"][-1])
+        if isinstance(request.get("system"), list):
+            for block in request["system"][:self.system]:
+                self._mark(block)
         if self.tools and request.get("tools"):
             self._mark(request["tools"][-1])
         for msg in (request.get("messages") or [])[-self.messages:] if self.messages else []:
