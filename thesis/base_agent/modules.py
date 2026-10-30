@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Callable
@@ -26,26 +27,40 @@ from thesis.base_agent.interfaces import (
 
 REGISTRY: dict[str, dict[str, type]] = {slot: {} for slot in INTERFACES}
 TOOLS: dict[tuple[str, str], Callable[[dict], Tool]] = {}
+SOURCES: dict[str, str] = {}  # "M7:pi_edit" / "tool:pi:read" -> source
+ORIGINAL = "original: thesis/base_agent"
 
 HARNESS_MODULES = ()  # filled in as harness files are added
 
 
-def register(slot: str, name: str):
+def _check_source(source: str, what: str) -> None:
+    if not (source == ORIGINAL or re.match(r"^[\w.-]+/[\w.-]+@[0-9a-f]{7,40}:\S", source or "")):
+        raise ValueError(f"{what}: source must be {ORIGINAL!r} or 'org/repo@<commit>:<path>'")
+
+
+def register(slot: str, name: str, source: str):
+    """``source`` is where the behaviour comes from: ``ORIGINAL`` (written
+    here, no upstream) or ``org/repo@<pinned commit>:<path>`` of an
+    open-source harness."""
     def deco(cls):
         if not issubclass(cls, INTERFACES[slot]):
             raise TypeError(f"{cls.__name__} does not implement {slot}")
         if name in REGISTRY[slot]:
             raise ValueError(f"{slot}:{name} registered twice")
+        _check_source(source, f"{slot}:{name}")
         REGISTRY[slot][name] = cls
+        SOURCES[f"{slot}:{name}"] = source
         return cls
     return deco
 
 
-def tool(family: str, name: str):
+def tool(family: str, name: str, source: str):
     def deco(fn):
         if (family, name) in TOOLS:
             raise ValueError(f"tool {family}:{name} registered twice")
+        _check_source(source, f"tool {family}:{name}")
         TOOLS[(family, name)] = fn
+        SOURCES[f"tool:{family}:{name}"] = source
         return fn
     return deco
 
@@ -81,7 +96,7 @@ def find_context_files(workdir: str, names=("AGENTS.md", "CLAUDE.md"), stop_at_g
 
 
 # --- M1 PromptAssembler ---------------------------------------------------
-@register("M1", "base")
+@register("M1", "base", ORIGINAL)
 class BasePrompt(PromptAssembler):
     """Minimal neutral prompt: preamble, optional project files, cwd."""
 
@@ -101,7 +116,7 @@ class BasePrompt(PromptAssembler):
 
 
 # --- M2 ToolRegistry ------------------------------------------------------
-@register("M2", "catalog")
+@register("M2", "catalog", ORIGINAL)
 class CatalogTools(ToolRegistry):
     """Tools in the configured order. A name is looked up first among tools
     contributed by M7/M9/M10, then in ``TOOLS[(family, name)]``."""
@@ -136,7 +151,7 @@ def _schema(props: dict, required: list[str]) -> dict:
     return {"type": "object", "properties": props, "required": required}
 
 
-@tool("base", "bash")
+@tool("base", "bash", ORIGINAL)
 def _base_bash(p):
     def run(args, ctx):
         if not isinstance(args.get("command"), str):
@@ -147,7 +162,7 @@ def _base_bash(p):
                          "timeout": {"type": "number", "description": "Timeout in seconds"}}, ["command"]), run)
 
 
-@tool("base", "read")
+@tool("base", "read", ORIGINAL)
 def _base_read(p):
     def run(args, ctx):
         return T.read_file(ctx.workdir, args.get("path"), args.get("offset"), args.get("limit"),
@@ -157,21 +172,21 @@ def _base_read(p):
                          "limit": {"type": "integer"}}, ["path"]), run)
 
 
-@tool("base", "write")
+@tool("base", "write", ORIGINAL)
 def _base_write(p):
     return Tool("write", "Create or overwrite a file.",
                 _schema({"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
                 lambda a, ctx: T.write_file(ctx.workdir, a.get("path"), a.get("content")))
 
 
-@tool("base", "glob")
+@tool("base", "glob", ORIGINAL)
 def _base_glob(p):
     return Tool("glob", "Find files by glob pattern.",
                 _schema({"pattern": {"type": "string"}, "path": {"type": "string"}}, ["pattern"]),
                 lambda a, ctx: T.glob_files(ctx.workdir, a.get("pattern"), a.get("path")))
 
 
-@tool("base", "grep")
+@tool("base", "grep", ORIGINAL)
 def _base_grep(p):
     return Tool("grep", "Search file contents with a regex.",
                 _schema({"pattern": {"type": "string"}, "path": {"type": "string"},
@@ -180,13 +195,13 @@ def _base_grep(p):
 
 
 # --- M3 CachePolicy -------------------------------------------------------
-@register("M3", "none")
+@register("M3", "none", ORIGINAL)
 class NoCache(CachePolicy):
     def apply(self, request):
         return None
 
 
-@register("M3", "anthropic")
+@register("M3", "anthropic", ORIGINAL)
 class AnthropicBreakpoints(CachePolicy):
     """``cache_control: ephemeral`` on the last system block, the last tool,
     and the last ``messages`` messages (at most 4 breakpoints in total)."""
@@ -212,7 +227,7 @@ class AnthropicBreakpoints(CachePolicy):
 
 
 # --- M4 SamplingPolicy (fixed) ---------------------------------------------
-@register("M4", "fixed")
+@register("M4", "fixed", ORIGINAL)
 class FixedSampling(SamplingPolicy):
     def __init__(self, max_tokens: int = 32000, temperature: float | None = None,
                  thinking_budget: int | None = None):
@@ -227,13 +242,13 @@ class FixedSampling(SamplingPolicy):
 
 
 # --- M5 SideCalls ---------------------------------------------------------
-@register("M5", "none")
+@register("M5", "none", ORIGINAL)
 class NoSideCalls(SideCalls):
     def on_start(self, ctx):
         return None
 
 
-@register("M5", "title")
+@register("M5", "title", ORIGINAL)
 class TitleCall(SideCalls):
     """One title request before the main loop, as OpenCode makes. Its tokens
     are tagged ``side:title`` at the proxy."""
@@ -254,13 +269,13 @@ class TitleCall(SideCalls):
 
 
 # --- M6 ContextManager ----------------------------------------------------
-@register("M6", "none")
+@register("M6", "none", ORIGINAL)
 class KeepAll(ContextManager):
     def prepare(self, messages, last_usage, ctx):
         return messages
 
 
-@register("M6", "summarize")
+@register("M6", "summarize", ORIGINAL)
 class SummarizeOnThreshold(ContextManager):
     """When the last main request's input tokens reach ``threshold`` of
     ``context_window`` (or ``context_window - reserve_tokens``), replace the
@@ -296,7 +311,7 @@ class SummarizeOnThreshold(ContextManager):
 
 
 # --- M7 Editor ------------------------------------------------------------
-@register("M7", "none")
+@register("M7", "none", ORIGINAL)
 class NoEditor(Editor):
     """No edit tool: edits go through the shell (Codex on Claude)."""
 
@@ -304,7 +319,7 @@ class NoEditor(Editor):
         return []
 
 
-@register("M7", "replace")
+@register("M7", "replace", ORIGINAL)
 class BaseReplace(Editor):
     def tools(self, ctx):
         return [Tool("edit", "Replace one exact, unique occurrence of old_text with new_text in a file.",
@@ -315,7 +330,7 @@ class BaseReplace(Editor):
 
 
 # --- M8 Executor ----------------------------------------------------------
-@register("M8", "shell")
+@register("M8", "shell", ORIGINAL)
 class ShellExecutor(Executor):
     """``default_timeout_s`` None means no timeout unless the model sets one.
     The observation keeps the ``keep`` end of the output within
@@ -354,20 +369,20 @@ class ShellExecutor(Executor):
 
 
 # --- M9 Planner / M10 Delegation ------------------------------------------
-@register("M9", "none")
+@register("M9", "none", ORIGINAL)
 class NoPlanner(Planner):
     def tools(self, ctx):
         return []
 
 
-@register("M10", "none")
+@register("M10", "none", ORIGINAL)
 class NoDelegation(Delegation):
     def tools(self, ctx):
         return []
 
 
 # --- M11 LoopController ---------------------------------------------------
-@register("M11", "basic")
+@register("M11", "basic", ORIGINAL)
 class BasicLoop(LoopController):
     """``max_steps`` is the fixed global cap (row 23). ``hooks`` are the
     swappable row-25 behaviours:
@@ -403,7 +418,7 @@ class BasicLoop(LoopController):
 
 
 # --- M12 RetryPolicy (fixed) ------------------------------------------------
-@register("M12", "backoff")
+@register("M12", "backoff", ORIGINAL)
 class BackoffRetry(RetryPolicy):
     def __init__(self, max_attempts: int = 4, initial_s: float = 2.0, factor: float = 2.0,
                  max_s: float = 30.0, sleep: Callable[[float], None] | None = None):
@@ -425,7 +440,7 @@ class BackoffRetry(RetryPolicy):
 
 
 # --- M13 Permissions (fixed) ------------------------------------------------
-@register("M13", "allow_all")
+@register("M13", "allow_all", ORIGINAL)
 class AllowAll(Permissions):
     """Headless allow-all (rows 26-29). Never asks, never auto-rejects. The
     container is the sandbox. ``deny_tools`` exists only so a parity arm can

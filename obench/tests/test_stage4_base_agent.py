@@ -72,7 +72,7 @@ class SlotTable(unittest.TestCase):
 
     def test_register_rejects_wrong_interface(self):
         with self.assertRaises(TypeError):
-            modules.register("M1", "bogus")(modules.NoCache)
+            modules.register("M1", "bogus", modules.ORIGINAL)(modules.NoCache)
 
 
 class FixedRows(unittest.TestCase):
@@ -91,6 +91,24 @@ class FixedRows(unittest.TestCase):
         fixed["rows"]["6"]["set"] = {"x": 1}
         with self.assertRaisesRegex(C.ConfigError, "infra"):
             C.validate_fixed(fixed)
+
+
+class Sources(unittest.TestCase):
+    def test_every_module_and_tool_cites_a_source(self):
+        modules.load_harness_modules()
+        for slot, impls in modules.REGISTRY.items():
+            for name in impls:
+                self.assertIn(f"{slot}:{name}", modules.SOURCES)
+        for family, name in modules.TOOLS:
+            self.assertIn(f"tool:{family}:{name}", modules.SOURCES)
+        for key, src in modules.SOURCES.items():
+            self.assertNotRegex(src.lower(), r"claude[- ]?code|anthropic-ai/claude", key)
+
+    def test_source_must_be_original_or_pinned_repo(self):
+        for bad in ("", "pi", "badlogic/pi-mono:core/x.ts", "badlogic/pi-mono@main:core/x.ts"):
+            with self.assertRaises(ValueError, msg=bad):
+                modules.register("M3", f"bad{len(bad)}", bad)(modules.NoCache)
+        modules._check_source("badlogic/pi-mono@d0aa218:packages/coding-agent/src/core/tools/edit.ts", "ok")
 
 
 class Configs(unittest.TestCase):
@@ -132,6 +150,47 @@ class Configs(unittest.TestCase):
             self.assertEqual(r["modules"]["M13"]["impl"], "allow_all")
 
 
+class FixedRowsAcrossConfigs(unittest.TestCase):
+    """Fixed and runner-owned rows must be identical across configs. This
+    diffs ``fixed_projection`` for every config in configs/, per arm."""
+
+    def projections(self, arm):
+        fixed = C.load_fixed()
+        out = {}
+        for path in sorted(C.CONFIG_DIR.glob("*.toml")):
+            if path.stem == "fixed":
+                continue
+            cfg = C.load_config(path.stem)
+            out[path.stem] = C.fixed_projection(C.resolve(cfg, fixed, arm), fixed)
+        return out
+
+    def test_identical_in_each_arm(self):
+        for arm in C.ARMS:
+            proj = self.projections(arm)
+            first_name, first = next(iter(proj.items()))
+            for name, p in proj.items():
+                with self.subTest(arm=arm, config=name):
+                    self.assertEqual(p, first, f"{name} differs from {first_name} on a fixed row")
+
+    def test_swap_projection_covers_every_fixed_and_infra_row(self):
+        for p in self.projections("swap").values():
+            self.assertEqual({k for k in p if k.startswith("row")},
+                             {f"row{r.row}" for r in non_swappable_rows()})
+            self.assertEqual(set(fully_fixed_slots()) - set(p), set())
+            self.assertEqual(p["row19"]["still_exposed"], [])
+
+    def test_a_config_that_overrides_a_fixed_value_is_caught(self):
+        fixed = C.load_fixed()
+        cfg = C.load_config("base")
+        cfg["modules"]["M1"]["params"]["memory_files"] = True  # overwritten by row 14
+        cfg["modules"]["M2"]["params"]["mcp"] = True  # overwritten by row 20
+        good = C.fixed_projection(C.resolve(C.load_config("base"), fixed, "swap"), fixed)
+        self.assertEqual(C.fixed_projection(C.resolve(cfg, fixed, "swap"), fixed), good)
+        resolved = C.resolve(C.load_config("base"), fixed, "swap")
+        resolved["modules"]["M11"]["params"]["max_steps"] = 5  # simulated drift
+        self.assertNotEqual(C.fixed_projection(resolved, fixed), good)
+
+
 class VersionHash(unittest.TestCase):
     def setUp(self):
         self.fixed = C.load_fixed()
@@ -157,7 +216,7 @@ class VersionHash(unittest.TestCase):
 
     def test_record_fields_and_provisional_rows(self):
         r = self.record()
-        for k in ("base_agent_version", "framework_hash", "config_hash", "fixed_hash", "resolved_hash",
+        for k in ("base_agent_version", "framework_hash", "config_hash", "fixed_hash", "resolved_hash", "fixed_rows_hash",
                   "arm", "harness", "harness_pin", "provisional_fixed_rows"):
             self.assertIn(k, r)
         self.assertEqual(r["provisional_fixed_rows"], [9, 23, 24])

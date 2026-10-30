@@ -164,6 +164,35 @@ def resolve(cfg: dict, fixed: dict, arm: str) -> dict:
             "fixed_rows_applied": applied, "harness_values_kept": [str(x) for x in harness_kept]}
 
 
+def fixed_projection(resolved: dict, fixed: dict) -> dict:
+    """Every value the arm holds fixed, read back from the resolved config.
+
+    It must be identical across all configs in the same arm, and a test diffs
+    it. Rows and slots that the parity arm leaves to the harness
+    (``parity = "harness"``) are left out of the parity projection. Infra rows
+    contribute their pinned text.
+    """
+    kept = set(resolved["harness_values_kept"])
+    mods = resolved["modules"]
+    out: dict = {}
+    for slot in sorted(fixed["slots"]):
+        if slot not in kept:
+            out[slot] = mods[slot]
+    for n, spec in sorted(_rows(fixed).items()):
+        if str(n) in kept:
+            continue
+        entry: dict = {"value": spec["value"]}
+        slot = spec.get("slot")
+        if spec.get("set"):
+            entry["set"] = {k: mods[slot]["params"].get(k) for k in sorted(spec["set"])}
+        if spec.get("drop_tools"):
+            m2 = mods["M2"]["params"]
+            entry["still_exposed"] = sorted(t for t in m2.get("tools", [])
+                                            if t in spec["drop_tools"] and t not in (m2.get("drop_tools") or []))
+        out[f"row{n}"] = entry
+    return out
+
+
 def framework_files() -> list[Path]:
     """Code and prompt assets; configs are hashed separately."""
     out = []
@@ -200,6 +229,7 @@ def version_record(cfg: dict, fixed: dict, resolved: dict) -> dict:
         "config_hash": sha256(canonical(cfg)),
         "fixed_hash": sha256(canonical(fixed)),
         "resolved_hash": resolved_hash,
+        "fixed_rows_hash": sha256(canonical(fixed_projection(resolved, fixed))),
         "arm": resolved["arm"],
         "harness": resolved["harness"],
         "harness_pin": resolved["harness_pin"],
