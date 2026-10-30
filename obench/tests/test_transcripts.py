@@ -131,6 +131,8 @@ class FinalWorkspaceTarTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(fh.read()).hexdigest(),
                              row["final_workspace_tar_sha256"])
         self.assertEqual(os.path.getsize(expected), row["final_workspace_tar_bytes"])
+        self.assertEqual(row["final_workspace_status"], "saved")
+        self.assertIsNone(row["final_workspace_skip_reason"])
         with tarfile.open(expected, "r:gz") as tf:
             names = set(tf.getnames())
         # Every file the checker saw is in the tarball.
@@ -150,4 +152,32 @@ class FinalWorkspaceTarTests(unittest.TestCase):
         out = run.save_final_workspace(ws, os.path.join(self.tmp, "o.tar.gz"),
                                        max_bytes=1024)
         self.assertIn("skipped", out)
+        self.assertEqual(out["status"], "skipped_oversize")
+        self.assertEqual(out["workspace_bytes"], 2048)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "o.tar.gz")))
+
+
+class FinalWorkspaceOversizeRowTests(unittest.TestCase):
+    def test_oversize_skip_writes_explicit_row_fields(self):
+        import json
+        tmp = tempfile.mkdtemp(prefix="bench_finalws_big_")
+        try:
+            results = os.path.join(tmp, "results.jsonl")
+            env = dict(os.environ, OBENCH_FINAL_WORKSPACE_MAX_BYTES="1")
+            argv = [sys.executable, *RUN_MOD, "--task", "write-marker",
+                    "--harness", "fake_adapter", "--model", "gpt-5.5-medium",
+                    "--results-path", results,
+                    "--adapters-dir", FIXTURES_DIR, "--tasks-dir", FIXTURES_DIR,
+                    "--transcripts-dir", os.path.join(tmp, "t")]
+            proc = subprocess.run(argv, capture_output=True, text=True, env=env)
+            self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
+            with open(results, encoding="utf-8") as fh:
+                row = json.loads(fh.readline())
+            self.assertEqual(row["final_workspace_status"], "skipped_oversize")
+            self.assertGreater(row["final_workspace_bytes"], 1)
+            self.assertIn("> limit 1", row["final_workspace_skip_reason"])
+            self.assertIsNone(row["final_workspace_tar"])
+            self.assertTrue(row["success"])
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)

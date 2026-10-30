@@ -98,6 +98,7 @@ ROW_FIELDS = (
     "tokens_fresh", "turns", "cmd", "checker_exit", "exec_mode", "score", "harness_version",
     "harness_version_source", "failure_class", "failure_reason", "agent_mode", "workspace_changed", "checker_stdout", "checker_stderr", "checker_workspace_files",
     "final_workspace_tar", "final_workspace_tar_sha256", "final_workspace_tar_bytes",
+    "final_workspace_status", "final_workspace_bytes", "final_workspace_skip_reason",
     "image_digest", "candidate_provenance", "version_drift", "timeout_s",
     "workspace_source",
     "last_activity_age_s",
@@ -1708,7 +1709,8 @@ def save_final_workspace(workdir, dest, max_bytes=None):
             if os.path.isfile(fp) and not os.path.islink(fp):
                 total += os.path.getsize(fp)
     if total > limit:
-        return {"skipped": f"workspace {total} bytes > limit {limit}"}
+        return {"skipped": f"workspace {total} bytes > limit {limit}",
+                "status": "skipped_oversize", "workspace_bytes": total}
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".partial"
     with tarfile.open(tmp, "w:gz") as tf:
@@ -1719,7 +1721,8 @@ def save_final_workspace(workdir, dest, max_bytes=None):
             digest.update(chunk)
     os.replace(tmp, dest)
     return {"path": dest, "sha256": digest.hexdigest(),
-            "bytes": os.path.getsize(dest)}
+            "bytes": os.path.getsize(dest), "status": "saved",
+            "workspace_bytes": total}
 
 
 def write_transcript(path, row, body):
@@ -2297,6 +2300,9 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "final_workspace_tar": None,
         "final_workspace_tar_sha256": None,
         "final_workspace_tar_bytes": None,
+        "final_workspace_status": None,
+        "final_workspace_bytes": None,
+        "final_workspace_skip_reason": None,
         "image_digest": None,
         "candidate_provenance": candidate.provenance if candidate is not None else None,
         "version_drift": bool(version_drift),
@@ -2689,12 +2695,17 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             row["workspace_changed"] = current_workspace_files != initial_workspace_files
             row["checker_workspace_files"] = scrub_workspace_evidence_paths(
                 current_workspace_files)
+            if not transcripts_dir:
+                row["final_workspace_status"] = "not_saved_no_transcripts_dir"
             if transcripts_dir:
                 try:
                     saved = save_final_workspace(workdir, final_workspace_tar_path(
                         transcripts_dir, results_stem, run_id))
                 except Exception as exc:  # noqa: BLE001 - never fail a cell on this
-                    saved = {"skipped": f"save_failed: {type(exc).__name__}"}
+                    saved = {"skipped": f"save_failed: {type(exc).__name__}",
+                             "status": "skipped_error"}
+                row["final_workspace_status"] = saved.get("status")
+                row["final_workspace_bytes"] = saved.get("workspace_bytes")
                 if "path" in saved:
                     row["final_workspace_tar"] = saved["path"]
                     row["final_workspace_tar_sha256"] = saved["sha256"]
@@ -2703,7 +2714,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                     row["final_workspace_tar"] = None
                     row["final_workspace_tar_sha256"] = None
                     row["final_workspace_tar_bytes"] = None
-                    row["final_workspace_tar_skipped"] = saved["skipped"]
+                    row["final_workspace_skip_reason"] = saved["skipped"]
             checker_start = time.monotonic()
             checker_root = None
             try:
