@@ -75,9 +75,19 @@ every result as `version`.
 - `config_hash`, `fixed_hash`, `resolved_hash`: canonical JSON with sorted
   keys and no whitespace.
 - `arm`, `harness`, `harness_pin`, `harness_values_kept`.
+- `fixed_rows_hash`: hash of every value the arm holds fixed. It is the same
+  for every config in the same arm, and a test diffs it.
+- `anchor`, `anchor_rows_hash`: row 9 (sampling) follows each harness's
+  captured value. This is the Researcher's ruling of 2026-10-30: Pi uses
+  adaptive thinking and OpenCode has thinking off. A swap config holds its
+  anchor's value, so configs that share an anchor send the same sampling.
 - `provisional_fixed_rows`: fixed values the Researcher has not ruled on
-  yet: row 9 (sampling), row 23 (step cap) and row 24 (retries). These must
-  be pinned before any scored cell.
+  yet. These are row 23 (step cap) and row 24 (retries). They must be
+  pinned before any scored cell.
+- Module row fields. For example, OpenCode's title module adds
+  `small_model`, `small_model_default` and `small_model_deviation=true`
+  (#189). `Agent.run()` returns them in `row`, together with the version
+  record.
 
 Any change to code, a prompt asset, a fixed row, a config or the arm changes
 `base_agent_version`.
@@ -86,14 +96,19 @@ Any change to code, a prompt asset, a fixed row, a config or the arm changes
 
 | Config | Pin | First request (system / tools bytes, stub run) |
 |---|---|---|
-| `pi` | badlogic/pi-mono `d0aa218` (the sheet's pin and the #196 Pi pin) | ~2.7 KB / ~2.8 KB, 4 tools |
-| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | ~8.6 KB / ~36.1 KB, 11 tools |
+| `pi` | badlogic/pi-mono `d0aa218` (the sheet's pin and the #196 Pi pin) | 3009 / 3348 bytes, 5 tools: exact match with the real capture |
+| `opencode` | sst/opencode build `ba54cee5`, the #196 build (Researcher ruling 2026-10-30) | 8610 / 36071 bytes, 11 tools. System bytes are −1.33% against the capture because the Claude Code identity header is left out. Tool bytes match exactly. |
 
 Each `[rows.N]` entry holds three fields. `value` is what the module
 reproduces. `sheet` is the sheet's cell, copied exactly. `source` is the
 sheet's `*_src` cell, or the SC-1 addendum where SC-1 resolved a "not found"
 cell. A test checks every swappable row against
 `prereg/harness-components-2026-10-24.csv`.
+
+Tool specs (descriptions, schemas, strict-mode keys) come from each real
+harness's capture (`assets/<harness>/tools.json`). A test checks that each
+file equals the tools in its committed capture. Prompts are assembled from
+the upstream text at the pin.
 
 Each file's module docstring lists what the config does not reproduce yet
 (for example Pi's `keepRecentTokens`, OpenCode's LSP diagnostics and
@@ -151,14 +166,18 @@ report also shows:
 `captures/<config>/real.requests.jsonl` plus `capture.toml`; the format is in
 `captures/README.md`. The gate replays the capture's model, instruction and
 workdir through the base agent, and requires a PASS. It also requires that
-the capture's `harness_pin` equals the config's. **It fails until a real
-capture is committed for each harness**: a config does not count as built
-before that.
+the capture's `harness_pin` equals the config's. It fails for any harness config that has no committed capture.
 
-Pi has no stub-capture runner yet. `step8_stub_ready` drives only the
-OpenCode adapter. A Pi capture needs the same thing for `obench.adapters.pi`:
-point Pi's provider base URL at `build_check.CaptureStub` and save
-`stub.requests`.
+Pi: `step8_stub_ready` drives only the OpenCode adapter, so
+`python -m thesis.base_agent.capture_pi --cache <build_pi cache> --out captures/pi`
+does the same for Pi. It runs the pinned Pi binary through
+`obench.adapters.pi_harness` (the adapter the #196 Pi cells used) against
+`build_check.CaptureStub`. Pi's install root, which appears in its `<docs>`
+section, is recorded under `[env]` in `capture.toml` and replayed the same
+way as the workdir.
+
+Both captures were taken on 2026-10-30 at zero cost. With both committed,
+the gate passes.
 
 ## Implementation basis
 
@@ -173,7 +192,7 @@ Code code or prompt text is used.
 ```bash
 python3 -m unittest obench.tests.test_stage4_base_agent obench.tests.test_stage4_harness_configs \
     obench.tests.test_stage4_build_check -v
-python3 -m unittest obench.tests.test_stage4_build_gate -v   # red until real captures are committed
+python3 -m unittest obench.tests.test_stage4_build_gate -v
 ```
 
 The tests use a scripted model. They make no paid or live model calls.

@@ -116,7 +116,7 @@ class CaptureStub:
 
 
 def capture_base(config: str, arm: str, model: str, workdir: str | None = None,
-                 instruction: str = DEFAULT_INSTRUCTION) -> tuple[list[dict], dict]:
+                 instruction: str = DEFAULT_INSTRUCTION, env: dict | None = None) -> tuple[list[dict], dict]:
     """Run the base agent once against a capture stub. Returns the captured
     requests and the config's version record."""
     stub = CaptureStub()
@@ -125,7 +125,7 @@ def capture_base(config: str, arm: str, model: str, workdir: str | None = None,
         if workdir is None:
             tmp = tempfile.TemporaryDirectory(prefix="ac3-capture-")
             workdir = tmp.name
-        agent = Agent.from_config(config, arm, HttpModelClient(stub.url), model, workdir, instruction)
+        agent = Agent.from_config(config, arm, HttpModelClient(stub.url), model, workdir, instruction, env=env)
         agent.run()
         return list(stub.requests), agent.version
     finally:
@@ -288,8 +288,8 @@ CAPTURES = Path(__file__).resolve().parent / "captures"
 def gate(cfg: dict, capture_dir: Path, tolerance: float = TOLERANCE) -> dict:
     """The AC3 gate for one harness config: ``capture_dir`` holds the real
     harness's ``real.requests.jsonl`` and ``capture.toml``. Replays the
-    capture's model, instruction and workdir through the base agent (parity
-    arm) and compares. Raises ``ValueError`` when the capture is missing or
+    capture's model, instruction, workdir and ``[env]`` through the base
+    agent (parity arm) and compares. Raises ``ValueError`` when the capture is missing or
     was taken from another build than the config's ``harness_pin``."""
     real, meta_path = Path(capture_dir) / "real.requests.jsonl", Path(capture_dir) / "capture.toml"
     if not (real.is_file() and meta_path.is_file()):
@@ -299,7 +299,7 @@ def gate(cfg: dict, capture_dir: Path, tolerance: float = TOLERANCE) -> dict:
     if meta.get("harness_pin") != cfg.get("harness_pin"):
         raise ValueError(f"{cfg['name']}: capture pin {meta.get('harness_pin')} != config pin {cfg.get('harness_pin')}")
     reqs, version = capture_base(cfg["name"], "parity", meta["model"], meta.get("workdir"),
-                                 meta.get("instruction", DEFAULT_INSTRUCTION))
+                                 meta.get("instruction", DEFAULT_INSTRUCTION), meta.get("env"))
     base_m = measure(_body(main_request(reqs)))
     real_m = measure(_body(main_request(load_requests(real))))
     return {"config": cfg["name"], "version": version, "capture": meta,

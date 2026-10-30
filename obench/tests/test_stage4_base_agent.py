@@ -176,8 +176,25 @@ class FixedRowsAcrossConfigs(unittest.TestCase):
         for p in self.projections("swap").values():
             self.assertEqual({k for k in p if k.startswith("row")},
                              {f"row{r.row}" for r in non_swappable_rows()})
-            self.assertEqual(set(fully_fixed_slots()) - set(p), set())
+            anchored = {s for s, v in C.load_fixed()["slots"].items() if v.get("swap") == "anchor"}
+            self.assertEqual(set(fully_fixed_slots()) - anchored - set(p), set())
+            self.assertEqual(anchored, {"M4"})
             self.assertEqual(p["row19"]["still_exposed"], [])
+
+    def test_swap_holds_the_anchor_value_for_row_9(self):
+        """Row 9 ruling: swap configs hold the anchor's sampling; every config
+        sharing an anchor sends the same M4."""
+        fixed = C.load_fixed()
+        derived = C.load_config("base")
+        derived["name"], derived["anchor"] = "base-on-pi", "pi"
+        pi_swap = C.resolve(C.load_config("pi"), fixed, "swap")
+        derived_swap = C.resolve(derived, fixed, "swap")
+        self.assertEqual(C.anchor_projection(pi_swap, fixed), C.anchor_projection(derived_swap, fixed))
+        self.assertEqual(derived_swap["modules"]["M4"], C.load_config("pi")["parity"]["M4"])
+        self.assertEqual(derived_swap["anchor"], "pi")
+        base_swap = C.resolve(C.load_config("base"), fixed, "swap")
+        self.assertEqual(base_swap["modules"]["M4"]["params"], {"max_tokens": 32000})
+        self.assertIsNone(base_swap["anchor"])
 
     def test_parity_projection_leaves_out_harness_rows_even_when_not_overridden(self):
         fixed = C.load_fixed()
@@ -228,9 +245,10 @@ class VersionHash(unittest.TestCase):
     def test_record_fields_and_provisional_rows(self):
         r = self.record()
         for k in ("base_agent_version", "framework_hash", "config_hash", "fixed_hash", "resolved_hash", "fixed_rows_hash",
+                  "anchor_rows_hash", "anchor",
                   "arm", "harness", "harness_pin", "provisional_fixed_rows"):
             self.assertIn(k, r)
-        self.assertEqual(r["provisional_fixed_rows"], [9, 23, 24])
+        self.assertEqual(r["provisional_fixed_rows"], [23, 24])  # row 9 ruled 2026-10-30
 
     def test_framework_hash_covers_code_not_configs(self):
         files = {str(p.relative_to(C.PKG)) for p in C.framework_files()}

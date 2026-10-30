@@ -104,7 +104,7 @@ class EndToEnd(unittest.TestCase):
         real.write_text(json.dumps(body))  # a bare request body is accepted too
         rep = B.report(base, real, None)
         self.assertEqual(rep["verdict"], "FAIL")
-        self.assertEqual(rep["comparison"]["tool_names"]["extra_in_base"], ["edit", "write"])
+        self.assertEqual(rep["comparison"]["tool_names"]["extra_in_base"], ["edit", "write", "__pi_deferred_placeholder__"])
         self.assertEqual(len(rep["base"]["sha256"]), 64)
 
     def write_capture(self, name, body_edit=None, pin=None):
@@ -137,6 +137,16 @@ class EndToEnd(unittest.TestCase):
         cfg, d = self.write_capture("pi", pin="ba54cee55e18b47fb70badc84ae2cbac7c83d258")
         with self.assertRaisesRegex(ValueError, "capture pin"):
             B.gate(cfg, d)
+
+    def test_tool_assets_equal_the_committed_captures(self):
+        """assets/<harness>/tools.json is the capture's tools array, verbatim
+        (cache_control removed): the asset cannot drift from the evidence."""
+        for name in ("pi", "opencode"):
+            body = json.loads(B.main_request(B.load_requests(B.CAPTURES / name / "real.requests.jsonl"))["body"])
+            meta = C.load_toml(B.CAPTURES / name / "capture.toml")
+            text = (C.PKG / "assets" / name / "tools.json").read_text().replace("{{workdir}}", meta["workdir"])
+            self.assertEqual(json.loads(text), B._strip_cache(body["tools"]), name)
+            self.assertEqual(meta["harness_pin"], C.load_config(name)["harness_pin"])
 
     def test_captures_do_not_change_the_framework_hash(self):
         before = C.framework_hash()
