@@ -12,7 +12,7 @@ AGENT_IMAGE=h1-env:1022
 AGENT_DIGEST=$(sudo docker image inspect -f '{{.Id}}' "$AGENT_IMAGE")
 STAGE=$HOME/h2/checker-venvs
 if [ ! -d "$STAGE/torch-tensor-parallelism" ]; then
-  cid=$(sudo docker create h2-checker-venvs:latest)
+  cid=$(sudo docker create h2-checker-venvs:latest /bin/true)
   rm -rf "$STAGE"
   sudo docker cp "$cid":/opt/h2-checker-venvs "$STAGE"
   sudo docker rm "$cid" >/dev/null
