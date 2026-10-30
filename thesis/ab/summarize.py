@@ -193,10 +193,16 @@ def load_jsonl(path: Path) -> list[dict]:
         if not line.strip():
             continue
         rows.append(json.loads(line))
+    from obench.cell_columns import apply_folder_quarantine
+    apply_folder_quarantine(rows, path)
     return rows
 
 
 def countable(row: dict) -> bool:
+    """Solved and wrong-answer cells. Env failures, startup exits, and quarantines are out."""
+    from obench.cell_columns import excluded_from_scoring
+    if excluded_from_scoring(row):
+        return False
     return row.get("failure_class") not in EXCLUDED
 
 

@@ -130,6 +130,12 @@ def load_rows(paths):
                 row.setdefault("_source", path)
                 row.setdefault("_lineno", lineno)
                 rows.append(row)
+    from .cell_columns import apply_folder_quarantine
+    for path in paths:
+        apply_folder_quarantine(
+            [row for row in rows if row.get("_source") == path],
+            path,
+        )
     return rows
 
 
