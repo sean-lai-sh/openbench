@@ -1,0 +1,111 @@
+# Fixed and infra rows of the 34-row sheet, pinned once for every config.
+# Source: briefs/stage4-prereg-base-agent.md section 2 (status column).
+#
+# [slots.*]  fully fixed slots (every row fixed): M4, M12, M13. Harness
+#            configs cannot choose them; [parity.Mx] in a harness config
+#            replaces one only in the parity arm, and only when parity = "harness".
+# [rows.N]   every fixed or infra row. `set` / `drop_tools` change a module in
+#            a partly fixed slot. `parity = "enforce"` applies in both arms;
+#            `parity = "harness"` applies in the swap arm only.
+# status = "provisional" marks a value the Researcher has not ruled on yet. It
+# is logged per row as `provisional_fixed_rows` and must be cleared before
+# any scored cell.
+
+schema = 1
+
+[slots.M4]
+impl = "fixed"
+parity = "harness"
+status = "provisional"
+params = { max_tokens = 32000 }
+
+[slots.M12]
+impl = "backoff"
+parity = "enforce"
+status = "provisional"
+params = { max_attempts = 4, initial_s = 2.0, factor = 2.0, max_s = 30.0 }
+
+[slots.M13]
+impl = "allow_all"
+parity = "enforce"
+params = {}
+
+[rows.6]
+value = "All model traffic goes through the Vertex counting proxy (Anthropic Messages on /v1/messages)."
+
+[rows.7]
+value = "Base URL is the per-cell proxy URL; the proxy ledger is the token source of truth."
+
+[rows.9]
+slot = "M4"
+parity = "harness"
+status = "provisional"
+value = "Model, temperature and thinking budget held constant across swap configs. Provider defaults (no temperature, no thinking) until the Researcher pins values; parity arm reproduces each harness's own setting."
+
+[rows.14]
+slot = "M1"
+parity = "enforce"
+set = { memory_files = false }
+value = "Memory files off in every config and arm: write-back memory would leak across cells."
+
+[rows.18]
+value = "Runner container (h1-env) is the sandbox for every config."
+
+[rows.19]
+slot = "M2"
+parity = "harness"
+drop_tools = ["webfetch", "websearch"]
+value = "No web tools in swap configs (tasks have no network). The parity arm keeps the harness's web tool schemas so request bytes match."
+
+[rows.20]
+slot = "M2"
+parity = "enforce"
+set = { mcp = false }
+value = "No MCP, plugins or skills servers in any config."
+
+[rows.23]
+slot = "M11"
+parity = "enforce"
+status = "provisional"
+set = { max_steps = 1000 }
+value = "One global step cap for every config; the runner's 2400 s wall kill still applies. The harness's own cap is recorded in its config, not used."
+
+[rows.24]
+slot = "M12"
+parity = "enforce"
+value = "Same retry policy in every config ([slots.M12]); retries are logged as events."
+
+[rows.26]
+slot = "M13"
+parity = "enforce"
+value = "Allow-all, recorded per config."
+
+[rows.27]
+slot = "M13"
+parity = "enforce"
+value = "Never asks and never auto-rejects (matches the real-harness runs' auto-approve flags)."
+
+[rows.28]
+slot = "M13"
+parity = "enforce"
+value = "No path guards; the container is the boundary."
+
+[rows.29]
+slot = "M13"
+parity = "enforce"
+value = "No destructive-command blocking; blocks would be logged as permission_denied events."
+
+[rows.30]
+value = "Secret redaction is a logging concern (obench/scrub.py), not an agent knob."
+
+[rows.31]
+value = "No project-trust gate in the base agent."
+
+[rows.32]
+value = "Headless only: python -m thesis.base_agent.run."
+
+[rows.33]
+value = "Proxy ledger; every request carries X-OB-Call-Role (main, side:title, side:summary, side:subagent)."
+
+[rows.34]
+value = "Base agent is MIT (this repo). Vendored prompt text keeps its upstream MIT notice."
