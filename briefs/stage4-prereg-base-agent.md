@@ -120,7 +120,7 @@ Pi 10/10 vs OpenCode 3/10 (#196; Fisher p = 0.003) is the largest per-task split
 - **Real-harness arms:** Pi vs OpenCode #196 cells (after the 40 timeout cells are rerun on the #191-fixed runner) can serve as the real-harness side of parity **only if** the base-agent arm runs on the same runner commit, image, proxy, model and checker limits. Otherwise they stay as Stage 3 results and the real arm is rerun.
 - **H2 / hard-suite / 26821 reruns:** remain Stage 3 evidence; they are not parity data unless their harness gets a base-agent config run under identical conditions.
 - **Parts table (34 rows):** becomes the config spec; still needs Pi's column filled from proxy logs.
-- **Off-protocol data** (first OpenCode gate, pre-fix 26821 run): kept, never pooled.
+- **Off-protocol data** (first OpenCode gate; the pre-fix 26821 run in #135 only once Sean confirms the rerun): kept, never pooled.
 - **VM A/A check:** supplies the noise floor for behavioural flags.
 
 ## 4. Prior art (verified 2026-10-30)
