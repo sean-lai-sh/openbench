@@ -141,8 +141,9 @@ def baseline_from_docker(image: str, script: Path) -> str:
     """Run this script's capture inside a fresh container of ``image``."""
     if not shutil.which("docker"):
         raise SystemExit(f"docker is not available; cannot capture {image}")
+    sudo = ["sudo"] if os.environ.get("PROVE_DOCKER_SUDO") else []
     proc = subprocess.run(
-        [
+        sudo + [
             "docker", "run", "--rm", "--network", "none",
             "-v", f"{script.resolve()}:/prove-agent-image.py:ro",
             "--entrypoint", "python3", image,
@@ -154,6 +155,41 @@ def baseline_from_docker(image: str, script: Path) -> str:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise SystemExit(f"baseline capture in {image} failed: {detail}")
     return proc.stdout
+
+
+def agent_from_runner(harness: str, image: str, script: Path) -> tuple[str, list[str]]:
+    """Capture inside the exact ``docker run`` argv the cell runner builds.
+
+    Uses ``obench.docker_exec.build_docker_cmd`` for ``harness`` on ``image``
+    (same mounts, env, PATH and proxy-bridge args as a real cell), swapping
+    only the trailing ``entry.py`` command for this script's ``--capture``.
+    No model is called.
+    """
+    import tempfile
+    repo = Path(__file__).resolve().parents[3]
+    sys.path.insert(0, str(repo))
+    from obench import docker_exec
+
+    with tempfile.TemporaryDirectory(prefix="prove-agent-", dir=str(Path.home())) as tmp:
+        work = Path(tmp) / "work"
+        work.mkdir()
+        instr = Path(tmp) / "instruction.txt"
+        instr.write_text("capture only\n", encoding="utf-8")
+        cmd = docker_exec.build_docker_cmd(
+            harness, str(work), "capture-only", 60,
+            str(repo / "obench" / "adapters"), image, str(instr),
+        )
+        idx = len(cmd) - 1 - cmd[::-1].index(image)
+        argv = cmd[:idx] + [
+            "-v", f"{script.resolve()}:/prove-agent-image.py:ro",
+            "--entrypoint", "python3", image, "/prove-agent-image.py", "--capture",
+        ]
+        if os.environ.get("PROVE_DOCKER_SUDO"):
+            argv = ["sudo", "-E"] + argv
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        raise SystemExit(f"agent capture via runner argv failed: {(proc.stderr or proc.stdout).strip()}")
+    return proc.stdout, argv
 
 
 def baseline_from_python(python: str) -> str:
@@ -178,6 +214,11 @@ def main(argv=None) -> int:
         default="",
         help="capture the agent phase from this image (a fresh container, no checker venvs)",
     )
+    parser.add_argument(
+        "--agent-harness",
+        default="",
+        help="capture the agent phase from the runner's own docker argv for this harness (e.g. pi, opencode)",
+    )
     parser.add_argument("--baseline-image", default=AGENT_IMAGE)
     parser.add_argument("--baseline-python", default="", help="compare against this interpreter instead of docker")
     parser.add_argument("--baseline-file", default="", help="compare against a saved capture")
@@ -189,7 +230,10 @@ def main(argv=None) -> int:
     if args.capture:
         sys.stdout.write(capture_text())
         return 0
-    if args.agent_image:
+    if args.agent_harness:
+        agent, argv = agent_from_runner(args.agent_harness, args.agent_image or AGENT_IMAGE, Path(__file__).resolve())
+        print("agent argv: " + " ".join(argv), file=sys.stderr)
+    elif args.agent_image:
         agent = baseline_from_docker(args.agent_image, Path(__file__).resolve())
     else:
         agent = capture_text()
