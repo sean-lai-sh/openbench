@@ -170,7 +170,8 @@ the capture's `harness_pin` equals the config's. It fails for any harness config
 
 Pi: `step8_stub_ready` drives only the OpenCode adapter, so
 `python -m thesis.base_agent.capture_pi --cache <build_pi cache> --out captures/pi`
-does the same for Pi. It runs the pinned Pi binary through
+does the same for Pi. Pass `--binary <path>` instead of `--cache` to use a
+Pi that is already built at the pin, such as the #196 binary on the thesis VM. It runs the pinned Pi binary through
 `obench.adapters.pi_harness` (the adapter the #196 Pi cells used) against
 `build_check.CaptureStub`. Pi's install root, which appears in its `<docs>`
 section, is recorded under `[env]` in `capture.toml` and replayed the same
