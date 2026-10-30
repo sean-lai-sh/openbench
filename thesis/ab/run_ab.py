@@ -892,6 +892,8 @@ def execute_cell(spec: dict) -> None:
                 row["webfetch_seed"] = png_server.seed
                 row["webfetch_colour"] = png_server.colour
         apply_toolchain(row, spec.get("toolchain"), installed_text)
+        if isinstance(row, dict):
+            row["installed_anthropic"] = installed_anthropic_of(row, installed_text)
         toolchain_path = spec.get("toolchain_path")
         if toolchain_path:
             publish_side_toolchain(Path(toolchain_path), spec.get("toolchain"), installed_text)
@@ -1361,6 +1363,25 @@ def proven_provider_versions(path=None) -> dict:
             out[str(sha).lower()] = {"version": str(entry["provider_version"]),
                                      "source": str(entry.get("source") or "capture")}
     return out
+
+
+def installed_anthropic_of(row: dict, installed) -> str:
+    """The on-disk @ai-sdk/anthropic version for the cell row, or "none".
+
+    The adapter reports it; failing that, the toolchain or provider_versions
+    the runner recorded. Every cell row carries the column.
+    """
+    candidates = [installed]
+    toolchain = row.get("toolchain")
+    if isinstance(toolchain, dict):
+        candidates.append(toolchain.get("anthropic"))
+    versions = row.get("provider_versions")
+    if isinstance(versions, dict):
+        candidates.append(versions.get("@ai-sdk/anthropic"))
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "none"
 
 
 def fill_provenance_fallbacks(row: dict, spec: dict, versions_path=None) -> None:
