@@ -104,6 +104,27 @@ class Evidence(unittest.TestCase):
         self.assertEqual(row["load_proof"], "pass")
         self.assertNotIn("load_proof", _apply_load_proof({}))
 
+    def test_ledger_ua_records_basis_once_adapter_pin_is_carried(self):
+        from obench.run import apply_proxy_ledger, carry_load_proof_inputs
+        result = {"anthropic_pin": "2.0.58", "embedded_version": "2.0.58",
+                  "module_hook_log": None, "image_scan_copies": []}
+        ledger = [{"record_type": "request", "loaded_anthropic": "2.0.58"},
+                  {"record_type": "request", "loaded_anthropic": "2.0.58"}]
+        bare = apply_proxy_ledger({}, ledger)
+        self.assertIsNone(bare.get("load_proof_basis"))
+        row = apply_proxy_ledger(carry_load_proof_inputs({}, result), ledger)
+        self.assertEqual(row["loaded_anthropic"], "2.0.58")
+        self.assertEqual((row["load_proof_basis"], row["load_proof"]), ("user_agent", "pass"))
+        mixed = [{"record_type": "request", "loaded_anthropic": "2.0.58"},
+                 {"record_type": "request", "loaded_anthropic": "2.0.25"}]
+        row = apply_proxy_ledger(carry_load_proof_inputs({}, result), mixed)
+        self.assertEqual((row["load_proof_basis"], row["load_proof"]), ("user_agent", "fail"))
+
+    def test_carry_does_not_overwrite_row(self):
+        from obench.run import carry_load_proof_inputs
+        row = carry_load_proof_inputs({"anthropic_pin": "2.0.25"}, {"anthropic_pin": "2.0.58"})
+        self.assertEqual(row["anthropic_pin"], "2.0.25")
+
     def test_install_hook_writes_plugin(self):
         path = lp.install_hook(os.path.join(self.d, ".config"), os.path.join(self.d, "h.jsonl"))
         self.assertTrue(path.endswith("opencode/plugin/obench-load-proof.js"))
