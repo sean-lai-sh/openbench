@@ -4,7 +4,7 @@
 # SPEC line: <model> <pr> <pin> <rerun-from (container path)> [cells for --cells]
 # Refuses before launch on: spend self-test failure, image ID != DIG, no GCE metadata,
 # or any spec line whose pin differs from the rev2 pin table (pin_table_check.py).
-# Local guards: this VM's run spend >= STOPAT, disk < 15G, or any pair >= $1.00 (stops that container).
+# Local guards: this VM's run spend >= STOPAT or disk < 15G.
 # The binding combined $297-cumulative stop runs centrally (env_rerun_central.sh).
 set -u
 PFX=${PFX:-e1031}; STOPAT=${STOPAT:?set STOPAT = this VM share of the remaining headroom}
@@ -38,7 +38,7 @@ exec /venv/bin/python -m thesis.ab.run_ab /h2/h2prs.csv --pr $PR --trials 10 --t
  --order interleave-seeded --seed 1022 --runner-commit $OBENCH_RUNNER_COMMIT "${X[@]}" > $OUT/run.log 2>&1
 IN
 chmod +x $R/cell.sh
-log "start vm=$VMN instance_id=$IID code=$COMMIT image=$IMAGE@$DIG stop_at=\$$STOPAT pair_cap=\$1.00 spec=$(tr '\n' ';' < $SPEC)"
+log "start vm=$VMN instance_id=$IID code=$COMMIT image=$IMAGE@$DIG stop_at=\$$STOPAT spec=$(tr '\n' ';' < $SPEC)"
 NAMES=()
 while read -r m pr pin src cells; do
  [ -z "$m" ] && continue; n=$PFX-$m
@@ -51,7 +51,6 @@ while sudo docker ps -q -f name=$PFX- | grep -q .; do
  P=$(sudo python3 $H/pair_spend.py $R); C=$(echo "$P" | sed -n 's/^total=\([0-9.]*\).*/\1/p'); C=${C:-0}
  F=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
  echo "$(TZ=America/New_York date '+%F %T %Z') spend=\$$C $(echo "$P" | head -1 | cut -d' ' -f2-) free=${F}G" >> $R/spend.log
- echo "$P" | grep '^OVER' | while read -r _ m k v; do grep -qF "$k" $R/paircap.log 2>/dev/null || { log "PAIRCAP $k \$$v stop $PFX-$m"; echo "$k $v" >> $R/paircap.log; sudo docker stop -t 30 $PFX-$m; }; done
  if python3 -c "import sys;sys.exit(0 if $C>=$STOPAT else 1)"; then echo "STOP spend $C" > $R/STOPPED; sudo docker stop -t 30 "${NAMES[@]}"; fi
  [ ${F:-0} -lt 15 ] && { echo "STOP disk ${F}G" > $R/STOPPED; sudo docker stop -t 30 "${NAMES[@]}"; }
  sleep 60
