@@ -1274,6 +1274,9 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
         machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
     row["machine"] = machine.strip()
     row["vm_type"] = meta.get("vm_type")
+    # GCE identity from the driver (OBENCH_VM_NAME / OBENCH_INSTANCE_ID).
+    row["vm_name"] = meta.get("vm_name")
+    row["instance_id"] = meta.get("instance_id")
     # Cell container image tag (e.g. h1-env:1027-strace); set by the launcher.
     row["cell_image"] = meta.get("cell_image") or os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None
     flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()

@@ -39,6 +39,13 @@ class CellMetaInstanceTests(unittest.TestCase):
         self.assertIsNone(meta["vm_name"])
         self.assertIsNone(meta["instance_id"])
 
+    def test_row_carries_vm_name_and_instance_id(self):
+        row = {}
+        run_ab.attach_cell_meta(row, {"cell_meta": {"vm_name": "thesis-h1-cpu-3", "instance_id": "42"}},
+                                "2026-10-31T17:00:00+00:00")
+        self.assertEqual(row["vm_name"], "thesis-h1-cpu-3")
+        self.assertEqual(row["instance_id"], "42")
+
 
 if __name__ == "__main__":
     unittest.main()
