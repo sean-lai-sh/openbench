@@ -14,6 +14,7 @@ export OBENCH_ANTHROPIC_PIN=$PIN
 export OBENCH_GATE_CELL=1
 [ -x /venv/bin/python ] || { python3 -m venv /venv && /venv/bin/pip install -q -e /ob; }
 mkdir -p "$OUT"
+cd /ob
 echo "$OBENCH_RUNNER_COMMIT" > "$OUT/runner_commit.txt"
 echo "$OBENCH_CELL_IMAGE" > "$OUT/cell_image.txt"
 exec /venv/bin/python -m thesis.ab.run_ab /h2/h2prs.csv --pr "$PR" --trials 1 \
