@@ -1,0 +1,15 @@
+I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy`, and that matrix matches the true `A1` up to permuting and rescaling the rows. It runs in about 3 seconds.
+
+**How it works** (the script only calls `forward()`; it never reads the weights):
+1. Along 200 random lines through input space, the output changes in straight-line pieces. The script finds each bend by repeatedly splitting the line and checking whether the midpoint lies on the straight line between the ends. Each bend is where one hidden neuron switches on or off.
+2. It pins each bend down more precisely by intersecting the straight pieces on either side.
+3. It estimates the gradient just before and just after each bend. The jump between them equals `A2[i] * A1[i]`, which is row `i` of `A1` times a constant. The script normalises each jump to unit length and fixes its sign.
+4. It groups jump vectors that point the same way, which also tells it how many neurons there are (A1's shape was never given). It drops groups much smaller than the typical size as spurious and keeps the median vector of each group as one row.
+
+**Verification:** after running the script, I compared its output to the real `A1` in `forward.py`. Every recovered row lines up with a different true row, and every true row is matched, with cosine similarity above 0.999999999999.
+
+**Problems fixed along the way:**
+- The first version found only 19 neurons. The missed one has a very small output weight (`A2 ≈ 0.006`), so its bend was hard to detect. More lines and a stricter straightness check fixed that.
+- That change then produced one false row, caused by two bends sitting close together. Measuring gradients much closer to each bend removed it.
+
+All 20 groups now have 164–187 hits each, so there's a wide margin between real neurons and noise.

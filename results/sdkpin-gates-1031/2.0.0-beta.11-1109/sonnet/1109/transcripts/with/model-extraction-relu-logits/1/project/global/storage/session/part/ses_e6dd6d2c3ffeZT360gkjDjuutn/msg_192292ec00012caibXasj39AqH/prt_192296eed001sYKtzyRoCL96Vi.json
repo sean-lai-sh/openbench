@@ -1,0 +1,27 @@
+{
+  "id": "prt_192296eed001sYKtzyRoCL96Vi",
+  "messageID": "msg_192292ec00012caibXasj39AqH",
+  "sessionID": "ses_e6dd6d2c3ffeZT360gkjDjuutn",
+  "type": "tool",
+  "tool": "bash",
+  "callID": "toolu_vrtx_01HsMbbnYGch9oL8YC9Sf1tW",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-9xbubo_6/bench_opencode_model-extraction-relu-logits_um5qwkwo; cat > steal.py <<'EOF'\nimport os\nimport numpy as np\nfrom forward import forward\n\nD = 10\nH = 1e-8\nrng = np.random.default_rng(12345)\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\n\n\ndef grad(x):\n    f0 = forward(x)\n    g = np.empty(D)\n    for i in range(D):\n        e = np.zeros(D)\n        e[i] = H\n        g[i] = (forward(x + e) - f0) / H\n    return g\n\n\ndef find_kinks(p, d, R=4.0, N=400):\n    ts = np.linspace(-R, R, N)\n    fs = np.array([forward(p + t * d) for t in ts])\n    dt = ts[1] - ts[0]\n    s = np.diff(fs) / dt\n    res = []\n    for k in range(1, len(s)):\n        if abs(s[k] - s[k - 1]) > 1e-7:\n            a, b = ts[k - 1], ts[k + 1]\n            ga, gb = grad(p + a * d), grad(p + b * d)\n            if np.linalg.norm(ga - gb) < 1e-6:\n                continue\n            while b - a > 1e-5:\n                m = 0.5 * (a + b)\n                gm = grad(p + m * d)\n                if np.linalg.norm(ga - gm) > 1e-6:\n                    b, gb = m, gm\n                else:\n                    a, ga = m, gm\n            delta = gb - ga\n            if np.linalg.norm(delta) > 1e-5:\n                res.append(delta)\n    return res\n\n\ndirs = []\ncounts = []\nfor it in range(600):\n    p = rng.normal(size=D) * 0.5\n    d = rng.normal(size=D)\n    d /= np.linalg.norm(d)\n    for delta in find_kinks(p, d):\n        v = delta / np.linalg.norm(delta)\n        for j, (u, n) in enumerate(dirs):\n            c = np.dot(u, v)\n            if abs(c) > 0.9999:\n                v = v if c > 0 else -v\n                dirs[j] = ((u * n + v) / np.linalg.norm(u * n + v), n + 1)\n                break\n        else:\n            dirs.append((v, 1))\n    counts.append(len(dirs))\n    if it > 150 and counts[-1] == counts[-100]:\n        break\n\nA1 = np.array([u for u, n in dirs])\nnp.save(OUT, A1)\nprint(A1.shape)\nprint(A1)\nEOF\ntime python steal.py | head -3\npython -c \"\nimport numpy as np, forward\nS=np.load('stolen_A1.npy'); A=forward.A1\nA=A/np.linalg.norm(A,axis=1,keepdims=True)\nprint(S.shape, np.abs(S@A.T).max(0).min())\"",
+      "description": "Write and test steal.py"
+    },
+    "output": "<stdout>\n(53, 10)\n[[-3.08812757e-01  2.38756156e-01  1.23419751e-01 -4.07167917e-01\n   3.94448194e-01  5.02488806e-01  3.12425186e-01 -4.76875028e-02\n(53, 10) 0.9999999995530265\n\n</stdout>\n<stderr>\n\nreal\t0m25.149s\nuser\t0m26.535s\nsys\t0m0.032s\n\n</stderr>",
+    "metadata": {
+      "stderr": "\nreal\t0m25.149s\nuser\t0m26.535s\nsys\t0m0.032s\n",
+      "stdout": "(53, 10)\n[[-3.08812757e-01  2.38756156e-01  1.23419751e-01 -4.07167917e-01\n   3.94448194e-01  5.02488806e-01  3.12425186e-01 -4.76875028e-02\n(53, 10) 0.9999999995530265\n",
+      "exit": 0,
+      "description": "Write and test steal.py"
+    },
+    "title": "cd /tmp/obench-cell-9xbubo_6/bench_opencode_model-extraction-relu-logits_um5qwkwo; cat > steal.py <<'EOF'\nimport os\nimport numpy as np\nfrom forward import forward\n\nD = 10\nH = 1e-8\nrng = np.random.default_rng(12345)\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\n\n\ndef grad(x):\n    f0 = forward(x)\n    g = np.empty(D)\n    for i in range(D):\n        e = np.zeros(D)\n        e[i] = H\n        g[i] = (forward(x + e) - f0) / H\n    return g\n\n\ndef find_kinks(p, d, R=4.0, N=400):\n    ts = np.linspace(-R, R, N)\n    fs = np.array([forward(p + t * d) for t in ts])\n    dt = ts[1] - ts[0]\n    s = np.diff(fs) / dt\n    res = []\n    for k in range(1, len(s)):\n        if abs(s[k] - s[k - 1]) > 1e-7:\n            a, b = ts[k - 1], ts[k + 1]\n            ga, gb = grad(p + a * d), grad(p + b * d)\n            if np.linalg.norm(ga - gb) < 1e-6:\n                continue\n            while b - a > 1e-5:\n                m = 0.5 * (a + b)\n                gm = grad(p + m * d)\n                if np.linalg.norm(ga - gm) > 1e-6:\n                    b, gb = m, gm\n                else:\n                    a, ga = m, gm\n            delta = gb - ga\n            if np.linalg.norm(delta) > 1e-5:\n                res.append(delta)\n    return res\n\n\ndirs = []\ncounts = []\nfor it in range(600):\n    p = rng.normal(size=D) * 0.5\n    d = rng.normal(size=D)\n    d /= np.linalg.norm(d)\n    for delta in find_kinks(p, d):\n        v = delta / np.linalg.norm(delta)\n        for j, (u, n) in enumerate(dirs):\n            c = np.dot(u, v)\n            if abs(c) > 0.9999:\n                v = v if c > 0 else -v\n                dirs[j] = ((u * n + v) / np.linalg.norm(u * n + v), n + 1)\n                break\n        else:\n            dirs.append((v, 1))\n    counts.append(len(dirs))\n    if it > 150 and counts[-1] == counts[-100]:\n        break\n\nA1 = np.array([u for u, n in dirs])\nnp.save(OUT, A1)\nprint(A1.shape)\nprint(A1)\nEOF\ntime python steal.py | head -3\npython -c \"\nimport numpy as np, forward\nS=np.load('stolen_A1.npy'); A=forward.A1\nA=A/np.linalg.norm(A,axis=1,keepdims=True)\nprint(S.shape, np.abs(S@A.T).max(0).min())\"",
+    "time": {
+      "start": 1793453556947,
+      "end": 1793453582300
+    }
+  }
+}
