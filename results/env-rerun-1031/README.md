@@ -50,7 +50,7 @@ Data only. Nothing here was rerun to make this PR. All counts and dollar figures
 - **env-rerun-1031d-argfail:** 0 rows, $0. This was an earlier launch with the cell list passed inline; the container e1031e-opus exited 1 at 13:56. It was relaunched as env-rerun-1031d.
 - **VM2 cells-rerun-1031 (13090):** 4 infra rows, $1.2297. Code e1ea72f0.
   - ABORTED-wrong-pin: the driver set pin 2.0.25, but the 13090 pin is 2.0.58. Not counted.
-  - The ABORTED note says "8 infra rows, $3.04". Only 4 rows / $1.2297 are in this folder, and the committed figure is the measured one. The note's other rows are not in any copied folder.
+  - **Corrected (ruling d):** 4 infra rows / $1.2297. The note's old "8 infra rows, $3.04" combined this folder with VM3's same-wave 13331 run ($1.8083, 4 rows) from `box/central.log` 13:35:36 EDT: $1.2297 + $1.8083 = $3.038. The VM3 first-wave rows stayed on VM3 and are not in this PR. A correction is appended to the note.
 - **VM2 cells-smoke-1031d attempt 1:** name collision, $0.
 - **VM2 cells-rerun-1031e attempt 1:** launched only the first cell line, $0.
 
@@ -61,6 +61,15 @@ Data only. Nothing here was rerun to make this PR. All counts and dollar figures
 - 19 rows are regex-chess: with 1–10, and without 1–8 and 10.
 - 1 row is with/model-extraction-relu-logits/2. It also hit the 600 s checker timeout (env_cause=checker_timeout).
 - No Sonnet run has hang rows.
+- **Ruling (b): the watchdog is identical on both arms**, so hangs count as agent failures, kept in their own column.
+  - `run_ab --no-progress-s` defaults to 300 and is applied to every spec via `_fill` → `_export_no_progress` → env `OBENCH_NO_PROGRESS_S`. Both arms run in one run_ab process; `cell.sh` does not override it. The adapter (`opencode.py _no_progress_limit` → `cell_watch.run_piped`) reads it. Every hang row shows idle_s=300.x.
+  - Hang split: with 11 (regex-chess 10 + relu 1), without 9 (regex-chess).
+- **Opus 3052 comparison (180 rows; infra excluded from the denominator; hangs counted as failures):**
+
+| scope | with | without |
+|---|---|---|
+| all tasks | 33/81 = 0.407 (37 WA, 11 hang, 9 infra; $29.45) | 32/90 = 0.356 (46 WA, 3 timeout, 9 hang; $33.23) |
+| excluding regex-chess | 33/71 = 0.465 | 31/80 = 0.388 |
 
 ## Checker timeouts — 3 rows, env-rerun-1031d opus
 - These are without/model-extraction-relu-logits/7, 8 and 9, with outcome `timeout` and env_cause=checker_timeout.
@@ -73,7 +82,7 @@ Data only. Nothing here was rerun to make this PR. All counts and dollar figures
     - env-rerun-1031d opus, 4 rows: video-processing 2, 4, 5 and sam-cell-seg 1.
     - h2-hardsuite-1022 opus, 7 rows: video-processing 2, 3, 5, 6, 9, 10 and sam-cell-seg 3.
     - h2-hardsuite-1022 sonnet, 3 rows: video-processing 4, 8 and sam-cell-seg 8.
-  - **Plus 5 more** env-rerun-1031d opus rows written after the list was drafted: with/video-processing 6, 7, 8, 9 and 10. They have the same signature 400 and are marked "pending Researcher confirm" in `failure_basis.csv`.
+  - **Plus 5 more** env-rerun-1031d opus rows written after the list was drafted: with/video-processing 6, 7, 8, 9 and 10. They have the same signature 400. **Confirmed (ruling a):** each of the 9 env-rerun-1031d with-arm rows maps 1:1 to a ledger containing the exact string "Invalid 'signature' in 'thinking' block" (ledger ids in `failure_basis.csv` columns `ledger`/`ledger_evidence`). Rows without that exact string stay infra.
   - So all 9 env-rerun-1031d infra rows carry the basis.
 - **5140 infra row:** h2-hardsuite-1022/deferred-opus-attempt1, opus 5140 without/filter-js-from-html/1. It is infra_uncounted, signature_400_both_arms, and should be rerun with the 5140 group after its gate passes (not run).
 - **VM2 cells-rerun-1031c (13090), 4 infra rows:** $1.8284, code bfa88e4c. These cells were redone in cells-smoke-1031d (1 solved, $0.4374) and cells-rerun-1031e (4 solved, $1.3112).
@@ -97,7 +106,7 @@ All other rows match their ledger by unique fingerprint.
 - Results:
   - 338 rows backfilled, all pass.
   - The 4 VM2 cells-rerun-1031 rows are also UA 2.0.58 == the 13090 pin. They stay infra and not counted because the driver's pin env was wrong.
-  - 2 rows are not backfilled: Sonnet env-rerun-1031c with/regex-chess/2 and without/regex-chess/2. Neither has a matching ledger.
+  - 2 rows are not backfilled: Sonnet env-rerun-1031c with/regex-chess/2 and without/regex-chess/2. Neither has a matching ledger. **Ruling (c):** they are kept, marked `run_status=unproven_uncounted` in rows-all.csv, and added to the rerun batch (`sonnet-3052-missing.csv`, now 52).
 - Raw row JSONs still show load_proof_basis=None.
 
 ## 13090 deviation
@@ -109,20 +118,23 @@ All other rows match their ledger by unique fingerprint.
 - env-rerun-1031c sonnet has 44 solved, 76 wrong_answer, 10 infra. Spend $20.474.
 - The run was SIGSTOPped at 17:49:57 UTC and SIGCONTed at 17:54:42 UTC (`pause.log`).
 - The worker pool then died: `sonnet/run.log` shows KeyError '/mp-…' and `concurrent.futures.process.BrokenProcessPool`.
-- **50 cells have no row** (`sonnet-3052-missing.csv`, mostly trials 8–10). They were not rerun. That needs a separate go.
+- **50 cells have no row**, mostly trials 8–10. Together with the 2 unproven regex-chess/2 rows, they make up the 52-cell rerun list in `sonnet-3052-missing.csv`, which is rerun in a separate data PR.
 - 7 Sonnet orphan ledgers exist for in-flight cells.
 
 ## Spend (measured, row sums)
 | run | rows | $ | counted |
 |---|---|---|---|
 | VM1 env-rerun-1031b | 13 | 2.1914 | no (aborted) |
-| VM1 env-rerun-1031c (sonnet 130 + opus 9) | 139 | 23.4951 | yes |
+| VM1 env-rerun-1031c (sonnet 130 + opus 9) | 139 | 23.4951 | yes, except 2 unproven regex-chess/2 rows ($0.0503) |
 | VM1 env-rerun-1031d (opus) | 171 | 59.6586 | yes |
 | VM2 cells-rerun-1031 | 4 | 1.2297 | no (wrong pin) |
 | VM2 cells-rerun-1031c | 4 | 1.8284 | yes (infra rows) |
 | VM2 cells-smoke-1031d | 1 | 0.4374 | yes |
 | VM2 cells-rerun-1031e | 4 | 1.3112 | yes |
 | VM3 cells-rerun-1031c (opus 3 + sonnet 1, 13331) | 4 | 1.3505 | yes |
-| **total** | **340** | **91.5029** | counted 323 rows / 88.0818 |
+| **total** | **340** | **91.5029** | counted 321 rows / 88.0315 |
 
-The central $297 monitor (`box/central4.log`) last read cumulative $96.72 including PRIOR, using its own pair_spend accounting.
+**Central monitor reconciliation.** The true cumulative env spend is $12.30 (env spend before 10/31, per driver.sh "prior ~$12.3"; wave-1 PRIOR) + $91.50 (this PR) + $1.8083 (VM3's first-wave 13331 run, not copied) = **$105.61**.
+- The monitor under-read: its last line, `central4.log` 16:37 EDT, was $100.68 = PRIOR $17.53 (= $12.30 + wave 1: 1031b $2.19 + VM2 $1.23 + VM3 $1.81) + VM1 $83.15.
+- It logged the VM2/VM3 targets ($4.93) as `$?` → $0, because ssh to stopped VMs failed. The earlier $96.72 reading had the same defect.
+- It has been replaced by a monitor that polls only RUNNING VMs, uses a short ssh timeout, and holds a stopped VM's last value.
