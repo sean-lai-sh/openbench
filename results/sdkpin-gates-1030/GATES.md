@@ -22,3 +22,8 @@ Notes:
 - 2.0.0-beta.4: attempt2/ is the first run, where the manifest overrode the pin and installed beta.11 (invalid). The rerun with e3746feb completed only the with side before the total cap.
 - attempt1/: the first launch, preflight failures (missing worktrees).
 - Unhandled chunk type hits: none
+
+Follow-up (2026-10-30 21:45 EDT, no model calls):
+- attempt1/ and attempt2/ rows now carry the gate fields, with gate_pass=false and gate_excluded=true. The first beta.4 run (attempt2/) is excluded: the manifest overrode the pin and installed 2.0.0-beta.11.
+- The 4 PASS pins have installed_anthropic == pin on both arms. The loaded version is unproven on all 8 rows (strace off, provider_loaded_source=none).
+- 2.0.77 / 13331: both builds (ba54cee55e, 847e06f9e1) statically import @ai-sdk/anthropic 2.0.58 (BUNDLED_PROVIDERS in provider.ts, declared in packages/opencode/package.json), so the binary embeds 2.0.58 and never loads the cache pin. This gate ran on ff501756 (#207 at 305d0139, before e3746feb) with pin_source=lockfile. e3746feb changes only manifest precedence, so it does not fix this build.
