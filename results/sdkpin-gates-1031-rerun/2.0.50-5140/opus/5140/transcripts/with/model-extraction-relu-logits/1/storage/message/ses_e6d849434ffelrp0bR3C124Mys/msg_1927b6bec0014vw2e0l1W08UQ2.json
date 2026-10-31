@@ -1,0 +1,18 @@
+{
+  "id": "msg_1927b6bec0014vw2e0l1W08UQ2",
+  "sessionID": "ses_e6d849434ffelrp0bR3C124Mys",
+  "role": "user",
+  "time": {
+    "created": 1793458924524
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy` in about 2 seconds. I checked the result against the real `A1` in `forward.py`: every one of the 20 rows matches a true row with cosine similarity 1.0 (error around 1e-15), and the signs are right as well. The script itself never reads the weights; it only calls `forward()`.\n\nHow it works:\n\n1. **Finding kinks:** Along each of 30 random lines through input space, the output is piecewise linear in position, with a bend wherever a hidden neuron switches on or off. The script locates each bend by repeatedly halving intervals and intersecting the straight pieces on either side. I checked the bend positions it finds against the true ones on 30 test lines, and they agree to about 1e-9.\n2. **Recovering rows:** Just before and just after each bend, it measures the slope of the output in all 10 input directions. The difference between the two equals `A2[i] * A1[i]` for the neuron that switched, so it gives that row of `A1` up to scale. Rows found more than once are merged; there are 20 neurons, so `A1` is 20×10.\n3. **Fixing signs:** Flipping a row's sign gives a genuinely different network, because a ReLU is not symmetric. To choose the right signs, the script locates where each neuron switches and then searches for the set of flips that exactly explains the slopes measured at random points.\n\nEach saved row is scaled to length 1, which is allowed since the answer only has to match up to scaling and reordering of neurons.\n\nTwo limitations:\n- It only looks for bends within 30 units of each line's starting point. That's enough for these weights (all around 0.1), but a network with much larger biases could place some bends outside that range and those neurons would be missed.\n- The sign search tries every combination of flips, so it only runs if there are 26 neurons or fewer. With more, it skips the step and the rows may come out with the wrong sign.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

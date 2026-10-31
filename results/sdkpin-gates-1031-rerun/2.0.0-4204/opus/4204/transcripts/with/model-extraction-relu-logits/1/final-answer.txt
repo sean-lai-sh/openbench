@@ -1,0 +1,13 @@
+I wrote `steal.py` and ran it. It recovered all 20 hidden neurons from 41 random lines and saved a 20×10 matrix to `stolen_A1.npy`. When run, it also prints the matrix.
+
+**How it works (queries to `forward()` only):**
+1. Along a random line `x(t) = p + t·d`, the output changes linearly in `t` except where one neuron's input `A1_i·x + b1_i` crosses zero. At that point the slope changes.
+2. The script finds these points by repeatedly splitting the interval and intersecting the straight pieces until each change point is pinned down exactly.
+3. At each change point it estimates the gradient just before and just after, from small steps in each of the 10 input directions. The difference between the two gradients is `A2_i · A1_i`, which is row `i` of A1 times a scalar.
+4. Each row is scaled to unit length and given a fixed sign, and duplicates are dropped. It stops after 40 lines in a row turn up no new neuron.
+
+**Check:** As a one-off test, separate from `steal.py`, I compared the result with the real `A1` from `forward.py`. Every recovered row matches a real row, and every real row is matched, with absolute cosine similarity of 1.0000. `steal.py` itself never reads `A1` directly.
+
+Two limits:
+- Rows come back as unit vectors, and their sign may be flipped. That counts as scaling only if a negative scale factor is accepted.
+- Neurons that never switch on or off within the search range (`t` from −20 to 20 around random points) or that barely affect the output wouldn't be found. Here all 20 were.

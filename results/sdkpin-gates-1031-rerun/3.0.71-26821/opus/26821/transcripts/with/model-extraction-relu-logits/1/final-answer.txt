@@ -1,0 +1,14 @@
+I wrote `steal.py`, ran it, and it recovered all 20 hidden neurons. It saves the result as a 20×10 matrix to `stolen_A1.npy`.
+
+To check it, I compared the output against the true `A1` in `forward.py`. The script itself never reads the weights; it only calls `forward(x)`.
+- Each recovered row matches exactly one true row, and all 20 true neurons are covered.
+- Each recovered row lines up with its true row to within about 1e-16.
+- Within each matched pair, the element-by-element ratios differ by at most about 6e-7, so the scale factor is effectively constant across the row.
+- The script takes about 0.4 seconds.
+
+How it works:
+1. **Finding the kinks:** it walks along random straight lines through the input space and looks for points where the output's slope changes. Each of these lies on the boundary where one neuron switches on or off. A recursive search pins these points down by fitting a straight line to each side and checking that they meet where the function actually is.
+2. **Reading off a row:** at each such point, it estimates the gradient just before and just after, using finite differences. The difference between the two is that neuron's weight row multiplied by its output weight.
+3. **Merging duplicates:** it scales each row to unit length and treats rows pointing in the same direction as the same neuron, averaging repeat sightings. It stops once 15 lines in a row turn up no new neurons.
+
+The overall sign of each row isn't recovered. I flip each row so its largest entry is positive, so a row can come out as a negative multiple of the true one. That fits "equal up to scaling" if negative scale factors count. If your checker needs positive scale factors only, the signs would need extra work.

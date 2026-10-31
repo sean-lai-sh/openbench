@@ -1,0 +1,11 @@
+{
+  "id": "prt_1928f49a2001qYJVMyStjXZLgE",
+  "sessionID": "ses_e6d718835ffejua1wsFDKgJYiO",
+  "messageID": "msg_1928f288c001WKyFLt5wGmkewi",
+  "type": "text",
+  "text": "I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy`, and the matrix matches A1 up to the order of the rows and their scale.\n\n**How I checked it:** after running the script, I loaded the real `A1` from `forward.py` and compared it with the saved matrix. Each recovered row lines up with exactly one real row, with a cosine similarity of 0.9999999999999998 (1 means the same direction). The match holds in both directions: every recovered row matches a real neuron and every real neuron is recovered. The script itself only calls `forward()` and never reads the weights. It takes about a second to run.\n\n**How it works:**\n1. **Find the kinks:** I query `forward()` along random straight lines through the input space. Along a line the output is made of straight segments, and it bends wherever one hidden neuron switches on or off. The script finds these bends by repeatedly splitting the line in half, then pins each one down by working out where the straight segments on either side meet.\n2. **Read off the row:** at each bend, I estimate the gradient just before and just after it. The change in gradient points in the same direction as that neuron's row of A1, so I normalise it and fix its sign.\n3. **Filter:**\n   - I discard a bend if the gradient isn't constant on both sides of it, which happens when two bends are very close together.\n   - I merge directions that are nearly identical.\n   - I keep only directions seen more than once, since a real neuron shows up on many different lines.\n\nMy first version skipped the filtering step and returned 163 rows. All 20 real neurons were among them, but most of the rest were wrong. The filtering is what brings it down to exactly the 20 real ones.\n\n**Limitation:** a neuron that is never active, or never switches, anywhere along the lines tried wouldn't be found. The script searches lines from −50 to +50, which is much wider than these weights need, so this didn't happen here. I only tested against this one network.",
+  "time": {
+    "start": 1793460226554,
+    "end": 1793460226554
+  }
+}

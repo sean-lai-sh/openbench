@@ -1,0 +1,11 @@
+{
+  "id": "prt_19291648e001x26M9msLa9S8hU",
+  "sessionID": "ses_e6d705873ffeTrMjO6fGc41wFh",
+  "messageID": "msg_19291452e001A9HWyJ7S1SPREK",
+  "type": "text",
+  "text": "I wrote `steal.py`. It recovers A1 using only calls to `forward()`, and runs in about 2 seconds. Running it saves a 20×10 matrix to `stolen_A1.npy`.\n\n**Result:** each row matches one row of the true A1 after normalising both to unit length. The worst-case cosine similarity is 0.9999999999999987, so every recovered row equals a true row up to a positive scale factor and a reordering. The script also rebuilds the whole network from what it found, and the rebuild matches `forward()` to within 5e-9.\n\n**How it works:**\n1. **Find the kinks:** it searches along 60 random lines through input space for points where the output stops being linear. Each such point is where one hidden neuron switches on or off.\n2. **Read off each neuron's weights:** at each kink it measures the gradient just before and just after the point. The difference between the two points along that neuron's row of A1 (scaled by its output weight). Duplicate kinks from the same neuron are merged.\n3. **Fix the signs:** the measurements in step 2 only give each row up to a plus-or-minus sign. The script tries every combination of signs and keeps the one that correctly predicts the gradient at fresh random inputs. That leaves only a positive scale factor per row.\n\n**One fix along the way:** the first version reported 26 neurons instead of 20. The 6 extras came from places where two kinks sit very close together, which gave mixed readings. I added a check that the gradient stays constant on each side of a kink, and discards the kink if it doesn't. After that it found exactly 20.\n\nTo confirm the result I compared it against the real A1 in `forward.py`, but `steal.py` itself never reads it. The number of neurons wasn't given and is found automatically. Rows are normalised to unit length and their order is arbitrary.",
+  "time": {
+    "start": 1793460364500,
+    "end": 1793460364500
+  }
+}

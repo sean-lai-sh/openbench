@@ -1,0 +1,26 @@
+{
+  "id": "prt_192786197001fiw77YO2vGTDcl",
+  "sessionID": "ses_e6d87dbeaffe2t7c7RqAiLwNtY",
+  "messageID": "msg_192782f0c0010mpYi1GRgQ3hT6",
+  "type": "tool",
+  "callID": "toolu_vrtx_01NufcSgppcg4Cc23YF9c4ZE",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-t71nju0v/bench_opencode_model-extraction-relu-logits_yz6hciga/steal.py",
+      "content": "import os\nimport sys\n\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef line_fn(x0, d):\n    return lambda t: f(x0 + t * d)\n\n\ndef slope(g, t, side, h=1e-7):\n    if side > 0:\n        return (g(t + h) - g(t)) / h\n    return (g(t) - g(t - h)) / h\n\n\ndef find_kinks(g, a, b, depth=0, out=None):\n    if out is None:\n        out = []\n    if depth > 60 or b - a < 1e-9:\n        return out\n    fa, fb = g(a), g(b)\n    sa, sb = slope(g, a, +1), slope(g, b, -1)\n    scale = max(1.0, abs(sa), abs(sb))\n    if abs(sa - sb) < 1e-8 * scale:\n        mid = 0.5 * (a + b)\n        if abs(g(mid) - (fa + fb) / 2) < 1e-10 * max(1.0, abs(fa), abs(fb)):\n            return out\n    else:\n        tstar = (fb - fa + sa * a - sb * b) / (sa - sb)\n        if a < tstar < b:\n            pred = fa + sa * (tstar - a)\n            if abs(g(tstar) - pred) < 1e-9 * max(1.0, abs(pred)):\n                left_ok = abs(g(0.5 * (a + tstar)) - (fa + sa * (0.5 * (tstar - a)))) < 1e-9 * max(1.0, abs(fa))\n                right_ok = abs(g(0.5 * (tstar + b)) - (fb - sb * (0.5 * (b - tstar)))) < 1e-9 * max(1.0, abs(fb))\n                if left_ok and right_ok:\n                    out.append(tstar)\n                    return out\n    mid = 0.5 * (a + b)\n    find_kinks(g, a, mid, depth + 1, out)\n    find_kinks(g, mid, b, depth + 1, out)\n    return out\n\n\ndef gradient(x, h=1e-6):\n    g = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef row_at_kink(x0, d, t, delta=1e-3):\n    g1 = gradient(x0 + (t + delta) * d)\n    g2 = gradient(x0 + (t - delta) * d)\n    r = g1 - g2\n    n = np.linalg.norm(r)\n    if n < 1e-9:\n        return None\n    return r / n\n\n\ndef canonical(r):\n    i = np.argmax(np.abs(r))\n    return r * np.sign(r[i])\n\n\ndef steal(num_lines=60, T=50.0, patience=15):\n    rows = []\n    since_new = 0\n    for _ in range(num_lines * 10):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        g = line_fn(x0, d)\n        kinks = sorted(find_kinks(g, -T, T))\n        found_new = False\n        for t in kinks:\n            r = row_at_kink(x0, d, t)\n            if r is None:\n                continue\n            r = canonical(r)\n            matched = False\n            for k, (s, cnt) in enumerate(rows):\n                if np.abs(s / cnt - r).max() < 1e-3:\n                    rows[k] = (s + r, cnt + 1)\n                    matched = True\n                    break\n            if not matched:\n                rows.append((r, 1))\n                found_new = True\n        since_new = 0 if found_new else since_new + 1\n        if since_new >= patience:\n            break\n    A = np.array([s / c for s, c in rows if c >= 2] or [s / c for s, c in rows])\n    A /= np.linalg.norm(A, axis=1, keepdims=True)\n    return A\n\n\nif __name__ == \"__main__\":\n    A1 = steal()\n    print(A1.shape)\n    print(A1)\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-t71nju0v/bench_opencode_model-extraction-relu-logits_yz6hciga/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-t71nju0v/bench_opencode_model-extraction-relu-logits_yz6hciga/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793458736609,
+      "end": 1793458741033
+    }
+  }
+}
