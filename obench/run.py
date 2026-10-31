@@ -117,6 +117,7 @@ ROW_FIELDS = (
     "pin_source",
     "pin_source_class",
     "provider_loaded_version",
+    "loaded_anthropic",
     "installed_anthropic",
     "failure_subclass",
     "provider_loaded_source",
@@ -2021,6 +2022,9 @@ def apply_proxy_ledger(row, ledger_rows):
     # Provider-pacing wait injected by the proxy (sums over every request, not
     # just usage-bearing ones): the wait lands inside wall_time_s, so latency is
     # only comparable across paced and unpaced runs when this is subtracted.
+    # SDK version from each request's User-Agent (obench.provider_ua).
+    from obench.provider_ua import aggregate as _ua_aggregate
+    row["loaded_anthropic"] = _ua_aggregate(r.get("loaded_anthropic") for r in records) or None
     paced_ms = sum(r.get("paced_wait_ms") or 0 for r in records)
     row["paced_wait_s"] = round(paced_ms / 1000.0, 3)
     if not calls:

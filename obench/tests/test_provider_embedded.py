@@ -39,11 +39,11 @@ class ScanTest(unittest.TestCase):
 
 class GateTest(unittest.TestCase):
     def test_embedded_matching_pin_is_ok(self):
-        ok, why = judge({"probe_method": "embedded", "provider_loaded_version": "2.0.58"}, "2.0.58")
+        ok, why = judge({"loaded_anthropic": "2.0.58", "probe_method": "embedded", "provider_loaded_version": "2.0.58"}, "2.0.58")
         self.assertTrue(ok, why)
 
     def test_embedded_other_version_is_mismatch(self):
-        ok, why = judge({"probe_method": "embedded", "provider_loaded_version": "2.0.57"}, "2.0.58")
+        ok, why = judge({"loaded_anthropic": "2.0.58", "probe_method": "embedded", "provider_loaded_version": "2.0.57"}, "2.0.58")
         self.assertFalse(ok)
         self.assertIn("embedded loaded 2.0.57 != pin 2.0.58", why)
 
@@ -61,14 +61,14 @@ class GateTest(unittest.TestCase):
                     # layout: RUN/<pr>/cells/<side>/<task>/<cell>.json
                     cell = os.path.join(d, pr, "cells", side, "t", "c.json")
                     os.makedirs(os.path.dirname(cell), exist_ok=True)
-                    json.dump({"probe_method": method, "provider_loaded_version": "2.0.58",
+                    json.dump({"loaded_anthropic": "2.0.58", "probe_method": method, "provider_loaded_version": "2.0.58",
                                "route": "on:provider-options"}, open(cell, "w"))
             pins = {f"{pr}{s}": {s: {"packages": {"@ai-sdk/anthropic": "2.0.58"}}}
                     for pr, v in sides.items() for s in v}
             out, rc = evaluate(d, pins, sides)
             self.assertEqual(rc, 0, out["mismatch_sides"])
             self.assertEqual(out["sides_seen"], 22)
-            self.assertIn("embedded 2.0.58", {c["why"] for c in out["cells"]})
+            self.assertIn("user-agent 2.0.58, embedded 2.0.58", {c["why"] for c in out["cells"]})
 
 
 def _cells(d, routes):
@@ -99,7 +99,7 @@ class RouteTest(unittest.TestCase):
                     cell = os.path.join(d, pr, "cells", side, "t", "c.json")
                     os.makedirs(os.path.dirname(cell), exist_ok=True)
                     route = "off:base-url-env" if (i, side) == (0, "without") else "on:provider-options"
-                    json.dump({"probe_method": "strace", "provider_loaded_version": "2.0.0",
+                    json.dump({"loaded_anthropic": "2.0.0", "probe_method": "strace", "provider_loaded_version": "2.0.0",
                                "route": route}, open(cell, "w"))
             out, rc = evaluate(d, pins, sides)
             self.assertEqual(out["mismatch_sides"], ["100/without"])

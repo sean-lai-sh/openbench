@@ -34,6 +34,8 @@ import sys
 from datetime import datetime
 
 PROBE_METHODS = ("strace", "embedded")
+# Probe-only fields: optional now that the User-Agent proves the loaded SDK.
+PROBE_FIELDS = {"probe_method", "provider_loaded_version", "provider_loaded_source", "strace_on"}
 MAX_OFF_ROUTE_PER_SIDE = 2
 MAX_BAD_SIDES = 2
 SCORED_PER_SIDE = 30
@@ -181,20 +183,29 @@ def pin_for(pins: dict, sha: str, side: str) -> str:
 
 
 def judge(cell: dict, pin: str) -> tuple[bool, str]:
-    """(ok, why) for one gate cell against its pin."""
-    if cell.get("missing_fields"):
-        return False, "cell missing fields: " + ",".join(cell["missing_fields"])
+    """(ok, why) for one gate cell against its pin.
+
+    The pass condition is ``loaded_anthropic == pin``: the version in the
+    requests' ``ai-sdk/anthropic/X`` User-Agent, recorded by the proxy. A
+    strace/embedded probe is a second check: when it ran it must agree too.
+    """
+    missing = [k for k in cell.get("missing_fields") or () if k not in PROBE_FIELDS]
+    if missing:
+        return False, "cell missing fields: " + ",".join(missing)
+    ua = str(cell.get("loaded_anthropic") or "")
+    if not ua:
+        return False, "loaded_anthropic unproven (no ai-sdk/anthropic User-Agent)"
+    if not pin:
+        return False, f"no pin (User-Agent saw {ua})"
+    if ua != pin:
+        return False, f"User-Agent loaded {ua} != pin {pin}"
     method = cell.get("probe_method") or ""
     loaded = str(cell.get("provider_loaded_version") or "")
-    if method not in PROBE_METHODS or not loaded:
-        return False, "loaded version unproven"
     if cell.get("provider_loaded_mismatch"):
         return False, str(cell["provider_loaded_mismatch"])
-    if not pin:
-        return False, f"no pin ({method} saw {loaded})"
-    if loaded != pin:
-        return False, f"{method} loaded {loaded} != pin {pin}"
-    return True, f"{method} {loaded}"
+    if method in PROBE_METHODS and loaded and loaded != pin:
+        return False, f"{method} loaded {loaded} != pin {pin} (User-Agent {ua})"
+    return True, f"user-agent {ua}" + (f", {method} {loaded}" if method in PROBE_METHODS and loaded else "")
 
 
 def _how(route) -> str:
@@ -222,6 +233,7 @@ def evaluate(run_dir: str, pins: dict, sides: dict, later: bool = False) -> tupl
         rel = os.path.relpath(f, run_dir)
         cells.append(dict(cell=rel, pr=pr, side=side, sha=sha, pin=pin,
                           loaded=c.get("provider_loaded_version"),
+                          loaded_anthropic=c.get("loaded_anthropic"),
                           probe_method=c.get("probe_method") or "",
                           loaded_source=c.get("provider_loaded_source"),
                           mismatch_field=c.get("provider_loaded_mismatch"),

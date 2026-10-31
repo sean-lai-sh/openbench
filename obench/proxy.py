@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from obench import gateway_profiles, gateway_spec
+from obench.provider_ua import loaded_anthropic_from_ua
 from obench.gateway_metrics import sse_parser
 from obench.gateway_spec import TRACK, RoutePlan, SecretPlan
 
@@ -587,6 +588,7 @@ class CountingProxyHandler(BaseHTTPRequestHandler):
                 "sampling_source": "http_request" if sampling else (meta.get("source") if recorded_sampling else None),
                 "duration_ms": round((time.time() - started) * 1000),
                 "paced_wait_ms": round(locals().get("paced_wait_s", 0.0) * 1000),
+                "loaded_anthropic": loaded_anthropic_from_ua(self.headers.get("user-agent", "")) or None,
             }
             if route is not None:
                 rec["route"] = route.route

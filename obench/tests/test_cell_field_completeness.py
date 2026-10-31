@@ -7,7 +7,7 @@ from unittest import mock
 from thesis.ab import run_ab, step8_gate
 from obench.tests.test_phase_timing import TestPhaseTiming
 
-PROBED = {"provider_loaded_version": "2.0.0", "provider_loaded_source": "strace", "probe_method": "strace"}
+PROBED = {"loaded_anthropic": "2.0.0", "provider_loaded_version": "2.0.0", "provider_loaded_source": "strace", "probe_method": "strace"}
 SHA = {"with": "a" * 40, "without": "b" * 40}
 PINS = {s: {side: {"packages": {"@ai-sdk/anthropic": "2.0.0"}}} for side, s in SHA.items()}
 NOT_CELL = {"packages", "ok_prs", "mismatch_sides", "halted_at", "missing_fields"}
@@ -34,6 +34,7 @@ class CellFieldCompleteness(TestPhaseTiming):
             row = self._run_with_fakes(extra_result=dict(PROBED))
             row["requests_cost_usd"] = 0.1
             row["route"] = "on:provider-options"  # apply_cell_meter sets this from the ledger
+            row["loaded_anthropic"] = "2.0.0"  # apply_proxy_ledger sets this from the User-Agent
             run_ab.attach_cell_meta(row, spec, "2026-10-27T03:00:00-04:00")
             run_ab.attach_provider_pin(row, spec)
             run_ab.attach_required_fields(row, spec)
