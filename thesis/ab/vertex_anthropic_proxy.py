@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from obench.proxy import extract_usage
+from obench.provider_ua import loaded_anthropic_from_ua
 
 ANTHROPIC_VERSION = "vertex-2023-10-16"
 MODEL_ID = "claude-opus-5-5"
@@ -908,6 +909,7 @@ def _append_ledger(
     call_role: dict | None = None,
     stream: dict | None = None,
     no_usage: bool = False,
+    loaded_anthropic: str | None = None,
 ) -> None:
     path = (cell_no_usage_path if no_usage else cell_ledger_path)(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -946,6 +948,10 @@ def _append_ledger(
             row["call_role_reason"] = reason
     if isinstance(stream, dict):
         row["stream"] = stream
+    # Same field as ``obench/proxy.py`` (#218): the SDK version named by the
+    # caller's ``ai-sdk/anthropic/X`` User-Agent. Absent when none was sent.
+    if isinstance(loaded_anthropic, str) and loaded_anthropic:
+        row["loaded_anthropic"] = loaded_anthropic
     line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2195,6 +2201,11 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             self.wfile.write(b"\r\n")
             self.wfile.flush()
 
+        def _loaded_anthropic(self) -> str:
+            # The incoming request's User-Agent, before the neutral one is sent upstream.
+            headers = getattr(self, "headers", None)
+            return loaded_anthropic_from_ua(headers.get("User-Agent", "") if headers is not None else "")
+
         def _record(self, cell: str | None, usage: dict | None, status: int | None = None,
                     identity: dict | None = None, thinking_sent: str = "none",
                     call_role: dict | None = None, upstream_model_id: str | None = None,
@@ -2213,6 +2224,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 requested_model=requested_model,
                 endpoint_location=location,
                 call_role=call_role,
+                loaded_anthropic=self._loaded_anthropic(),
             )
 
         def _record_error(self, cell: str | None, status: int, payload: bytes | str,
@@ -2228,6 +2240,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 requested_model=requested_model,
                 endpoint_location=location,
                 call_role=call_role,
+                loaded_anthropic=self._loaded_anthropic(),
             )
 
         def _forward(self, url: str, headers: dict, body: bytes, cell: str | None, kind: str,

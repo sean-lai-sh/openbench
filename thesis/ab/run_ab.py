@@ -1833,6 +1833,10 @@ def apply_cell_meter(
         return row
     apply_proxy_ledger(row, records)
     attach_upstream_model(row, records)
+    from obench.provider_ua import aggregate as _ua_aggregate
+    row["loaded_anthropic"] = _ua_aggregate(
+        record.get("loaded_anthropic") for record in records if isinstance(record, dict)
+    ) or None
     row["proxy_cost_usd"] = proxy_cost_from_records(
         records, str(row.get("upstream_model") or ""),
     )
