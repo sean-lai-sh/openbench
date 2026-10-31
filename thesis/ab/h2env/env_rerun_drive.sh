@@ -2,6 +2,8 @@
 # H2 env-rerun driver (VM host). Produced env-rerun-1031c (3052) and the 13090/13331 --cells reruns.
 # usage: [PFX=name] [STOPAT=usd] env_rerun_drive.sh SPECFILE OUTDIR(relative to ~/h2)
 # SPEC line: <model> <pr> <pin> <rerun-from (container path)> [cells for --cells]
+# One cell per line is fine: spec_merge.py folds lines into one launch line per model
+# (cells comma-joined) and refuses a model set two ways. Every loop reads the merged spec.
 # Refuses before launch on: spend self-test failure, image ID != DIG, no GCE metadata,
 # or any spec line whose pin differs from the rev2 pin table (pin_table_check.py).
 # Local guards: this VM's run spend >= STOPAT or disk < 15G.
@@ -18,10 +20,12 @@ log(){ echo "$(TZ=America/New_York date '+%F %T %Z') $*" >> $R/driver.log; }
 python3 $H/spend_monitor.py --self-test >> $R/guard.log 2>&1 || { log "REFUSE self-test"; exit 8; }
 [ "$(sudo docker image inspect -f '{{.Id}}' $IMAGE)" = "$DIG" ] || { log "REFUSE image"; exit 8; }
 [ -n "$VMN" ] && [ -n "$IID" ] || { log "REFUSE metadata"; exit 8; }
+msg=$(python3 $H/spec_merge.py $SPEC $R/spec.merged.txt) || { log "$msg"; exit 9; }; log "$msg"
+MS=$R/spec.merged.txt
 while read -r m pr pin src cells; do
  [ -z "$m" ] && continue
- msg=$(python3 $H/pin_table_check.py --pr $pr --model $m --pin $pin) || { log "$msg"; exit 9; }; log "$msg"
-done < $SPEC
+ msg=$(python3 $H/pin_table_check.py --pr $pr --model $m --pin $pin </dev/null) || { log "$msg"; exit 9; }; log "$msg"
+done < $MS
 cp $SPEC $R/spec.txt
 cat > $R/cell.sh <<'IN'
 #!/bin/bash
@@ -38,15 +42,15 @@ exec /venv/bin/python -m thesis.ab.run_ab /h2/h2prs.csv --pr $PR --trials 10 --t
  --order interleave-seeded --seed 1022 --runner-commit $OBENCH_RUNNER_COMMIT "${X[@]}" > $OUT/run.log 2>&1
 IN
 chmod +x $R/cell.sh
-log "start vm=$VMN instance_id=$IID code=$COMMIT image=$IMAGE@$DIG stop_at=\$$STOPAT spec=$(tr '\n' ';' < $SPEC)"
+log "start vm=$VMN instance_id=$IID code=$COMMIT image=$IMAGE@$DIG stop_at=\$$STOPAT spec=$(tr '\n' ';' < $MS)"
 NAMES=()
 while read -r m pr pin src cells; do
  [ -z "$m" ] && continue; n=$PFX-$m
  sudo docker run -d --name $n --network host -e OBENCH_ADC_METADATA=1 -e GOOGLE_CLOUD_PROJECT=nyu-rdg-fy26-js11531-a68d -e VERTEX_LOCATION=global \
   -e OBENCH_VM_TYPE=n2-standard-16 -e OBENCH_VM_NAME=$VMN -e OBENCH_INSTANCE_ID=$IID -e TZ=America/New_York -e OBENCH_RUNNER_COMMIT=$COMMIT \
-  -e OBENCH_CELL_IMAGE=$IMAGE@$DIG -v $OB:/ob -v $HOME/h1:/h1 -v $HOME/h2:/h2 $IMAGE $GR/cell.sh claude-$m-5-5 $pr $pin $GR/$m $src "$cells" >> $R/driver.log
+  -e OBENCH_CELL_IMAGE=$IMAGE@$DIG -v $OB:/ob -v $HOME/h1:/h1 -v $HOME/h2:/h2 $IMAGE $GR/cell.sh claude-$m-5-5 $pr $pin $GR/$m $src "$cells" </dev/null >> $R/driver.log
  NAMES+=($n)
-done < $SPEC
+done < $MS
 while sudo docker ps -q -f name=$PFX- | grep -q .; do
  P=$(sudo python3 $H/pair_spend.py $R); C=$(echo "$P" | sed -n 's/^total=\([0-9.]*\).*/\1/p'); C=${C:-0}
  F=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
