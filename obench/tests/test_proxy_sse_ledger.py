@@ -12,8 +12,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from obench.tests.test_vertex_proxy_harness_api import STREAM, _Vertex, _event, _post
+from thesis.ab.run_ab import PROXY_TRACE_FIELDS, apply_cell_meter
 from thesis.ab.vertex_anthropic_proxy import (
+    LOCATION,
+    MODEL_ID,
     SseObserver,
+    _append_ledger,
+    cell_no_usage_path,
+    read_no_usage_records,
     sse_dump_cap,
     sse_dump_dir,
     start_proxy,
@@ -141,6 +147,91 @@ class ProxyLedgerTests(unittest.TestCase):
         dumped = (sse_dump_dir(ledger, "e1") / "0001.sse").read_bytes()
         self.assertTrue(dumped.startswith(ERRORED[:40]))
         self.assertIn(b"# truncated:", dumped)
+
+
+NO_USAGE = _event("error", {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})
+
+
+class NoUsageCountTests(unittest.TestCase):
+    """Streams with no usage must not move the fields the analysis already uses."""
+
+    FIELDS = ("proxy_requests", "untraced_requests", "requests_count", "trace_requests",
+              "off_protocol", "model_match_reason", "proxy_cost_usd", "requests_error",
+              "upstream_model", "requested_model", "endpoint_location", "route")
+
+    def ledger(self):
+        root = Path(tempfile.mkdtemp())
+        for _ in range(2):
+            _append_ledger(root, "c", {"input_tokens": 100, "output_tokens": 10},
+                           status=200, upstream_model=MODEL_ID, requested_model=MODEL_ID,
+                           endpoint_location=LOCATION, stream={"stop_reason": "end_turn"})
+        return root
+
+    def meter(self, root, require=True):
+        row = {"turns": 2}
+        return apply_cell_meter(row, {"ledger_dir": str(root), "cell_id": "c"},
+                                protocol_model=MODEL_ID, protocol_location=LOCATION,
+                                require_model_match=require)
+
+    def add_no_usage(self, root, n, model="some-other-model"):
+        for _ in range(n):
+            # A wrong model and location: if these rows were counted, the
+            # off_protocol and model-match checks would flip.
+            _append_ledger(root, "c", None, status=200, upstream_model=model,
+                           requested_model="x", endpoint_location="us-east5",
+                           stream={"stop_reason": None, "closed_before_stop": True},
+                           no_usage=True)
+
+    def test_existing_count_fields_ignore_no_usage_streams(self):
+        before = self.meter(self.ledger())
+        root = self.ledger()
+        self.add_no_usage(root, 3)
+        after = self.meter(root)
+        for key in self.FIELDS:
+            self.assertEqual(after.get(key), before.get(key), key)
+        self.assertEqual(after["proxy_requests"], 2)
+        self.assertEqual(after["requests_count"], 2)
+        self.assertEqual(after["untraced_requests"], 0)
+        self.assertFalse(after["off_protocol"])
+        self.assertIsNone(after["model_match_reason"])
+        self.assertEqual(before["proxy_requests_no_usage"], 0)
+        self.assertEqual(after["proxy_requests_no_usage"], 3)
+        self.assertEqual(after["proxy_stream_calls"], 5)
+        self.assertEqual(after["proxy_stream_closed_before_stop"], 3)
+        self.assertIn("proxy_requests_no_usage", PROXY_TRACE_FIELDS)
+
+    def test_no_usage_stream_costs_zero(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "c.jsonl").write_text("")
+        self.add_no_usage(root, 2, model=MODEL_ID)
+        row = self.meter(root, require=False)
+        self.assertEqual(row["proxy_cost_usd"], 0.0)
+        self.assertEqual(row["requests_count"], 0)
+        self.assertEqual(row["proxy_requests"], 0)
+        self.assertEqual(row["proxy_requests_no_usage"], 2)
+
+    def test_proxy_writes_no_usage_stream_to_sibling_file_only(self):
+        httpd, proxy, ledger = ProxyLedgerTests.start(self, {})
+        httpd.queue.append((NO_USAGE, True))
+        status, body = _post(proxy.base_url + "/c/n1/v1/messages", BODY)
+        self.assertEqual(body, NO_USAGE)
+        main = ledger / "n1.jsonl"
+        self.assertTrue(not main.exists() or main.read_text() == "")
+        rows = read_no_usage_records(ledger, "n1")
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("usage", rows[0])
+        self.assertTrue(rows[0]["stream"]["closed_before_stop"])
+        self.assertEqual(cell_no_usage_path(ledger, "n1").name, "n1.no_usage.jsonl")
+
+
+class ClientBytesTests(unittest.TestCase):
+    def test_client_bytes_identical_with_observer_and_dump_on(self):
+        for env in ({}, {"OBENCH_GATE_CELL": "1"}):
+            for body in (STREAM, REFUSAL, ERRORED):
+                httpd, proxy, _ledger = ProxyLedgerTests.start(self, env)
+                httpd.queue.append((body, True))
+                _status, got = _post(proxy.base_url + "/c/b1/v1/messages", BODY)
+                self.assertEqual(got, body)
 
 
 if __name__ == "__main__":

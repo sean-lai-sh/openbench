@@ -783,6 +783,33 @@ def cell_faults_path(directory: Path, cell_id: str) -> Path:
     return ledger.with_name(f"{ledger.stem}.faults.jsonl")
 
 
+def cell_no_usage_path(directory: Path, cell_id: str) -> Path:
+    """Sibling of the usage ledger for streamed requests that carried no usage.
+
+    The proxy used to drop those requests. They live here, not in the usage
+    ledger, so ``proxy_requests``, ``requests_count``, ``untraced_requests``
+    and the off_protocol and model-match checks keep counting only rows with
+    usage, as they did before the SSE record existed.
+    """
+    ledger = cell_ledger_path(Path(directory), cell_id)
+    return ledger.with_name(f"{ledger.stem}.no_usage.jsonl")
+
+
+def read_no_usage_records(directory: Path | str, cell_id: str) -> list[dict]:
+    path = cell_no_usage_path(Path(directory), cell_id)
+    if not path.is_file():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            rows.append(obj)
+    return rows
+
+
 def faults_served(directory: Path | str, cell_id: str) -> int:
     path = cell_faults_path(Path(directory), cell_id)
     if not path.is_file():
@@ -880,8 +907,9 @@ def _append_ledger(
     endpoint_location: str | None = None,
     call_role: dict | None = None,
     stream: dict | None = None,
+    no_usage: bool = False,
 ) -> None:
-    path = cell_ledger_path(Path(directory), cell_id)
+    path = (cell_no_usage_path if no_usage else cell_ledger_path)(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
     if isinstance(usage, dict):
         kept, timing = trim_ledger_usage(usage)
@@ -2178,7 +2206,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             if ledger is None or not cell or (not usage and not stream):
                 return
             _append_ledger(
-                ledger, cell, usage, status=status, identity=identity, stream=stream,
+                ledger, cell, usage or None, status=status, identity=identity, stream=stream,
+                no_usage=not usage,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
