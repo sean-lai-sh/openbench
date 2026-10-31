@@ -1,0 +1,2 @@
+for v in "" -2 -3; do gcloud compute scp /workspace/env1031b/rowcheck.py thesis-h1-cpu$v:h2/rowcheck.py --zone us-central1-a >/dev/null 2>&1
+ timeout 120 gcloud compute ssh thesis-h1-cpu$v --zone us-central1-a --command 'cd ~/h2; sudo python3 rowcheck.py $(ls -d env-rerun-1031c env-rerun-1031d cells-rerun-1031c 2>/dev/null | sed "s#^#$HOME/h2/#"); sudo docker ps --format "{{.Names}}" | paste -sd" "' 2>&1 | grep -v -i -e numpy -e "^WARNING" -e "External IP" -e please -e '^$'; done; tail -1 /workspace/env1031b/central3.log
