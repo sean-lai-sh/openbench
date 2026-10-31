@@ -2,6 +2,14 @@
 # H2 driver (VM host). Pre-reg v2 + A1 + A2, sha256 a8668fc6641bc9eeb855065688fbbc02a0d3754c0021013e5169b4b0b0b88814
 # Sean approved via PM 2026-10-22 (hard-suite cap $5K); executor stops at $1,000 combined model spend (watcher below) and reports.
 set -u
+# --- launch guard (added 2026-10-30, after the 1022 run; lines below it are the as-ran record, unchanged) ---
+# The 1022 run used the inline python spend sum in the watcher below. A NEW paid launch from this
+# file must first pass spend_monitor.py --self-test and must run on the exact h2-env:1022 image.
+H2_IMAGE_DIGEST=sha256:72c59033194aae26f6de67c62c77d742aef1d71849000e308f3ee875ff5169ff
+python3 ~/ob/thesis/ab/h2env/spend_monitor.py --self-test || { echo "REFUSE: spend_monitor.py --self-test failed" >&2; exit 8; }
+H2_IMAGE_GOT=$(sudo docker image inspect -f '{{.Id}}' h2-env:1022 2>/dev/null)
+[ "$H2_IMAGE_GOT" = "$H2_IMAGE_DIGEST" ] || { echo "REFUSE: h2-env:1022 is '${H2_IMAGE_GOT:-missing}', want $H2_IMAGE_DIGEST" >&2; exit 8; }
+# --- end launch guard ---
 cd ~/h2; echo "a8668fc6641bc9eeb855065688fbbc02a0d3754c0021013e5169b4b0b0b88814  hard-suite-prereg-v2.md" | sha256sum -c || exit 9
 R=$HOME/h2/h2-hardsuite-1022; mkdir -p $R
 echo "$(TZ=America/New_York date '+%F %T %Z') start H2 vm=n2-standard-16 runner=$(git -C ~/ob rev-parse HEAD) image=h2-env:1022($(sudo docker image inspect -f '{{.Id}}' h2-env:1022)) prereg_sha=a8668fc6 controls=2533,913,11731 jobs=4/model seed=1022" >> $R/driver.log
