@@ -313,6 +313,9 @@ def _executable(path, body):
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
+from obench.tests.test_sdk_preinstall import make_pin_root
+
+
 class CellTests(unittest.TestCase):
     def _proxy(self, bun):
         return {
@@ -326,6 +329,7 @@ class CellTests(unittest.TestCase):
             "provider_pins": {"@ai-sdk/anthropic": "2.0.0"},
             "provider_pin_sha256": "abc",
             "pin_source": "lockfile",
+            "pin_root": str(make_pin_root(Path(bun).parent / "pins", "2.0.0")),
         }
 
     def _bun(self, root):

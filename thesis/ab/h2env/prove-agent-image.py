@@ -87,6 +87,7 @@ def _import_line(python: str, module: str) -> str:
         "    print('imported')\n"
         "except Exception as exc:\n"
         "    print(type(exc).__name__)\n"
+        "    sys.exit(1)\n"
     )
     code_rc, out, err = _run([python, "-c", code], timeout=60)
     kind = (out.strip().splitlines() or [""])[-1].strip()

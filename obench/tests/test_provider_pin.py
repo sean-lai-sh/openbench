@@ -261,6 +261,9 @@ class GuardTests(unittest.TestCase):
         self.assertTrue((template / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").is_file())
 
 
+from obench.tests.test_sdk_preinstall import make_pin_root
+
+
 class CellAbortTests(unittest.TestCase):
     def _proxy(self, root: Path, bun: Path) -> dict:
         from thesis.ab.provider_pin import pin_sha256
@@ -277,6 +280,13 @@ class CellAbortTests(unittest.TestCase):
             "provider_pin_sha256": pin_sha256(packages),
             "pin_store": str(root / "provider-pins"),
             "pin_source": "vm_quarantine_log",
+            # A fake bun that would install the pin stands for a provisioned
+            # pin root; a no-op bun stands for a pin that was never provisioned.
+            "pin_root": str(
+                make_pin_root(root / "pin-root", "2.0.0")
+                if "@ai-sdk/anthropic@" in Path(bun).read_text(encoding="utf-8")
+                else root / "pin-root"
+            ),
         }
 
     def _binary(self, path: Path, started: Path, request: Path, body: str) -> None:
@@ -342,8 +352,10 @@ class CellAbortTests(unittest.TestCase):
         row = self._run(root, binary, bun)
         self.assertFalse(started.exists())
         self.assertEqual(row["failure_class"], "infra")
-        self.assertIn("provider_pin_mismatch", row["failure_reason"])
-        self.assertIn("empty cache", row["failure_reason"])
+        self.assertIn("sdk drift", row["failure_reason"])
+        self.assertIn("missing != pin 2.0.0", row["failure_reason"])
+        self.assertIs(row["env_failure"], True)
+        self.assertEqual(row["env_cause"], "provider_sdk_drift")
         self.assertFalse(row["success"])
         self.assertTrue(row["provider_pin_sha256"])
         self.assertEqual(row["pin_source"], "vm_quarantine_log")

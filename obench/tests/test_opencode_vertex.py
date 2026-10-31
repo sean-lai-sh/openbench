@@ -590,242 +590,47 @@ class TestAssessment(unittest.TestCase):
 
 
 class TestProviderSdkPin(unittest.TestCase):
-    def test_install_uses_the_pin_and_an_absolute_bun(self):
+    """The pin is copied from the read-only pin root; bun is never run."""
+
+    def _seed(self, version, **proxy_extra):
         import obench.adapters.opencode as opencode
-        origin = Path.cwd()
-        repo = Path(tempfile.mkdtemp())
-        os.chdir(repo)
-        self.addCleanup(os.chdir, origin)
-        args_file = repo / "args.txt"
-        bun = repo / "results" / "opencode-src" / "bun" / "1.2.14" / "bun"
-        bun.parent.mkdir(parents=True)
-        bun.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
-            import os, pathlib, sys
-            args = sys.argv[1:]
-            dest = pathlib.Path(os.environ["BUN_ARGS"])
-            previous = dest.read_text(encoding="utf-8") if dest.is_file() else ""
-            dest.write_text(previous + "\\n".join(args) + "\\n", encoding="utf-8")
-            for arg in args:
-                if arg.startswith("@ai-sdk/anthropic@"):
-                    version = arg.rsplit("@", 1)[1]
-                    module = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
-                    module.parent.mkdir(parents=True, exist_ok=True)
-                    module.write_text('{"version": "%s"}' % version, encoding="utf-8")
-        """), encoding="utf-8")
-        bun.chmod(0o755)
-        home = Path(tempfile.mkdtemp())
+        from obench.tests.test_sdk_preinstall import make_pin_root, never_bun
+        tmp = Path(tempfile.mkdtemp())
+        home = tmp / "xdg"
         env = os.environ.copy()
         env["XDG_CACHE_HOME"] = str(home)
-        env["BUN_ARGS"] = str(args_file)
+        marker = tmp / "bun-ran"
         proxy = {
             "needs_sdk": True,
-            "bun": "results/opencode-src/bun/1.2.14/bun",
-            "anthropic_sdk": "1.2.12",
-            "cache_version": "1",
+            "bun": str(never_bun(tmp, marker)),
+            "anthropic_sdk": version,
+            "pin_root": str(make_pin_root(tmp / "pins", version)),
+            **proxy_extra,
         }
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "1.2.12")
+        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), version)
+        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), version)
+        self.assertFalse(marker.exists(), "bun must not run at cell start")
         self.assertEqual(env["OPENCODE_DISABLE_DEFAULT_PLUGINS"], "1")
+        self.assertEqual(opencode._provider_sdk_drift(env, proxy), "")
+        saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
+        return home, saved["dependencies"]["@ai-sdk/anthropic"]
+
+    def test_seeded_pin_records_the_alias_gate(self):
+        home, dep = self._seed("1.2.12", cache_version="1")
+        self.assertEqual(dep, "latest")
         self.assertEqual((home / "opencode" / "version").read_text(encoding="utf-8"), "1")
-        cache = os.path.abspath(str(home / "opencode"))
-        self.assertEqual(
-            args_file.read_text(encoding="utf-8").splitlines(),
-            ["add", "--force", "--exact", "--cwd", cache, "@ai-sdk/anthropic@1.2.12"],
-        )
-        saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "latest")
-        installed = json.loads(
-            (home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(installed["version"], "1.2.12")
 
-    def test_beta_install_alias_keeps_the_pin(self):
+    def test_seeded_beta_pin_records_the_beta_alias(self):
+        _home, dep = self._seed("2.0.0-beta.11", sdk_install_alias="beta", cache_version="3")
+        self.assertEqual(dep, "beta")
+
+    def test_seeded_outdated_gate_records_the_sentinel(self):
         import obench.adapters.opencode as opencode
-        origin = Path.cwd()
-        repo = Path(tempfile.mkdtemp())
-        os.chdir(repo)
-        self.addCleanup(os.chdir, origin)
-        args_file = repo / "args.txt"
-        bun = repo / "results" / "opencode-src" / "bun" / "1.2.14" / "bun"
-        bun.parent.mkdir(parents=True)
-        bun.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
-            import os, pathlib, sys
-            args = sys.argv[1:]
-            dest = pathlib.Path(os.environ["BUN_ARGS"])
-            previous = dest.read_text(encoding="utf-8") if dest.is_file() else ""
-            dest.write_text(previous + "\\n".join(args) + "\\n", encoding="utf-8")
-            for arg in args:
-                if arg.startswith("@ai-sdk/anthropic@"):
-                    version = arg.rsplit("@", 1)[1]
-                    module = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
-                    module.parent.mkdir(parents=True, exist_ok=True)
-                    module.write_text('{"version": "%s"}' % version, encoding="utf-8")
-        """), encoding="utf-8")
-        bun.chmod(0o755)
-        home = Path(tempfile.mkdtemp())
-        env = os.environ.copy()
-        env["XDG_CACHE_HOME"] = str(home)
-        env["BUN_ARGS"] = str(args_file)
-        proxy = {
-            "needs_sdk": True,
-            "bun": "results/opencode-src/bun/1.2.14/bun",
-            "anthropic_sdk": "2.0.0-beta.11",
-            "sdk_install_alias": "beta",
-            "cache_version": "3",
-        }
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.0-beta.11")
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.0-beta.11")
-        self.assertEqual((home / "opencode" / "version").read_text(encoding="utf-8"), "3")
-        self.assertEqual(env["OPENCODE_DISABLE_DEFAULT_PLUGINS"], "1")
-        saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "beta")
-        installed = json.loads(
-            (home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8")
+        _home, dep = self._seed(
+            "2.0.77", sdk_install_alias="latest", sdk_install_gate="outdated", cache_version="21",
         )
-        self.assertEqual(installed["version"], "2.0.0-beta.11")
+        self.assertEqual(dep, opencode.OUTDATED_GATE_RECORD)
 
-    def _strict_bun(self, repo):
-        """Install 4.0.87 unless --exact is set, and only under --cwd.
-
-        A second invocation installs latest, which is what bun does when the
-        cache dependency is already the dist-tag or the outdated-gate sentinel.
-        ``BUN_ISOLATED=1`` writes the pin under node_modules/.bun and leaves
-        the hoisted path empty.
-        """
-        bun = repo / "results" / "opencode-src" / "bun" / "1.3.2" / "bun"
-        bun.parent.mkdir(parents=True)
-        bun.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
-            import os, pathlib, sys
-            args = sys.argv[1:]
-            dest = pathlib.Path(os.environ["BUN_ARGS"])
-            previous = dest.read_text(encoding="utf-8") if dest.is_file() else ""
-            dest.write_text(previous + "\\n".join(args) + "\\n", encoding="utf-8")
-            spec = next((arg for arg in args if arg.startswith("@ai-sdk/anthropic@")), "")
-            version = spec.rsplit("@", 1)[1] if spec else ""
-            cache = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "opencode"
-            cwd = ""
-            if "--cwd" in args:
-                cwd = args[args.index("--cwd") + 1]
-            if not cwd or os.path.abspath(cwd) != os.path.abspath(cache):
-                raise SystemExit(0)
-            if "--exact" not in args or previous or not version:
-                version = "4.0.87"
-            if os.environ.get("BUN_ISOLATED") == "1":
-                module = (
-                    cache / "node_modules" / ".bun" / ("@ai-sdk+anthropic@" + version)
-                    / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
-                )
-            else:
-                module = cache / "node_modules" / "@ai-sdk" / "anthropic" / "package.json"
-            module.parent.mkdir(parents=True, exist_ok=True)
-            module.write_text('{"version": "%s", "name": "@ai-sdk/anthropic"}' % version, encoding="utf-8")
-            (module.parent / "index.js").write_text("module.exports = {}\\n", encoding="utf-8")
-        """), encoding="utf-8")
-        bun.chmod(0o755)
-        return bun
-
-    def test_exact_install_keeps_alias_gate_on_the_pin(self):
-        """PR 4204 embeds bun and skips install only when the dep is ``latest``.
-
-        Without ``--exact`` the same command leaves npm ``latest`` (4.0.87).
-        """
-        import obench.adapters.opencode as opencode
-        origin = Path.cwd()
-        repo = Path(tempfile.mkdtemp())
-        os.chdir(repo)
-        self.addCleanup(os.chdir, origin)
-        args_file = repo / "args.txt"
-        self._strict_bun(repo)
-        home = Path(tempfile.mkdtemp())
-        env = os.environ.copy()
-        env["XDG_CACHE_HOME"] = str(home)
-        env["BUN_ARGS"] = str(args_file)
-        proxy = {
-            "needs_sdk": False,
-            "bun": "results/opencode-src/bun/1.3.2/bun",
-            "anthropic_sdk": "2.0.0",
-            "sdk_install_alias": "latest",
-            "sdk_install_gate": "alias",
-            "cache_version": "9",
-        }
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.0")
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.0")
-        saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "latest")
-        installed = json.loads(
-            (home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(installed["version"], "2.0.0")
-        self.assertEqual((home / "opencode" / "version").read_text(encoding="utf-8"), "9")
-        self.assertEqual(args_file.read_text(encoding="utf-8").count("@ai-sdk/anthropic@2.0.0"), 1)
-        self.assertIn("exact = true", (home / "opencode" / "bunfig.toml").read_text(encoding="utf-8"))
-
-    def test_outdated_gate_records_a_sentinel_and_keeps_the_pin(self):
-        """PR 13331 treats ``latest`` as stale and reinstalls, or drops the package."""
-        import obench.adapters.opencode as opencode
-        from thesis.ab.sdk_pin import OUTDATED_GATE_RECORD
-        origin = Path.cwd()
-        repo = Path(tempfile.mkdtemp())
-        os.chdir(repo)
-        self.addCleanup(os.chdir, origin)
-        args_file = repo / "args.txt"
-        self._strict_bun(repo)
-        home = Path(tempfile.mkdtemp())
-        env = os.environ.copy()
-        env["XDG_CACHE_HOME"] = str(home)
-        env["BUN_ARGS"] = str(args_file)
-        proxy = {
-            "needs_sdk": False,
-            "bun": "results/opencode-src/bun/1.3.2/bun",
-            "anthropic_sdk": "2.0.77",
-            "sdk_install_alias": "latest",
-            "sdk_install_gate": "outdated",
-            "cache_version": "21",
-        }
-        self.assertEqual(opencode.OUTDATED_GATE_RECORD, OUTDATED_GATE_RECORD)
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.77")
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.77")
-        saved = json.loads((home / "opencode" / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved["dependencies"]["@ai-sdk/anthropic"], "999.0.0")
-        installed = json.loads(
-            (home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic" / "package.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(installed["version"], "2.0.77")
-        self.assertEqual((home / "opencode" / "version").read_text(encoding="utf-8"), "21")
-        self.assertEqual(args_file.read_text(encoding="utf-8").count("@ai-sdk/anthropic@2.0.77"), 1)
-        self.assertEqual(opencode._provider_sdk_drift(env, proxy), "")
-
-    def test_isolated_bun_store_is_copied_to_the_hoisted_path(self):
-        """PR 26821 has no BunProc.install for this package. A store-only add is missing."""
-        import obench.adapters.opencode as opencode
-        origin = Path.cwd()
-        repo = Path(tempfile.mkdtemp())
-        os.chdir(repo)
-        self.addCleanup(os.chdir, origin)
-        args_file = repo / "args.txt"
-        self._strict_bun(repo)
-        home = Path(tempfile.mkdtemp())
-        env = os.environ.copy()
-        env["XDG_CACHE_HOME"] = str(home)
-        env["BUN_ARGS"] = str(args_file)
-        env["BUN_ISOLATED"] = "1"
-        proxy = {
-            "needs_sdk": False,
-            "bun": "results/opencode-src/bun/1.3.2/bun",
-            "anthropic_sdk": "2.0.77",
-            "sdk_install_alias": "latest",
-            "sdk_install_gate": "alias",
-            "cache_version": "",
-        }
-        self.assertEqual(opencode._ensure_provider_sdk(env, proxy), "2.0.77")
-        hoisted = home / "opencode" / "node_modules" / "@ai-sdk" / "anthropic"
-        installed = json.loads((hoisted / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(installed["version"], "2.0.77")
-        self.assertTrue((hoisted / "index.js").is_file())
-        self.assertEqual(opencode._provider_sdk_drift(env, proxy), "")
 
     def test_sdk_drift_names_the_installed_version(self):
         import obench.adapters.opencode as opencode

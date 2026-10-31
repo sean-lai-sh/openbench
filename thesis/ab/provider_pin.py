@@ -203,9 +203,14 @@ def apply_provider_pin(proxy: dict, cache, sha: str, side: str = "", pr: str = "
     refuses ``latest``. ``pin_source`` records which of those produced the pin.
     """
     proxy = dict(proxy)
-    found = lookup_entry(sha, side, pr)
+    # An explicit OBENCH_ANTHROPIC_PIN (gate cells) beats the manifest too.
+    override = os.environ.get("OBENCH_ANTHROPIC_PIN", "").strip()
+    found = None if override else lookup_entry(sha, side, pr)
     packages = dict(found["packages"]) if found else None
     source = pin_source_for(found.get("entry") if found else None)
+    if override:
+        packages = {"@ai-sdk/anthropic": override}
+        source = "override"
     if not packages:
         pin = str(proxy.get("anthropic_sdk") or "").strip()
         if pin and pin != "latest":
