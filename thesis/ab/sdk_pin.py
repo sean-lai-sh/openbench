@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -198,8 +199,20 @@ def cache_dependency_record(alias: str, gate: str) -> str:
     return text or "latest"
 
 
+# Explicit pin for gate cells and pinned reruns: when set, this exact
+# `@ai-sdk/anthropic` version is used for every build instead of the
+# lockfile/registry choice below.
+PIN_OVERRIDE_ENV = "OBENCH_ANTHROPIC_PIN"
+
+
 def anthropic_pin_for_tree(root: Path, registry: dict[str, str] | None = None) -> str | None:
-    """Read `bun.lock` when it exists. Fall back to an exact package.json pin."""
+    """Read `bun.lock` when it exists. Fall back to an exact package.json pin.
+
+    ``OBENCH_ANTHROPIC_PIN`` overrides both with an explicit version.
+    """
+    override = os.environ.get(PIN_OVERRIDE_ENV, "").strip()
+    if override:
+        return override
     root = Path(root)
     lock_path = root / "bun.lock"
     if lock_path.is_file():

@@ -232,3 +232,18 @@ class SignatureReplayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnthropicPinOverrideTests(unittest.TestCase):
+    def test_env_override_beats_lockfile(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from thesis.ab.sdk_pin import anthropic_pin_for_tree
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text('{"dependencies": {"@ai-sdk/anthropic": "1.2.12"}}')
+            with patch.dict("os.environ", {"OBENCH_ANTHROPIC_PIN": ""}):
+                self.assertEqual(anthropic_pin_for_tree(root, registry={}), "1.2.12")
+            with patch.dict("os.environ", {"OBENCH_ANTHROPIC_PIN": "2.0.0-beta.4"}):
+                self.assertEqual(anthropic_pin_for_tree(root, registry={}), "2.0.0-beta.4")
