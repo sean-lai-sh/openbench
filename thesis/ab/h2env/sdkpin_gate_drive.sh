@@ -4,7 +4,9 @@
 # Env: G (gate dir under ~/h2), OB (runner worktree), GATEWATCH (spend watcher).
 set -u
 G=${G:?set G=~/h2/<gate-dir>}; OB=${OB:?set OB=<runner worktree>}; GATEWATCH=${GATEWATCH:-$G/gatewatch.py}
-PAIR_CAP=${PAIR_CAP:-1.0}; TOTAL_CAP=${TOTAL_CAP:-8}
+# PAIR_CAP and TOTAL_CAP are enforced here by stopping the container.
+# CELL_CAP (default none) is the in-cell run_ab cap; leave it unset for reruns.
+PAIR_CAP=${PAIR_CAP:-1.0}; TOTAL_CAP=${TOTAL_CAP:-8}; CELL_CAP=${CELL_CAP:-}
 IMAGE=h2-env:1022
 H2_IMAGE_DIGEST=sha256:72c59033194aae26f6de67c62c77d742aef1d71849000e308f3ee875ff5169ff
 CELL=/ob/thesis/ab/h2env/sdkpin_gate_cell.sh
@@ -32,7 +34,7 @@ while read -r PIN PR MODEL BUDGET <&3; do
     -e OBENCH_VM_TYPE=n2-standard-16 -e TZ=America/New_York \
     -e OBENCH_RUNNER_COMMIT="$COMMIT" -e OBENCH_CELL_IMAGE="$IMAGE@$H2_IMAGE_DIGEST" \
     -v "$OB:/ob" -v "$HOME/h1:/h1" -v "$HOME/h2:/h2" $IMAGE \
-    $CELL "claude-$MODEL-5-5" "$GDIR/$PIN-$PR/$MODEL" "$PR" "$PIN" "${TASK:-model-extraction-relu-logits}" "$PAIR_CAP" >/dev/null
+    $CELL "claude-$MODEL-5-5" "$GDIR/$PIN-$PR/$MODEL" "$PR" "$PIN" "${TASK:-model-extraction-relu-logits}" "$CELL_CAP" >/dev/null
   while sudo docker ps -q -f name="^$N$" | grep -q .; do
     read -r P T < <(sudo python3 "$GATEWATCH" "$D" "$G" "$OB")
     echo "$(TZ=America/New_York date '+%F %T %Z') pin=$PIN pair=\$$P total=\$$T" >> "$G/spend.log"
