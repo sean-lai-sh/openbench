@@ -577,6 +577,151 @@ def drain_sse(buf: bytes) -> tuple[bytes, list[dict]]:
     return buf, found
 
 
+# Per-request SSE record. The ledger keeps usage only, so a 0-output 200
+# could not say whether the stream was cut off, carried an error event, or
+# ended cleanly with an odd stop_reason. ``SseObserver`` answers that.
+SSE_ERROR_KEEP = 5
+SSE_DUMP_GATE_DEFAULT = 4 * 1024 * 1024
+
+
+class SseObserver:
+    """Count event types, the stop, and error events on one streamed response."""
+
+    def __init__(self):
+        self.pending = b""
+        self.counts: dict[str, int] = {}
+        self.message_stop = False
+        self.stop_reason: str | None = None
+        self.errors: list[dict] = []
+        self.bytes = 0
+
+    def feed(self, chunk: bytes) -> None:
+        self.bytes += len(chunk)
+        self.pending += chunk
+        while True:
+            sep = None
+            for marker in (b"\r\n\r\n", b"\n\n", b"\r\r"):
+                index = self.pending.find(marker)
+                if index != -1 and (sep is None or index < sep[0]):
+                    sep = (index, marker)
+            if sep is None:
+                return
+            index, marker = sep
+            block = self.pending[:index]
+            self.pending = self.pending[index + len(marker):]
+            self._block(block)
+
+    def _block(self, block: bytes) -> None:
+        event = None
+        data_lines = []
+        for line in block.splitlines():
+            if line.startswith(b"event:"):
+                event = line[6:].strip().decode("utf-8", "replace")
+            elif line.startswith(b"data:"):
+                data_lines.append(line[5:].lstrip())
+        obj = None
+        if data_lines:
+            data = b"\n".join(data_lines).strip()
+            if data and data != b"[DONE]":
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    obj = None
+        kind = obj.get("type") if isinstance(obj, dict) and isinstance(obj.get("type"), str) else event
+        if not kind:
+            if not data_lines:
+                return
+            kind = "unparsed"
+        self.counts[kind] = self.counts.get(kind, 0) + 1
+        if kind == "message_stop":
+            self.message_stop = True
+        elif kind == "message_delta" and isinstance(obj, dict):
+            delta = obj.get("delta") if isinstance(obj.get("delta"), dict) else {}
+            stop = delta.get("stop_reason")
+            if isinstance(stop, str) and stop:
+                self.stop_reason = stop
+        elif kind == "error" and len(self.errors) < SSE_ERROR_KEEP:
+            err = obj.get("error") if isinstance(obj, dict) and isinstance(obj.get("error"), dict) else {}
+            self.errors.append({
+                "type": str(err.get("type") or "")[:100],
+                "message": str(err.get("message") or "")[:300],
+            })
+
+    def finish(self, *, disconnected: bool = False) -> dict:
+        if self.pending.strip():
+            self._block(self.pending)
+            self.pending = b""
+        return {
+            "sse_event_counts": dict(sorted(self.counts.items())),
+            "message_stop": self.message_stop,
+            "stop_reason": self.stop_reason,
+            "sse_errors": list(self.errors),
+            "response_bytes": self.bytes,
+            "closed_before_stop": not self.message_stop,
+            "client_disconnected": bool(disconnected),
+        }
+
+
+def sse_dump_cap(env=None) -> int:
+    """Byte cap for the raw SSE dump. 0 is off.
+
+    ``OBENCH_PROXY_SSE_DUMP_BYTES`` wins. Otherwise a gate run
+    (``OBENCH_GATE_CELL=1``) dumps up to 4 MiB per request; every other run
+    dumps nothing.
+    """
+    env = os.environ if env is None else env
+    text = str(env.get("OBENCH_PROXY_SSE_DUMP_BYTES") or "").strip()
+    if text:
+        try:
+            return max(0, int(text))
+        except ValueError:
+            return 0
+    if str(env.get("OBENCH_GATE_CELL") or "").strip() == "1":
+        return SSE_DUMP_GATE_DEFAULT
+    return 0
+
+
+def sse_dump_dir(directory: Path, cell_id: str) -> Path:
+    """Raw SSE dumps for one cell: ``<ledger_dir>/<cell>.sse/``."""
+    return cell_ledger_path(Path(directory), cell_id).with_suffix(".sse")
+
+
+def write_sse_dump(directory: Path, cell_id: str, raw: bytes, cap: int) -> str | None:
+    """Write the first ``cap`` bytes of one response. Returns the file name."""
+    if cap <= 0 or not cell_id:
+        return None
+    root = sse_dump_dir(Path(directory), cell_id)
+    with _LEDGER_LOCK:
+        root.mkdir(parents=True, exist_ok=True)
+        seq = sum(1 for _ in root.glob("*.sse")) + 1
+        name = f"{seq:04d}.sse"
+        body = bytes(raw[:cap])
+        if len(raw) > cap:
+            body += f"\n# truncated: {len(raw)} bytes, cap {cap}\n".encode("utf-8")
+        (root / name).write_bytes(body)
+    return name
+
+
+def stream_summary(records) -> dict:
+    """Cell-row fields from the ledger's per-request ``stream`` records."""
+    streams = [
+        r["stream"] for r in records or []
+        if isinstance(r, dict) and isinstance(r.get("stream"), dict)
+    ]
+    errors = []
+    for item in streams:
+        for err in item.get("sse_errors") or []:
+            if isinstance(err, dict) and len(errors) < SSE_ERROR_KEEP:
+                errors.append(err)
+    return {
+        "proxy_stream_calls": len(streams),
+        "proxy_stream_closed_before_stop": sum(1 for i in streams if i.get("closed_before_stop")),
+        "proxy_stop_reasons": [i.get("stop_reason") for i in streams],
+        "proxy_sse_errors": errors,
+        "proxy_response_bytes": sum(int(i.get("response_bytes") or 0) for i in streams),
+    }
+
+
 def merge_message_usage(parts: list[dict]) -> dict | None:
     merged: dict = {}
     for part in parts:
@@ -734,6 +879,7 @@ def _append_ledger(
     requested_model: str | None = None,
     endpoint_location: str | None = None,
     call_role: dict | None = None,
+    stream: dict | None = None,
 ) -> None:
     path = cell_ledger_path(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -770,6 +916,8 @@ def _append_ledger(
         reason = call_role.get("call_role_reason")
         if isinstance(reason, str) and reason:
             row["call_role_reason"] = reason
+    if isinstance(stream, dict):
+        row["stream"] = stream
     line = json.dumps(row, sort_keys=True) + "\n"
     with _LEDGER_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2022,14 +2170,15 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
         def _record(self, cell: str | None, usage: dict | None, status: int | None = None,
                     identity: dict | None = None, thinking_sent: str = "none",
                     call_role: dict | None = None, upstream_model_id: str | None = None,
-                    requested_model: str | None = None) -> None:
+                    requested_model: str | None = None,
+                    stream: dict | None = None) -> None:
             # One row per messages or chat-completions POST on /c/<cell-id>/.
             # A subagent or child session that reused that base URL is included
             # in the cell total. The role tag does not change that total.
-            if ledger is None or not cell or not usage:
+            if ledger is None or not cell or (not usage and not stream):
                 return
             _append_ledger(
-                ledger, cell, usage, status=status, identity=identity,
+                ledger, cell, usage, status=status, identity=identity, stream=stream,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
@@ -2067,6 +2216,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             called = upstream_model_id or model
             translate_out = presentation == "openai" and kind != "count"
             stream_tx = _OpenAIStream(called) if translate_out and kind == "stream" else None
+            observer = SseObserver() if kind == "stream" else None
+            dump_cap = sse_dump_cap() if ledger is not None and cell else 0
+
+            def stream_record(disconnected: bool = False) -> dict | None:
+                if observer is None:
+                    return None
+                info = observer.finish(disconnected=disconnected)
+                if dump_cap:
+                    info["sse_dump"] = write_sse_dump(ledger, cell, bytes(raw), dump_cap)
+                return info
 
             def finish_usage() -> dict | None:
                 nonlocal pending
@@ -2122,6 +2281,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     # still moves the watchdog's byte file.
                     note_cell_bytes(ledger, cell, len(chunk))
                     raw.extend(chunk)
+                    if observer is not None:
+                        observer.feed(chunk)
                     if kind == "stream":
                         pending += chunk
                         pending, found = drain_sse(pending)
@@ -2135,7 +2296,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 if kind != "count":
                     self._record(
                         cell, usage, status, identity, thinking_sent, call_role, called,
-                        requested_model=requested_model,
+                        requested_model=requested_model, stream=stream_record(),
                     )
                     recorded = True
                 if stream_tx is not None:
@@ -2150,7 +2311,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 if not recorded and kind != "count":
                     self._record(
                         cell, finish_usage(), status, identity, thinking_sent, call_role, called,
-                        requested_model=requested_model,
+                        requested_model=requested_model, stream=stream_record(disconnected=True),
                     )
             finally:
                 if response is not None:
