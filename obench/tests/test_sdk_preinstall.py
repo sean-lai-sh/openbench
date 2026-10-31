@@ -247,3 +247,16 @@ class AnthropicPinOverrideTests(unittest.TestCase):
                 self.assertEqual(anthropic_pin_for_tree(root, registry={}), "1.2.12")
             with patch.dict("os.environ", {"OBENCH_ANTHROPIC_PIN": "2.0.0-beta.4"}):
                 self.assertEqual(anthropic_pin_for_tree(root, registry={}), "2.0.0-beta.4")
+
+
+class ProviderPinOverrideTests(unittest.TestCase):
+    def test_env_pin_beats_manifest(self):
+        from unittest import mock
+        from thesis.ab import provider_pin
+        entry = {"packages": {"@ai-sdk/anthropic": "2.0.0-beta.11"}, "entry": {}}
+        with mock.patch.object(provider_pin, "lookup_entry", return_value=entry), \
+                mock.patch.dict(os.environ, {"OBENCH_ANTHROPIC_PIN": "2.0.0-beta.4"}):
+            got = provider_pin.apply_provider_pin({}, "/c", "abc", "with", "795")
+        self.assertEqual(got["anthropic_sdk"], "2.0.0-beta.4")
+        self.assertEqual(got["provider_pins"], {"@ai-sdk/anthropic": "2.0.0-beta.4"})
+        self.assertEqual(got["pin_source"], "env_override")
