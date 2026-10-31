@@ -1579,6 +1579,7 @@ PROXY_TRACE_FIELDS = (
     "proxy_requests",
     "trace_requests",
     "untraced_requests",
+    "proxy_requests_no_usage",
     "requested_model",
     "requested_model_mixed",
     "upstream_model",
@@ -1786,6 +1787,12 @@ def apply_cell_meter(
     row["faults_served"] = faults_served(str(ledger), str(cell))
     records = read_proxy_ledger(str(ledger), str(cell))
     ledger_path = cell_ledger_path(Path(str(ledger)), str(cell))
+    # Streams with no usage sit in a sibling file. They are counted here only,
+    # never in proxy_requests, requests_count, cost, or the protocol checks.
+    from thesis.ab.vertex_anthropic_proxy import read_no_usage_records, stream_summary
+    no_usage = read_no_usage_records(str(ledger), str(cell))
+    row["proxy_requests_no_usage"] = len(no_usage)
+    row.update(stream_summary(list(records or []) + no_usage))
     from thesis.ab.route import route_label
     row["route"] = route_label(proxy, sum(1 for r in records or [] if isinstance(r, dict)))
     if not records:
