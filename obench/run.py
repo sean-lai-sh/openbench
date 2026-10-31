@@ -118,6 +118,8 @@ ROW_FIELDS = (
     "pin_source_class",
     "provider_loaded_version",
     "loaded_anthropic",
+    "load_proof_basis",
+    "load_proof",
     "installed_anthropic",
     "failure_subclass",
     "provider_loaded_source",
@@ -1989,6 +1991,27 @@ def read_proxy_ledger(ledger_dir, token, wait_s=0.0, stable_s=0.1):
     return rows
 
 
+def _apply_load_proof(row):
+    """``load_proof_basis`` / ``load_proof`` from the UA or the module hook."""
+    pin = str(row.get("anthropic_pin") or "").strip()
+    if not pin:
+        return row
+    from obench.load_proof import judge_load_proof
+    emb = str(row.get("embedded_version") or "")
+    verdict = judge_load_proof(
+        pin=pin,
+        ua_version=str(row.get("loaded_anthropic") or ""),
+        hook=row.get("module_hook_log"),
+        copies=row.get("image_scan_copies"),
+        embedded_version=emb,
+        # A built-in version with no outside load is a compiled-in build.
+        # A build that loaded a node_modules copy is judged on that copy.
+        compiled=bool(emb) and not ((row.get("module_hook_log") or {}).get("loaded")),
+    )
+    row.update(verdict)
+    return row
+
+
 def apply_proxy_ledger(row, ledger_rows):
     """Populate proxy-measured token fields from scrubbed ledger rows.
 
@@ -2025,6 +2048,7 @@ def apply_proxy_ledger(row, ledger_rows):
     # SDK version from each request's User-Agent (obench.provider_ua).
     from obench.provider_ua import aggregate as _ua_aggregate
     row["loaded_anthropic"] = _ua_aggregate(r.get("loaded_anthropic") for r in records) or None
+    _apply_load_proof(row)
     paced_ms = sum(r.get("paced_wait_ms") or 0 for r in records)
     row["paced_wait_s"] = round(paced_ms / 1000.0, 3)
     if not calls:

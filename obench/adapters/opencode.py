@@ -888,6 +888,44 @@ def _seed_anthropic_pin(cache, pin, root):
     return True
 
 
+def _install_load_proof_hook(env):
+    """Arm the in-process module hook (obench.load_proof) for this arm.
+
+    The plugin is auto-loaded by OpenCode from ``$XDG_CONFIG_HOME/opencode/plugin``,
+    so no ``BUN_OPTIONS`` preload is needed (compiled builds reject that).
+    """
+    from obench import load_proof
+    home = env.get("HOME") or ""
+    cfg = env.get("XDG_CONFIG_HOME") or ""
+    if not home or not cfg:
+        return ""
+    log = os.path.join(home, "obench-load-proof.jsonl")
+    env[load_proof.HOOK_LOG_ENV] = log
+    return load_proof.install_hook(cfg, log)
+
+
+def _load_proof_evidence(env, proxy, exe):
+    """Hook log, image scan and built-in version for the row. Read-only."""
+    from obench import load_proof
+    log = env.get(load_proof.HOOK_LOG_ENV) or ""
+    if not log:
+        return {}
+    home = env.get("HOME") or ""
+    roots = [home, os.path.dirname(os.path.dirname(os.path.realpath(exe))) if exe else "",
+             "/usr/lib/node_modules", "/usr/local/lib/node_modules", "/root/.cache/opencode"]
+    copies = load_proof.scan_copies(roots, exclude=[_pin_root(proxy)])
+    embedded = ""
+    try:
+        embedded = _embedded_version(exe) if exe else ""
+    except Exception:  # noqa: BLE001 - scanner is evidence only
+        embedded = ""
+    return {
+        "module_hook_log": load_proof.read_hook_log(log),
+        "image_scan_copies": copies,
+        "embedded_version": embedded or None,
+    }
+
+
 def _ensure_provider_sdk(env, proxy):
     """Seed the pinned SDK into the cell cache from the read-only pin root.
 
@@ -909,6 +947,7 @@ def _ensure_provider_sdk(env, proxy):
         )
     cache = os.path.join(env["XDG_CACHE_HOME"], "opencode")
     os.makedirs(cache, exist_ok=True)
+    _install_load_proof_hook(env)
     module = os.path.join(cache, "node_modules", "@ai-sdk", "anthropic", "package.json")
     try:
         if pin and _installed_sdk_version(module) != pin:
@@ -1866,6 +1905,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         if version:
             row["provider_loaded_version"] = version
         pin = _anthropic_pin(proxy) if isinstance(proxy, dict) else ""
+        if pin:
+            row["anthropic_pin"] = pin
+            row.update(_load_proof_evidence(env, proxy, exe))
         mismatch = _loaded_mismatch_text(pin, version, loaded_source)
         if mismatch:
             row = _attach_loaded_mismatch(row, mismatch)
