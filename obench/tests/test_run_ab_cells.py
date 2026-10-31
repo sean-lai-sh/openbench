@@ -87,6 +87,28 @@ class CellsTests(unittest.TestCase):
         self.assertEqual(parse_cells(str(lines), prs), want)
         self.assertEqual(parse_cells(str(js), prs), want)
 
+    def test_existing_target_cell_refuses_and_runs_nothing(self):
+        out = Path(tempfile.mkdtemp())
+        existing = cell_file(out, "13090", "with", TASKS[0], 3)
+        publish_text(existing, json.dumps({"task": TASKS[0], "trial": 3, "score": 1}))
+        before = existing.read_bytes()
+        calls = []
+        keys = parse_cells(f"with/{TASKS[0]}/3,with/{TASKS[0]}/7", self._prs())
+        with self.assertRaises(RunError) as raised:
+            drive(
+                self._prs(), TASKS, 10, out, jobs=1, model="claude-opus-5-5",
+                timeout_s=5, cache=out, max_cost_usd=None, dry_run=False,
+                tasks_dir=Path("/tmp"),
+                build_fn=lambda sha, cache, repo="": calls.append("build") or Path("/tmp") / sha,
+                assess_fn=lambda b: Assessment("native", "listed", {}, False),
+                worker=lambda spec: calls.append(spec["trial"]), cells=keys,
+            )
+        self.assertIn("13090/cells/with/model-extraction-relu-logits/3.json", str(raised.exception))
+        self.assertNotIn("/7.json", str(raised.exception))
+        self.assertEqual(calls, [])
+        self.assertEqual(existing.read_bytes(), before)
+        self.assertFalse(cell_file(out, "13090", "with", TASKS[0], 7).exists())
+
     def test_invalid_entries_rejected(self):
         prs = self._prs()
         for bad in ("with/x", "with/model-extraction-relu-logits/0", "with/t/abc", ""):

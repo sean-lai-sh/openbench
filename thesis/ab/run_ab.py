@@ -2668,6 +2668,16 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         if unknown:
             raise RunError("--cells not in the plan (check --pr/--tasks/side): " + ", ".join(unknown))
         scheduled = [spec for spec in scheduled if _cell_rel(spec) in cells]
+        # A rerun must never overwrite an existing row: refuse before anything runs.
+        present = sorted(
+            _cell_rel(spec) for spec in scheduled
+            if cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"]).exists()
+        )
+        if present:
+            raise RunError(
+                "--cells targets already exist under the output dir; refusing to run: "
+                + ", ".join(present)
+            )
     only = rerun_cells_from_env()
     if only is not None:
         scheduled = [spec for spec in scheduled if _cell_rel(spec) in only]
