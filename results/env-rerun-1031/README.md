@@ -64,12 +64,29 @@ Data only. Nothing here was rerun to make this PR. All counts and dollar figures
 - **Ruling (b): the watchdog is identical on both arms**, so hangs count as agent failures, kept in their own column.
   - `run_ab --no-progress-s` defaults to 300 and is applied to every spec via `_fill` → `_export_no_progress` → env `OBENCH_NO_PROGRESS_S`. Both arms run in one run_ab process; `cell.sh` does not override it. The adapter (`opencode.py _no_progress_limit` → `cell_watch.run_piped`) reads it. Every hang row shows idle_s=300.x.
   - Hang split: with 11 (regex-chess 10 + relu 1), without 9 (regex-chess).
-- **Opus 3052 comparison (180 rows; infra excluded from the denominator; hangs counted as failures):**
+- **Opus 3052 comparison, superseded (infra excluded from the denominator). See "Rates" below for the corrected figures:**
 
 | scope | with | without |
 |---|---|---|
 | all tasks | 33/81 = 0.407 (37 WA, 11 hang, 9 infra; $29.45) | 32/90 = 0.356 (46 WA, 3 timeout, 9 hang; $33.23) |
 | excluding regex-chess | 33/71 = 0.465 | 31/80 = 0.388 |
+
+## Rates (Researcher correction 2026-10-31 17:40 EDT)
+pr_harness_trace rows (signature 400s, with arm) **stay in the denominator as with-arm failures**. Only true infra, unproven and missing rows drop out. Hangs and timeouts count as failures. PR 3052 rows only.
+
+| arm | scope | with | without |
+|---|---|---|---|
+| Opus 3052 (#229: 1031d 171 + 1031c 9 = 180) | all tasks | 33/90 = 0.367 (incl. 9 pr_harness_trace) | 32/90 = 0.356 |
+| | excl. regex-chess | 33/80 = 0.412 | 31/80 = 0.388 |
+| Sonnet 3052 #229 part (1031c, 128 counted) | all tasks | 22/64 = 0.344 (incl. 10 pr_harness_trace) | 22/64 = 0.344 |
+| | excl. regex-chess | 21/59 = 0.356 | 21/59 = 0.356 |
+| Sonnet 3052 #230 part (1031f, 52) | all tasks | 8/26 = 0.308 (incl. 3 pr_harness_trace) | 10/26 = 0.385 |
+| | excl. regex-chess | 7/21 = 0.333 | 9/21 = 0.429 |
+| **Sonnet 3052 full arm (128 + 52 = 180)** | all tasks | 30/90 = 0.333 (incl. 13 pr_harness_trace) | 32/90 = 0.356 |
+| | excl. regex-chess | 28/80 = 0.350 | 30/80 = 0.375 |
+
+Excluded from these rates: the 2 unproven Sonnet 1031c regex-chess/2 rows (no ledger; replaced by #230 rows), 17 aborted_not_counted rows (13 VM1 env-rerun-1031b, 4 VM2 cells-rerun-1031 wrong pin), the 50 rows missing from the 1031c pool crash (filled in #230), and the 5140 infra_uncounted row. None of the 3052 rows in scope is true infra, so no rows drop out for infra. The 13 counted 13090/13331 cells rows belong to other PRs and are not in these arms (their 4 VM2 cells-rerun-1031c infra rows are true infra, redone in 1031d/1031e).
+Supersedes the earlier tables that excluded infra (Opus 0.407/0.465; Sonnet full arm 0.390/0.418).
 
 ## Checker timeouts — 3 rows, env-rerun-1031d opus
 - These are without/model-extraction-relu-logits/7, 8 and 9, with outcome `timeout` and env_cause=checker_timeout.
