@@ -64,7 +64,7 @@ Data only. Nothing here was rerun to make this PR. All counts and dollar figures
 - **Ruling (b): the watchdog is identical on both arms**, so hangs count as agent failures, kept in their own column.
   - `run_ab --no-progress-s` defaults to 300 and is applied to every spec via `_fill` → `_export_no_progress` → env `OBENCH_NO_PROGRESS_S`. Both arms run in one run_ab process; `cell.sh` does not override it. The adapter (`opencode.py _no_progress_limit` → `cell_watch.run_piped`) reads it. Every hang row shows idle_s=300.x.
   - Hang split: with 11 (regex-chess 10 + relu 1), without 9 (regex-chess).
-- **Opus 3052 comparison, superseded (infra excluded from the denominator). See "Rates" below for the corrected figures:**
+- **Opus 3052 comparison (superseded; see "Rates" below for the corrected figures):**
 
 | scope | with | without |
 |---|---|---|
