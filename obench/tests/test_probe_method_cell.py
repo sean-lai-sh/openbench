@@ -11,7 +11,7 @@ from thesis.ab import compat, run_ab, step8_gate
 SHA = {"with": "e88b659545245888ee4091a0cc353f4d7bda7327", "without": "74048ece2d06dd8c3b6f9be46a10ae0c927e13db"}
 PINS = {s: {side: {"packages": {"@ai-sdk/anthropic": "2.0.0"}}} for side, s in SHA.items()}
 SIDES = {"3424": dict(SHA)}
-PROBED = {"provider_loaded_version": "2.0.0", "provider_loaded_source": "strace", "probe_method": "strace"}
+PROBED = {"loaded_anthropic": "2.0.0", "provider_loaded_version": "2.0.0", "provider_loaded_source": "strace", "probe_method": "strace"}
 
 
 class ProbeMethodEndToEnd(TestPhaseTiming):
@@ -27,6 +27,7 @@ class ProbeMethodEndToEnd(TestPhaseTiming):
         self.assertEqual(row["provider_loaded_source"], "strace")
         run_ab.attach_provider_pin(row, {"proxy": {}})
         self.assertEqual(row["probe_method"], "strace")
+        row["loaded_anthropic"] = "2.0.0"  # from the proxy ledger User-Agent
         with tempfile.TemporaryDirectory() as d:
             for side in SHA:
                 self._write(Path(d), side, row)
@@ -44,13 +45,13 @@ class ProbeMethodEndToEnd(TestPhaseTiming):
 
     def test_old_cell_shape_still_unproven(self):
         # 2026-10-27 gate cells (no probe_method): the gate is not loosened.
-        old = {k: v for k, v in PROBED.items() if k != "probe_method"}
+        old = {k: v for k, v in PROBED.items() if k not in ("probe_method", "loaded_anthropic")}
         with tempfile.TemporaryDirectory() as d:
             for side in SHA:
                 self._write(Path(d), side, old)
             out, _ = step8_gate.evaluate(d, PINS, SIDES)
         self.assertEqual(out["ok_prs"], [])
-        self.assertTrue(all(c["why"] == "loaded version unproven" for c in out["cells"]))
+        self.assertTrue(all(c["why"].startswith("loaded_anthropic unproven") for c in out["cells"]))
 
     def test_gate_fails_pair_with_split_route(self):
         with tempfile.TemporaryDirectory() as d:

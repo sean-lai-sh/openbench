@@ -47,7 +47,7 @@ class CheckerLockTest(unittest.TestCase):
 
 class ProvenanceFallbackTest(unittest.TestCase):
     def _row(self):
-        return {"route": "proxy", "provider_loaded_source": "none", "provider_loaded_mismatch": None,
+        return {"route": "proxy", "loaded_anthropic": "2.0.0", "provider_loaded_source": "none", "provider_loaded_mismatch": None,
                 "requests_cost_usd": 0.1, "started_et": "a", "ended_et": "b", "strace_on": False,
                 "gate_cell": True, "provider_trace": "off", "opencode_cache": "/c",
                 "lockfile_sha256": "ab", "provider_versions": {"@ai-sdk/anthropic": "2.0.0"}}

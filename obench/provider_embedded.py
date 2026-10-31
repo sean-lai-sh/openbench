@@ -9,6 +9,11 @@ module, and the bun install layout puts the version in that path::
 
 With a flat ``node_modules`` layout the path has no version, so this falls
 back to the first ``var VERSIONn = "x"`` after that module's comment.
+
+Minified builds keep neither: the User-Agent template survives as
+``ai-sdk/anthropic/${X}`` with ``X`` a minified ``var X="3.0.71"``. The last
+fallback resolves that name (nearest definition before the template, else
+after it).
 """
 from __future__ import annotations
 
@@ -21,7 +26,25 @@ _BUN_PATH = re.compile(
     rb"/node_modules/@ai-sdk/anthropic/dist/index\.mjs")
 _FLAT_PATH = re.compile(rb"node_modules/@ai-sdk/anthropic/dist/index\.mjs")
 _VERSION_VAR = re.compile(rb'var VERSION\d* = "([0-9][0-9A-Za-z.\-]*)"')
+_UA_TEMPLATE = re.compile(rb"ai-sdk/anthropic/\$\{([A-Za-z_$][\w$]*)\}")
 _CACHE: dict[tuple, str] = {}
+
+
+def _minified_ua(data: bytes) -> str:
+    found = set()
+    for t in _UA_TEMPLATE.finditer(data):
+        name = re.escape(t.group(1))
+        dfn = re.compile(rb'(?:\bvar\s+|\blet\s+|\bconst\s+|[,;{(]\s*)'
+                         + name + rb'\s*=\s*"([0-9][0-9A-Za-z.\-]*)"')
+        lo = max(0, t.start() - (1 << 20))
+        before = list(dfn.finditer(data, lo, t.start()))
+        if before:
+            found.add(before[-1].group(1).decode())
+            continue
+        after = dfn.search(data, t.end(), t.end() + (1 << 20))
+        if after:
+            found.add(after.group(1).decode())
+    return found.pop() if len(found) == 1 else ""
 
 
 def scan(data: bytes) -> str:
@@ -36,7 +59,7 @@ def scan(data: bytes) -> str:
         v = _VERSION_VAR.search(data, m.end(), m.end() + 4096)
         if v:
             return v.group(1).decode()
-    return ""
+    return _minified_ua(data)
 
 
 def embedded_version(binary: str) -> str:

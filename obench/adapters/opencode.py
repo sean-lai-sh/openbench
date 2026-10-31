@@ -840,6 +840,8 @@ def _resolved_provider_versions(env, proxy):
 # Cells copy from it and never run ``bun add`` for the anthropic pin.
 PIN_ROOT_ENV = "OBENCH_PROVIDER_PIN_ROOT"
 DEFAULT_PIN_ROOT = "~/h1/opencode-src/provider-pins"
+# Inside a Docker cell HOME=/root and the host ~/h1 is mounted at /h1.
+CONTAINER_PIN_ROOT = "/h1/opencode-src/provider-pins"
 ENV_CAUSE_SDK_DRIFT = "provider_sdk_drift"
 
 
@@ -847,8 +849,13 @@ def _pin_root(proxy):
     raw = ""
     if isinstance(proxy, dict):
         raw = str(proxy.get("pin_root") or "").strip()
-    raw = raw or os.environ.get(PIN_ROOT_ENV, "").strip() or DEFAULT_PIN_ROOT
-    return os.path.abspath(os.path.expanduser(raw))
+    raw = raw or os.environ.get(PIN_ROOT_ENV, "").strip()
+    if raw:
+        return os.path.abspath(os.path.expanduser(raw))
+    default = os.path.abspath(os.path.expanduser(DEFAULT_PIN_ROOT))
+    if not os.path.isdir(default) and os.path.isdir(CONTAINER_PIN_ROOT):
+        return CONTAINER_PIN_ROOT
+    return default
 
 
 def _make_writable(root):

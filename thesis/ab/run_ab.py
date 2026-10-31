@@ -1299,7 +1299,7 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
 # provenance checks read from a saved cell. A field the runner cannot produce
 # is written as null and listed in ``missing_fields``: never silently absent.
 GATE_CELL_FIELDS = (
-    "route", "rerun", "probe_method", "provider_loaded_version", "provider_loaded_source",
+    "route", "rerun", "loaded_anthropic", "probe_method", "provider_loaded_version", "provider_loaded_source",
     "provider_loaded_mismatch", "requests_cost_usd", "started_et", "ended_et", "strace_on", "gate_cell",
 )
 PROVENANCE_CELL_FIELDS = (
