@@ -1991,6 +1991,25 @@ def read_proxy_ledger(ledger_dir, token, wait_s=0.0, stable_s=0.1):
     return rows
 
 
+LOAD_PROOF_INPUTS = ("anthropic_pin", "module_hook_log", "image_scan_copies", "embedded_version")
+
+
+def carry_load_proof_inputs(row, result):
+    """Copy the adapter's pin and hook evidence onto the row.
+
+    ``_apply_load_proof`` reads them from the row; without the pin it returns
+    early and ``load_proof_basis`` stays blank even when every request's
+    User-Agent proves the loaded version.
+    """
+    if not isinstance(result, dict):
+        return row
+    for key in LOAD_PROOF_INPUTS:
+        value = result.get(key)
+        if value is not None and row.get(key) is None:
+            row[key] = value
+    return row
+
+
 def _apply_load_proof(row):
     """``load_proof_basis`` / ``load_proof`` from the UA or the module hook."""
     pin = str(row.get("anthropic_pin") or "").strip()
@@ -2730,6 +2749,7 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         loaded_mismatch = result.get("provider_loaded_mismatch")
         if isinstance(loaded_mismatch, str) and loaded_mismatch.strip():
             row["provider_loaded_mismatch"] = loaded_mismatch.strip()
+        carry_load_proof_inputs(row, result)
         full_output = result.get("full_output")
         classifier_output = full_output if full_output is not None else row["output_tail"]
         _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)
