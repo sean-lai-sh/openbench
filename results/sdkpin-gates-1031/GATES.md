@@ -18,7 +18,7 @@ Pass rule: loaded_anthropic (from the request User-Agent, #218) == pin on both a
 | 2.0.58 | 13331 | opus | - | - | - | - | 0 | NOT RUN |
 | 2.0.58 | 13090 | opus | - | - | - | - | 0 | NOT RUN (in pin-table-1030 plan) |
 
-Why everything is unproven: these cells use `--vertex-model`, so requests go through `thesis/ab/vertex_anthropic_proxy.py`. #218 added User-Agent capture only to `obench/proxy.py`. The vertex proxy reads the UA (only to strip `claude-cli/`) and forwards `User-Agent: openbench`, but never writes `loaded_anthropic` to its ledger. So `loaded_anthropic` is null on every row, and run_ab warns "cell missing required fields ['loaded_anthropic', 'cell_image', 'runner_commit']" (the driver also did not set OBENCH_CELL_IMAGE / OBENCH_RUNNER_COMMIT; runner_commit.txt per pair records 94534ef9).
+Why everything is unproven: these cells use `--vertex-model`, so requests go through `thesis/ab/vertex_anthropic_proxy.py`. #218 added User-Agent capture only to `obench/proxy.py`. The vertex proxy reads the UA (only to strip `claude-cli/`) and forwards `User-Agent: openbench`, but never writes `loaded_anthropic` to its ledger. So `loaded_anthropic` is null on every row, and run_ab warns "cell missing required fields ['loaded_anthropic', 'cell_image', 'runner_commit']" (the driver also did not set OBENCH_CELL_IMAGE / OBENCH_RUNNER_COMMIT; runner_commit.txt is empty because git rev-parse failed inside the container; driver.log records code=94534ef9 for every pair).
 
 I stopped the driver at 09:39 EDT during 2.0.0-beta.4 (STOPPED) so the remaining pairs would not spend on cells that cannot pass. Rerun after the vertex proxy records `loaded_anthropic`.
 
