@@ -19,11 +19,22 @@ Completes the Sonnet 3052 arm from #229 (env-rerun-1031c, 130/180). Data only, d
 - **1 hang:** without/regex-chess/8, watchdog `no_progress idle_s=300.0` (same 300 s on both arms, ruling b).
 - regex-chess/2 reruns: with wrong_answer ($0.4092), without wrong_answer ($0.4093). Ledger-backed replacements for the unproven #229 originals.
 
-## Sonnet 3052 arm, combined (#229 env-rerun-1031c counted 128 + these 52 = 180; infra excluded from denominator, hang = failure)
-| scope | with | without |
-|---|---|---|
-| all tasks | 30/77 = 0.390 (47 WA, 13 infra) | 32/90 = 0.356 (57 WA, 1 hang) |
-| excl. regex-chess | 28/67 = 0.418 | 30/80 = 0.375 |
+## Rates (Researcher correction 2026-10-31 17:40 EDT)
+pr_harness_trace rows (signature 400s, with arm) **stay in the denominator as with-arm failures**. Only true infra, unproven and missing rows drop out. Hangs and timeouts count as failures. PR 3052 rows only.
+
+| arm | scope | with | without |
+|---|---|---|---|
+| Opus 3052 (#229: 1031d 171 + 1031c 9 = 180) | all tasks | 33/90 = 0.367 (incl. 9 pr_harness_trace) | 32/90 = 0.356 |
+| | excl. regex-chess | 33/80 = 0.412 | 31/80 = 0.388 |
+| Sonnet 3052 #229 part (1031c, 128 counted) | all tasks | 22/64 = 0.344 (incl. 10 pr_harness_trace) | 22/64 = 0.344 |
+| | excl. regex-chess | 21/59 = 0.356 | 21/59 = 0.356 |
+| Sonnet 3052 #230 part (1031f, 52) | all tasks | 8/26 = 0.308 (incl. 3 pr_harness_trace) | 10/26 = 0.385 |
+| | excl. regex-chess | 7/21 = 0.333 | 9/21 = 0.429 |
+| **Sonnet 3052 full arm (128 + 52 = 180)** | all tasks | 30/90 = 0.333 (incl. 13 pr_harness_trace) | 32/90 = 0.356 |
+| | excl. regex-chess | 28/80 = 0.350 | 30/80 = 0.375 |
+
+Excluded from these rates: the 2 unproven Sonnet 1031c regex-chess/2 rows (no ledger; replaced by #230 rows), 17 aborted_not_counted rows (13 VM1 env-rerun-1031b, 4 VM2 cells-rerun-1031 wrong pin), the 50 rows missing from the 1031c pool crash (filled in #230), and the 5140 infra_uncounted row. None of the 3052 rows in scope is true infra, so no rows drop out for infra. The 13 counted 13090/13331 cells rows belong to other PRs and are not in these arms (their 4 VM2 cells-rerun-1031c infra rows are true infra, redone in 1031d/1031e).
+Supersedes the earlier tables that excluded infra (Opus 0.407/0.465; Sonnet full arm 0.390/0.418).
 
 ## Flag
 `model`/`requested_model` = claude-opus-5-5 while `upstream_model`/`protocol_model` = claude-sonnet-5-5 on all 52 rows, and transcript names say opus. The #229 env-rerun-1031c Sonnet rows have the identical pattern, so this is consistent with the arm being completed. The served model per proxy is Sonnet, and the cost per cell is Sonnet-scale. Needs a Researcher look at the label source.
