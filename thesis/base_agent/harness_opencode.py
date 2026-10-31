@@ -12,11 +12,14 @@ Sources (review criterion 1):
   ba54cee5 capture in captures/opencode/ (zod -> JSON Schema output, tool
   descriptions from tool/*.txt, the task tool's agent list).
 
-Deliberate deviation: for the anthropic provider, ba54cee5 starts the system
-prompt with a Claude Code identity line (its own system block and again at the
-top of the main block). Review criterion 1 bars Claude Code text, so the base
-config does not send it. The AC3 build check reports the byte gap (~1.4% of
-system bytes).
+Identity header: for the anthropic provider, ba54cee5 starts the system
+prompt with the Claude Code identity line from session/prompt/anthropic_spoof.txt
+(sst/opencode ba54cee5: packages/opencode/src/session/system.ts header(),
+joined in session/llm.ts). The real capture sends it as its own system block
+and again as the first line of the main block (header + "\n" + rest). The
+config turns this on with M1 params.header = "anthropic_spoof.txt"
+(assets/opencode/, vendored verbatim). It is the only Claude Code text allowed
+in the base agent (test_stage4_harness_configs.ClaudeCodeIdentityAllowlist).
 """
 from __future__ import annotations
 
@@ -46,10 +49,18 @@ class OpenCodePrompt(PromptAssembler):
     """session/system.ts at ba54cee5: anthropic.txt (provider prompt for a
     model id containing "claude") followed by the environment block, in one
     system block. session/llm.ts joins everything after the header with
-    "\\n"; the header itself is the identity line this config leaves out."""
+    "\\n"; the header is the identity line (anthropic_spoof.txt), sent when
+    ``header`` names that asset: as its own block (trimmed) and as the prefix
+    of the main block."""
 
-    def __init__(self, provider_id: str = "anthropic", context_files: bool = False, memory_files: bool = False):
+    HEADERS = ("anthropic_spoof.txt",)
+
+    def __init__(self, provider_id: str = "anthropic", context_files: bool = False, memory_files: bool = False,
+                 header: str | None = None):
+        if header is not None and header not in self.HEADERS:
+            raise ValueError(f"opencode M1 header must be one of {self.HEADERS}, got {header!r}")
         self.provider_id, self.context_files, self.memory_files = provider_id, context_files, memory_files
+        self.header = header
 
     def system_blocks(self, ctx, tools):
         env = ctx.env
@@ -66,7 +77,11 @@ class OpenCodePrompt(PromptAssembler):
             "  ",
             "</directories>",
         ])
-        return [asset("anthropic.txt") + "\n" + environment]
+        main = asset("anthropic.txt") + "\n" + environment
+        if self.header and self.provider_id == "anthropic":
+            head = asset(self.header)
+            return [head.strip(), head + "\n" + main]
+        return [main]
 
 
 @tool("opencode", "bash", SRC + "tool/bash.ts")

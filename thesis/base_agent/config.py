@@ -85,6 +85,8 @@ def validate_fixed(fixed: dict) -> None:
             raise ConfigError(f"fixed row {n}: parity must be enforce|harness")
         if spec.get("status", "pinned") not in ("pinned", "provisional"):
             raise ConfigError(f"fixed row {n}: status must be pinned|provisional")
+        if spec.get("swap", "fixed") not in ("fixed", "anchor"):
+            raise ConfigError(f"fixed row {n}: swap must be fixed|anchor")
         if row.status == "infra" and ({"set", "drop_tools"} & set(spec)):
             raise ConfigError(f"infra row {n} cannot change a module")
     slots = fixed.get("slots") or {}
@@ -93,6 +95,10 @@ def validate_fixed(fixed: dict) -> None:
     for slot, spec in slots.items():
         if "impl" not in spec:
             raise ConfigError(f"fixed slot {slot} has no impl")
+        if spec.get("swap", "fixed") not in ("fixed", "anchor"):
+            raise ConfigError(f"fixed slot {slot}: swap must be fixed|anchor")
+        if spec.get("swap") == "anchor" and spec.get("parity") != "harness":
+            raise ConfigError(f"fixed slot {slot}: swap = anchor needs parity = harness")
 
 
 def _rows(cfg: dict) -> dict[int, dict]:
@@ -126,10 +132,21 @@ def validate_config(cfg: dict) -> None:
                 raise ConfigError(f"{cfg['name']}: row {r.row} cites {c.get('sheet_column')}, expected {column}")
 
 
+def anchor_of(cfg: dict) -> str | None:
+    """The harness config whose own values a swap config holds for
+    ``swap = "anchor"`` slots (row 9 ruling, 2026-10-30). A harness config
+    is its own anchor; a derived config names one with ``anchor = "pi"``."""
+    if cfg.get("anchor"):
+        return cfg["anchor"]
+    return cfg["name"] if cfg.get("harness", "base") != "base" else None
+
+
 def resolve(cfg: dict, fixed: dict, arm: str) -> dict:
     if arm not in ARMS:
         raise ConfigError(f"arm must be one of {ARMS}")
     validate_config(cfg)
+    anchor = anchor_of(cfg)
+    anchor_cfg = None if anchor is None else (cfg if anchor == cfg["name"] else load_config(anchor))
     modules.load_harness_modules()
     mods = copy.deepcopy(cfg["modules"])
     for spec in mods.values():
@@ -140,6 +157,10 @@ def resolve(cfg: dict, fixed: dict, arm: str) -> dict:
             mods[slot] = copy.deepcopy(cfg["parity"][slot])
             mods[slot].setdefault("params", {})
             harness_kept.append(slot)
+        elif arm == "swap" and spec.get("swap") == "anchor" and anchor_cfg \
+                and slot in (anchor_cfg.get("parity") or {}):
+            mods[slot] = copy.deepcopy(anchor_cfg["parity"][slot])
+            mods[slot].setdefault("params", {})
         else:
             mods[slot] = {"impl": spec["impl"], "params": copy.deepcopy(spec.get("params") or {})}
     for n, spec in sorted(_rows(fixed).items()):
@@ -159,7 +180,7 @@ def resolve(cfg: dict, fixed: dict, arm: str) -> dict:
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"{cfg.get('name')}: {slot}:{spec['impl']}: {exc}") from exc
     return {"name": cfg["name"], "harness": cfg.get("harness", "base"),
-            "harness_pin": cfg.get("harness_pin", ""), "arm": arm,
+            "harness_pin": cfg.get("harness_pin", ""), "arm": arm, "anchor": anchor,
             "modules": dict(sorted(mods.items(), key=lambda kv: int(kv[0][1:]))),
             "fixed_rows_applied": applied, "harness_values_kept": [str(x) for x in harness_kept]}
 
@@ -176,8 +197,11 @@ def fixed_projection(resolved: dict, fixed: dict) -> dict:
     mods = resolved["modules"]
     out: dict = {}
     for slot, spec in sorted(fixed["slots"].items()):
-        if not (parity and spec.get("parity") == "harness"):
-            out[slot] = mods[slot]
+        if parity and spec.get("parity") == "harness":
+            continue
+        if not parity and spec.get("swap") == "anchor":
+            continue  # held at the anchor's value; identical within an anchor (anchor_projection)
+        out[slot] = mods[slot]
     for n, spec in sorted(_rows(fixed).items()):
         if parity and spec.get("parity") == "harness":
             continue
@@ -193,12 +217,20 @@ def fixed_projection(resolved: dict, fixed: dict) -> dict:
     return out
 
 
+def anchor_projection(resolved: dict, fixed: dict) -> dict:
+    """Swap-arm values held at the anchor's value. Identical across every
+    config that shares an anchor."""
+    return {slot: resolved["modules"][slot] for slot, spec in sorted(fixed["slots"].items())
+            if spec.get("swap") == "anchor"}
+
+
 def framework_files() -> list[Path]:
-    """Code and prompt assets; configs are hashed separately."""
+    """Code and prompt assets. Configs are hashed separately; captures are
+    evidence, not framework."""
     out = []
     for p in sorted(PKG.rglob("*")):
         rel = p.relative_to(PKG)
-        if p.is_file() and rel.parts[0] != "configs" and "__pycache__" not in rel.parts and p.suffix != ".pyc" \
+        if p.is_file() and rel.parts[0] not in ("configs", "captures") and "__pycache__" not in rel.parts and p.suffix != ".pyc" \
                 and p.name != "README.md":
             out.append(p)
     return out
@@ -230,7 +262,9 @@ def version_record(cfg: dict, fixed: dict, resolved: dict) -> dict:
         "fixed_hash": sha256(canonical(fixed)),
         "resolved_hash": resolved_hash,
         "fixed_rows_hash": sha256(canonical(fixed_projection(resolved, fixed))),
+        "anchor_rows_hash": sha256(canonical(anchor_projection(resolved, fixed))),
         "arm": resolved["arm"],
+        "anchor": resolved.get("anchor"),
         "harness": resolved["harness"],
         "harness_pin": resolved["harness_pin"],
         "harness_values_kept": resolved["harness_values_kept"],

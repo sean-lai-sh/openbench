@@ -109,8 +109,9 @@ class Resolution(unittest.TestCase):
         return [t.name for t in a.tools()]
 
     def test_tool_lists(self):
-        self.assertEqual(self.tools("pi", "parity"), ["read", "bash", "edit", "write"])
-        self.assertEqual(self.tools("pi", "swap"), ["read", "bash", "edit", "write"])
+        pi = ["read", "bash", "edit", "write", "__pi_deferred_placeholder__"]
+        self.assertEqual(self.tools("pi", "parity"), pi)
+        self.assertEqual(self.tools("pi", "swap"), pi)
         oc = ["question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "skill"]
         self.assertEqual(self.tools("opencode", "parity"), oc)
         self.assertEqual(self.tools("opencode", "swap"), [t for t in oc if t != "webfetch"])
@@ -145,8 +146,67 @@ class PiEpisode(unittest.TestCase):
             for tag in ("<tools>", "<rules>", "<docs>", "<cwd>"):
                 self.assertIn(tag, system)
             self.assertIn("- Use bash for file operations like ls, rg, find", system)
-            self.assertIn("cache_control", req["tools"][-1])
+            self.assertIn("cache_control", req["tools"][-2])  # last non-deferred tool (write)
+            self.assertNotIn("cache_control", req["tools"][-1])
+            self.assertEqual(req["thinking"]["type"], "adaptive")  # row 9 ruling
+            self.assertEqual(req["max_tokens"], 128000)
             self.assertEqual(res["version"]["harness"], "pi")
+
+
+# The one Claude Code string the base agent may send: OpenCode ba54cee5's
+# anthropic header (sst/opencode ba54cee5:
+# packages/opencode/src/session/prompt/anthropic_spoof.txt). Allowed only in
+# the cited OpenCode asset and the real OpenCode capture it reproduces.
+OC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+OC_IDENTITY_PATHS = (
+    "thesis/base_agent/assets/opencode/anthropic_spoof.txt",
+    "thesis/base_agent/captures/opencode/",
+)
+
+# Files that name the header (citation text, not the line itself).
+OC_IDENTITY_CITERS = ("thesis/base_agent/assets/SOURCE.md", "thesis/base_agent/configs/opencode.toml")
+
+
+class ClaudeCodeIdentityAllowlist(unittest.TestCase):
+    @staticmethod
+    def claude_code_hits(request) -> int:
+        """Count 'Claude Code' in a request body; fail on any hit that is not
+        the exact OpenCode identity line."""
+        blob = json.dumps(request, ensure_ascii=False)
+        return blob.count("Claude Code") if blob.count("Claude Code") == blob.count(OC_IDENTITY) else -1
+
+    def test_identity_asset_is_exactly_the_upstream_line(self):
+        self.assertEqual((OC.ASSETS / "anthropic_spoof.txt").read_text(encoding="utf-8"), OC_IDENTITY + "\n")
+        self.assertEqual(C.load_config("opencode")["modules"]["M1"]["params"]["header"], "anthropic_spoof.txt")
+
+    def test_identity_line_appears_nowhere_else_in_the_base_agent(self):
+        hits, stray = [], []
+        for path in sorted((REPO / "thesis" / "base_agent").rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            rel = path.relative_to(REPO).as_posix()
+            data = path.read_bytes().decode("utf-8", "replace")
+            if OC_IDENTITY in data:
+                (hits if rel.startswith(OC_IDENTITY_PATHS) else stray).append(rel)
+        self.assertEqual(stray, [], "Claude Code identity line outside the cited OpenCode assets")
+        self.assertIn(OC_IDENTITY_PATHS[0], hits)
+        # No other Claude Code text in the base agent's own prompts and configs.
+        for d in ("assets", "configs"):
+            for path in sorted((REPO / "thesis" / "base_agent" / d).rglob("*")):
+                rel = path.relative_to(REPO).as_posix()
+                if path.is_file() and not rel.startswith(OC_IDENTITY_PATHS) and rel not in OC_IDENTITY_CITERS:
+                    self.assertNotIn("Claude Code", path.read_text(encoding="utf-8", errors="replace"), rel)
+
+    def test_pi_sends_no_claude_code_text(self):
+        with tempfile.TemporaryDirectory() as wd:
+            client = Scripted([text("done")])
+            agent_for("pi", client, wd, arm="parity").run()
+            for _, req in client.requests:
+                self.assertEqual(self.claude_code_hits(req), 0)
+
+    def test_header_param_rejects_other_assets(self):
+        with self.assertRaises(ValueError):
+            OC.OpenCodePrompt(header="anthropic.txt")
 
 
 class OpenCodeEpisode(unittest.TestCase):
@@ -167,11 +227,12 @@ class OpenCodeEpisode(unittest.TestCase):
             roles = [r for r, _ in client.requests]
             self.assertEqual(roles, ["side:title", "main", "main", "side:subagent", "side:subagent", "main", "main"])
             main = client.requests[1][1]
-            self.assertEqual(len(main["system"]), 1)
-            self.assertTrue(main["system"][0]["text"].startswith("You are OpenCode"))
-            self.assertNotIn("Claude Code", main["system"][0]["text"])
-            self.assertIn("cache_control", main["system"][0])
-            self.assertIn("The exact model ID is anthropic/claude-test", main["system"][0]["text"])
+            # ba54cee5 for anthropic: identity block, then identity + "\n\n" + anthropic.txt + env
+            self.assertEqual([b["text"] for b in main["system"]][0], OC_IDENTITY)
+            self.assertTrue(main["system"][1]["text"].startswith(OC_IDENTITY + "\n\nYou are OpenCode"))
+            self.assertEqual(ClaudeCodeIdentityAllowlist.claude_code_hits(main), 2)
+            self.assertTrue(all("cache_control" in b for b in main["system"]))
+            self.assertIn("The exact model ID is anthropic/claude-test", main["system"][1]["text"])
             self.assertNotIn("thinking", main)  # row 9 ruling: OpenCode thinking off
             self.assertEqual(client.requests[0][1]["model"], "claude-sonnet-5-5")  # #189 small_model pin
             self.assertIs(res["row"]["small_model_deviation"], True)

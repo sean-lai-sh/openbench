@@ -29,12 +29,17 @@ from datetime import datetime, timezone
 
 from . import proxy, results, gateway_profiles, gateway_spec
 from .adapters import pi
+from .checker_timeout import checker_timeout_s as resolve_checker_timeout
 from .publish import task_content_digest
 from .run import read_instruction, run_checker
 from .workspace import WorkspaceError, materialize_workspace
 
 
-CHECKER_TIMEOUT_S = 120
+def _checker_timeout_for(task: TaskProvenance) -> int:
+    """Per-task checker budget recorded on the cell identity."""
+    return resolve_checker_timeout(task.name, task.path)
+
+
 FROZEN_PRICES_ENV = "OPENBENCH_GATEWAY_FROZEN_PRICES_JSON"
 ADAPTERS_DIR_ENV = "OPENBENCH_GATEWAY_ADAPTERS_DIR"
 LOCAL_LANE = "local-exploratory-route-isolation"
@@ -397,7 +402,7 @@ def _identity(
         budget_max_output_tokens=experiment.budget.max_output_tokens,
         budget_usd_cap=experiment.budget.usd_cap,
         adapter_timeout_s=experiment.budget.timeout_s,
-        checker_timeout_s=CHECKER_TIMEOUT_S,
+        checker_timeout_s=_checker_timeout_for(task),
         window_id=block.window_id,
         repetition=block.repetition,
         block_id=block_id,
@@ -1133,6 +1138,9 @@ def _run_cell(
     checker_score = 0.0
     checker_stdout = ""
     checker_stderr = ""
+    checker_wall_time_s = 0.0
+    checker_timeout_s = _checker_timeout_for(task)
+    agent_record: dict[str, Any] = {}
     with tempfile.TemporaryDirectory(prefix="obench_gateway_cell_") as temp:
         cell_root = Path(temp)
         workdir = cell_root / "workspace"
@@ -1150,20 +1158,34 @@ def _run_cell(
             infrastructure_reason = "workspace_materialization"
             adapter_result = {"completed": False, "error": str(exc)}
         else:
+            from .checker_venv import (
+                AgentEnvironmentError,
+                checker_split_enabled,
+                guard_agent_phase,
+                note_agent_image,
+            )
             try:
-                adapter_result = _invoke_local(
-                    plan_path=plan_path,
-                    instruction_path=instruction_path,
-                    workdir=workdir,
-                    proxy_base_url=proxy_base_url,
-                    token=token,
-                    timeout_s=experiment.budget.timeout_s,
-                    adapters_dir=adapters_dir,
-                    max_calls_exceeded=max_calls_event.is_set,
-                )
-            except Exception as exc:  # noqa: BLE001 - row records infra failure
-                infrastructure_reason = "adapter_entry_failure"
+                note_agent_image(agent_record)
+                if checker_split_enabled():
+                    guard_agent_phase()
+            except AgentEnvironmentError as exc:
+                infrastructure_reason = "agent_image_drift"
                 adapter_result = {"completed": False, "error": str(exc)}
+            else:
+                try:
+                    adapter_result = _invoke_local(
+                        plan_path=plan_path,
+                        instruction_path=instruction_path,
+                        workdir=workdir,
+                        proxy_base_url=proxy_base_url,
+                        token=token,
+                        timeout_s=experiment.budget.timeout_s,
+                        adapters_dir=adapters_dir,
+                        max_calls_exceeded=max_calls_event.is_set,
+                    )
+                except Exception as exc:  # noqa: BLE001 - row records infra failure
+                    infrastructure_reason = "adapter_entry_failure"
+                    adapter_result = {"completed": False, "error": str(exc)}
         try:
             seal = server.seal_cell(
                 token,
@@ -1203,9 +1225,18 @@ def _run_cell(
                     if os.environ.get(key)
                 }
                 checker_env["HOME"] = str(checker_home)
+                from .checker_venv import checker_split_enabled, prepare_checker_root
+                from .checker_env import verify_split_checker_venv
+                if checker_split_enabled():
+                    checker_root = prepare_checker_root(cell_root)
+                    verify_split_checker_venv(checker_root, task.path)
+                    checker_env["H2_CHECKER_VENV_ROOT"] = str(checker_root)
+                checker_timeout_s = _checker_timeout_for(task)
+                checker_started = time.monotonic()
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
-                    str(task.path), str(workdir), CHECKER_TIMEOUT_S, checker_env
+                    str(task.path), str(workdir), checker_timeout_s, checker_env
                 )
+                checker_wall_time_s = round(time.monotonic() - checker_started, 3)
                 checker_score = (
                     1.0
                     if checker_exit == 0
@@ -1213,7 +1244,15 @@ def _run_cell(
                 )
                 if checker_exit == "timeout":
                     infrastructure_reason = infrastructure_reason or "checker_timeout"
+                from .checker_env import classify_checker_output
+                infra_cause = classify_checker_output(
+                    checker_exit, checker_stdout, checker_stderr, checker_split_enabled())
+                if infra_cause:
+                    infrastructure_reason = infrastructure_reason or infra_cause
             except Exception as exc:  # noqa: BLE001
+                from .checker_env import CheckerEnvError
+                if isinstance(exc, CheckerEnvError):
+                    infrastructure_reason = infrastructure_reason or exc.cause
                 infrastructure_reason = infrastructure_reason or "checker_failure"
                 checker_stderr = str(exc)
     duration = time.monotonic() - started
@@ -1258,6 +1297,10 @@ def _run_cell(
             "adapter_completed": bool(adapter_result.get("completed", False)),
             "adapter_error": adapter_result.get("error"),
             "checker_exit": checker_exit,
+            "checker_wall_time_s": checker_wall_time_s,
+            "checker_timeout_s": checker_timeout_s,
+            "env_failure": checker_exit == "timeout",
+            "env_cause": "checker_timeout" if checker_exit == "timeout" else None,
         },
         "route_integrity": route_integrity,
         "proxy_metrics": {"calls": calls},
@@ -1282,7 +1325,11 @@ def _run_cell(
         },
         "schedule_order": list(block.arm_ids),
         "block_attempt": attempt,
+        "agent_image": agent_record.get("agent_image"),
+        "agent_image_digest": agent_record.get("agent_image_digest"),
     }
+    from .cell_columns import stamp_env_columns
+    stamp_env_columns(row, checker_timeout_s=_checker_timeout_for(task))
     results.result_cell_id(row)
     return row
 

@@ -21,7 +21,7 @@ params = { context_files = true }
 
 [modules.M2]
 impl = "catalog"
-params = { family = "pi", tools = ["read", "bash", "edit", "write"] }
+params = { family = "pi", tools = ["read", "bash", "edit", "write", "__pi_deferred_placeholder__"] }
 
 [modules.M3]
 impl = "anthropic"
@@ -51,11 +51,16 @@ impl = "none"
 impl = "basic"
 params = { hooks = [] }
 
-# Parity arm only. Must be replaced with the values the real Pi request
-# carries (max_tokens / temperature / thinking), read from the AC3 capture.
+# Pi's own sampling, read from the real capture (captures/pi/). Row 9 ruling
+# 2026-10-30: the parity arm sends it, and swap configs anchored on pi hold
+# it (fixed.toml swap = "anchor").
 [parity.M4]
 impl = "fixed"
-params = { max_tokens = 32000 }
+
+[parity.M4.params]
+max_tokens = 128000
+thinking = { type = "adaptive", display = "summarized", block_binding = { prefix_mismatch_behavior = "drop_block" } }
+extra = { output_config = { effort = "low" } }
 
 # --- citations: every swappable row ----------------------------------------
 [rows.1]
@@ -74,12 +79,12 @@ sheet = "7 core: read, bash, edit, write (+ grep, find, ls); minimal by design"
 source = "core/tools/index.ts; SC-1: pi@d0aa218:packages/coding-agent/src/core/settings-manager.ts:84-85"
 
 [rows.4]
-value = "Derived from rows 3 and 5; measured at the proxy by the AC3 build check"
+value = "Derived from rows 3 and 5; measured at the proxy by the AC3 build check (captures/pi/)"
 sheet = "Smallest of the five (not measured)"
 source = "derived; measured at AC3"
 
 [rows.5]
-value = "TypeBox-style JSON Schema objects with per-property descriptions"
+value = "TypeBox JSON Schema as pi-ai sends it in strict mode (all properties required, optional ones nullable, eager_input_streaming, a deferred placeholder tool): assets/pi/tools.json from the real capture"
 sheet = "TypeBox JSON Schema"
 source = "core/tools/edit.ts:23"
 

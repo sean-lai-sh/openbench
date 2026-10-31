@@ -97,6 +97,8 @@ ROW_FIELDS = (
     "usage_ranking_exclusion_reason",
     "tokens_fresh", "turns", "cmd", "checker_exit", "exec_mode", "score", "harness_version",
     "harness_version_source", "failure_class", "failure_reason", "agent_mode", "workspace_changed", "checker_stdout", "checker_stderr", "checker_workspace_files",
+    "final_workspace_tar", "final_workspace_tar_sha256", "final_workspace_tar_bytes",
+    "final_workspace_status", "final_workspace_bytes", "final_workspace_skip_reason",
     "image_digest", "candidate_provenance", "version_drift", "timeout_s",
     "workspace_source",
     "last_activity_age_s",
@@ -117,6 +119,19 @@ ROW_FIELDS = (
     "provider_loaded_source",
     "provider_loaded_mismatch",
     "probe_method",
+    "checker_timeout_s",
+    "checker_wall_time_s",
+    "env_failure",
+    "env_cause",
+    "free_disk_gb",
+    "lock_wait_s",
+    "checker_lock",
+    "rerun_of",
+    "rescored_from",
+    "suspect_startup_exit",
+    "quarantine",
+    "agent_image",
+    "agent_image_digest",
     # True only when the checker did not return a pass/fail grade (timeout,
     # missing toolchain, docker launch failure). Exit 0 and 1 stay false.
     # Older logs omit the field; readers treat a missing value as false.
@@ -1371,6 +1386,64 @@ def _run_checker_in_task_image(task_dir, workdir, timeout_s, checker_env,
     )
 
 
+
+# Checkers for tasks whose tests bind a fixed local port (torch.distributed
+# MASTER_PORT) cannot run concurrently on a shared network namespace. A
+# host-wide flock serializes them; agent phases stay parallel. Put the lock
+# file on a path every container on the host mounts (OBENCH_CHECKER_LOCK).
+CHECKER_LOCK_DEFAULT = "/tmp/obench-checker.lock"
+_PORT_BINDING_MARKERS = (b"MASTER_PORT", b"init_process_group")
+
+
+def checker_binds_port(task_dir) -> bool:
+    forced = os.environ.get("OBENCH_CHECKER_LOCK_TASKS", "").strip()
+    name = os.path.basename(os.path.normpath(str(task_dir)))
+    if forced:
+        return name in {t.strip() for t in forced.split(",") if t.strip()}
+    for root, _dirs, files in os.walk(os.path.join(str(task_dir), "checker_data")):
+        for fn in files:
+            if not fn.endswith((".py", ".sh")):
+                continue
+            try:
+                with open(os.path.join(root, fn), "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            if any(m in data for m in _PORT_BINDING_MARKERS):
+                return True
+    return False
+
+
+class CheckerLock:
+    """Exclusive flock held for the checker phase; no-op when ``path`` is None."""
+
+    def __init__(self, path):
+        self.path = path
+        self._fh = None
+
+    def __enter__(self):
+        if self.path:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self._fh = open(self.path, "a")
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                self._fh.close()
+                self._fh = None
+        return False
+
+
+def checker_lock_for(task_dir) -> CheckerLock:
+    if not checker_binds_port(task_dir):
+        return CheckerLock(None)
+    return CheckerLock(os.environ.get("OBENCH_CHECKER_LOCK", "").strip() or CHECKER_LOCK_DEFAULT)
+
+
 def run_checker(task_dir, workdir, timeout_s, checker_env=None, task_image=None,
                 container_workdir=None):
     """Run ``<task_dir>/checker.sh`` with cwd=workdir and TASK_DIR set.
@@ -1668,6 +1741,48 @@ def transcript_path(transcripts_dir, results_stem, run_id):
     """
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", run_id)
     return os.path.join(transcripts_dir, results_stem, safe + ".txt")
+
+
+FINAL_WORKSPACE_MAX_BYTES = int(os.environ.get(
+    "OBENCH_FINAL_WORKSPACE_MAX_BYTES", str(2 * 1024 ** 3)))
+
+
+def final_workspace_tar_path(transcripts_dir, results_stem, run_id):
+    """Local path for a cell's final-workspace tarball, next to its transcript."""
+    base = transcript_path(transcripts_dir, results_stem, run_id)
+    return base[:-len(".txt")] + ".workspace.tar.gz"
+
+
+def save_final_workspace(workdir, dest, max_bytes=None):
+    """Tar the workspace the checker will see, so the cell can be re-checked.
+
+    Returns ``{"path", "sha256", "bytes"}``, or ``{"skipped": reason}`` when
+    the workspace is larger than ``max_bytes`` (uncompressed regular files).
+    Symlinks are stored as links, never followed.
+    """
+    import tarfile
+    limit = FINAL_WORKSPACE_MAX_BYTES if max_bytes is None else max_bytes
+    total = 0
+    for root, dirs, files in os.walk(workdir, followlinks=False):
+        for name in files:
+            fp = os.path.join(root, name)
+            if os.path.isfile(fp) and not os.path.islink(fp):
+                total += os.path.getsize(fp)
+    if total > limit:
+        return {"skipped": f"workspace {total} bytes > limit {limit}",
+                "status": "skipped_oversize", "workspace_bytes": total}
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".partial"
+    with tarfile.open(tmp, "w:gz") as tf:
+        tf.add(workdir, arcname="workspace", recursive=True)
+    digest = hashlib.sha256()
+    with open(tmp, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    os.replace(tmp, dest)
+    return {"path": dest, "sha256": digest.hexdigest(),
+            "bytes": os.path.getsize(dest), "status": "saved",
+            "workspace_bytes": total}
 
 
 def write_transcript(path, row, body):
@@ -2018,6 +2133,8 @@ def _apply_sdk_drift(row, result):
     resolved. When that text is non-empty it is the failure reason, ahead of
     a cache-only ``sdk_drift`` string.
     """
+    from .cell_columns import stamp_env_columns
+    stamp_env_columns(row)
     if not isinstance(result, dict):
         return row
     drift = result.get("sdk_drift")
@@ -2240,6 +2357,12 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "checker_stdout": None,
         "checker_stderr": None,
         "checker_workspace_files": None,
+        "final_workspace_tar": None,
+        "final_workspace_tar_sha256": None,
+        "final_workspace_tar_bytes": None,
+        "final_workspace_status": None,
+        "final_workspace_bytes": None,
+        "final_workspace_skip_reason": None,
         "image_digest": None,
         "candidate_provenance": candidate.provenance if candidate is not None else None,
         "version_drift": bool(version_drift),
@@ -2253,6 +2376,19 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         "paced_wait_s": None,
         "checker_defect": False,
         "functional_pass": None,
+        "checker_timeout_s": checker_timeout_s,
+        "checker_wall_time_s": 0.0,
+        "env_failure": False,
+        "env_cause": None,
+        "free_disk_gb": None,
+        "lock_wait_s": None,
+        "checker_lock": None,
+        "rerun_of": None,
+        "rescored_from": None,
+        "suspect_startup_exit": False,
+        "quarantine": None,
+        "agent_image": None,
+        "agent_image_digest": None,
     }
 
     # Namespaced tasks (e.g. terminal-bench/feal) contain "/"; keep the prefix
@@ -2387,6 +2523,41 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             watchdog_thread.start()
         elif proxy_server is not None and cell_token:
             proxy_server.register_cell(cell_token)
+        from .checker_venv import (
+            AgentEnvironmentError,
+            checker_split_enabled,
+            guard_agent_phase,
+            note_agent_image,
+        )
+        from .checker_env import (
+            CheckerEnvError, check_free_disk, free_disk_gb, mark_env_failure, min_free_gb,
+        )
+        try:
+            row["free_disk_gb"] = check_free_disk(
+                cell_root, min_free_gb(checker_split_enabled()))
+        except CheckerEnvError as exc:
+            # Stop before the agent: no model spend on a cell that cannot be checked.
+            row["free_disk_gb"] = free_disk_gb(cell_root)
+            mark_env_failure(row, exc.cause, str(exc))
+            row["error"] = str(exc)
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), {},
+            )
+        try:
+            note_agent_image(row)
+            if checker_split_enabled():
+                guard_agent_phase()
+        except AgentEnvironmentError as exc:
+            row["env_failure"] = True
+            row["env_cause"] = "agent_image_drift"
+            row["failure_class"] = "infra"
+            row["failure_reason"] = str(exc)
+            row["error"] = str(exc)
+            row["success"] = False
+            row["score"] = 0.0
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), {},
+            )
         adapter_exc = None
         try:
             result, exec_used = invoke_adapter(
@@ -2431,7 +2602,10 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
                 row["failure_class"] = STALLED
             else:
                 row["failure_class"] = classify_failure(row, "", timeout_s)
-            return _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)
+            from .cell_columns import stamp_env_columns
+            return stamp_env_columns(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)
+            )
         row["wall_time_s"] = _adapter_wall_time_s(start, result, exec_used)
         row["t_agent_s"] = _agent_wall_time_s(start, result, exec_used)
         _add_host_env_setup_s(row, result, exec_used)
@@ -2555,10 +2729,13 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         # LSP was requested and the worktree config could not be written.
         # That is infra: do not let a later checker turn it into a wrong answer.
         if not row["completed"] and result.get("failure_class") == "infra":
-            row["failure_class"] = "infra"
-            row["failure_reason"] = str(result.get("error") or "infra")
-            row["success"] = False
-            row["score"] = 0.0
+            # Adapter infra (for example a provider pin mismatch) is an
+            # unscored env failure, never an agent fail. Rerun it.
+            from .checker_env import mark_env_failure
+            mark_env_failure(
+                row, str(result.get("env_cause") or "adapter_infra"),
+                str(result.get("error") or "infra"),
+            )
             row["checker_exit"] = None
             return _apply_sdk_drift(
                 _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
@@ -2583,15 +2760,58 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
             row["workspace_changed"] = current_workspace_files != initial_workspace_files
             row["checker_workspace_files"] = scrub_workspace_evidence_paths(
                 current_workspace_files)
+            if not transcripts_dir:
+                row["final_workspace_status"] = "not_saved_no_transcripts_dir"
+            if transcripts_dir:
+                try:
+                    saved = save_final_workspace(workdir, final_workspace_tar_path(
+                        transcripts_dir, results_stem, run_id))
+                except Exception as exc:  # noqa: BLE001 - never fail a cell on this
+                    saved = {"skipped": f"save_failed: {type(exc).__name__}",
+                             "status": "skipped_error"}
+                row["final_workspace_status"] = saved.get("status")
+                row["final_workspace_bytes"] = saved.get("workspace_bytes")
+                if "path" in saved:
+                    row["final_workspace_tar"] = saved["path"]
+                    row["final_workspace_tar_sha256"] = saved["sha256"]
+                    row["final_workspace_tar_bytes"] = saved["bytes"]
+                else:
+                    row["final_workspace_tar"] = None
+                    row["final_workspace_tar_sha256"] = None
+                    row["final_workspace_tar_bytes"] = None
+                    row["final_workspace_skip_reason"] = saved["skipped"]
+            checker_lock = checker_lock_for(task_dir)
+            lock_wait_start = time.monotonic()
+            checker_lock.__enter__()
+            row["lock_wait_s"] = round(time.monotonic() - lock_wait_start, 3)
+            row["checker_lock"] = checker_lock.path
+            # The checker timeout and t_checker_s start only once the lock is held.
             checker_start = time.monotonic()
+            checker_root = None
             try:
                 checker_image = task_image or (
                     docker_image if exec_used == "docker" else None)
+                from .checker_venv import checker_split_enabled, prepare_checker_root
+                if checker_split_enabled():
+                    checker_root = prepare_checker_root(cell_root)
+                    from .checker_env import verify_split_checker_venv
+                    verify_split_checker_venv(checker_root, task_dir)
+                    os.environ["H2_CHECKER_VENV_ROOT"] = str(checker_root)
                 checker_exit, raw_score, checker_stdout, checker_stderr = run_checker(
                     task_dir, workdir, checker_timeout_s, task_image=checker_image,
                     container_workdir=task_workdir)
             finally:
+                os.environ.pop("H2_CHECKER_VENV_ROOT", None)
                 row["t_checker_s"] = round(time.monotonic() - checker_start, 3)
+                row["checker_wall_time_s"] = row["t_checker_s"]
+                checker_lock.__exit__(None, None, None)
+        except CheckerEnvError as exc:
+            row["checker_exit"] = None
+            mark_env_failure(row, exc.cause, str(exc))
+            row["error"] = row["error"] or str(exc)
+            return _apply_sdk_drift(
+                _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
+            )
         except Exception:  # noqa: BLE001
             row["checker_exit"] = None
             row["checker_defect"] = True
@@ -2605,6 +2825,8 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         row["checker_stderr"] = scrub_checker_output(checker_stderr)
         row["checker_exit"] = checker_exit
         row["checker_defect"] = checker_run_was_defect(checker_exit)
+        if checker_exit == "timeout":
+            row["checker_hit_cap"] = True
         from .checker_verdict import apply_explicit_verdict, expects_explicit_verdict
         if expects_explicit_verdict(task_dir):
             apply_explicit_verdict(
@@ -2623,6 +2845,12 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         _attach_functional_pass(
             row, task, workdir, task_dir, checker_image, task_workdir,
             checker_timeout_s)
+        from .checker_env import classify_checker_output
+        from .checker_venv import checker_split_enabled
+        infra_cause = classify_checker_output(
+            checker_exit, checker_stdout, checker_stderr, checker_split_enabled())
+        if infra_cause:
+            mark_env_failure(row, infra_cause, f"checker infrastructure failure: {infra_cause}")
         return _apply_sdk_drift(
             _populate_proxy_row(row, active_proxy_ctx, cell_token), result,
         )
@@ -2666,8 +2894,12 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=2400,
                         help="per-cell adapter timeout in seconds (default: 2400)")
     parser.add_argument("--checker-timeout", type=int, default=120,
-                        help="checker.sh timeout in seconds (default: 120); "
-                             "on timeout the row records checker_exit='timeout'")
+                        help="checker.sh timeout in seconds. The default 120 "
+                             "uses the per-task budget (600 for torch-tensor, "
+                             "torch-pipeline, model-extraction, sam-cell-seg). "
+                             "Any other value overrides that budget. "
+                             "On timeout the row records checker_exit='timeout' "
+                             "and env_cause='checker_timeout'")
     parser.add_argument("--force", action="store_true",
                         help="re-run cells even if their run_id already exists")
     parser.add_argument("--results-path", default=None,
@@ -2910,10 +3142,11 @@ def main(argv=None):
                 return 2
             smoke_harness = harnesses[0]
             smoke_candidate = candidates.get(smoke_harness)
+            from .checker_timeout import effective_checker_timeout
             smoke_row = run_cell(
                 smoke_harness, smoke_task, args.model, 0, args.timeout,
                 args.tasks_dir, args.adapters_dir,
-                args.checker_timeout,
+                effective_checker_timeout(smoke_task, args.tasks_dir, args.checker_timeout),
                 exec_mode=args.exec_mode, docker_image=args.docker_image,
                 docker_fallback=args.docker_fallback,
                 harness_version=versions.get(smoke_harness),
@@ -2949,9 +3182,11 @@ def main(argv=None):
                         skipped += 1
                         print(f"SKIP {run_id}")
                         continue
+                    from .checker_timeout import effective_checker_timeout
                     row = run_cell(
                         harness, task, args.model, trial, args.timeout,
-                        args.tasks_dir, args.adapters_dir, args.checker_timeout,
+                        args.tasks_dir, args.adapters_dir,
+                        effective_checker_timeout(task, args.tasks_dir, args.checker_timeout),
                         exec_mode=args.exec_mode, docker_image=args.docker_image,
                         docker_fallback=args.docker_fallback,
                         harness_version=versions.get(harness),
