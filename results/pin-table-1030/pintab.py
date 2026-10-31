@@ -131,6 +131,34 @@ def installed(r):
     pv = r.get("provider_versions") if isinstance(r.get("provider_versions"), dict) else {}
     return str(r.get("installed_anthropic") or tc.get("anthropic") or pv.get("@ai-sdk/anthropic") or "none")
 
+DRIFTV = {"4.0.87", "none", "missing", ""}
+def clean_reason(g, r):
+    if not g["scored"]: return "unscored"
+    if in_rerun(g, r): return "rerun_set(drift arm/checker timeout/infra cell)"
+    if r.get("sdk_drift"): return "sdk_drift"
+    fr = str(r.get("failure_reason") or r.get("error") or "")
+    if "sdk drift" in fr or "Unhandled chunk" in fr or "early death" in fr: return "drift/chunk-type"
+    if installed(r) in DRIFTV: return "drift_version(" + installed(r) + ")"
+    if r.get("failure_class") in ("infra", "hang") or "openbench-infra" in fr: return "infra/hang"
+    return None
+EXCL = collections.Counter()
+bclean = collections.defaultdict(collections.Counter)
+for g in groups:
+    for r in g["rows"]:
+        why = clean_reason(g, r)
+        if why: EXCL[why] += 1
+        else: bclean[g["sha"]][installed(r)] += 1
+for sha, b in binfo.items():
+    c = bclean.get(sha)
+    if c:
+        v, n = c.most_common(1)[0]
+        b.update(actual_installed_mode=v, clean_mode_rows=n, clean_rows=sum(c.values()),
+                 clean_versions=";".join(f"{k}x{x}" for k, x in c.most_common()),
+                 rerun_pin=v, rerun_pin_rule="actual_installed")
+    else:
+        b.update(actual_installed_mode="", clean_mode_rows=0, clean_rows=0, clean_versions="",
+                 rerun_pin=b["policy_pin"], rerun_pin_rule=b["pin_rule"].split("(")[0])
+json.dump(dict(EXCL), open(os.path.expanduser("~/pintab/clean-exclusions.json"), "w"), indent=1)
 out = []
 for g in groups:
     b = binfo[g["sha"]]
@@ -147,11 +175,14 @@ for g in groups:
                     pin_changes=b["policy_pin"] != b["current_pin"],
                     installed=";".join(f"{k}x{v}" for k, v in inst.most_common()),
                     rerun_cells=len(rr), rerun_cost=round(sum(float(r.get("requests_cost_usd") or 0) for r in rr), 2),
-                    scored_rows_on_other_version=len(off)))
+                    scored_rows_on_other_version=len(off),
+                    actual_installed_mode=b["actual_installed_mode"], clean_mode_rows=b["clean_mode_rows"], clean_rows=b["clean_rows"],
+                    clean_versions=b["clean_versions"], rerun_pin=b["rerun_pin"], rerun_pin_rule=b["rerun_pin_rule"],
+                    group_clean_rows=sum(1 for r in g["rows"] if not clean_reason(g, r))))
 os.makedirs(os.path.expanduser("~/pintab"), exist_ok=True)
 with open(os.path.expanduser("~/pintab/pin-table.csv"), "w", newline="") as fh:
     w = csv.DictWriter(fh, fieldnames=list(out[0])); w.writeheader(); w.writerows(out)
 json.dump(binfo, open(os.path.expanduser("~/pintab/builds.json"), "w"), indent=1)
-print("missing builds:", [s[:10] for s, b in binfo.items() if not b["found"]])
+print("EXCL", dict(EXCL)); print("missing builds:", [s[:10] for s, b in binfo.items() if not b["found"]])
 for o in out:
     print("\t".join(str(o[k]) for k in ("run", "model", "pr", "arm", "build", "build_date", "scored", "rows", "cost_usd", "current_pin", "runtime_latest", "declared", "locked_opencode", "policy_pin", "installed", "rerun_cells", "rerun_cost", "scored_rows_on_other_version", "ai", "pin_rule", "pin_publish_ts")))
