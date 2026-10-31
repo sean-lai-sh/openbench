@@ -2151,6 +2151,59 @@ def _cell_rel(spec: dict) -> str:
     return f"{spec['pr']}/cells/{spec['side']}/{task_component(spec['task'])}/{spec['trial']}.json"
 
 
+def parse_cells(value: str, prs=()) -> set[str]:
+    """``--cells``: a file path or a comma list of cells.
+
+    Each cell is ``side/task/trial`` or ``pr/side/task/trial``. A file holds one
+    cell per line (``#`` comments allowed), or JSON: a list of those strings,
+    of ``<pr>/cells/<side>/<task>/<trial>.json`` keys, or a step8_gate output
+    with a ``rerun`` list. Returns ``_cell_rel`` keys. Without a PR prefix the
+    cell applies to every ``--pr``.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        raise RunError("--cells is empty")
+    path = Path(raw)
+    if path.is_file():
+        text = path.read_text()
+        try:
+            data = json.loads(text)
+        except ValueError:
+            items = [ln.split("#", 1)[0].strip() for ln in text.splitlines()]
+        else:
+            items = data.get("rerun", []) if isinstance(data, dict) else data
+    else:
+        items = raw.split(",")
+    pr_ids = [pr.pr for pr in prs]
+    keys: set[str] = set()
+    for item in items:
+        item = str(item).strip()
+        if not item:
+            continue
+        parts = item.split("/")
+        if len(parts) == 5 and parts[1] == "cells" and parts[4].endswith(".json"):
+            parts = [parts[0], parts[2], parts[3], parts[4][: -len(".json")]]
+        if len(parts) == 3:
+            if not pr_ids:
+                raise RunError(f"--cells {item!r} has no PR and no --pr was given")
+            targets = [(pr, *parts) for pr in pr_ids]
+        elif len(parts) == 4:
+            targets = [tuple(parts)]
+        else:
+            raise RunError(f"--cells entry {item!r} is not [pr/]side/task/trial")
+        for pr, side, task, trial in targets:
+            if not trial.isdigit() or int(trial) < 1:
+                raise RunError(f"--cells entry {item!r}: trial must be a positive integer")
+            keys.add(_cell_rel({"pr": pr, "side": side, "task": task, "trial": int(trial)}))
+    if not keys:
+        raise RunError("--cells lists no cells")
+    return keys
+
+
+def _cells_max_trial(keys) -> int:
+    return max(int(Path(k).stem) for k in keys)
+
+
 def rerun_cells_from_env() -> set[str] | None:
     """OBENCH_RERUN_CELLS=<json>: a list of cell keys, or a step8_gate output
     with a ``rerun`` list. Only those cells are scheduled."""
@@ -2560,7 +2613,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           no_progress_s: float = 300, omp_thinking: str = "default",
           vertex_model: str = "claude-opus-5-5",
           require_model_match: bool = False,
-          rerun_from: Path | None = None):
+          rerun_from: Path | None = None,
+          cells: set[str] | None = None):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -2579,6 +2633,8 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         prs, tasks, trials, aa=aa, fixtures=fixtures, with_aa=with_aa,
         order=order, seed=seed,
     )
+    if dry_run and cells:
+        plan += f"cells: {len(cells)} listed (--cells)\n" + "".join(f"  {k}\n" for k in sorted(cells))
     if dry_run:
         return plan, 0, None
     if aa or with_aa:
@@ -2597,11 +2653,31 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     adapters = _adapters_dir()
     prepared: dict[tuple[str, str], dict] = {}
     pending = []
+    # --cells: plan the full grid out to the highest listed trial, order it
+    # with the same seed, then keep only the listed cells. Trial ids, seeded
+    # order and cell keys are exactly what a full run would have used.
+    plan_trials = max(trials, _cells_max_trial(cells)) if cells else trials
     scheduled = order_cells(
-        plan_cells(prs, tasks, trials, aa=aa, fixtures=fixtures, with_aa=with_aa),
+        plan_cells(prs, tasks, plan_trials, aa=aa, fixtures=fixtures, with_aa=with_aa),
         order=order,
         seed=seed,
     )
+    if cells:
+        planned = {_cell_rel(spec) for spec in scheduled}
+        unknown = sorted(cells - planned)
+        if unknown:
+            raise RunError("--cells not in the plan (check --pr/--tasks/side): " + ", ".join(unknown))
+        scheduled = [spec for spec in scheduled if _cell_rel(spec) in cells]
+        # A rerun must never overwrite an existing row: refuse before anything runs.
+        present = sorted(
+            _cell_rel(spec) for spec in scheduled
+            if cell_file(out_dir, spec["pr"], spec["side"], spec["task"], spec["trial"]).exists()
+        )
+        if present:
+            raise RunError(
+                "--cells targets already exist under the output dir; refusing to run: "
+                + ", ".join(present)
+            )
     only = rerun_cells_from_env()
     if only is not None:
         scheduled = [spec for spec in scheduled if _cell_rel(spec) in only]
@@ -2965,6 +3041,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", type=Path, default=Path("results/ab"))
     parser.add_argument(
+        "--cells",
+        default=None,
+        help=(
+            "Run only these cells: a file, or a comma list of [pr/]side/task/trial "
+            "(e.g. with/model-extraction-relu-logits/3). Original trial ids, seeded "
+            "order and cell paths are kept. Unset: the full plan, unchanged."
+        ),
+    )
+    parser.add_argument(
         "--rerun-from",
         type=Path,
         default=None,
@@ -3114,6 +3199,7 @@ def main(argv: list[str] | None = None) -> int:
             vertex_model=args.vertex_model,
             require_model_match=args.require_model_match,
             rerun_from=args.rerun_from,
+            cells=parse_cells(args.cells, prs) if args.cells else None,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
