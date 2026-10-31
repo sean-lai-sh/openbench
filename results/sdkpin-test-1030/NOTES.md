@@ -25,11 +25,14 @@ Evidence:
 ## Result: FAIL against the pass rule
 | side | provider_versions / toolchain anthropic | installed_anthropic | env_failure / class | solved | cost | agent s |
 |---|---|---|---|---|---|---|
-| without | 2.0.0 / 2.0.0 | null | False / wrong_answer | no | $0.177299 | 7.985 |
-| with | 2.0.0 / 2.0.0 | null | False / wrong_answer | no | $0.177269 | 8.998 |
+| without | 2.0.0 / 2.0.0 | null | False / wrong_answer | no | $0.177269 | 7.985 |
+| with | 2.0.0 / 2.0.0 | null | False / wrong_answer | no | $0.177299 | 8.998 |
 
 - "Unhandled chunk type" appears nowhere in the outputs (`grep -r`, rc 1).
 - **Traces are not full.** On both sides the agent made one tool call. The next request then returned 200 with 0 output tokens, step-finish was `reason: "unknown"`, and OpenCode exited about 9 s in. The row sets `suspect_startup_exit=true` and `final_answer_present=false`.
 - **The `installed_anthropic` column is null on both rows.** It is only filled on the `obench/run.py` row path. run_ab cell rows don't carry it, which is a #207 gap. The version is still on the rows, as `provider_versions`, `provider_manifest_version` and `toolchain.anthropic`.
 - The transcripts also show `@opencode-ai/plugin@0.0.0--202610170212 failed to resolve` at startup.
 - Total cost: $0.354568.
+
+## Unscored
+Both rows are a #207 setup test, not data: they carry `gate_cell: true` and `quarantine: sdkpin_test_1030`, and the folder has `quarantine.txt`, so `excluded_from_scoring()` drops them from every denominator. Costs above are the rows' `proxy_cost_usd` (with $0.177299, without $0.177269).
