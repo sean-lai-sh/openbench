@@ -3164,6 +3164,9 @@ def main(argv: list[str] | None = None) -> int:
                      "cell_image": os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None,
                      "runner_commit": resolve_runner_commit(args.runner_commit),
                      "machine": machine,
+                     # GCE identity, set by the driver from the metadata server.
+                     "vm_name": os.environ.get("OBENCH_VM_NAME", "").strip() or None,
+                     "instance_id": os.environ.get("OBENCH_INSTANCE_ID", "").strip() or None,
                      "timeout_cap_s": CELL_TIMEOUT_CAP_S,
                      "running_dir": str((Path(args.out) / ".running").resolve())}
     try:
