@@ -259,4 +259,30 @@ class ProviderPinOverrideTests(unittest.TestCase):
             got = provider_pin.apply_provider_pin({}, "/c", "abc", "with", "795")
         self.assertEqual(got["anthropic_sdk"], "2.0.0-beta.4")
         self.assertEqual(got["provider_pins"], {"@ai-sdk/anthropic": "2.0.0-beta.4"})
-        self.assertEqual(got["pin_source"], "env_override")
+        self.assertEqual(got["pin_source"], "override")
+
+
+class PinSourceClassTests(unittest.TestCase):
+    def test_classes(self):
+        from obench.pin_source_class import pin_source_class
+        self.assertEqual(pin_source_class("override"), "override")
+        self.assertEqual(pin_source_class("lockfile"), "lockfile")
+        self.assertEqual(pin_source_class("box_cache"), "manifest")
+        self.assertEqual(pin_source_class("nearest_box_build"), "manifest")
+        self.assertEqual(pin_source_class("bundled_monorepo"), "bundled")
+        self.assertEqual(pin_source_class(""), "")
+
+    def test_run_ab_row_gets_class(self):
+        from thesis.ab import run_ab
+        fn = run_ab.attach_provider_pin
+        for source, want in (("override", "override"), ("box_cache", "manifest"), ("lockfile", "lockfile")):
+            row = {}
+            fn(row, {"proxy": {"pin_source": source}})
+            self.assertEqual(row["pin_source"], source)
+            self.assertEqual(row["pin_source_class"], want)
+
+    def test_adapter_row_gets_class(self):
+        from obench.adapters import opencode
+        row = {}
+        opencode._stamp_pin_source_class(row, "override")
+        self.assertEqual(row["pin_source_class"], "override")

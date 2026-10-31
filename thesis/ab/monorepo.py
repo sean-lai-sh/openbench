@@ -234,6 +234,7 @@ def attach_bundled_provider(row: dict, proxy) -> None:
     row["bundled_provider_version"] = str(proxy.get("bundled_provider_version") or "")
     row["bundled_provider_tree"] = str(proxy.get("bundled_provider_tree") or "")
     row["pin_source"] = PIN_SOURCE
+    row["pin_source_class"] = "bundled"
     loaded = str(row.get("provider_loaded_version") or "").strip()
     versions = row.get("provider_versions")
     if not loaded and isinstance(versions, dict):

@@ -1459,6 +1459,9 @@ def attach_provider_pin(row: dict, spec: dict) -> None:
     source = str(proxy.get("pin_source") or "").strip()
     if source and not row.get("pin_source"):
         row["pin_source"] = source
+    if row.get("pin_source") and not row.get("pin_source_class"):
+        from obench.pin_source_class import stamp
+        stamp(row, row["pin_source"])
     for key in ("opencode_cache", "lockfile", "lockfile_sha256"):
         if proxy.get(key) and not row.get(key):
             row[key] = proxy[key]

@@ -261,7 +261,7 @@ class RunnerPathTests(unittest.TestCase):
 
         pinned: dict = {}
         attach_provider_pin(pinned, {"proxy": {"pin_source": "nearest_box_build"}})
-        self.assertEqual(pinned, {"pin_source": "nearest_box_build"})
+        self.assertEqual(pinned, {"pin_source": "nearest_box_build", "pin_source_class": "manifest"})
         for field in monorepo.CELL_FIELDS:
             self.assertNotIn(field, pinned)
 

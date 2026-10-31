@@ -573,6 +573,14 @@ def _append_bun_preload(env, probe):
     env["BUN_OPTIONS"] = f"{current} {flag}".strip() if current else flag
 
 
+def _stamp_pin_source_class(row, source):
+    try:
+        from obench.pin_source_class import stamp
+    except ImportError:  # cell copy without the package on sys.path
+        return
+    stamp(row, source)
+
+
 def _arm_provider_probe(env, cache):
     """Write the preload script next to the cell cache. Do not arm it.
 
@@ -1832,6 +1840,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             source = str(proxy.get("pin_source") or "").strip()
             if source:
                 row["pin_source"] = source
+                _stamp_pin_source_class(row, source)
         versions = observed.get("versions")
         if isinstance(versions, dict):
             row["provider_versions"] = versions

@@ -115,6 +115,7 @@ ROW_FIELDS = (
     "machine",
     "runner_commit",
     "pin_source",
+    "pin_source_class",
     "provider_loaded_version",
     "installed_anthropic",
     "failure_subclass",
@@ -2674,6 +2675,11 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         pin_source = result.get("pin_source")
         if isinstance(pin_source, str) and pin_source.strip():
             row["pin_source"] = pin_source.strip()
+            from obench.pin_source_class import pin_source_class
+            row["pin_source_class"] = (
+                str(result.get("pin_source_class") or "").strip()
+                or pin_source_class(pin_source)
+            )
         provider_versions = result.get("provider_versions")
         if isinstance(provider_versions, dict):
             row["provider_versions"] = {

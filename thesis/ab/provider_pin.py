@@ -210,7 +210,7 @@ def apply_provider_pin(proxy: dict, cache, sha: str, side: str = "", pr: str = "
     source = pin_source_for(found.get("entry") if found else None)
     if override:
         packages = {"@ai-sdk/anthropic": override}
-        source = "env_override"
+        source = "override"
     if not packages:
         pin = str(proxy.get("anthropic_sdk") or "").strip()
         if pin and pin != "latest":
