@@ -1,0 +1,11 @@
+{
+  "id": "prt_18f89a45f001TRyufKoq5xYJ22",
+  "sessionID": "ses_e70786cc7ffe2C26Re24VDuFvV",
+  "messageID": "msg_18f898193001XNNRxHF5u7hnRz",
+  "type": "text",
+  "text": "I've written `steal.py`. When run, it recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. Each row of that file points in exactly the same direction as one row of A1, with the correct sign; the cosine similarity to its true counterpart rounds to 1.000000. It used about 43k queries and did not need to know the hidden size in advance.\n\nTo check the result I compared it against the real `A1` inside `forward.py`. The script itself never reads the weights; it only calls `forward(x)`.\n\n**How it works:**\n1. **Find the kinks.** Along random straight lines through input space, the network's output is made of straight segments. The script splits each line in half repeatedly to find the bend points. Each bend happens where one hidden neuron switches on or off.\n2. **Read off the row.** At each bend, it estimates the gradient just before and just after by finite differences. The jump in gradient is (that neuron's output weight) × (that neuron's row of A1), so it points along the row.\n3. **Remove duplicates.** It normalises each jump to unit length and keeps only new directions. It stops after 15 lines in a row turn up no new neuron.\n4. **Fix the signs.** A row and its negative look the same so far. The script picks each row's sign so that the rebuilt network's gradient matches the real one at a random point. The leftover mismatch was about 2e-10, so the choice is clear. The output rows are unit-length, positive multiples of the true rows.\n\n**A bug I fixed along the way:** the first version found only 14 of the 20 neurons. Its test for \"this segment is straight\" was too loose, so it skipped bends where the output weight is small. After tightening that test, and shrinking the gradient step when two bends are close together, all 20 were found.\n\n**Limitation:** a neuron is missed if it never switches state within the region searched (lines up to ±20 around random starting points). This network has none like that, but such a neuron would only add a straight-line term to the output, so no queries could recover it anyway.",
+  "time": {
+    "start": 1793409525014,
+    "end": 1793409525014
+  }
+}

@@ -1,0 +1,13 @@
+I wrote `steal.py`. Running it saved a 20×10 matrix to `stolen_A1.npy`, and that matrix matches the real `A1` up to reordering and scaling of the rows.
+
+**How it works (it only calls `forward()`):**
+1. It picks 30 random straight lines through the 10-dimensional input space.
+2. Along each line, it measures the output's slope at many points and narrows down where the slope changes. Each change is a point where one hidden neuron switches on or off, and the script pins down its location exactly.
+3. At each of those points, it estimates the output's gradient just before and just after. The difference between the two is a scaled copy of that neuron's row of `A1`.
+4. It scales each recovered row to length 1, fixes its sign, and groups rows that point the same way. Rows that only show up once are dropped. The rest are saved as the stolen matrix.
+
+**Check:** I compared the result to the true `A1` in `forward.py`. This check was a separate step and is not in `steal.py`. All 20 true rows have a stolen row pointing the same way (cosine ≈ 1.0), and every stolen row matches one. The script takes the number of neurons from the data rather than assuming it. That count came out as 20, which is correct.
+
+My first version found only 14 neurons plus one wrong row, because its test for a slope change missed changes near the edges of each search interval. I replaced that test with a direct slope comparison, and the run above uses the fixed version.
+
+The rows are saved at unit length rather than at their original scale, which the "up to scaling" requirement allows.

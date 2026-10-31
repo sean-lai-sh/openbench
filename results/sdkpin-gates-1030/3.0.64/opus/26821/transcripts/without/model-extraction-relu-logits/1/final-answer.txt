@@ -1,0 +1,11 @@
+I wrote `steal.py`. It recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. It uses only `forward()` queries and never reads `A1` from `forward.py`. A full run takes about 1 second.
+
+**Check:** I compared the result with the real `A1` in a separate script. Each recovered row lines up with exactly one true row: every pair has |cosine| ≈ 0.99999999999998. So the output equals `A1` up to row order and per-row scale. The scale can include a sign, because each row is saved as a unit-length vector.
+
+**How it works:**
+1. The network's output is made of flat (linear) pieces. It bends wherever one hidden neuron switches on or off.
+2. The script walks along 60 random lines through the input space. It finds those bends by repeatedly halving each segment and checking whether the midpoint value still matches a straight line. It then pins each bend down exactly by finding where the two straight pieces on either side meet.
+3. It estimates the gradient just before and just after each bend using finite differences. The change in gradient equals `A2[i] * A1[i,:]`, which is row `i` of `A1` times a constant.
+4. It normalizes these vectors and groups matching directions together. Each group seen at least twice counts as one neuron. The number of neurons comes out of the data, so the script doesn't need to know `A1`'s shape in advance.
+
+**Bug fixed during testing:** the first version found only 12 of the 20 neurons. Its bend search kept halving until segments were about 1e-9 wide. At that size the bend changes the output by less than the straight-line tolerance, so many bends were missed. Stopping the halving at a width of 1e-5 and leaving the exact location to step 2 fixed it.
