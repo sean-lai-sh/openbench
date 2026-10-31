@@ -1,0 +1,27 @@
+{
+  "id": "prt_1928d3673001Yv97hDLMSNlpWR",
+  "sessionID": "ses_e6d72f06bffez6g7gPjUBMsxZZ",
+  "messageID": "msg_1928d1898001pDGN4vsK6Gth1L",
+  "type": "tool",
+  "callID": "toolu_vrtx_01EMnJT7D5wUAePecFCSWPme",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-r0o7mznx/bench_opencode_model-extraction-relu-logits_ti96co6i/steal.py",
+      "content": "\"\"\"\nBlack-box extraction of A1 (up to row permutation and scaling) from a\none-hidden-layer ReLU network f(x) = A2 relu(A1 x + b1) + b2, using only\nqueries to forward().\n\nMethod:\n  1. Along random lines x(t) = x0 + t*d, f is piecewise linear in t. Each kink\n     corresponds to a hidden neuron i crossing zero (A1_i . x + b1_i = 0).\n     Kinks are located by recursive bisection using slope comparisons.\n  2. At each kink, the gradient of f jumps by A2_i * A1_i. Computing the\n     gradient (finite differences) on either side and differencing gives a\n     vector proportional to row A1_i.\n  3. Normalize the vectors, fix sign, and deduplicate across many lines.\n\"\"\"\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, eps=1e-6, tol=1e-9, depth=0):\n    \"\"\"Return list of t-values in [lo, hi] where f(x0 + t d) has a kink.\"\"\"\n    g = lambda t: f(x0 + t * d)\n\n    def slope(t, s):\n        return (g(t + s) - g(t)) / s\n\n    kinks = []\n\n    def rec(a, b, fa, fb, sa, sb, depth):\n        if b - a < 1e-7 or depth > 60:\n            return\n        if abs(sa - sb) < tol * max(1.0, abs(sa), abs(sb)):\n            # check linearity at midpoint (guards against cancelling kinks)\n            m = 0.5 * (a + b)\n            if abs(g(m) - (fa + sa * (m - a))) < 1e-10:\n                return\n        # Intersection of the two end lines\n        if abs(sa - sb) > 1e-14:\n            tc = (fb - fa + sa * a - sb * b) / (sa - sb)\n            if a < tc < b:\n                pred = fa + sa * (tc - a)\n                if abs(g(tc) - pred) < 1e-10:\n                    # verify single kink: slopes just left/right match ends\n                    left = (g(tc) - g(tc - eps * 10)) / (eps * 10)\n                    right = (g(tc + eps * 10) - g(tc)) / (eps * 10)\n                    if abs(left - sa) < 1e-6 and abs(right - sb) < 1e-6:\n                        kinks.append(tc)\n                        return\n        m = 0.5 * (a + b)\n        fm = g(m)\n        sml = (fm - g(m - eps)) / eps\n        smr = (g(m + eps) - fm) / eps\n        rec(a, m, fa, fm, sa, sml, depth + 1)\n        rec(m, b, fm, fb, smr, sb, depth + 1)\n\n    fa, fb = g(lo), g(hi)\n    sa = slope(lo, eps)\n    sb = (fb - g(hi - eps)) / eps\n    rec(lo, hi, fa, fb, sa, sb, 0)\n    return kinks\n\n\ndef gradient(x, h=1e-7):\n    x = np.asarray(x, dtype=np.float64)\n    f0 = f(x)\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f0) / h\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\ndef steal(n_lines=60, span=30.0, offset=1e-4):\n    rows = []\n    counts = []\n    for _ in range(n_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        for t in find_kinks(x0, d, -span, span):\n            gl = gradient(x0 + (t - offset) * d)\n            gr = gradient(x0 + (t + offset) * d)\n            diff = gr - gl\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = normalize(diff)\n            for i, r in enumerate(rows):\n                if np.linalg.norm(r - v) < 1e-3:\n                    counts[i] += 1\n                    # running average for accuracy\n                    rows[i] = normalize(r * (counts[i] - 1) + v)\n                    break\n            else:\n                rows.append(v)\n                counts.append(1)\n    # discard spurious rows seen only once if they are rare outliers\n    rows = [r for r, c in zip(rows, counts) if c >= 2] or rows\n    return np.array(rows)\n\n\nif __name__ == \"__main__\":\n    A1_hat = steal()\n    print(\"Recovered\", A1_hat.shape[0], \"neurons\")\n    print(A1_hat)\n    np.save(\n        \"/tmp/obench-cell-r0o7mznx/bench_opencode_model-extraction-relu-logits_ti96co6i/stolen_A1.npy\",\n        A1_hat,\n    )\n"
+    },
+    "output": "Wrote file successfully.",
+    "title": "tmp/obench-cell-r0o7mznx/bench_opencode_model-extraction-relu-logits_ti96co6i/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-r0o7mznx/bench_opencode_model-extraction-relu-logits_ti96co6i/steal.py",
+      "exists": false,
+      "truncated": false
+    },
+    "time": {
+      "start": 1793460104824,
+      "end": 1793460109534
+    }
+  }
+}

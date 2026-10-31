@@ -1,0 +1,10 @@
+I've written `steal.py`. When run, it rebuilds A1 using only calls to `forward()` and saves a 20×10 matrix to `stolen_A1.npy`. It takes about 36k queries.
+
+To check it, I compared the result with the real `A1` in `forward.py`; the script itself never reads that value. Every stolen row lines up one-to-one with a real row, with cosine similarity of 0.9999999999999992 or better, signs included. So the match is exact up to reordering the neurons and scaling each row by a positive number.
+
+How it works:
+1. **Finding the neuron boundaries:** each hidden neuron switches on along a flat boundary in input space. Along 30 random lines through input space, the output bends wherever the line crosses one of these boundaries. The script finds those bend points by repeatedly splitting each line into smaller pieces. At each bend, it measures the gradient just before and just after; the jump between them points in the direction of that neuron's row of A1.
+2. **Grouping:** jumps pointing in the same direction belong to the same neuron. Real neurons show up on almost every line (28–30 times). On the first run, one extra "neuron" appeared only once, because two bends close together were merged. The script now drops any group seen too rarely, which brings the count to exactly 20.
+3. **Getting each row's sign right:** the jump only gives a row's direction up to a plus or minus sign. To settle the signs, the script fits the whole network to 2,000 random samples (maximum error about 8e-10). It then checks every combination of signs (2^20) to find the one that fits the data, which it does almost exactly. This brute-force check only runs when there are 24 or fewer neurons. Above that, the script leaves the signs unsettled.
+
+Rows are saved as unit vectors.

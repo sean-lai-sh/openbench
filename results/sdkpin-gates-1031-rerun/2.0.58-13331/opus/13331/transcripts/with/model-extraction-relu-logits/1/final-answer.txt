@@ -1,0 +1,12 @@
+I wrote `steal.py`, ran it, and it recovers A1 up to row order and scaling. It saves the result to `stolen_A1.npy` and takes about 1 second to run.
+
+**How it works (calling `forward()` only):**
+1. It picks 60 random lines through input space and moves along each one. Along a line the output is a series of straight segments, with a bend wherever a hidden neuron switches on or off. It finds each bend by repeatedly halving the interval and comparing slopes.
+2. At each bend it estimates the gradient (by finite differences) just before and just after. The difference between the two equals `A2[i] * A1[i]`, which points the same way as one row of A1.
+3. It scales each such vector to length 1, flips it so its largest entry is positive, and merges vectors that match. Each row is averaged over repeat sightings, and anything seen only once is dropped.
+
+The number of hidden neurons isn't hard-coded; it comes out of the number of distinct rows found.
+
+**Result:** As a test, I compared the output to the real `A1` in `forward.py`. The script doesn't use that matrix itself. It found all 20 neurons, and none were extra. Each recovered row matches its true row almost exactly: the largest gap from a perfect match (1 minus cosine similarity) is about 5e-14.
+
+Each row comes out at length 1 with its largest entry made positive. So it is A1 up to row order and a scale per row, and the scale can be negative.
