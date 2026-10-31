@@ -1,0 +1,10 @@
+I wrote `steal.py`. When run, it recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. It finishes in about 2.4 seconds.
+
+To check it, I compared the saved matrix with the real `A1` defined in `forward.py`. The script itself never reads `A1`; it only calls `forward(x)`. After scaling each row to length 1, every real row has exactly one recovered row matching it, with |cosine similarity| = 1.00000000 (to 8 decimals). The matches go both ways, so there are no extra or duplicate rows.
+
+**How it works:**
+1. **Find the bends.** Along a random straight line through input space, the network's output is made of straight segments. Each bend is a point where one hidden neuron switches on or off. The script finds bends by halving intervals wherever the slope changes. It then gets each bend's exact position by intersecting the two straight segments on either side, and checks that only one bend is there.
+2. **Read off a row.** At a bend, the script estimates the gradient just before and just after it using finite differences. The jump in gradient equals ±A2ᵢ·A1ᵢ, which is row i of A1 times a constant.
+3. **Combine the results.** Each recovered row is scaled to length 1 with its sign fixed. Rows that match an existing one (|cos| > 0.999) are averaged together. The search stops after 40 lines in a row turn up no new neuron. As a guard against noise, a row is kept only if it was seen at least twice.
+
+The rows are unit length, and each row's sign is set so its largest entry is positive. So the output equals A1 up to the order of the neurons and a scale factor per row, which may be negative.

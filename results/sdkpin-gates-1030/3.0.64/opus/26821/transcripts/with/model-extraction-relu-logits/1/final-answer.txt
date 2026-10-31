@@ -1,0 +1,14 @@
+I wrote `steal.py` and ran it. It saved a 20×10 matrix to `stolen_A1.npy`, one row per hidden neuron (20 neurons, input dimension 10). The script only calls `forward()`; it never reads the weights. As a separate check after it ran, I compared the output with the real `A1` in `forward.py`. Each true row matches exactly one recovered row, with |cosine similarity| ≥ 0.9999999998, and there are no extra rows. A run takes about 4 seconds.
+
+**How it works:**
+1. Along any straight line through the input space, the network's output is made of straight segments, with a bend wherever one hidden neuron switches on or off. The script picks random lines over t ∈ [-30, 30] and finds each bend exactly by repeatedly splitting the interval and checking where the straight pieces meet.
+2. At each bend, it estimates the gradient just before and just after the bend using small finite-difference steps. The difference between the two equals `A2[i] * A1[i]`, which is row *i* of A1 times a constant.
+3. Each such vector is normalised to unit length with a fixed sign, then grouped with earlier ones if it matches to |cosine| > 1 − 1e-4. Matches are averaged together. It keeps drawing lines until 15 in a row turn up no new neuron.
+
+**A problem I hit and fixed:** the first version returned 220 rows instead of 20. The extra ones were noisy copies of real rows, created when another neuron's switching point lay close enough to disturb the gradient estimate. Two filters fixed this:
+- Each bend's row is computed at two step sizes (1e-5 and 1e-4) and thrown away if the two results disagree.
+- A group of matches is only kept if it appears at least 20% as often as the most common group. Real neurons show up on almost every line, about 170 times each, while the bad copies showed up 1 to 5 times.
+
+**Output format:** each row has length 1, and its sign is set so the entry with the largest magnitude is positive. That fits "up to permuting neurons and scaling", provided scaling by negative numbers is allowed. The flipped sign can't be undone from the outputs alone, because the method can't tell a row from its negative.
+
+Run it with `python steal.py`.

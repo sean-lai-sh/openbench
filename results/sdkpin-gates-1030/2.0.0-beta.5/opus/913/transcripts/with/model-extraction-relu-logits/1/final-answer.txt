@@ -1,0 +1,39 @@
+opencode
+
+█▀▀█ █▀▀█ █▀▀ █▀▀▄ █▀▀ █▀▀█ █▀▀▄ █▀▀
+█░░█ █░░█ █▀▀ █░░█ █░░ █░░█ █░░█ █▀▀
+▀▀▀▀ █▀▀▀ ▀▀▀ ▀  ▀ ▀▀▀ ▀▀▀▀ ▀▀▀  ▀▀▀
+
+>  I have a ReLU neural network that you can query by importing `forward.py` and calling forward(x) which returns a single floating point number as output. The input dimension is 10. The neural network is a one-layer fully connected model. (so the function is defined as A2*ReLU(A1*x+b1)+b2). You do not...
+
+@  anthropic/claude-opus-5-5
+
+import numpy as np
+from forward import A1
+S=np.load('stolen_A1.npy')
+An=A1/np.linalg.norm(A1,axis=1,keepdims=True)
+C=np.abs(S@An.T)
+print(C.max(1).min(), C.max(0))
+"
+
+I wrote `steal.py`, ran it, and it recovered all 20 hidden neurons. It saves a 20×10 matrix to `stolen_A1.npy` in about 1.2 seconds.
+
+I checked it against the true `A1` in `forward.py`. After scaling both to unit length, every stolen row lines up with exactly one true row, and every true row is matched (lowest match 0.9999999999999998, where 1.0 is perfect). That check was a separate step: `steal.py` itself only ever calls `forward()`.
+
+How it works:
+- **Find the bends:** it walks along random straight lines through the input space and halves the search range repeatedly to find points where the output stops changing linearly. Each bend is where one hidden neuron switches on or off.
+- **Read off the row:** at each bend it estimates the gradient just before and just after, by nudging each input slightly. The difference between the two is that neuron's row of `A1`, multiplied by its output weight. Bend points where another bend is too close for clean estimates are skipped.
+- **Remove duplicates:** each row is scaled to unit length with a fixed sign, and a row is kept only if it isn't already in the list. It stops after 30 lines in a row turn up no new neurons.
+
+A neuron that is never active for any input would leave no bend, so the script couldn't find it; that wasn't a problem with this network.
+
+I wrote `steal.py`, ran it, and it recovered all 20 hidden neurons. It saves a 20×10 matrix to `stolen_A1.npy` in about 1.2 seconds.
+
+I checked it against the true `A1` in `forward.py`. After scaling both to unit length, every stolen row lines up with exactly one true row, and every true row is matched (lowest match 0.9999999999999998, where 1.0 is perfect). That check was a separate step: `steal.py` itself only ever calls `forward()`.
+
+How it works:
+- **Find the bends:** it walks along random straight lines through the input space and halves the search range repeatedly to find points where the output stops changing linearly. Each bend is where one hidden neuron switches on or off.
+- **Read off the row:** at each bend it estimates the gradient just before and just after, by nudging each input slightly. The difference between the two is that neuron's row of `A1`, multiplied by its output weight. Bend points where another bend is too close for clean estimates are skipped.
+- **Remove duplicates:** each row is scaled to unit length with a fixed sign, and a row is kept only if it isn't already in the list. It stops after 30 lines in a row turn up no new neurons.
+
+A neuron that is never active for any input would leave no bend, so the script couldn't find it; that wasn't a problem with this network.

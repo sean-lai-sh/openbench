@@ -1,0 +1,10 @@
+I wrote `steal.py` and ran it. It recovered all 20 hidden neurons, and every recovered row matches a row of the true A1 up to scaling.
+
+**How it works:** the script only calls `forward()` and never reads the weights in `forward.py`. The network's output is piecewise linear, and it bends wherever one neuron switches on or off.
+1. **Find the bends.** It takes random straight lines through input space. On each line it keeps halving intervals until it pins down the points where the output stops being linear.
+2. **Measure the change in slope.** At each bend it estimates the gradient just before and just after, using finite differences. The difference between the two equals that neuron's row of A1 multiplied by a constant (`±A2[i]`).
+3. **Group the results.** Each estimate is scaled to length 1 and given a fixed sign. Estimates that point the same way are averaged together as one neuron. It keeps trying new lines until 60 in a row turn up no new neuron, so it doesn't need to know the hidden size in advance. Directions seen only once are dropped as noise.
+
+**Result:** it took about 2.7 seconds and saved a (20, 10) matrix to `stolen_A1.npy`. To check it, I compared it against the real `A1` in `forward.py`, which the script itself doesn't use. Every true row matched a recovered row with |cosine| ≥ 0.9999999999999958, and every recovered row matched a true row equally well.
+
+**Sign:** the rows come out with unit length and a sign chosen by convention: the largest-magnitude entry is made positive. So each row can only be trusted up to a positive or negative scale factor. The true sign can't be told apart from `A2[i]`'s sign using these slope measurements alone.

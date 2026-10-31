@@ -1,0 +1,26 @@
+{
+  "id": "prt_18f801746001ONYkBWU8LsDMmd",
+  "sessionID": "ses_e708027baffeVHNjVBC0tOfxnz",
+  "messageID": "msg_18f7fe4cf001MzQrkOIM6USMC2",
+  "type": "tool",
+  "callID": "toolu_vrtx_01LXbVG4YcQ5hyFJGjcDYzAm",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-kx92gt2f/bench_opencode_model-extraction-relu-logits_7quzsdeb/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef gradient(x, h=1e-4):\n    g = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef find_kinks(p, d, T=8.0, n=400, tol=1e-10):\n    ts = np.linspace(-T, T, n + 1)\n    vals = np.array([f(p + t * d) for t in ts])\n    kinks = []\n\n    def g(t):\n        return f(p + t * d)\n\n    def recurse(a, b, fa, fb, depth):\n        m = 0.5 * (a + b)\n        fm = g(m)\n        if abs(fm - 0.5 * (fa + fb)) < tol * max(1.0, abs(fa) + abs(fb)) and depth > 0:\n            return\n        if b - a < 1e-7:\n            kinks.append(m)\n            return\n        recurse(a, m, fa, fm, depth + 1)\n        recurse(m, b, fm, fb, depth + 1)\n\n    for i in range(n):\n        recurse(ts[i], ts[i + 1], vals[i], vals[i + 1], 0)\n\n    refined = []\n    for k in sorted(kinks):\n        if refined and abs(k - refined[-1]) < 1e-5:\n            continue\n        refined.append(k)\n\n    out = []\n    h = 1e-4\n    for k in refined:\n        a, b = k - 5e-7, k + 5e-7\n        sl = (g(a) - g(a - h)) / h\n        sr = (g(b + h) - g(b)) / h\n        if abs(sl - sr) < 1e-9:\n            continue\n        fa, fb = g(a), g(b)\n        t_star = (fb - fa + sl * a - sr * b) / (sl - sr)\n        if a - 1e-6 <= t_star <= b + 1e-6:\n            out.append(t_star)\n        else:\n            out.append(k)\n    return out\n\n\ndef steal(num_lines=60):\n    rows = []\n    for _ in range(num_lines):\n        p = rng.normal(size=DIM) * 0.5\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        for t in find_kinks(p, d):\n            x = p + t * d\n            eps = 1e-3\n            g1 = gradient(x + eps * d, h=1e-5)\n            g2 = gradient(x - eps * d, h=1e-5)\n            diff = g1 - g2\n            nrm = np.linalg.norm(diff)\n            if nrm < 1e-8:\n                continue\n            v = diff / nrm\n            v *= np.sign(v[np.argmax(np.abs(v))])\n            rows.append(v)\n\n    clusters = []\n    for v in rows:\n        for c in clusters:\n            if np.linalg.norm(c[0] - v) < 1e-3:\n                c.append(v)\n                break\n        else:\n            clusters.append([v])\n\n    counts = [len(c) for c in clusters]\n    maxc = max(counts)\n    good = [np.median(np.array(c), axis=0) for c in clusters\n            if len(c) >= max(2, 0.05 * maxc)]\n    good = [g / np.linalg.norm(g) for g in good]\n    return np.array(good)\n\n\nif __name__ == \"__main__\":\n    A1_hat = steal()\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_hat)\n    print(A1_hat.shape)\n    print(A1_hat)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-kx92gt2f/bench_opencode_model-extraction-relu-logits_7quzsdeb/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-kx92gt2f/bench_opencode_model-extraction-relu-logits_7quzsdeb/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793408908962,
+      "end": 1793408913400
+    }
+  }
+}
