@@ -1,0 +1,10 @@
+I wrote `steal.py`. It recovers A1 using only calls to `forward()` and saves the result to `stolen_A1.npy`.
+
+**Result:** it found 20 hidden neurons (it isn't told this number), so the saved matrix is 20×10. Each row pairs up with a different row of the real A1, with cosine similarity above 0.9999999999999 after normalising. Three runs with other random seeds gave the same result. A run takes about 0.6 seconds. I only read `forward.A1` afterwards, to check the answer; the script never uses it.
+
+**How it works:**
+1. **Find the bends.** Along a random line through input space, the output changes in straight segments with a bend wherever one hidden neuron switches on or off. The script measures the slope at each end of an interval and solves for where the two lines would meet. If the real output matches at that point, that's the bend. If not, it splits the interval in half and tries again. It does this on 60 lines over t ∈ [-20, 20].
+2. **Read off a row.** At each bend, it estimates the gradient just before and just after, with small finite differences. The change between the two is that neuron's row of A1 multiplied by its output weight, which only scales it, so the direction is the row.
+3. **Group the results.** Each row is scaled to length 1 and its sign fixed. Rows whose directions agree (|cosine| > 0.999) are averaged into one neuron. A direction found only once is thrown out as noise.
+
+The output rows are unit length, so they match A1 up to the order of the neurons and a scale factor per row (which can be negative). A neuron that never switches within the search range, or whose output weight is zero, would not show up.
