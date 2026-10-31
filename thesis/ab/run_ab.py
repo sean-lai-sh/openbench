@@ -1274,6 +1274,9 @@ def attach_cell_meta(row: dict, spec: dict, started_at: str) -> None:
         machine = os.environ.get("OBENCH_MACHINE", "").strip() or socket.gethostname().split(".")[0]
     row["machine"] = machine.strip()
     row["vm_type"] = meta.get("vm_type")
+    # GCE identity from the driver (OBENCH_VM_NAME / OBENCH_INSTANCE_ID).
+    row["vm_name"] = meta.get("vm_name")
+    row["instance_id"] = meta.get("instance_id")
     # Cell container image tag (e.g. h1-env:1027-strace); set by the launcher.
     row["cell_image"] = meta.get("cell_image") or os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None
     flag = os.environ.get("OBENCH_PROVIDER_TRACE", "").strip()
@@ -3164,6 +3167,9 @@ def main(argv: list[str] | None = None) -> int:
                      "cell_image": os.environ.get("OBENCH_CELL_IMAGE", "").strip() or None,
                      "runner_commit": resolve_runner_commit(args.runner_commit),
                      "machine": machine,
+                     # GCE identity, set by the driver from the metadata server.
+                     "vm_name": os.environ.get("OBENCH_VM_NAME", "").strip() or None,
+                     "instance_id": os.environ.get("OBENCH_INSTANCE_ID", "").strip() or None,
                      "timeout_cap_s": CELL_TIMEOUT_CAP_S,
                      "running_dir": str((Path(args.out) / ".running").resolve())}
     try:
