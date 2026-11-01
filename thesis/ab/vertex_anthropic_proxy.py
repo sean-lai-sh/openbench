@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -63,6 +64,10 @@ _SUBAGENT_RE = re.compile(
 _FORWARDED = ("anthropic-beta", "anthropic-version")
 _LEDGER_LOCK = threading.Lock()
 _DISCONNECT = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)
+# Errors raised while reading the upstream body. They are the upstream's
+# fault even when the class is also in _DISCONNECT (a reset or timeout on the
+# upstream socket), so they are caught around the read, not the client write.
+_UPSTREAM_READ_ERRORS = (http.client.HTTPException, OSError)
 _NEUTRAL_USER_AGENT = "openbench"
 _CC_BETAS = ("claude-code-20250219", "oauth-2025-04-20")
 _CC_BETA_SET = frozenset(_CC_BETAS)
@@ -661,6 +666,15 @@ class SseObserver:
             "closed_before_stop": not self.message_stop,
             "client_disconnected": bool(disconnected),
         }
+
+
+def upstream_stream_error_event(error_type: str) -> bytes:
+    """Anthropic SSE error event the proxy sends when the upstream stream breaks."""
+    body = {"type": "error", "error": {
+        "type": "api_error",
+        "message": f"upstream stream error: {error_type}",
+    }}
+    return f"event: error\ndata: {json.dumps(body)}\n\n".encode("utf-8")
 
 
 def sse_dump_cap(env=None) -> int:
@@ -2261,10 +2275,15 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             observer = SseObserver() if kind == "stream" else None
             dump_cap = sse_dump_cap() if ledger is not None and cell else 0
 
-            def stream_record(disconnected: bool = False) -> dict | None:
+            upstream_error: dict | None = None
+
+            def stream_record(disconnected: bool = False, usage: dict | None = None) -> dict | None:
                 if observer is None:
                     return None
                 info = observer.finish(disconnected=disconnected)
+                if upstream_error is not None:
+                    info["upstream_error"] = dict(upstream_error)
+                    info["partial_usage"] = bool(usage)
                 if dump_cap:
                     info["sse_dump"] = write_sse_dump(ledger, cell, bytes(raw), dump_cap)
                 return info
@@ -2316,7 +2335,17 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
                 while True:
-                    chunk = response.read1(8192)
+                    try:
+                        chunk = response.read1(8192)
+                    except _UPSTREAM_READ_ERRORS as exc:
+                        # P1: the upstream stream broke mid-response. Record it
+                        # and end the client stream with an error event instead
+                        # of treating it as a client disconnect (no terminator).
+                        upstream_error = {
+                            "type": type(exc).__name__,
+                            "message": str(exc)[:300],
+                        }
+                        break
                     if not chunk:
                         break
                     # Count before the client write. A blocked consumer
@@ -2338,10 +2367,23 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 if kind != "count":
                     self._record(
                         cell, usage, status, identity, thinking_sent, call_role, called,
-                        requested_model=requested_model, stream=stream_record(),
+                        requested_model=requested_model,
+                        stream=stream_record(usage=usage),
                     )
                     recorded = True
-                if stream_tx is not None:
+                if upstream_error is not None:
+                    if kind == "stream" and stream_tx is not None:
+                        err = {"error": {"message": f"upstream stream error: {upstream_error['type']}",
+                                         "type": "api_error"}}
+                        self._write_chunk(f"data: {json.dumps(err)}\n\n".encode("utf-8"))
+                        self._write_chunk(b"data: [DONE]\n\n")
+                    elif kind == "stream":
+                        self._write_chunk(upstream_stream_error_event(upstream_error["type"]))
+                    elif translate_out:
+                        self._write_chunk(openai_error_bytes(json.dumps(
+                            {"error": {"type": "api_error", "message": "upstream stream error"}}
+                        ).encode("utf-8")))
+                elif stream_tx is not None:
                     for piece in stream_tx.finish():
                         self._write_chunk(piece)
                 elif translate_out:

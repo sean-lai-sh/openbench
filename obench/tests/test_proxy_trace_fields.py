@@ -72,7 +72,21 @@ def _drive(out: Path, prs, worker, *, trials: int = 1, vertex_model: str = "clau
     )
 
 
-class ProxyTraceFieldTests(unittest.TestCase):
+class _EnvIsolated(unittest.TestCase):
+    """Restore os.environ after each test.
+
+    run_ab's worker and the smoke cells export OBENCH_* settings into the
+    process env. Without this they leak into later tests in the same run.
+    """
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class ProxyTraceFieldTests(_EnvIsolated):
     def test_each_field_on_a_uniform_sonnet_cell(self):
         row = {"turns": 2}
         records = [
@@ -195,7 +209,7 @@ class ProxyTraceFieldTests(unittest.TestCase):
         self.assertEqual(row["endpoint_location"], "global")
 
 
-class OffProtocolHaltTests(unittest.TestCase):
+class OffProtocolHaltTests(_EnvIsolated):
     def test_matching_cell_does_not_halt(self):
         out = Path(tempfile.mkdtemp())
         calls = []
@@ -289,7 +303,7 @@ class OffProtocolHaltTests(unittest.TestCase):
         self.assertEqual(batch_exit_code(stopped), 1)
 
 
-class RequireModelMatchTests(unittest.TestCase):
+class RequireModelMatchTests(_EnvIsolated):
     def test_opus_served_as_sonnet_is_on_protocol_until_the_flag_is_set(self):
         records = [{
             "requested_model": "claude-opus-5-5",
@@ -508,7 +522,7 @@ def _load_smoke(relative, name):
     return module
 
 
-class HaltFiresFromLedgerTests(unittest.TestCase):
+class HaltFiresFromLedgerTests(_EnvIsolated):
     """The halt has to come from a ledger row, then stop the runner."""
 
     def _run_ab(self, out: Path, *, flag: bool, requested):
@@ -688,7 +702,7 @@ class HaltFiresFromLedgerTests(unittest.TestCase):
         self.assertIn("model_match_reason=model_unrecorded", log)
 
 
-class OpenCodeSmallModelSetupTests(unittest.TestCase):
+class OpenCodeSmallModelSetupTests(_EnvIsolated):
     """The comparison cell records the pinned title model and still bills it."""
 
     def test_cell_records_the_sonnet_small_model_and_bills_the_title_call(self):
@@ -794,6 +808,23 @@ def _usage_row(*, role, detail, input_uncached, output, cache_read, cache_write)
         row["call_role_detail"] = detail
     return row
 
+
+
+class EnvLeakTests(unittest.TestCase):
+    def test_suite_leaves_os_environ_unchanged(self):
+        before = dict(os.environ)
+        loader = unittest.defaultTestLoader
+        suite = unittest.TestSuite(
+            loader.loadTestsFromTestCase(cls) for cls in (
+                ProxyTraceFieldTests, OffProtocolHaltTests, RequireModelMatchTests,
+                HaltFiresFromLedgerTests, OpenCodeSmallModelSetupTests,
+            )
+        )
+        with open(os.devnull, "w", encoding="utf-8") as sink, \
+                patch("sys.stdout", sink), patch("sys.stderr", sink):
+            result = unittest.TextTestRunner(stream=sink, verbosity=0).run(suite)
+        self.assertTrue(result.wasSuccessful())
+        self.assertEqual(dict(os.environ), before)
 
 if __name__ == "__main__":
     unittest.main()
