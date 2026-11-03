@@ -20,11 +20,14 @@ A gate passes only if both sides pass.
 
 Both gates **pass**.
 
-## 795 / 913 / 1109 (parked, nothing spent)
+## 795 / 913 / 1109: SDK pin unverified, excluded from main results
+
+The Researcher accepted these three as **unproven**, effective 2026-11-03. No more spend and no drift reruns for them, ever. They are **excluded from main results**. 913 stays a candidate, partly *because* its pin is unproven.
+
+Why no proof route works:
 - **User-agent route:** the 1103 ledgers and rows have no SDK version in the user-agent header on any side (`loaded_anthropic` is null on all six rows). The SDK only adds `ai-sdk/anthropic/<ver>` from 2.0.18 on, and these pins are 2.0.0 betas.
 - **sha256 route:** every binary is a local `bun compile` of the PR commit (`build_channel` local:compile, version string `openbench`). None of them is an OpenCode release, so no published artifact can match its hash.
   - The SDK is bundled inside the binary, so the npm tarball can't be matched against the binary either.
   - The built-in-version scan also finds nothing.
 - **Hook route:** these builds predate OpenCode's plugin system (their source has no `src/plugin` directory and no plugin glob), so the #223 hook cannot load.
 - **Untried idea:** compare the bundled SDK code pulled out of the binary with the npm `dist/`. Bundling probably rewrites the code, so an exact match is unlikely.
-- These three need a new proof basis for the Researcher to decide on.
