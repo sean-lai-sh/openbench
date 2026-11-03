@@ -17,6 +17,14 @@ from pathlib import Path
 from obench.proxy import extract_usage
 from obench.provider_ua import loaded_anthropic_from_ua
 
+from thesis.ab.responses_api import (
+    ResponsesError,
+    ResponsesStream,
+    responses_body_bytes,
+    responses_error_bytes,
+    responses_to_anthropic,
+)
+
 ANTHROPIC_VERSION = "vertex-2023-10-16"
 MODEL_ID = "claude-opus-5-5"
 LOCATION = "global"
@@ -1207,6 +1215,12 @@ def _chat_route(route: str) -> bool:
     return path.endswith("/chat/completions")
 
 
+def _responses_route(route: str) -> bool:
+    """OpenAI Responses API (Codex CLI, ``wire_api = "responses"``)."""
+    path = route.split("?", 1)[0].rstrip("/")
+    return path.endswith("/responses")
+
+
 def _route_by_request_default() -> bool:
     flag = os.environ.get(ROUTE_BY_REQUEST_ENV, "").strip().lower()
     return flag in {"1", "true", "yes", "on"}
@@ -2090,7 +2104,13 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 holder["proxy"].note_reached(cell)
             route, query_removed = strip_beta_query(route)
             removed = list(query_removed)
-            presentation = "openai" if _chat_route(route) else "anthropic"
+            if _chat_route(route):
+                presentation = "openai"
+            elif _responses_route(route):
+                presentation = "responses"
+            else:
+                presentation = "anthropic"
+            responses_ctx = None
             try:
                 parsed = json.loads(raw.decode("utf-8")) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -2123,6 +2143,24 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._send(400, "application/json", payload)
                     return
                 raw = json.dumps(parsed).encode("utf-8")
+            elif presentation == "responses":
+                if not isinstance(parsed, dict):
+                    self._send(400, "application/json", responses_error_bytes(json.dumps({
+                        "error": {"message": "request body must be an object",
+                                  "type": "invalid_request_error"},
+                    }).encode("utf-8")))
+                    return
+                try:
+                    parsed, responses_ctx = responses_to_anthropic(parsed)
+                except ResponsesError as exc:
+                    self._send(400, "application/json", responses_error_bytes(json.dumps({
+                        "error": {"message": str(exc), "type": "invalid_request_error"},
+                    }).encode("utf-8")))
+                    return
+                # Classify on the translated body: the heuristics read
+                # Anthropic ``system``/``tools``. The header still wins.
+                call_role = classify_call_role(parsed, self.headers.get(CALL_ROLE_HEADER))
+                raw = json.dumps(parsed).encode("utf-8")
             sampling_removed: list[str] = []
             if isinstance(parsed, dict):
                 removed.extend(strip_cc_body(parsed))
@@ -2139,6 +2177,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     parts.append(BLOCK_BINDING_BETA)
                 beta_header = ",".join(parts)
             identity = cc_identity_record(removed)
+            if responses_ctx is not None:
+                # Ledger: row["cc_identity_stripped"]["responses"] records what
+                # the Responses translation dropped or added for this request.
+                identity["responses"] = responses_ctx.record()
             if binding:
                 identity["thinking_block_binding"] = binding
             if sampling_removed:
@@ -2172,6 +2214,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     payload = json.dumps({
                         "error": {"message": str(exc), "type": "invalid_request_error"},
                     }).encode("utf-8")
+                elif presentation == "responses":
+                    payload = responses_error_bytes(json.dumps({
+                        "error": {"message": str(exc), "type": "invalid_request_error"},
+                    }).encode("utf-8"))
                 self._send(400, "application/json", payload)
                 return
             headers = {
@@ -2193,6 +2239,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 presentation=presentation, call_role=call_role,
                 upstream_model_id=upstream_model,
                 requested_model=requested_model,
+                responses_ctx=responses_ctx,
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -2265,7 +2312,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                      identity: dict | None = None, thinking_sent: str = "none",
                      presentation: str = "anthropic", call_role: dict | None = None,
                      upstream_model_id: str | None = None,
-                     requested_model: str | None = None) -> None:
+                     requested_model: str | None = None,
+                     responses_ctx=None) -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -2274,8 +2322,14 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             recorded = False
             status: int | None = None
             called = upstream_model_id or model
-            translate_out = presentation == "openai" and kind != "count"
-            stream_tx = _OpenAIStream(called) if translate_out and kind == "stream" else None
+            translate_out = presentation in {"openai", "responses"} and kind != "count"
+            stream_tx = None
+            if translate_out and kind == "stream":
+                stream_tx = (
+                    ResponsesStream(called, responses_ctx)
+                    if presentation == "responses"
+                    else _OpenAIStream(called)
+                )
             observer = SseObserver() if kind == "stream" else None
             dump_cap = sse_dump_cap() if ledger is not None and cell else 0
 
@@ -2315,7 +2369,11 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
+                    elif presentation == "responses":
+                        payload = responses_error_bytes(payload)
                     content_type = exc.headers.get("Content-Type") or "application/json"
+                    if presentation == "responses":
+                        content_type = "application/json"
                     self._send(exc.code, content_type, payload)
                     return
                 except urllib.error.URLError as exc:
@@ -2326,6 +2384,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
+                    elif presentation == "responses":
+                        payload = responses_error_bytes(payload)
                     self._send(502, "application/json", payload)
                     return
                 status = response.status
@@ -2376,13 +2436,20 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     )
                     recorded = True
                 if upstream_error is not None:
-                    if kind == "stream" and stream_tx is not None:
+                    if kind == "stream" and isinstance(stream_tx, ResponsesStream):
+                        for piece in stream_tx.fail(f"upstream stream error: {upstream_error['type']}"):
+                            self._write_chunk(piece)
+                    elif kind == "stream" and stream_tx is not None:
                         err = {"error": {"message": f"upstream stream error: {upstream_error['type']}",
                                          "type": "api_error"}}
                         self._write_chunk(f"data: {json.dumps(err)}\n\n".encode("utf-8"))
                         self._write_chunk(b"data: [DONE]\n\n")
                     elif kind == "stream":
                         self._write_chunk(upstream_stream_error_event(upstream_error["type"]))
+                    elif translate_out and presentation == "responses":
+                        self._write_chunk(responses_error_bytes(json.dumps(
+                            {"error": {"type": "api_error", "message": "upstream stream error"}}
+                        ).encode("utf-8")))
                     elif translate_out:
                         self._write_chunk(openai_error_bytes(json.dumps(
                             {"error": {"type": "api_error", "message": "upstream stream error"}}
@@ -2390,6 +2457,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 elif stream_tx is not None:
                     for piece in stream_tx.finish():
                         self._write_chunk(piece)
+                elif translate_out and presentation == "responses":
+                    self._write_chunk(responses_body_bytes(bytes(raw), called, responses_ctx))
                 elif translate_out:
                     self._write_chunk(openai_response_bytes(bytes(raw), called))
                 self.wfile.write(b"0\r\n\r\n")
