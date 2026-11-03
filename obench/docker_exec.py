@@ -495,7 +495,17 @@ _OPENCODE_PROXY_ENV = (
     "OBENCH_CELL_LEDGER",
 )
 
-_PROXY_HARNESSES = frozenset({"pi", "opencode", "omp"})
+_CODEX_COMPARISON_ENV = (
+    "OBENCH_CODEX_HARNESS",
+    "OBENCH_VERTEX_PROXY_URL",
+    "OBENCH_VERTEX_CELL_ID",
+    "OBENCH_VERTEX_LEDGER_DIR",
+    "OBENCH_VERTEX_ROUTE_BY_REQUEST",
+    "OBENCH_CODEX_BIN",
+    "OBENCH_CODEX_SETTINGS_PATH",
+)
+
+_PROXY_HARNESSES = frozenset({"pi", "opencode", "omp", "codex"})
 
 
 def _append_env(args, names):
@@ -513,6 +523,8 @@ def _append_env(args, names):
 # ~/h1/pi-src and PI_NODE_PREFIX is a toolchain directory with a different path.
 PI_CACHE_CONTAINER = "/h1/pi-src"
 PI_NODE_CONTAINER = "/opt/node-v22.19.0"
+# The pinned Codex release binary is static; its directory is mounted here.
+CODEX_BIN_CONTAINER = "/opt/openbench-codex"
 # OpenCode wrappers built with $HOME/h1 mounted at /h1 hard-code /h1/opencode-src.
 OPENCODE_CACHE_CONTAINER = "/h1/opencode-src"
 _CONTAINER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -638,6 +650,20 @@ def _opencode_mounts(args):
     _container_path_env(args, ("OPENCODE_NODE_PREFIX",), node_prefix, container)
 
 
+def _codex_comparison_mounts(args):
+    """Mount the pinned Codex binary's directory read-only into the cell.
+
+    ``OBENCH_CODEX_BIN`` is rewritten to the container path. The cell image
+    needs no Codex install and no Node (the release binary is static).
+    """
+    binary = os.environ.get("OBENCH_CODEX_BIN", "").strip()
+    if not binary:
+        return
+    host_dir = os.path.dirname(os.path.abspath(binary))
+    args.extend(_ro_bind(host_dir, CODEX_BIN_CONTAINER))
+    _container_path_env(args, ("OBENCH_CODEX_BIN",), host_dir, CODEX_BIN_CONTAINER)
+
+
 def _proxy_bridge_docker_args(harness, extra_docker_args):
     """Forward the shared Vertex proxy into a Pi or OpenCode cell.
 
@@ -665,6 +691,15 @@ def _proxy_bridge_docker_args(harness, extra_docker_args):
         if vertex:
             _append_env(args, _PI_VERTEX_ENV)
         _pi_comparison_mounts(args)
+    elif harness == "codex":
+        # Only an explicit comparison cell (the launcher sets the flag). A
+        # shared OBENCH_VERTEX_PROXY_URL from a Pi run must not pull a stock
+        # Codex (subscription) cell onto the Vertex path.
+        flag = os.environ.get("OBENCH_CODEX_HARNESS", "").strip().lower()
+        if flag not in {"1", "true", "yes", "on"}:
+            return []
+        _append_env(args, _CODEX_COMPARISON_ENV)
+        _codex_comparison_mounts(args)
     else:
         if not os.environ.get("OBENCH_OPENCODE_PROXY", "").strip():
             return []
@@ -680,8 +715,11 @@ def _proxy_bridge_docker_args(harness, extra_docker_args):
     args += [
         "--add-host=host.docker.internal:host-gateway",
         "--add-host=api.anthropic.com:0.0.0.0",
-        "-e", "OBENCH_DOCKER_NETWORK=bridge",
     ]
+    if harness == "codex":
+        # Codex's built-in providers: a misrouted request must not leave the cell.
+        args += ["--add-host=api.openai.com:0.0.0.0", "--add-host=chatgpt.com:0.0.0.0"]
+    args += ["-e", "OBENCH_DOCKER_NETWORK=bridge"]
     return args
 
 

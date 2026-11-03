@@ -387,6 +387,40 @@ def _parse_json(stdout):
     tokens, turns, tail, token_usage = _parse_json_with_usage(stdout)
     return tokens, turns, tail
 
+# Hard-suite comparison arm (Claude on Vertex through the shared proxy's
+# /v1/responses endpoint). Lives in codex_harness.py; selected per cell by
+# OBENCH_CODEX_HARNESS=1 or OBENCH_VERTEX_PROXY_URL on a comparison model.
+_COMPARISON_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def _comparison_env_set() -> bool:
+    flag = os.environ.get("OBENCH_CODEX_HARNESS", "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return bool(os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip())
+
+
+def _load_comparison_harness():
+    """``codex_harness`` as a package module or as a sibling file (docker cells)."""
+    try:
+        from obench.adapters import codex_harness
+        return codex_harness
+    except ImportError:
+        import importlib.util
+        import sys
+
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codex_harness.py")
+        module = sys.modules.get("codex_harness")
+        loaded = getattr(module, "__file__", None) if module is not None else None
+        if loaded and os.path.abspath(loaded) == path:
+            return module
+        spec = importlib.util.spec_from_file_location("codex_harness", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["codex_harness"] = module
+        spec.loader.exec_module(module)
+        return module
+
+
 def run(
     instruction: str,
     workdir: str,
@@ -395,6 +429,8 @@ def run(
     env_override=None,
     auth_lease_proofs=(),
 ) -> dict:
+    if model in _COMPARISON_MODELS and _comparison_env_set():
+        return _load_comparison_harness().run(instruction, workdir, model, timeout_s)
     if os.environ.get("BENCH_IN_CONTAINER"):
         # codex's own sandbox (bwrap) needs user namespaces and cannot nest
         # inside the bench container; the disposable container IS the external
