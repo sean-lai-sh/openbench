@@ -58,7 +58,6 @@ class CellEnv(unittest.TestCase):
         self.workdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.workdir, True)
         env = {
-            "OBENCH_CODEX_HARNESS": "1",
             "OBENCH_VERTEX_PROXY_URL": "http://127.0.0.1:4567",
             "OBENCH_VERTEX_CELL_ID": "cellabc",
             "OBENCH_VERTEX_LEDGER_DIR": self.ledger,
@@ -69,7 +68,8 @@ class CellEnv(unittest.TestCase):
         patcher = patch.dict(os.environ, env, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in ("BENCH_IN_CONTAINER", "OBENCH_DOCKER_NETWORK", "OBENCH_CODEX_SETTINGS_PATH"):
+        for name in ("BENCH_IN_CONTAINER", "OBENCH_DOCKER_NETWORK", "OBENCH_CODEX_SETTINGS_PATH",
+                     "OBENCH_CODEX_HARNESS"):
             os.environ.pop(name, None)
 
     def write_totals(self):
@@ -216,61 +216,70 @@ class DispatchTests(CellEnv):
             codex_adapter.run("fix", self.workdir, "gpt-5.5-medium", 60)
         run.assert_not_called()
 
-    def test_proxy_url_without_the_flag_does_not_route(self):
-        """A shared OBENCH_VERTEX_PROXY_URL (e.g. from a Pi run) alone keeps the stock path."""
-        with patch.dict(os.environ, {"OBENCH_CODEX_HARNESS": ""}):
-            self.assertTrue(os.environ["OBENCH_VERTEX_PROXY_URL"])
-            self.assertFalse(codex_adapter._comparison_env_set())
-            self.assertFalse(ch.comparison_requested())
-            with patch.object(ch, "run") as harness_run, \
-                    patch.object(codex_adapter.subprocess, "run") as stock_run:
-                row = codex_adapter.run("fix", self.workdir, "claude-sonnet-5-5", 60)
-            harness_run.assert_not_called()
-            stock_run.assert_not_called()  # stock Codex has no Claude model: unsupported, no spawn
-            self.assertFalse(row["completed"])
-            # Calling the harness directly without the flag fails closed too.
-            direct = ch.run("fix", self.workdir, "claude-sonnet-5-5", 60, runner=FakeRunner())
-            self.assertEqual(direct["error"], "Codex harness comparison needs OBENCH_CODEX_HARNESS=1")
+    def test_a_url_set_routes_through_the_proxy_to_the_cell_base(self):
+        """Rule: a Claude-model Codex cell reaches the Vertex proxy when the URL is set.
+        No other flag is needed to route."""
+        for flag in (None, "0", "1"):
+            with patch.dict(os.environ, {} if flag is None else {"OBENCH_CODEX_HARNESS": flag}):
+                with patch.object(ch, "run", return_value={"completed": True, "via": "harness"}) as harness_run:
+                    row = codex_adapter.run("fix", self.workdir, "claude-sonnet-5-5", 60)
+                self.assertEqual(row["via"], "harness", flag)
+                harness_run.assert_called_once_with("fix", self.workdir, "claude-sonnet-5-5", 60)
+                runner = FakeRunner()
+                routed = ch.run("fix", self.workdir, "claude-opus-5-5", 60, runner=runner)
+                self.assertTrue(routed["completed"], flag)
+                cmd = runner.calls[-1][0]
+                self.assertIn('model_providers.obench_vertex.base_url="http://127.0.0.1:4567/c/cellabc/v1"',
+                              " ".join(cmd))
+                self.assertIn('model_provider="obench_vertex"', cmd)
 
-    def test_flag_and_proxy_url_route_to_the_harness(self):
-        self.assertTrue(codex_adapter._comparison_env_set())
-        self.assertTrue(ch.comparison_requested())
-        with patch.object(ch, "run", return_value={"completed": True, "via": "harness"}) as harness_run:
-            row = codex_adapter.run("fix", self.workdir, "claude-sonnet-5-5", 60)
-        self.assertEqual(row["via"], "harness")
-        harness_run.assert_called_once()
-        runner = FakeRunner()
-        routed = ch.run("fix", self.workdir, "claude-sonnet-5-5", 60, runner=runner)
-        self.assertTrue(routed["completed"])
-        self.assertIn("/c/cellabc/v1", " ".join(runner.calls[-1][0]))
-
-    def test_flag_without_proxy_url_fails_clearly(self):
-        with patch.dict(os.environ, {"OBENCH_VERTEX_PROXY_URL": ""}):
-            self.assertTrue(ch.comparison_requested())
+    def _assert_fails_closed(self, extra_env):
+        """No codex process, no socket, no HTTP request: the cell fails before any of them."""
+        env = {"OBENCH_VERTEX_PROXY_URL": ""}
+        env.update(extra_env)
+        with patch.dict(os.environ, env), \
+                patch.object(subprocess, "Popen", side_effect=AssertionError("codex invoked")) as popen, \
+                patch("urllib.request.urlopen", side_effect=AssertionError("network call")) as urlopen, \
+                patch("socket.create_connection", side_effect=AssertionError("network call")) as connect:
+            for model in ("claude-sonnet-5-5", "claude-opus-5-5"):
+                row = codex_adapter.run("fix", self.workdir, model, 60)
+                self.assertFalse(row["completed"])
+                self.assertEqual(row["error"], f"Codex harness cell for {model} needs OBENCH_VERTEX_PROXY_URL "
+                                               "(the Vertex proxy address); refusing to run without the proxy")
+                self.assertIsNone(row["cmd"])
+                self.assertIsNone(row["tokens"])
             runner = FakeRunner()
-            row = ch.run("fix", self.workdir, "claude-sonnet-5-5", 60, runner=runner)
-        self.assertFalse(row["completed"])
-        self.assertEqual(row["error"], "Codex harness comparison: OBENCH_CODEX_HARNESS=1 is set but "
-                                       "OBENCH_VERTEX_PROXY_URL (the proxy address) is missing")
-        self.assertEqual(runner.calls, [])  # no --version, no model call
+            direct = ch.run("fix", self.workdir, "claude-sonnet-5-5", 60, runner=runner)
+            self.assertFalse(direct["completed"])
+            self.assertEqual(runner.calls, [])  # not even `codex --version`
+        popen.assert_not_called()
+        urlopen.assert_not_called()
+        connect.assert_not_called()
 
-    def test_flag_values(self):
-        for value in ("1", "true", "YES", "on"):
-            with patch.dict(os.environ, {"OBENCH_CODEX_HARNESS": value}):
-                self.assertTrue(ch.comparison_requested(), value)
-                self.assertTrue(codex_adapter._comparison_env_set(), value)
-        for value in ("", "0", "false", "off"):
-            with patch.dict(os.environ, {"OBENCH_CODEX_HARNESS": value}):
-                self.assertFalse(ch.comparison_requested(), value)
-                self.assertFalse(codex_adapter._comparison_env_set(), value)
+    def test_b_url_unset_fails_closed_without_running_codex(self):
+        self._assert_fails_closed({})
+
+    def test_c_url_unset_with_harness_flag_still_fails_closed(self):
+        self._assert_fails_closed({"OBENCH_CODEX_HARNESS": "1"})
+
+    def test_claude_model_never_takes_the_stock_codex_path(self):
+        """Even if the harness module returned control, the stock argv is never built."""
+        for url in ("", "http://127.0.0.1:4567"):
+            with patch.dict(os.environ, {"OBENCH_VERTEX_PROXY_URL": url}), \
+                    patch.object(codex_adapter.subprocess, "run") as stock_run, \
+                    patch.object(ch, "run", wraps=ch.run) as harness_run:
+                codex_adapter.run("fix", self.workdir, "claude-sonnet-5-5", 60)
+            harness_run.assert_called_once()
+            stock_run.assert_not_called()
 
 
 class DockerArgsTests(CellEnv):
-    def test_codex_cells_get_env_mount_and_sinkholes(self):
+    def test_claude_model_codex_cells_get_env_mount_and_sinkholes(self):
         with patch("thesis.ab.proxy_bridge.shared_proxy_port", return_value=4567):
-            args = docker_exec._proxy_bridge_docker_args("codex", [])
-        self.assertIn("OBENCH_CODEX_HARNESS", args)
+            args = docker_exec._proxy_bridge_docker_args("codex", [], "claude-sonnet-5-5")
+        self.assertIn("OBENCH_VERTEX_PROXY_URL", args)
         self.assertIn("OBENCH_VERTEX_CELL_ID", args)
+        self.assertNotIn("OBENCH_CODEX_HARNESS", args)
         self.assertIn("/opt/codex:/opt/openbench-codex:ro", args)
         self.assertIn("OBENCH_CODEX_BIN=/opt/openbench-codex/codex", args)
         self.assertIn("--add-host=api.openai.com:0.0.0.0", args)
@@ -278,12 +287,22 @@ class DockerArgsTests(CellEnv):
         self.assertIn("--add-host=api.anthropic.com:0.0.0.0", args)
         self.assertNotIn("OPENAI_API_KEY", args)
 
-    def test_stock_codex_cells_are_untouched(self):
-        with patch.dict(os.environ, {"OBENCH_CODEX_HARNESS": "", "OBENCH_VERTEX_PROXY_URL": ""}):
-            self.assertEqual(docker_exec._proxy_bridge_docker_args("codex", []), [])
-        # A Pi run's shared proxy URL alone does not make a codex cell a comparison cell.
-        with patch.dict(os.environ, {"OBENCH_CODEX_HARNESS": ""}):
-            self.assertEqual(docker_exec._proxy_bridge_docker_args("codex", []), [])
+    def test_stock_gpt_codex_cells_are_unchanged(self):
+        """A Pi run's exported proxy URL does not touch a stock GPT-model Codex cell."""
+        for model in ("gpt-5.5-medium", "gpt-5.6-sol", None):
+            self.assertEqual(docker_exec._proxy_bridge_docker_args("codex", [], model), [], model)
+        with patch.dict(os.environ, {"OBENCH_VERTEX_PROXY_URL": ""}):
+            self.assertEqual(docker_exec._proxy_bridge_docker_args("codex", [], "gpt-5.5-medium"), [])
+
+    def test_build_docker_cmd_passes_the_model(self):
+        cmd = docker_exec.build_docker_cmd(
+            harness="codex", workdir="/tmp/wd", model="claude-sonnet-5-5", timeout_s=60,
+            adapters_dir="/repo/obench/adapters", image="img:1", instruction_path="/tmp/instr")
+        self.assertIn("OBENCH_CODEX_BIN=/opt/openbench-codex/codex", cmd)
+        stock = docker_exec.build_docker_cmd(
+            harness="codex", workdir="/tmp/wd", model="gpt-5.5-medium", timeout_s=60,
+            adapters_dir="/repo/obench/adapters", image="img:1", instruction_path="/tmp/instr")
+        self.assertNotIn("OBENCH_VERTEX_PROXY_URL", stock)
 
 
 class LauncherTests(unittest.TestCase):

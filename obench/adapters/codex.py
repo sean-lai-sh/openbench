@@ -388,16 +388,13 @@ def _parse_json(stdout):
     return tokens, turns, tail
 
 # Hard-suite comparison arm (Claude on Vertex through the shared proxy's
-# /v1/responses endpoint). Lives in codex_harness.py; selected per cell only by
-# OBENCH_CODEX_HARNESS=1 on a comparison model. OBENCH_VERTEX_PROXY_URL alone
-# never routes a cell here (a Pi run may export it); it is read as the proxy
-# address only after the flag is set.
+# /v1/responses endpoint). Lives in codex_harness.py. A Codex cell on a Claude
+# model id (Sonnet/Opus 5.5) always goes there and never takes the stock path
+# below; it reaches the Vertex proxy only when OBENCH_VERTEX_PROXY_URL is set
+# and otherwise fails closed before any model call. It never falls through to
+# OpenAI, ChatGPT or any direct API. No other flag is read for routing.
+# Stock GPT-model Codex cells are unchanged.
 _COMPARISON_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
-
-
-def _comparison_env_set() -> bool:
-    flag = os.environ.get("OBENCH_CODEX_HARNESS", "").strip().lower()
-    return flag in {"1", "true", "yes", "on"}
 
 
 def _load_comparison_harness():
@@ -429,7 +426,7 @@ def run(
     env_override=None,
     auth_lease_proofs=(),
 ) -> dict:
-    if model in _COMPARISON_MODELS and _comparison_env_set():
+    if model in _COMPARISON_MODELS:
         return _load_comparison_harness().run(instruction, workdir, model, timeout_s)
     if os.environ.get("BENCH_IN_CONTAINER"):
         # codex's own sandbox (bwrap) needs user namespaces and cannot nest

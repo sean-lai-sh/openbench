@@ -495,8 +495,11 @@ _OPENCODE_PROXY_ENV = (
     "OBENCH_CELL_LEDGER",
 )
 
+# Codex cells on these Claude model ids are hard-suite harness cells
+# (obench/adapters/codex_harness.py); stock GPT-model Codex cells are not.
+_CODEX_COMPARISON_MODELS = frozenset({"claude-opus-5-5", "claude-sonnet-5-5"})
+
 _CODEX_COMPARISON_ENV = (
-    "OBENCH_CODEX_HARNESS",
     "OBENCH_VERTEX_PROXY_URL",
     "OBENCH_VERTEX_CELL_ID",
     "OBENCH_VERTEX_LEDGER_DIR",
@@ -664,7 +667,7 @@ def _codex_comparison_mounts(args):
     _container_path_env(args, ("OBENCH_CODEX_BIN",), host_dir, CODEX_BIN_CONTAINER)
 
 
-def _proxy_bridge_docker_args(harness, extra_docker_args):
+def _proxy_bridge_docker_args(harness, extra_docker_args, model=None):
     """Forward the shared Vertex proxy into a Pi or OpenCode cell.
 
     Both harnesses get the same bridge publication: ``host.docker.internal``
@@ -692,11 +695,11 @@ def _proxy_bridge_docker_args(harness, extra_docker_args):
             _append_env(args, _PI_VERTEX_ENV)
         _pi_comparison_mounts(args)
     elif harness == "codex":
-        # Only an explicit comparison cell (the launcher sets the flag). A
-        # shared OBENCH_VERTEX_PROXY_URL from a Pi run must not pull a stock
-        # Codex (subscription) cell onto the Vertex path.
-        flag = os.environ.get("OBENCH_CODEX_HARNESS", "").strip().lower()
-        if flag not in {"1", "true", "yes", "on"}:
+        # Only Claude-model Codex cells are harness cells. They get the proxy
+        # env (the adapter fails closed in the cell when the URL is missing);
+        # stock GPT-model Codex cells are unchanged even when a Pi run has
+        # exported OBENCH_VERTEX_PROXY_URL.
+        if model not in _CODEX_COMPARISON_MODELS:
             return []
         _append_env(args, _CODEX_COMPARISON_ENV)
         _codex_comparison_mounts(args)
@@ -827,7 +830,7 @@ def build_docker_cmd(harness, workdir, model, timeout_s, adapters_dir, image,
         if os.path.isfile(source) and target not in mounted_auth_targets:
             cmd += ["-v", f"{source}:{target}:ro"]
             mounted_auth_targets.add(target)
-    cmd += _proxy_bridge_docker_args(effective_harness, extra_docker_args)
+    cmd += _proxy_bridge_docker_args(effective_harness, extra_docker_args, model)
     if extra_docker_args:
         cmd += list(extra_docker_args)
     cmd += [image, "python3", "/bench/entry.py", harness, model, str(timeout_s)]

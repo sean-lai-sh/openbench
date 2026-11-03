@@ -24,11 +24,15 @@ directory: no auth, config, AGENTS.md, skills, MCP, rules or memories from
 the machine owner. The custom provider needs no OpenAI credentials; its
 ``env_key`` carries a placeholder the proxy ignores.
 
-Selected only by ``OBENCH_CODEX_HARNESS=1`` on a comparison model;
-``codex.run`` dispatches here. ``OBENCH_VERTEX_PROXY_URL`` on its own never
-selects this path (a Pi run may export it); it is read as the proxy address
-only after the flag is set, and a flagged cell without it fails closed. ``thesis`` is not imported:
-docker cells mount only ``obench/adapters``.
+Routing rule: ``codex.run`` sends every Codex cell on a Claude model id
+(Sonnet/Opus 5.5) here; such a cell never takes the stock Codex path. It
+reaches the Vertex proxy only when ``OBENCH_VERTEX_PROXY_URL`` is set. If it
+is unset the cell fails closed before the codex binary runs and before any
+model call; it never falls through to OpenAI, ChatGPT or any direct API.
+No other flag is read for routing. Stock GPT-model Codex cells are
+unchanged.
+
+``thesis`` is not imported: docker cells mount only ``obench/adapters``.
 """
 
 from __future__ import annotations
@@ -66,7 +70,6 @@ AUTO_COMPACT_FRACTION = 0.9
 
 _CELL_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _TOTAL_KEYS = ("calls", "input_uncached", "output", "cache_read", "cache_write")
-_TRUTHY = {"1", "true", "yes", "on"}
 _STRIPPED_ENV = (
     "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "CODEX_HOME",
     "OPENBENCH_PROXY_BASE_URL", "OPENBENCH_PROXY_CELL_TOKEN",
@@ -77,10 +80,9 @@ class PinError(Exception):
     pass
 
 
-def comparison_requested() -> bool:
-    """True only for ``OBENCH_CODEX_HARNESS=1`` (or true/yes/on)."""
-    flag = os.environ.get("OBENCH_CODEX_HARNESS", "").strip().lower()
-    return flag in _TRUTHY
+def proxy_url() -> str:
+    """The Vertex proxy address, or "" when ``OBENCH_VERTEX_PROXY_URL`` is unset."""
+    return os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip()
 
 
 def cell_proxy_base(base_url: str, cell_id: str) -> str:
@@ -317,14 +319,13 @@ def _fail(message: str) -> dict:
 def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subprocess.run) -> dict:
     if model not in COMPARISON_MODELS:
         return _fail(f"Codex harness comparison does not run model {model!r}")
-    if not comparison_requested():
-        return _fail("Codex harness comparison needs OBENCH_CODEX_HARNESS=1")
-    proxy = os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip()
+    proxy = proxy_url()
+    if not proxy:
+        # Fail closed: no binary, no network, no model call, never a direct API.
+        return _fail(f"Codex harness cell for {model} needs OBENCH_VERTEX_PROXY_URL "
+                     "(the Vertex proxy address); refusing to run without the proxy")
     cell_id = os.environ.get("OBENCH_VERTEX_CELL_ID", "").strip()
     ledger_dir = os.environ.get("OBENCH_VERTEX_LEDGER_DIR", "").strip()
-    if not proxy:
-        return _fail("Codex harness comparison: OBENCH_CODEX_HARNESS=1 is set but "
-                     "OBENCH_VERTEX_PROXY_URL (the proxy address) is missing")
     if not _CELL_RE.fullmatch(cell_id or ""):
         return _fail("Codex harness comparison needs OBENCH_VERTEX_CELL_ID "
                      "(letters, digits, dot, underscore, hyphen)")
