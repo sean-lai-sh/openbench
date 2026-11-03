@@ -1,0 +1,28 @@
+{
+  "id": "prt_1a38ebfeb001Fx8HwV5kSQ2ETJ",
+  "sessionID": "ses_e5c718322ffeXYXAqru30buSXg",
+  "messageID": "msg_1a38e86460015ix8DCPibVQULu",
+  "type": "tool",
+  "callID": "toolu_vrtx_01HGnn7J2H7gJEHK9FH6K2XY",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-s38ipkr_/bench_opencode_model-extraction-relu-logits_zf2ryngh/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nfrom forward import forward\n\nDIM = 10\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nrng = np.random.default_rng(1234)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, tol=1e-9):\n    \"\"\"Find t values where f(x0 + t d) is non-linear, via recursive bisection.\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n    stack = [(lo, hi, g(lo), g(hi))]\n    while stack:\n        a, b, fa, fb = stack.pop()\n        m = 0.5 * (a + b)\n        fm = g(m)\n        if abs(fm - 0.5 * (fa + fb)) <= tol * (1 + abs(fa) + abs(fb)):\n            # Check quarter points too, to reduce chance of missing cancelling kinks\n            q1, q3 = 0.5 * (a + m), 0.5 * (m + b)\n            f1, f3 = g(q1), g(q3)\n            if (abs(f1 - 0.5 * (fa + fm)) <= tol * (1 + abs(fa) + abs(fm)) and\n                    abs(f3 - 0.5 * (fm + fb)) <= tol * (1 + abs(fm) + abs(fb))):\n                continue\n        if b - a < 1e-7:\n            kinks.append(m)\n            continue\n        stack.append((a, m, fa, fm))\n        stack.append((m, b, fm, fb))\n    kinks.sort()\n    # merge near-duplicates\n    merged = []\n    for k in kinks:\n        if merged and k - merged[-1] < 1e-5:\n            continue\n        merged.append(k)\n    return merged\n\n\ndef grad(x, h=1e-5):\n    gv = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gv[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return gv\n\n\ndef main():\n    rows = []\n    n_lines = 30\n    for _ in range(n_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        ks = find_kinks(x0, d, -20.0, 20.0)\n        for i, t in enumerate(ks):\n            # choose delta smaller than distance to neighbouring kinks\n            gaps = []\n            if i > 0:\n                gaps.append(t - ks[i - 1])\n            if i < len(ks) - 1:\n                gaps.append(ks[i + 1] - t)\n            delta = min([1e-3] + [g / 4 for g in gaps])\n            h = delta / 10\n            gp = grad(x0 + (t + delta) * d, h)\n            gm = grad(x0 + (t - delta) * d, h)\n            diff = gp - gm  # = a2_j * w_j * sign(w_j . d)\n            nrm = np.linalg.norm(diff)\n            if nrm < 1e-8:\n                continue\n            s = np.sign(diff @ d)  # = sign(a2_j)\n            w = diff * s  # = |a2_j| * w_j (positive scaling)\n            rows.append(w / np.linalg.norm(w))\n\n    # cluster unit vectors (exact direction, sign retained)\n    clusters = []\n    for r in rows:\n        for c in clusters:\n            if np.dot(c[\"mean\"] / np.linalg.norm(c[\"mean\"]), r) > 0.9999:\n                c[\"members\"].append(r)\n                c[\"mean\"] = np.sum(c[\"members\"], axis=0)\n                break\n        else:\n            clusters.append({\"mean\": r.copy(), \"members\": [r]})\n\n    # Keep clusters seen in multiple lines (real neurons cross every line)\n    min_count = max(2, n_lines // 3)\n    A = []\n    for c in clusters:\n        if len(c[\"members\"]) >= min_count:\n            m = np.median(np.array(c[\"members\"]), axis=0)\n            A.append(m / np.linalg.norm(m))\n    A = np.array(A)\n    np.save(OUT, A)\n    print(f\"Recovered {A.shape[0]} neurons\")\n    print(A)\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-s38ipkr_/bench_opencode_model-extraction-relu-logits_zf2ryngh/steal.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-s38ipkr_/bench_opencode_model-extraction-relu-logits_zf2ryngh/steal.py": []
+      },
+      "filepath": "/tmp/obench-cell-s38ipkr_/bench_opencode_model-extraction-relu-logits_zf2ryngh/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793745415938,
+      "end": 1793745420870
+    }
+  }
+}

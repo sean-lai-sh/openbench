@@ -1,0 +1,10 @@
+I wrote `steal.py` and ran it. It found 20 hidden neurons and saved a 20×10 matrix to `stolen_A1.npy`. The script only calls `forward()`. To check it afterwards, I compared the result with the real `A1` in `forward.py`: each stolen row matches exactly one real row with cosine similarity 1.0 (to about 1e-10), and the signs are correct too. The run made about 26,000 queries and also prints the matrix.
+
+**How it works:**
+1. **Finding the kinks:** along a random line through input space, the output is made of straight segments, with a bend wherever one hidden neuron switches on or off. The script finds these bends by repeatedly splitting the line and checking whether the output still follows a straight line. Once it has narrowed a bend down, it gets its exact position by intersecting the two straight pieces on either side.
+2. **Reading off a row:** at each bend, the gradient on one side minus the gradient on the other is proportional to that neuron's row of `A1`. Gradients come from finite differences. A bend is kept only if two different step sizes give the same answer, which throws out cases where a second bend is close by. Rows are normalised and duplicates are merged by comparing direction and offset. It keeps searching new random lines until 15 in a row turn up no new neurons, so the hidden size doesn't need to be known in advance.
+3. **Getting the signs:** the steps above only give each row up to ±. The script fits gradients at random points to a model built from the hyperplanes it found. Each neuron is active on one side of its hyperplane, and that choice determines the sign. The script tries all 2^20 combinations of sides, split into two halves, and keeps the one that fits. The leftover error was 3e-8, so the signs are reliable.
+
+**Output format:** the rows are unit-length rather than the original sizes, which the task allows ("up to scaling"), and their order may differ from the original.
+
+**Limitation:** the sign step works through all combinations, so it is fine up to roughly 25–30 hidden neurons but would be too slow for much larger networks.

@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a389a766001Jz0bNLwYLU6CSc",
+  "sessionID": "ses_e5c76fee2ffeRnjCaAkEWBeSgZ",
+  "messageID": "msg_1a3899415001HXlLYosxqMLr5F",
+  "type": "tool",
+  "callID": "toolu_vrtx_011borpxTaz7wHVMtxkqT4vz",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-aj_bjoax/bench_opencode_model-extraction-relu-logits_6adorqxs; python - <<'EOF'\ns=open('steal.py').read()\ns=s.replace('''def gradient(x, h=1e-6):\n    f0 = f(x)\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f0) / h\n    return gr''','''def gradient(x, h=1e-5):\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef side_gradient(xs, d, sign):\n    \"\"\"Gradient on one side of a kink; None if region looks inconsistent.\"\"\"\n    g1 = gradient(xs + sign * 1e-3 * d)\n    g2 = gradient(xs + sign * 2e-3 * d)\n    if np.linalg.norm(g1 - g2) > 1e-6 * max(1e-3, np.linalg.norm(g1)):\n        return None\n    return g1''')\ns=s.replace('''            delta = 1e-4\n            gl = gradient(xs - delta * d)\n            gr = gradient(xs + delta * d)\n            diff = gr - gl''','''            gl = side_gradient(xs, d, -1)\n            gr = side_gradient(xs, d, +1)\n            if gl is None or gr is None:\n                continue\n            diff = gr - gl''')\ns=s.replace('''            if not any(abs(np.dot(v, r)) > 0.999 for r in rows):\n                rows.append(v)\n                new = True\n            else:\n                # refine by averaging matching row\n                for k, r in enumerate(rows):\n                    if abs(np.dot(v, r)) > 0.999:\n                        rows[k] = canon(r + v * np.sign(np.dot(v, r)))\n                        break''','''            for k, r in enumerate(rows):\n                if abs(np.dot(v, r)) > 0.9999:\n                    counts[k] += 1\n                    break\n            else:\n                rows.append(v)\n                counts.append(1)\n                new = True''')\ns=s.replace('''    rows = []\n    since_new = 0''','''    rows = []\n    counts = []\n    since_new = 0''')\ns=s.replace('''    return np.array(rows)''','''    rows = [r for r, c in zip(rows, counts) if c >= 2]\n    return np.array(rows)''')\nopen('steal.py','w').write(s)\nEOF\npython steal.py | head -1; python -c \"\nimport numpy as np, forward as F\nS=np.load('stolen_A1.npy'); A=F.A1/np.linalg.norm(F.A1,axis=1,keepdims=True)\nC=np.abs(A@S.T); print(S.shape, C.max(1).min(), C.max(0).min())\"",
+      "description": "Improve robustness and re-verify",
+      "timeout": 600000
+    },
+    "output": "Recovered 20 neurons\n(20, 10) 0.9999999999999998 0.9999999999999998\n",
+    "title": "cd /tmp/obench-cell-aj_bjoax/bench_opencode_model-extraction-relu-logits_6adorqxs; python - <<'EOF'\ns=open('steal.py').read()\ns=s.replace('''def gradient(x, h=1e-6):\n    f0 = f(x)\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f0) / h\n    return gr''','''def gradient(x, h=1e-5):\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef side_gradient(xs, d, sign):\n    \"\"\"Gradient on one side of a kink; None if region looks inconsistent.\"\"\"\n    g1 = gradient(xs + sign * 1e-3 * d)\n    g2 = gradient(xs + sign * 2e-3 * d)\n    if np.linalg.norm(g1 - g2) > 1e-6 * max(1e-3, np.linalg.norm(g1)):\n        return None\n    return g1''')\ns=s.replace('''            delta = 1e-4\n            gl = gradient(xs - delta * d)\n            gr = gradient(xs + delta * d)\n            diff = gr - gl''','''            gl = side_gradient(xs, d, -1)\n            gr = side_gradient(xs, d, +1)\n            if gl is None or gr is None:\n                continue\n            diff = gr - gl''')\ns=s.replace('''            if not any(abs(np.dot(v, r)) > 0.999 for r in rows):\n                rows.append(v)\n                new = True\n            else:\n                # refine by averaging matching row\n                for k, r in enumerate(rows):\n                    if abs(np.dot(v, r)) > 0.999:\n                        rows[k] = canon(r + v * np.sign(np.dot(v, r)))\n                        break''','''            for k, r in enumerate(rows):\n                if abs(np.dot(v, r)) > 0.9999:\n                    counts[k] += 1\n                    break\n            else:\n                rows.append(v)\n                counts.append(1)\n                new = True''')\ns=s.replace('''    rows = []\n    since_new = 0''','''    rows = []\n    counts = []\n    since_new = 0''')\ns=s.replace('''    return np.array(rows)''','''    rows = [r for r, c in zip(rows, counts) if c >= 2]\n    return np.array(rows)''')\nopen('steal.py','w').write(s)\nEOF\npython steal.py | head -1; python -c \"\nimport numpy as np, forward as F\nS=np.load('stolen_A1.npy'); A=F.A1/np.linalg.norm(F.A1,axis=1,keepdims=True)\nC=np.abs(A@S.T); print(S.shape, C.max(1).min(), C.max(0).min())\"",
+    "metadata": {
+      "output": "Recovered 20 neurons\n(20, 10) 0.9999999999999998 0.9999999999999998\n",
+      "exit": 0,
+      "description": "Improve robustness and re-verify"
+    },
+    "time": {
+      "start": 1793745077277,
+      "end": 1793745078975
+    }
+  }
+}
