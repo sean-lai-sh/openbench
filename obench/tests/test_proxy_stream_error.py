@@ -125,6 +125,36 @@ class UpstreamStreamErrorTests(unittest.TestCase):
         self.assertFalse(rows[0]["stream"]["partial_usage"])
         self.assertIn("upstream_error", rows[0]["stream"])
 
+    def test_partial_usage_on_infra_cell_counts_toward_spend_cap(self):
+        from thesis.ab.run_ab import apply_cell_meter, over_budget
+        proxy, ledger = self.start(PARTIAL)
+        self.post(proxy.base_url + "/c/s4/v1/messages")
+        row = {"failure_class": "infra"}
+        apply_cell_meter(row, {"ledger_dir": str(ledger), "cell_id": "s4"})
+        self.assertEqual(row["proxy_upstream_errors"], 1)
+        self.assertEqual(row["proxy_partial_usage_calls"], 1)
+        cost = row["proxy_cost_usd"]
+        self.assertIsInstance(cost, float)
+        self.assertGreater(cost, 0.0)
+        out = Path(tempfile.mkdtemp())
+        path = out / "1" / "cells" / "with" / "task" / "1.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(row), encoding="utf-8")
+        # The infra cell is not scored, but its billed tokens reach the total.
+        self.assertIsNone(over_budget(out, cost * 2))
+        reason = over_budget(out, cost)
+        self.assertIsNotNone(reason)
+        self.assertIn("proxy cost", reason)
+
+    def test_unmetered_infra_cell_does_not_stop_the_run(self):
+        from thesis.ab.run_ab import over_budget
+        out = Path(tempfile.mkdtemp())
+        path = out / "1" / "cells" / "with" / "task" / "1.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"failure_class": "infra", "proxy_cost_usd": None}),
+                        encoding="utf-8")
+        self.assertIsNone(over_budget(out, 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()
