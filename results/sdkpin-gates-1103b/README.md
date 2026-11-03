@@ -22,7 +22,7 @@ Both gates **pass**.
 
 ## 795 / 913 / 1109: SDK pin unverified, excluded from main results
 
-The Researcher accepted these three as **unproven**, effective 2026-11-03. No more spend and no drift reruns for them, ever. They are **excluded from main results**. 913 stays a candidate, partly *because* its pin is unproven.
+**Final:** the Researcher accepted these three as **unproven** on 2026-11-03. Each is labeled **unverified SDK pin**. No more spend and no drift reruns for them, ever. They are **excluded from main results**. 913 stays a candidate, partly *because* its pin is unproven.
 
 Why no proof route works:
 - **User-agent route:** the 1103 ledgers and rows have no SDK version in the user-agent header on any side (`loaded_anthropic` is null on all six rows). The SDK only adds `ai-sdk/anthropic/<ver>` from 2.0.18 on, and these pins are 2.0.0 betas.
@@ -31,3 +31,6 @@ Why no proof route works:
   - The built-in-version scan also finds nothing.
 - **Hook route:** these builds predate OpenCode's plugin system (their source has no `src/plugin` directory and no plugin glob), so the #223 hook cannot load.
 - **Untried idea:** compare the bundled SDK code pulled out of the binary with the npm `dist/`. Bundling probably rewrites the code, so an exact match is unlikely.
+
+## hookfix-smoke-1103/
+This is the #223 hook-fix smoke run (5140, pin 2.0.50, opus) from the #237 branch. It confirms that `load_proof` is captured in `_observe` before the iso_home rmtree runs.
