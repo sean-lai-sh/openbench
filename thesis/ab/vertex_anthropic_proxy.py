@@ -2171,6 +2171,14 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 raw = json.dumps(parsed).encode("utf-8")
             beta_header, header_removed = strip_cc_headers(self.headers)
             removed.extend(header_removed)
+            if responses_ctx is not None and responses_ctx.betas:
+                # The translated body uses Pi's thinking wire (mid-conversation
+                # effort markers, block binding); Codex sends no anthropic-beta.
+                parts = [p.strip() for p in (beta_header or "").split(",") if p.strip()]
+                for beta in responses_ctx.betas:
+                    if beta not in parts:
+                        parts.append(beta)
+                beta_header = ",".join(parts)
             if binding:
                 parts = [p for p in (beta_header or "").split(",") if p.strip()]
                 if BLOCK_BINDING_BETA not in parts:

@@ -34,18 +34,48 @@ TOTALS = {
 }
 
 
+def _usage(inp, cached, out):
+    return {"input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out,
+            "reasoning_output_tokens": 0, "total_tokens": inp + out}
+
+
+def rollout_lines(per_call):
+    """A Codex 0.144.5 rollout: one token_count event per model response, plus
+    a rate-limit-only event (info null) and a repeated total, neither a call."""
+    lines = [{"timestamp": "t0", "type": "session_meta", "payload": {"id": "s1"}},
+             {"timestamp": "t0", "type": "event_msg", "payload": {"type": "token_count", "info": None,
+                                                                   "rate_limits": {}}}]
+    total = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+             "reasoning_output_tokens": 0, "total_tokens": 0}
+    for last in per_call:
+        total = {k: total[k] + last[k] for k in total}
+        info = {"total_token_usage": dict(total), "last_token_usage": last, "model_context_window": 200000}
+        lines.append({"timestamp": "t", "type": "event_msg", "payload": {"type": "token_count", "info": info}})
+        lines.append({"timestamp": "t", "type": "response_item", "payload": {"type": "message"}})
+    lines.append(dict(lines[-2]))  # Codex re-emits the last count with an unchanged total
+    return "\n".join(json.dumps(line) for line in lines) + "\n"
+
+
+CALLS = [_usage(11346, 0, 600), _usage(13001, 11346, 700), _usage(13558, 13001, 500), _usage(13789, 13558, 578)]
+
+
 class FakeRunner:
-    def __init__(self, version="codex-cli 0.144.5", returncode=0, stdout=TURN_JSONL, timeout=False):
+    def __init__(self, version="codex-cli 0.144.5", returncode=0, stdout=TURN_JSONL, timeout=False, rollout=None):
         self.version = version
         self.returncode = returncode
         self.stdout = stdout
         self.timeout = timeout
+        self.rollout = rollout
         self.calls = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append((cmd, kwargs))
         if cmd[1:] == ["--version"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=self.version + "\n", stderr="")
+        if self.rollout is not None:
+            day = Path(kwargs["env"]["CODEX_HOME"]) / "sessions" / "2026" / "11" / "03"
+            day.mkdir(parents=True, exist_ok=True)
+            (day / "rollout-2026-11-03T10-00-00-abc.jsonl").write_text(self.rollout)
         if self.timeout:
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"), output=b"partial", stderr=b"")
         return subprocess.CompletedProcess(cmd, self.returncode, stdout=self.stdout, stderr="")
@@ -97,8 +127,16 @@ class CommandTests(unittest.TestCase):
         self.assertIn("model_context_window=200000", joined)
         self.assertIn('model_reasoning_effort="medium"', joined)
         self.assertEqual(ch.CONTEXT_WINDOW, 200_000)
-        self.assertEqual(ch.ADAPTER_FIXES, ("AD1-codex-ctx",))
+        self.assertEqual(ch.ADAPTER_FIXES, ("AD1-codex-ctx", "AD2-codex-reasoning"))
         self.assertNotIn("apply_patch", joined)  # AD1-codex-edit: nothing added
+
+    def test_ad2_forces_codex_to_send_reasoning(self):
+        """Smoke at ddd5096d: Codex's fallback metadata for a Claude id has
+        supports_reasoning_summaries=false, so no `reasoning` was sent and the
+        ledger said thinking_sent=none."""
+        cmd = self.cmd()
+        self.assertIn("model_supports_reasoning_summaries=true", cmd)
+        self.assertIn('model_reasoning_summary="auto"', cmd)
 
     def test_sandbox_and_features(self):
         self.assertIn("workspace-write", self.cmd())
@@ -145,9 +183,9 @@ class RunTests(CellEnv):
         row = ch.run("fix it", self.workdir, "claude-sonnet-5-5", 600, runner=runner)
         self.assertTrue(row["completed"], row)
         self.assertIsNone(row["error"])
-        self.assertEqual(row["turns"], 1)
+        self.assertEqual(row["turns"], 1)  # no rollout: falls back to turn.completed
         self.assertEqual(row["model_context_window"], 200_000)
-        self.assertEqual(row["adapter_fixes"], ["AD1-codex-ctx"])
+        self.assertEqual(row["adapter_fixes"], ["AD1-codex-ctx", "AD2-codex-reasoning"])
         cmd, kwargs = runner.calls[-1]
         self.assertIn('model_providers.obench_vertex.base_url="http://127.0.0.1:4567/c/cellabc/v1"', " ".join(cmd))
         env = kwargs["env"]
@@ -200,6 +238,50 @@ class RunTests(CellEnv):
         self.assertNotIn("127.0.0.1", joined)
         self.assertIn("/c/cellabc/v1", joined)
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", joined)
+
+
+class TraceTests(CellEnv):
+    """Smoke at ddd5096d: trace_requests=1, untraced_requests=3. Every model
+    call must be traced, as it is for Pi (one turn_end per call)."""
+
+    def test_rollout_token_counts_give_one_trace_entry_per_model_call(self):
+        from thesis.ab.run_ab import harness_trace_requests
+        self.write_totals()
+        row = ch.run("fix", self.workdir, "claude-sonnet-5-5", 600, runner=FakeRunner(rollout=rollout_lines(CALLS)))
+        self.assertEqual(row["turns"], 4)
+        self.assertEqual(row["model_calls"], 4)
+        self.assertEqual(row["codex_turn_events"], 1)
+        self.assertEqual(row["usage_raw"], CALLS)
+        self.assertEqual(harness_trace_requests(row), 4)
+        settings = row["harness_settings"]
+        self.assertEqual((settings["turns"], settings["model_calls"], settings["codex_turn_events"]), (4, 4, 1))
+
+    def test_trace_matches_a_four_request_ledger(self):
+        from thesis.ab.run_ab import attach_proxy_trace
+        row = ch.run("fix", self.workdir, "claude-sonnet-5-5", 600, runner=FakeRunner(rollout=rollout_lines(CALLS)))
+        ledger = [{"usage": {"input_tokens": 1}, "upstream_model": "claude-sonnet-5-5",
+                   "requested_model": "claude-sonnet-5-5", "endpoint_location": "global"} for _ in CALLS]
+        attach_proxy_trace(row, ledger, "claude-sonnet-5-5", ledger_present=True)
+        self.assertEqual(row["trace_requests"], 4)
+        self.assertEqual(row["untraced_requests"], 0)
+
+    def test_rollout_parser_ignores_noise_and_reads_every_file(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        self.assertEqual(ch.rollout_model_calls(home), [])
+        day = Path(home, "sessions", "2026", "11", "03")
+        day.mkdir(parents=True)
+        (day / "rollout-a.jsonl").write_text(rollout_lines(CALLS[:2]) + "not json\n")
+        (day / "rollout-b.jsonl").write_text(rollout_lines(CALLS[2:]))
+        (day / "other.jsonl").write_text(rollout_lines(CALLS))
+        self.assertEqual(ch.rollout_model_calls(home), CALLS)
+
+    def test_timeout_still_reports_the_calls_made(self):
+        row = ch.run("fix", self.workdir, "claude-sonnet-5-5", 60,
+                     runner=FakeRunner(timeout=True, rollout=rollout_lines(CALLS[:2])))
+        self.assertEqual(row["failure_class"], "timeout")
+        self.assertEqual(row["turns"], 2)
+        self.assertEqual(row["model_calls"], 2)
 
 
 class DispatchTests(CellEnv):

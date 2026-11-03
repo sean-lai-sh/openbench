@@ -17,6 +17,20 @@ Stage 4 AD-1 fixes (briefs/stage4-slot-contract-AD1-note-2026-10-26.md):
   Claude's real limit. ``model_context_window = 200000`` is set.
 * AD1-codex-edit (no change): stock Codex on Claude registers no
   ``apply_patch`` tool; edits go through the shell. Nothing is added.
+* AD2-codex-reasoning: the same fallback metadata sets
+  ``supports_reasoning_summaries: false`` (models-manager/src/model_info.rs),
+  so Codex sends no ``reasoning`` at all and Claude gets no thinking config.
+  ``model_supports_reasoning_summaries=true`` with
+  ``model_reasoning_summary="auto"`` makes Codex send ``reasoning`` (effort
+  ``medium``), which the proxy maps to the exact thinking wire the Pi arm
+  sends (row 9 ruling; ``thesis/ab/responses_api.py``).
+
+Trace parity with Pi: ``turns`` (the harness's own model-call count, which
+``attach_proxy_trace`` compares with the proxy ledger) is the number of
+model responses in Codex's session rollout (``token_count`` events with new
+usage), read from the isolated ``CODEX_HOME`` before it is removed. Codex's
+``--json`` stream only has one ``turn.completed`` per ``exec``; that count is
+kept as ``codex_turn_events``.
 
 Codex is pinned to ``PIN``; the binary's ``--version`` must report it or the
 cell fails closed before any model call. ``CODEX_HOME`` is a fresh empty
@@ -56,7 +70,8 @@ PROXY_KEY_ENV = "OBENCH_CODEX_PROXY_KEY"
 PROXY_KEY_VALUE = "openbench-vertex-proxy"
 CONTEXT_WINDOW = 200_000  # AD1-codex-ctx
 REASONING_EFFORT = "medium"
-ADAPTER_FIXES = ("AD1-codex-ctx",)
+REASONING_SUMMARY = "auto"
+ADAPTER_FIXES = ("AD1-codex-ctx", "AD2-codex-reasoning")
 # Shipped defaults for an unknown (Claude) model id at PIN. Not passed on
 # the command line; recorded in the settings sidecar.
 MODEL_INFO = "fallback"
@@ -162,6 +177,8 @@ def build_command(binary: str, instruction: str, model: str, workdir: str, cell_
         *provider_config(cell_base),
         "-c", f"model_context_window={CONTEXT_WINDOW}",
         "-c", f'model_reasoning_effort="{REASONING_EFFORT}"',
+        "-c", "model_supports_reasoning_summaries=true",
+        "-c", f'model_reasoning_summary="{REASONING_SUMMARY}"',
         "-m", model,
         instruction,
     ]
@@ -194,6 +211,49 @@ def require_pin(binary: str, runner=subprocess.run) -> str:
     if found != PIN:
         raise PinError(f"codex reports {found!r}; the comparison pin is {PIN}")
     return found
+
+
+def rollout_model_calls(codex_home: str) -> list[dict]:
+    """Per-model-response usage from Codex's session rollout(s).
+
+    Each model response is persisted as ``{"type": "event_msg", "payload":
+    {"type": "token_count", "info": {"total_token_usage", "last_token_usage",
+    ...}}}``. Events with no ``info`` (rate-limit only) and repeats of an
+    unchanged total are not new calls. Returns the ``last_token_usage`` of
+    each call, in order.
+    """
+    calls: list[dict] = []
+    root = os.path.join(codex_home, "sessions")
+    paths = []
+    for dirpath, _dirs, files in os.walk(root):
+        paths.extend(os.path.join(dirpath, name) for name in files
+                     if name.startswith("rollout-") and name.endswith(".jsonl"))
+    for path in sorted(paths):
+        last_total = None
+        try:
+            with open(path, encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = obj.get("payload") if isinstance(obj, dict) else None
+            if obj.get("type") != "event_msg" or not isinstance(payload, dict):
+                continue
+            if payload.get("type") != "token_count":
+                continue
+            info = payload.get("info")
+            if not isinstance(info, dict) or not isinstance(info.get("last_token_usage"), dict):
+                continue
+            total = json.dumps(info.get("total_token_usage"), sort_keys=True)
+            if total == last_total:
+                continue
+            last_total = total
+            calls.append(info["last_token_usage"])
+    return calls
 
 
 def _stem(cell_id: str) -> str:
@@ -275,6 +335,9 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, ve
         "model_context_window": CONTEXT_WINDOW,
         "auto_compact_at_tokens": int(CONTEXT_WINDOW * AUTO_COMPACT_FRACTION),
         "reasoning_effort": REASONING_EFFORT,
+        "reasoning_summary": REASONING_SUMMARY,
+        "model_supports_reasoning_summaries": True,
+        "trace_source": "CODEX_HOME/sessions rollout token_count events (one per model response)",
         "edit_path": EDIT_PATH,
         "output_truncation_bytes": OUTPUT_TRUNCATION_BYTES,
         "features_disabled": ["apps", "plugins", "multi_agent"],
@@ -344,6 +407,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
                         in_container=bool(os.environ.get("BENCH_IN_CONTAINER")),
                         feature_flags=feature_flags)
     codex_home = tempfile.mkdtemp(prefix="codex_harness_home_")
+    model_calls: list[dict] = []
     try:
         try:
             proc = runner(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout_s,
@@ -352,6 +416,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
             out = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
             err = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", "replace")
             combined = (out or "") + (err or "")
+            calls = rollout_model_calls(codex_home)
             return {
                 "completed": False,
                 "error": f"timeout after {timeout_s}s",
@@ -359,11 +424,16 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
                 "output_tail": combined[-2000:],
                 "full_output": combined,
                 "tokens": None,
-                "turns": None,
+                "turns": len(calls) if calls else None,
                 "cmd": cmd,
                 **_empty_usage(),
+                "model_calls": len(calls),
+                **({"usage_raw": calls} if calls else {}),
             }
+        model_calls = rollout_model_calls(codex_home)
     finally:
+        if not model_calls:
+            model_calls = rollout_model_calls(codex_home)
         shutil.rmtree(codex_home, ignore_errors=True)
 
     stdout = proc.stdout or ""
@@ -374,9 +444,15 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
         tokens, turns, tail, token_usage = None, None, "", _empty_usage()
     if not tail:
         tail = combined[-2000:]
+    codex_turn_events = turns
+    if model_calls:
+        # Pi semantics: one trace entry per model call.
+        turns = len(model_calls)
     totals, totals_error = _observe_totals(ledger_dir, cell_id)
     settings = planned_settings(model, timeout_s, cell_base, binary, version)
     settings["turns"] = turns
+    settings["codex_turn_events"] = codex_turn_events
+    settings["model_calls"] = len(model_calls)
     settings["proxy_totals"] = totals
     settings["proxy_totals_error"] = totals_error
     settings["side_calls"] = None if totals is None else totals["side"]["calls"]
@@ -395,4 +471,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
         "adapter_fixes": list(ADAPTER_FIXES),
         "harness_settings": settings,
         **token_usage,
+        "codex_turn_events": codex_turn_events,
+        "model_calls": len(model_calls),
+        **({"usage_raw": model_calls} if model_calls else {}),
     }

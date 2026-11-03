@@ -106,8 +106,14 @@ class ResponsesNonStream(ResponsesEndpointTests):
         self.assertNotIn("input", forwarded)
         self.assertTrue(forwarded["system"][0]["text"].startswith("You are Codex"))
         self.assertEqual([t["name"] for t in forwarded["tools"]], ["exec_command", "write_stdin", "apply_patch"])
-        self.assertEqual(forwarded["thinking"], {"type": "adaptive"})
-        self.assertEqual(forwarded["output_config"], {"effort": "medium"})
+        self.assertEqual(forwarded["thinking"], {"type": "adaptive", "display": "summarized",
+                                                 "block_binding": {"prefix_mismatch_behavior": "drop_block"}})
+        self.assertEqual(forwarded["output_config"], {"effort": "low"})
+        self.assertEqual(forwarded["messages"][-1],
+                         {"role": "system", "content": [], "output_config": {"effort": "medium"}})
+        betas = (seen["beta"] or "").split(",")
+        self.assertIn("mid-conversation-output-config-2026-07-01", betas)
+        self.assertIn("thinking-binding-controls-2026-08-01", betas)
 
         row = ledger_rows(self.ledger, "cell-r")[-1]
         self.assertEqual((row["input_uncached"], row["output"], row["cache_read"], row["cache_write"]),
@@ -119,7 +125,12 @@ class ResponsesNonStream(ResponsesEndpointTests):
         self.assertEqual(record["responses_dropped_tools"], ["web_search"])
         self.assertTrue(record["responses_cache_emulation"])
         self.assertEqual(record["responses_thinking"], "adaptive:medium")
+        self.assertEqual(len(record["responses_tools_sha"]), 16)
+        self.assertEqual(len(record["responses_system_sha"]), 16)
         self.assertEqual(row["call_role"], "main")
+        # Smoke at ddd5096d recorded thinking_sent=none; it must record what was sent.
+        self.assertEqual(row["thinking_sent"], "adaptive")
+        self.assertEqual(row["thinking_mode"], "default")
 
     def test_accounting_matches_the_messages_and_chat_routes(self):
         """Same upstream usage -> identical ledger metering on all three routes."""
@@ -147,7 +158,8 @@ class ResponsesNonStream(ResponsesEndpointTests):
         status, _ = _post(self.url("cell-t", "responses"), body)
         self.assertEqual(status, 200)
         forwarded = json.loads(self.httpd.seen[-1]["body"])
-        self.assertEqual(forwarded["messages"][1]["content"][0], thinking)
+        assistant = [m for m in forwarded["messages"] if m["role"] == "assistant"][0]
+        self.assertEqual(assistant["content"][0], thinking)
 
     def test_bad_requests_get_responses_errors(self):
         status, payload = _post(self.url("cell-b", "responses"), b"[1, 2]")

@@ -11,7 +11,11 @@ the upstream Anthropic usage, as for the other two arms; the Responses
 
 Request mapping (Responses -> Anthropic):
 
-* ``instructions`` and ``developer``/``system`` message items -> ``system``.
+* ``instructions`` and the *leading* ``developer``/``system`` message items
+  -> ``system``. A developer/system item that appears after the first
+  user/assistant/tool item stays in place as a user text block wrapped in
+  ``<developer>``, so ``system`` (and its cache breakpoint) never changes
+  between turns of one session.
 * ``message`` items -> user/assistant messages; ``input_text``/``output_text``
   parts -> text blocks; ``input_image`` -> image blocks.
 * ``function_call`` -> assistant ``tool_use`` (``call_id`` is the id);
@@ -25,13 +29,23 @@ Request mapping (Responses -> Anthropic):
   with one string field ``input``. Hosted tools (web search, local shell,
   image generation, MCP) cannot be served by Claude on Vertex and are dropped;
   their types are recorded.
-* ``reasoning.effort`` -> ``thinking: {"type": "adaptive"}`` plus
-  ``output_config.effort`` (the shape the Pi arm sends for Claude);
-  ``effort == "none"`` sends no thinking.
+* ``reasoning.effort`` -> exactly what the Pi arm sends for Claude
+  (pi-ai ``anthropic-messages.ts`` at the Pi pin, "effort messages" path):
+  ``thinking: {"type": "adaptive", "display": "summarized", "block_binding":
+  {"prefix_mismatch_behavior": "drop_block"}}``, a fixed top-level
+  ``output_config: {"effort": "low"}`` (part of the cached prompt, so it never
+  varies), and the real effort as ``{"role": "system", "content": [],
+  "output_config": {"effort": E}}`` markers before every assistant message
+  and at the end, with the ``mid-conversation-output-config`` and
+  ``thinking-binding-controls`` betas. ``effort == "none"`` sends no thinking.
 * ``prompt_cache_key`` (OpenAI's automatic caching hint) -> ephemeral
-  ``cache_control`` on the last system block and the last message block, so
-  Claude caches the growing prefix. Recorded per request as
-  ``responses_cache_emulation`` (brief row 8: a confound to record).
+  ``cache_control`` on the last tool, the last system block, the last real
+  message, and the last real message before the newest assistant turn (the
+  previous turn's breakpoint): at most 4, Anthropic's limit. Consecutive
+  turns of a session repeat the earlier prefix byte for byte, so each turn
+  reads the entry the previous one wrote. Recorded per request
+  as ``responses_cache_emulation`` (brief row 8: a confound to record), with
+  digests of the tools and system so prefix drift is visible in the ledger.
 * ``max_output_tokens`` -> ``max_tokens``; ``parallel_tool_calls == false``
   -> ``tool_choice.disable_parallel_tool_use``. ``store``, ``include``,
   ``text``, ``service_tier``, ``metadata`` and ``client_metadata`` have no
@@ -52,6 +66,11 @@ import time
 from dataclasses import dataclass, field
 
 DEFAULT_MAX_TOKENS = 32000
+# Pi's Claude thinking wire (pi-ai anthropic-messages.ts, "effort messages").
+MID_CONVO_EFFORT_BETA = "mid-conversation-output-config-2026-07-01"
+THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+TOP_LEVEL_EFFORT = "low"
+_EFFORT_MAP = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh"}
 REASONING_ENVELOPE = "obench-thinking-v1:"
 HOSTED_TOOL_TYPES = frozenset({
     "web_search", "web_search_preview", "local_shell", "image_generation",
@@ -77,6 +96,10 @@ class ResponsesContext:
     dropped_fields: tuple = ()
     cache_emulation: bool = False
     thinking: str = "none"
+    betas: tuple = ()
+    inline_developer: int = 0
+    tools_sha: str = ""
+    system_sha: str = ""
 
     def record(self) -> dict:
         """Ledger ``identity`` fields for this request."""
@@ -89,6 +112,12 @@ class ResponsesContext:
             out["responses_dropped_fields"] = list(self.dropped_fields)
         out["responses_cache_emulation"] = self.cache_emulation
         out["responses_thinking"] = self.thinking
+        if self.betas:
+            out["responses_betas"] = list(self.betas)
+        if self.inline_developer:
+            out["responses_inline_developer"] = self.inline_developer
+        out["responses_tools_sha"] = self.tools_sha
+        out["responses_system_sha"] = self.system_sha
         return out
 
 
@@ -232,11 +261,13 @@ def _tool_choice(choice, names: set):
     raise ResponsesError(f"unsupported tool_choice {choice!r}")
 
 
-def _mark_cache(block_list: list) -> None:
+def _mark_cache(block_list: list) -> bool:
+    """Mark the last cacheable block (thinking blocks cannot carry a marker)."""
     for block in reversed(block_list):
         if isinstance(block, dict) and block.get("type") in {"text", "image", "tool_use", "tool_result"}:
             block["cache_control"] = {"type": "ephemeral"}
-            return
+            return True
+    return False
 
 
 def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
@@ -257,6 +288,7 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
 
     messages: list = []
     dropped_items: list = []
+    inline_developer = 0
     for item in items:
         if not isinstance(item, dict):
             raise ResponsesError("each input item must be an object")
@@ -265,7 +297,16 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
             role = item.get("role")
             blocks = _content_blocks(item.get("content"))
             if role in {"system", "developer"}:
-                system.extend(blocks)
+                if not messages:
+                    system.extend(blocks)
+                else:
+                    # Later developer notes stay in place so ``system`` is
+                    # stable across turns (cache prefix).
+                    text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                    if text:
+                        messages.append({"role": "user", "content": [
+                            {"type": "text", "text": f"<developer>\n{text}\n</developer>"}]})
+                        inline_developer += 1
             elif role == "assistant":
                 if blocks:
                     messages.append({"role": "assistant", "content": blocks})
@@ -338,19 +379,42 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
             out[key] = data[key]
 
     thinking = "none"
+    betas: tuple = ()
     reasoning = data.get("reasoning")
     effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
     if isinstance(effort, str) and effort and effort != "none":
-        out["thinking"] = {"type": "adaptive"}
-        out["output_config"] = {"effort": "low" if effort == "minimal" else effort}
-        thinking = f"adaptive:{out['output_config']['effort']}"
+        active = _EFFORT_MAP.get(effort, "high")
+        out["thinking"] = {
+            "type": "adaptive",
+            "display": "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        }
+        out["output_config"] = {"effort": TOP_LEVEL_EFFORT}
+        out["messages"] = _with_effort_markers(merged, active)
+        betas = (MID_CONVO_EFFORT_BETA, THINKING_BINDING_BETA)
+        thinking = f"adaptive:{active}"
 
     cache_emulation = isinstance(data.get("prompt_cache_key"), str) and bool(data["prompt_cache_key"])
     if cache_emulation:
+        if tools:
+            out["tools"][-1]["cache_control"] = {"type": "ephemeral"}
         if system:
             _mark_cache(system)
-        if merged:
-            _mark_cache(merged[-1]["content"])
+        # Message breakpoints: the last real message (this turn's prefix) and
+        # the last real message before the newest assistant turn, which is
+        # exactly where the previous turn put its breakpoint, so this request
+        # reads that cache entry directly.
+        real = [i for i, m in enumerate(out["messages"]) if m.get("role") != "system"]
+        targets = []
+        if real:
+            targets.append(real[-1])
+            assistants = [i for i in real if out["messages"][i].get("role") == "assistant"]
+            if assistants:
+                earlier = [i for i in real if i < assistants[-1]]
+                if earlier and earlier[-1] not in targets:
+                    targets.append(earlier[-1])
+        for index in targets:
+            _mark_cache(out["messages"][index]["content"])
 
     dropped_fields = tuple(key for key in _DROPPED_FIELDS if key in data)
     return out, ResponsesContext(
@@ -360,7 +424,38 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
         dropped_fields=dropped_fields,
         cache_emulation=cache_emulation,
         thinking=thinking,
+        betas=betas,
+        inline_developer=inline_developer,
+        tools_sha=_digest(out.get("tools") or []),
+        system_sha=_digest(out.get("system") or []),
     )
+
+
+def _digest(value) -> str:
+    """sha256[:16] of canonical JSON with cache markers removed."""
+    import hashlib
+
+    def strip(x):
+        if isinstance(x, dict):
+            return {k: strip(v) for k, v in x.items() if k != "cache_control"}
+        if isinstance(x, list):
+            return [strip(v) for v in x]
+        return x
+    raw = json.dumps(strip(value), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _with_effort_markers(messages: list, effort: str) -> list:
+    """Pi's effort markers: one before every assistant message and one at the
+    end. Deterministic, so the prefix of turn N+1 repeats turn N's bytes."""
+    marker = {"role": "system", "content": [], "output_config": {"effort": effort}}
+    out: list = []
+    for message in messages:
+        if message.get("role") == "assistant":
+            out.append(json.loads(json.dumps(marker)))
+        out.append(message)
+    out.append(json.loads(json.dumps(marker)))
+    return out
 
 
 # --- reply ------------------------------------------------------------------
