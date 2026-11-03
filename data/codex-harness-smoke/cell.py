@@ -126,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     repo = _repo_root()
     out.mkdir(parents=True, exist_ok=True)
     os.environ.pop("OBENCH_PI_HARNESS", None)
+    os.environ["OBENCH_CODEX_HARNESS"] = "1"
     os.environ["OBENCH_CODEX_BIN"] = str(binary)
     os.environ["OBENCH_VERTEX_ROUTE_BY_REQUEST"] = "1"
 
