@@ -388,16 +388,16 @@ def _parse_json(stdout):
     return tokens, turns, tail
 
 # Hard-suite comparison arm (Claude on Vertex through the shared proxy's
-# /v1/responses endpoint). Lives in codex_harness.py; selected per cell by
-# OBENCH_CODEX_HARNESS=1 or OBENCH_VERTEX_PROXY_URL on a comparison model.
+# /v1/responses endpoint). Lives in codex_harness.py; selected per cell only by
+# OBENCH_CODEX_HARNESS=1 on a comparison model. OBENCH_VERTEX_PROXY_URL alone
+# never routes a cell here (a Pi run may export it); it is read as the proxy
+# address only after the flag is set.
 _COMPARISON_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
 
 
 def _comparison_env_set() -> bool:
     flag = os.environ.get("OBENCH_CODEX_HARNESS", "").strip().lower()
-    if flag in {"1", "true", "yes", "on"}:
-        return True
-    return bool(os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip())
+    return flag in {"1", "true", "yes", "on"}
 
 
 def _load_comparison_harness():

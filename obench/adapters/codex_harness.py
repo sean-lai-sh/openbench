@@ -24,8 +24,10 @@ directory: no auth, config, AGENTS.md, skills, MCP, rules or memories from
 the machine owner. The custom provider needs no OpenAI credentials; its
 ``env_key`` carries a placeholder the proxy ignores.
 
-Selected by ``OBENCH_CODEX_HARNESS=1`` (or ``OBENCH_VERTEX_PROXY_URL``) on a
-comparison model; ``codex.run`` dispatches here. ``thesis`` is not imported:
+Selected only by ``OBENCH_CODEX_HARNESS=1`` on a comparison model;
+``codex.run`` dispatches here. ``OBENCH_VERTEX_PROXY_URL`` on its own never
+selects this path (a Pi run may export it); it is read as the proxy address
+only after the flag is set, and a flagged cell without it fails closed. ``thesis`` is not imported:
 docker cells mount only ``obench/adapters``.
 """
 
@@ -76,10 +78,9 @@ class PinError(Exception):
 
 
 def comparison_requested() -> bool:
+    """True only for ``OBENCH_CODEX_HARNESS=1`` (or true/yes/on)."""
     flag = os.environ.get("OBENCH_CODEX_HARNESS", "").strip().lower()
-    if flag in _TRUTHY:
-        return True
-    return bool(os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip())
+    return flag in _TRUTHY
 
 
 def cell_proxy_base(base_url: str, cell_id: str) -> str:
@@ -317,12 +318,13 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
     if model not in COMPARISON_MODELS:
         return _fail(f"Codex harness comparison does not run model {model!r}")
     if not comparison_requested():
-        return _fail("Codex harness comparison needs OBENCH_CODEX_HARNESS or OBENCH_VERTEX_PROXY_URL")
+        return _fail("Codex harness comparison needs OBENCH_CODEX_HARNESS=1")
     proxy = os.environ.get("OBENCH_VERTEX_PROXY_URL", "").strip()
     cell_id = os.environ.get("OBENCH_VERTEX_CELL_ID", "").strip()
     ledger_dir = os.environ.get("OBENCH_VERTEX_LEDGER_DIR", "").strip()
     if not proxy:
-        return _fail("Codex harness comparison needs OBENCH_VERTEX_PROXY_URL")
+        return _fail("Codex harness comparison: OBENCH_CODEX_HARNESS=1 is set but "
+                     "OBENCH_VERTEX_PROXY_URL (the proxy address) is missing")
     if not _CELL_RE.fullmatch(cell_id or ""):
         return _fail("Codex harness comparison needs OBENCH_VERTEX_CELL_ID "
                      "(letters, digits, dot, underscore, hyphen)")
