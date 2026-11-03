@@ -734,6 +734,10 @@ def stream_summary(records) -> dict:
         "proxy_stop_reasons": [i.get("stop_reason") for i in streams],
         "proxy_sse_errors": errors,
         "proxy_response_bytes": sum(int(i.get("response_bytes") or 0) for i in streams),
+        "proxy_upstream_errors": sum(1 for i in streams if i.get("upstream_error")),
+        "proxy_partial_usage_calls": sum(
+            1 for i in streams if i.get("upstream_error") and i.get("partial_usage")
+        ),
     }
 
 

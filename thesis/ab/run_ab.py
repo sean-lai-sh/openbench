@@ -566,6 +566,12 @@ def over_budget(out_dir: Path, max_cost_usd: float | None) -> str | None:
         if row is None:
             continue
         if row.get("failure_class") in _GUARD_SKIP:
+            # Infra cells are not scored, but tokens the proxy metered before
+            # the failure (e.g. partial usage on an upstream stream break)
+            # were billed, so they still count toward the cap.
+            value = row.get("proxy_cost_usd")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                spent += float(value)
             continue
         cost = cell_proxy_spend(row)
         if cost is None:
