@@ -1,0 +1,10 @@
+I wrote the polyglot to `polyglot/main.rs`. I built it with both of your commands and ran both programs: they print the same values, matching f(0)=1, f(1)=1, f(2)=2. I checked N = 0, 1, 2, 3, 4, 10, 50 and 90; for example, N=90 gives 4660046610375530309.
+
+**How it works:** the file uses three differences in how Rust and C++ read comments and `#` lines.
+- **Line 1 (`// \`):** in C++, a backslash at the end of a `//` comment carries the comment onto the next line. Rust doesn't do this. So the `/*` on line 2 starts a block comment in Rust, but C++ sees it as part of the line-1 comment. This hides the C++ code from Rust.
+- **`#if 0` … `#endif`:** after the C++ code, `#if 0` makes g++ skip everything up to `#endif`. Rust is still inside its block comment at that point, so it ignores those lines. The `*/` right after `#if 0` closes Rust's comment, and the Rust `fn main` follows.
+- **After the Rust code:** a second `// \` + `/*` pair, and then a third `// \` + `*/` pair, wrap `#endif` in a Rust comment. Both compilers end up reading those lines as comments.
+
+My first version failed with an "unterminated #if" error. Even inside skipped `#if 0` code, g++ still treats `/*` as the start of a comment, and that comment swallowed the `#endif`. Putting a `// \` line before that `/*` fixed it.
+
+Both versions use 64-bit unsigned integers, so results are correct up to N=92. Beyond that the numbers overflow and wrap around in the same way in both versions. If you compile with g++ `-Wall`, you'll get harmless "multi-line comment" warnings from the `// \` lines; your command as written shows none.
