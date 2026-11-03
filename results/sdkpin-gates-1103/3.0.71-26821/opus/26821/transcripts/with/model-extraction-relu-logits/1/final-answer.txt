@@ -1,0 +1,13 @@
+I wrote `steal.py`. It recovers all 20 neurons, and `stolen_A1.npy` has shape (20, 10). To check it, I compared each stolen row with the real `A1` from `forward.py`. The result is a one-to-one match in both directions, with the worst |cosine| at 0.99999999999997. So each stolen row equals a real row up to scale and sign. A full run takes about 2 seconds.
+
+The script only calls `forward(x)` and never reads the weights. That comparison was a separate one-off test and isn't part of the script.
+
+**How it works:**
+1. **Pick random lines.** Along a line `x0 + t·d`, the network's output is made of straight segments. It bends wherever a hidden neuron switches on or off.
+2. **Find the bends.** It splits each part of the line until a piece stops looking straight, then pins down the bend by intersecting the straight pieces on either side.
+3. **Read off a row.** At each bend it estimates the gradient just before and just after, using finite differences. The jump in gradient equals `A2[i]·A1[i,:]`, so it is that neuron's row of `A1` times a scale factor.
+4. **Group the results.** It normalises each jump direction (fixing the sign), merges matching directions into one neuron, and keeps those seen at least twice to drop false detections. It stops once 50 lines in a row produce no new neuron.
+
+**One fix along the way:** the first version found only 15 of the 20 neurons. Bends from neurons with small output weights faded below the straightness tolerance before the narrowing reached its minimum width. Tightening the tolerance to 1e-12 and raising the minimum width to 1e-5 fixed it.
+
+**Limitation:** a neuron is only found if its on/off boundary crosses a sampled line within |t| ≤ 100 of random starting points. A neuron that never switches over that range wouldn't be detected, but that didn't happen with this network.

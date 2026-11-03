@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a38e7cf3001izkGvjJdAyb1wh",
+  "sessionID": "ses_e5c718322ffeXYXAqru30buSXg",
+  "role": "user",
+  "time": {
+    "created": 1793745386739
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`, ran it, and it recovers A1 exactly up to permuting and rescaling the rows. Running `python steal.py` saves the result to `stolen_A1.npy`. It takes about 1 second.\n\n**Result:** the script found 20 hidden neurons. To check it, I compared the output against the real `A1` in a separate step that `steal.py` doesn't use. Each recovered row matches a different true row, and each true row is matched once. After normalizing, the largest difference in any entry is about 7e-9. The signs are correct too, so every row is a positive multiple of the true row. The script itself only calls `forward()` and never reads the weights.\n\n**How it works:**\n1. **Finding kinks:** along about 40 random lines through the input space, the network's output is piecewise linear. The script finds each break in slope by repeatedly halving intervals. A break happens exactly where one neuron's input sum `A1[j]·x + b1[j]` crosses zero.\n2. **Getting the weight rows:** at each break, the change in gradient from one side to the other is proportional to `A2[j] * A1[j]`. The gradient is estimated by small finite differences, and a point is skipped if those differences show it is too close to another break.\n3. **Grouping:** directions that agree to a cosine above 0.9999 (ignoring sign) are grouped together. A group needs at least 10 sightings to count as a neuron, which drops one-off false readings. The number of neurons isn't assumed; it comes out of this step.\n4. **Fixing the signs:** step 2 can't tell `w` from `-w`. The script works this out from the network's overall gradient at a few random points, which comes down to a 10-dimensional subset-sum problem. It solves that by trying every combination (residual about 4e-11).\n\n**Limitation:** that exhaustive search only works with up to 26 neurons. With more, the script prints a warning and saves the rows with arbitrary signs, which is still correct if scaling by a negative number is allowed.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

@@ -1,0 +1,156 @@
+opencode
+
+█▀▀█ █▀▀█ █▀▀ █▀▀▄ █▀▀ █▀▀█ █▀▀▄ █▀▀
+█░░█ █░░█ █▀▀ █░░█ █░░ █░░█ █░░█ █▀▀
+▀▀▀▀ █▀▀▀ ▀▀▀ ▀  ▀ ▀▀▀ ▀▀▀▀ ▀▀▀  ▀▀▀
+
+>  I have a ReLU neural network that you can query by importing `forward.py` and calling forward(x) which returns a single floating point number as output. The input dimension is 10. The neural network is a one-layer fully connected model. (so the function is defined as A2*ReLU(A1*x+b1)+b2). You do not...
+
+@  anthropic/claude-opus-5-5
+
+import numpy as np
+from forward import forward
+
+D = 10
+OUT = "/tmp/obench-cell-ef3joht8/bench_opencode_model-extraction-relu-logits_0y6wzql4/stolen_A1.npy"
+rng = np.random.default_rng(1)
+
+
+def f_line(x0, v, t):
+    return forward(x0 + t * v)
+
+
+def grad(x, h=1e-5):
+    f0 = forward(x)
+    g = np.zeros(D)
+    for i in range(D):
+        e = np.zeros(D)
+        e[i] = h
+        g[i] = (forward(x + e) - f0) / h
+    return g
+
+
+def find_kinks(x0, v, R, N):
+    ts = np.linspace(-R, R, N)
+    fs = np.array([f_line(x0, v, t) for t in ts])
+    dt = ts[1] - ts[0]
+    sd = fs[2:] - 2 * fs[1:-1] + fs[:-2]
+    idx = np.where(np.abs(sd) > 1e-9)[0]
+    res = []
+    last = -10
+    for i in idx:
+        if i - last <= 2 and last >= 0:
+            last = i
+            continue
+        last = i
+        a = ts[i]
+        b = ts[i + 2]
+        eps = dt * 1e-3
+        for _ in range(60):
+            pass
+        res.append((a, b))
+    return res
+
+
+def locate(x0, v, a, b):
+    sl = 1e-6
+    fa, fa2 = f_line(x0, v, a), f_line(x0, v, a + sl)
+    fb, fb2 = f_line(x0, v, b), f_line(x0, v, b - sl)
+    s1 = (fa2 - fa) / sl
+    s2 = (fb - fb2) / sl
+    if abs(s1 - s2) < 1e-7:
+        return None
+    t = (fb - s2 * b - fa + s1 * a) / (s1 - s2)
+    if not (a <= t <= b):
+        return None
+    pred = fa + s1 * (t - a)
+    if abs(f_line(x0, v, t) - pred) > 1e-3 * abs(s1 - s2) * (b - a) + 1e-9:
+        pass
+    mid = 0.5 * (a + t)
+    if abs(f_line(x0, v, mid) - (fa + s1 * (mid - a))) > 1e-9:
+        return None
+    mid2 = 0.5 * (b + t)
+    if abs(f_line(x0, v, mid2) - (fb + s2 * (mid2 - b))) > 1e-9:
+        return None
+    return t
+
+
+def main():
+    R, N = 6.0, 1200
+    dirs = []
+    for _ in range(400):
+        x0 = rng.standard_normal(D) * 1.0
+        v = rng.standard_normal(D)
+        v /= np.linalg.norm(v)
+        for a, b in find_kinks(x0, v, R, N):
+            t = locate(x0, v, a, b)
+            if t is None:
+                continue
+            e = 1e-4
+            xl = x0 + (t - e) * v
+            xr = x0 + (t + e) * v
+            gl = grad(xl)
+            gr = grad(xr)
+            gl2 = grad(x0 + (t - 2 * e) * v)
+            gr2 = grad(x0 + (t + 2 * e) * v)
+            if np.linalg.norm(gl - gl2) > 1e-6 or np.linalg.norm(gr - gr2) > 1e-6:
+                continue
+            d = gr - gl
+            n = np.linalg.norm(d)
+            if n < 1e-6:
+                continue
+            dirs.append(d / n)
+    clusters = []
+    for d in dirs:
+        for c in clusters:
+            m = c["m"]
+            if abs(d @ m) > 0.999:
+                s = 1 if d @ m > 0 else -1
+                c["sum"] += s * d
+                c["n"] += 1
+                c["m"] = c["sum"] / np.linalg.norm(c["sum"])
+                break
+        else:
+            clusters.append({"sum": d.copy(), "m": d.copy(), "n": 1})
+    rows = []
+    for c in clusters:
+        if c["n"] >= 2:
+            m = c["m"]
+            k = np.argmax(np.abs(m))
+            if m[k] < 0:
+                m = -m
+            rows.append(m)
+    A = np.array(rows)
+    np.save(OUT, A)
+    print(A)
+
+
+if __name__ == "__main__":
+    main()
+EOF
+time python steal.py | tail -3
+python -c "
+import numpy as np, forward
+A=np.load('stolen_A1.npy'); print(A.shape)
+T=forward.A1/np.linalg.norm(forward.A1,axis=1,keepdims=True)
+C=np.abs(A@T.T); print(np.sort(C.max(1))[:5], (C.max(0)>0.9999).sum())"
+
+I wrote `steal.py`. When I ran it, it recovered all 20 rows of A1 and saved them to `stolen_A1.npy` as a 20×10 matrix. I checked this by comparing each stolen row against the true A1 from `forward.py`. Every row matched one true row with cosine similarity of at least 0.9999, up to rounding, and all 20 true rows were matched. The run took about 6 seconds.
+
+The script uses only `forward()` queries, so it doesn't assume the hidden width of 20.
+
+- **Finding kinks:** it evaluates the network along random lines and looks for points where the output stops being linear, which is where a neuron switches on or off.
+- **Reading off the row:** at each kink it measures the gradient on both sides. The difference is proportional to that neuron's row of A1.
+- **Cleaning up:** it groups the directions that repeat and keeps those seen at least twice.
+
+Each row is normalized to unit length, and its sign is fixed so the largest component is positive. Sign and scale can't be recovered from the output alone, which matches the "up to scaling" allowance. A neuron that never switches within the search range (±6 along each line) wouldn't be found.
+
+I wrote `steal.py`. When I ran it, it recovered all 20 rows of A1 and saved them to `stolen_A1.npy` as a 20×10 matrix. I checked this by comparing each stolen row against the true A1 from `forward.py`. Every row matched one true row with cosine similarity of at least 0.9999, up to rounding, and all 20 true rows were matched. The run took about 6 seconds.
+
+The script uses only `forward()` queries, so it doesn't assume the hidden width of 20.
+
+- **Finding kinks:** it evaluates the network along random lines and looks for points where the output stops being linear, which is where a neuron switches on or off.
+- **Reading off the row:** at each kink it measures the gradient on both sides. The difference is proportional to that neuron's row of A1.
+- **Cleaning up:** it groups the directions that repeat and keeps those seen at least twice.
+
+Each row is normalized to unit length, and its sign is fixed so the largest component is positive. Sign and scale can't be recovered from the output alone, which matches the "up to scaling" allowance. A neuron that never switches within the search range (±6 along each line) wouldn't be found.

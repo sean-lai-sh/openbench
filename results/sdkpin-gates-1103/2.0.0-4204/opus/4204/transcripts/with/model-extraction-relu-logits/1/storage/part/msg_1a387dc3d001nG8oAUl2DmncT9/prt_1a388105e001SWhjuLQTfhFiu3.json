@@ -1,0 +1,28 @@
+{
+  "id": "prt_1a388105e001SWhjuLQTfhFiu3",
+  "sessionID": "ses_e5c782f9fffeQiLNhqZofAYroP",
+  "messageID": "msg_1a387dc3d001nG8oAUl2DmncT9",
+  "type": "tool",
+  "callID": "toolu_vrtx_016fkWUTmKaaDWtKV1VzNvD5",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-241a6s1c/bench_opencode_model-extraction-relu-logits_vp4fchw5/steal.py",
+      "content": "\"\"\"Black-box extraction of A1 (up to row permutation and scaling) for\nf(x) = A2 @ ReLU(A1 @ x + b1) + b2, using only queries to forward().\n\nApproach: along random lines through input space f is piecewise linear;\neach kink is where some hidden neuron's pre-activation crosses zero.\nAt a kink, the gradient jump of f equals A2[i] * A1[i], i.e. the row of A1\nup to scale. We collect these directions and de-duplicate them.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, a, b, fa, fb, out, depth=0):\n    \"\"\"Recursively locate kinks of g(t)=f(x0+t d) on [a,b].\"\"\"\n    m = 0.5 * (a + b)\n    fm = f(x0 + m * d)\n    q1, q3 = a + 0.25 * (b - a), a + 0.75 * (b - a)\n    f1, f3 = f(x0 + q1 * d), f(x0 + q3 * d)\n    tol = 1e-11 * (1 + abs(fa) + abs(fb))\n    lin = (abs(fm - 0.5 * (fa + fb)) < tol and\n           abs(f1 - (0.75 * fa + 0.25 * fb)) < tol and\n           abs(f3 - (0.25 * fa + 0.75 * fb)) < tol)\n    if lin:\n        return\n    if b - a < 1e-5 or depth > 60:\n        out.append(refine(x0, d, a, b))\n        return\n    find_kinks(x0, d, a, m, fa, fm, out, depth + 1)\n    find_kinks(x0, d, m, b, fm, fb, out, depth + 1)\n\n\ndef refine(x0, d, a, b):\n    \"\"\"Intersect the linear pieces on either side of [a,b] to locate the kink.\"\"\"\n    h = 1e-6\n    ga, gb = f(x0 + a * d), f(x0 + b * d)\n    sa = (ga - f(x0 + (a - h) * d)) / h\n    sb = (f(x0 + (b + h) * d) - gb) / h\n    if abs(sa - sb) < 1e-12:\n        return 0.5 * (a + b)\n    # ga + sa (t-a) = gb + sb (t-b)\n    t = (gb - ga + sa * a - sb * b) / (sa - sb)\n    return float(np.clip(t, a, b))\n\n\ndef grad(x, h=1e-6):\n    g = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\ndef steal(max_lines=400, patience=60, T=20.0, n_init=64):\n    rows = []\n    since_new = 0\n    for _ in range(max_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        # coarse grid then recursive search on each cell\n        ts = np.linspace(-T, T, n_init + 1)\n        fs = [f(x0 + t * d) for t in ts]\n        kinks = []\n        for j in range(n_init):\n            find_kinks(x0, d, ts[j], ts[j + 1], fs[j], fs[j + 1], kinks)\n        found_new = False\n        for t in kinks:\n            xs = x0 + t * d\n            delta = 1e-4\n            diff = grad(xs + delta * d) - grad(xs - delta * d)\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = normalize(diff)\n            if all(abs(np.dot(v, r)) < 0.9999 for r in rows):\n                rows.append(v)\n                found_new = True\n        since_new = 0 if found_new else since_new + 1\n        if since_new >= patience:\n            break\n    return np.array(rows)\n\n\nif __name__ == \"__main__\":\n    A1_hat = steal()\n    np.save(OUT, A1_hat)\n    print(f\"Recovered {A1_hat.shape[0]} neurons; shape {A1_hat.shape}\")\n    print(A1_hat)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-241a6s1c/bench_opencode_model-extraction-relu-logits_vp4fchw5/steal.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-241a6s1c/bench_opencode_model-extraction-relu-logits_vp4fchw5/steal.py": []
+      },
+      "filepath": "/tmp/obench-cell-241a6s1c/bench_opencode_model-extraction-relu-logits_vp4fchw5/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793744978061,
+      "end": 1793744983075
+    }
+  }
+}
