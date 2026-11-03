@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a3ad6ec9001gVebJy5ZaCtaI2",
+  "sessionID": "ses_e5c52c0a7ffeoaQkRSogTx24fD",
+  "messageID": "msg_1a3ad4e6c0015SFBe7WE40D26v",
+  "type": "tool",
+  "callID": "toolu_vrtx_01TcL154yJvmUcnMx3frC4HZ",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-vgygj0an/bench_opencode_model-extraction-relu-logits_wbzqd0x3/steal.py",
+      "content": "\"\"\"Extract A1 (up to neuron permutation and row scaling) from a 1-hidden-layer\nReLU network using only black-box queries to forward(x).\n\nMethod: along random lines the function is piecewise linear; each kink is where\none hidden neuron's pre-activation crosses zero. At a kink, the jump in the\ninput-gradient equals A2[i] * A1[i, :], i.e. a scaled copy of row i of A1.\n\"\"\"\nimport os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, a, b, fa, fb, sa, sb, out, depth=0, h=1e-6):\n    \"\"\"Find kink locations of g(t)=f(x0+t d) in [a,b].\n    sa/sb are slopes just inside a and b.\"\"\"\n    if depth > 60 or b - a < 1e-9:\n        return\n    if abs(sa - sb) <= 1e-9 * (1 + abs(sa) + abs(sb)):\n        return  # linear on [a,b] (assumed; possible cancelled pairs handled by many lines)\n    # Intersection of the two end lines -> candidate single kink\n    tc = (fb - fa + sa * a - sb * b) / (sa - sb)\n    if a < tc < b:\n        fc = f(x0 + tc * d)\n        pred = fa + sa * (tc - a)\n        if abs(fc - pred) <= 1e-9 * (1 + abs(fc)):\n            # verify single kink: slopes just left/right of tc match ends\n            sl = (fc - f(x0 + (tc - h) * d)) / h\n            sr = (f(x0 + (tc + h) * d) - fc) / h\n            if abs(sl - sa) < 1e-6 * (1 + abs(sa)) and abs(sr - sb) < 1e-6 * (1 + abs(sb)):\n                out.append(tc)\n                return\n    m = 0.5 * (a + b)\n    fm = f(x0 + m * d)\n    sml = (fm - f(x0 + (m - h) * d)) / h\n    smr = (f(x0 + (m + h) * d) - fm) / h\n    find_kinks(x0, d, a, m, fa, fm, sa, sml, out, depth + 1, h)\n    find_kinks(x0, d, m, b, fm, fb, smr, sb, out, depth + 1, h)\n\n\ndef grad(x, h=1e-5):\n    f0 = f(x)\n    g = np.empty(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f0) / h\n    return g\n\n\ndef row_at_kink(x0, d, t, kinks):\n    # choose offset smaller than distance to neighbouring kinks\n    others = [abs(k - t) for k in kinks if k != t]\n    gap = min(others) if others else 1.0\n    eps = min(1e-3, gap / 4)\n    gl = grad(x0 + (t - eps) * d, h=eps / 100)\n    gr = grad(x0 + (t + eps) * d, h=eps / 100)\n    return gr - gl\n\n\ndef main():\n    rows = []  # normalized unique rows\n\n    def add(v):\n        n = np.linalg.norm(v)\n        if n < 1e-8:\n            return False\n        u = v / n\n        if u[np.argmax(np.abs(u))] < 0:\n            u = -u\n        for r in rows:\n            if abs(np.dot(r, u)) > 1 - 1e-4:\n                return False\n        rows.append(u)\n        return True\n\n    no_new = 0\n    T = 20.0\n    h = 1e-6\n    while no_new < 30:\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        a, b = -T, T\n        fa, fb = f(x0 + a * d), f(x0 + b * d)\n        sa = (f(x0 + (a + h) * d) - fa) / h\n        sb = (fb - f(x0 + (b - h) * d)) / h\n        kinks = []\n        find_kinks(x0, d, a, b, fa, fb, sa, sb, kinks)\n        kinks.sort()\n        new = False\n        for t in kinks:\n            v = row_at_kink(x0, d, t, kinks)\n            if add(v):\n                new = True\n        no_new = 0 if new else no_new + 1\n\n    A = np.array(rows)\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A)\n    print(A.shape)\n    print(A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-vgygj0an/bench_opencode_model-extraction-relu-logits_wbzqd0x3/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-vgygj0an/bench_opencode_model-extraction-relu-logits_wbzqd0x3/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793747427556,
+      "end": 1793747432592
+    }
+  }
+}

@@ -1,0 +1,12 @@
+I wrote `steal.py`. It runs in under half a second and saves a 20×10 matrix to `stolen_A1.npy`, which matches the real `A1` up to permuting neurons and scaling.
+
+**How it works:** the script only calls `forward()`.
+1. Along a random line through input space, the network's output is a set of straight segments joined at "kinks". Each kink is a point where one hidden neuron switches on or off. The script finds the kinks by repeatedly splitting the line, then pins each one down exactly by intersecting the straight segments on either side.
+2. At each kink, it estimates the input gradient just before and just after, using finite differences. The difference between the two is ±`A2[i]·A1[i,:]`, which is a scaled copy of that neuron's row of `A1`.
+3. It scales each row to length 1, fixes its sign, and drops duplicates. It stops once 8 more random lines in a row turn up no new neuron. That's how it worked out there are 20 hidden neurons without knowing the shape in advance.
+
+**Check:** to verify, I compared the result with the true `A1` in `forward.py` in a separate command; `steal.py` itself never reads it. All 20 recovered rows match a true row, and every true row is matched, with cosine similarity of about 1 − 1e-15.
+
+**Limitations:**
+- Each row's sign and size can't be recovered, which the task allows.
+- A neuron whose output weight `A2[i]` is exactly zero has no effect on the output, so it can't be found. There are none here.

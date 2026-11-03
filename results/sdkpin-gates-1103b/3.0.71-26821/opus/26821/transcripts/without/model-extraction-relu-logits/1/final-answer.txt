@@ -1,0 +1,10 @@
+I wrote `steal.py`. It recovers A1 using only calls to `forward()`. Running it takes about 2 seconds, finds **20 hidden neurons**, and saves a 20×10 matrix to `stolen_A1.npy`.
+
+**Check:** after the script had run, I compared its output with the real `A1` in `forward.py`. The script itself never reads those weights. With each row scaled to length 1, every true row matches exactly one recovered row, and every recovered row matches a true row. The cosine similarity is above 0.99999999999998 in every case, so the result equals A1 up to reordering the neurons and scaling each row.
+
+**How it works:**
+1. **Find the corners.** It traces 60 random straight lines through the 10-dimensional input space. Along each line the output is made of straight segments, with a corner wherever a hidden neuron switches on or off. The script finds those corners by repeatedly splitting the line into smaller pieces and testing whether each piece is straight. It then pins each corner down more precisely by intersecting the straight pieces on either side.
+2. **Read off a row.** At each corner it estimates the gradient just before and just after, using small finite-difference steps. The difference between the two is the A1 row of the neuron that switched, multiplied by that neuron's output weight.
+3. **Group the results.** The same neuron shows up on many lines, so it groups rows that point the same way (including exact opposites, since the sign is ambiguous) and averages each group. Groups seen only once are dropped as likely noise. Each row is saved at length 1.
+
+Rows come out at length 1 and possibly with flipped signs, which the "up to scaling" condition allows. The number of hidden neurons isn't hard-coded; it's whatever number of distinct groups the script finds.
