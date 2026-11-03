@@ -58,6 +58,13 @@ class CellStartTests(unittest.TestCase):
                 print("--auto\\n-m, --model\\n--format\\n--dir\\n--title")
                 raise SystemExit(0)
             pathlib.Path(STARTED).write_text("request", encoding="utf-8")
+            import os
+            log = os.environ.get("OBENCH_LOAD_PROOF_LOG")
+            if log:  # what the OpenCode plugin hook writes in a live cell
+                with open(log, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"event": "start"}) + "\\n")
+                    fh.write(json.dumps({"event": "loaded", "path": "/x/@ai-sdk/anthropic",
+                                         "version": "2.0.0"}) + "\\n")
             print(json.dumps({"type": "step_finish", "part": {"tokens": {
                 "input": 1, "output": 1, "reasoning": 0,
                 "cache": {"read": 0, "write": 0}, "total": 2}}}))
@@ -111,6 +118,17 @@ class CellStartTests(unittest.TestCase):
         self.assertEqual(row["installed_anthropic"], "2.0.0")
         self.assertNotIn("sdk_drift", row)
         self.assertNotEqual(row.get("env_cause"), "provider_sdk_drift")
+
+    def test_hook_log_is_read_before_the_temp_home_is_removed(self):
+        # #223 regression: the log lives under iso_home, which the finally
+        # block removes before _stamp ran, so every live row said "missing".
+        pins = make_pin_root(Path(tempfile.mkdtemp()), "2.0.0")
+        row, requested, _ = self._run(pins)
+        self.assertTrue(requested)
+        self.assertEqual(row["module_hook_log"], {
+            "started": True,
+            "loaded": [{"path": "/x/@ai-sdk/anthropic", "version": "2.0.0"}],
+        })
 
     def test_missing_pin_fails_fast_without_a_request(self):
         row, requested, bun_ran = self._run(Path(tempfile.mkdtemp()))
