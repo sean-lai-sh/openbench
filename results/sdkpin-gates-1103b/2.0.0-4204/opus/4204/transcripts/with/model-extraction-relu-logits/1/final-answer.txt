@@ -1,0 +1,12 @@
+I wrote `steal.py`. It recovers all 20 hidden neurons, and every recovered row matches a true row of `A1` up to scale, with cosine similarity of 0.99999999999999 or better. I ran it, and it saved the matrix to `stolen_A1.npy` with shape (20, 10).
+
+For the check, I compared the result with the real `A1` inside `forward.py`. `steal.py` itself never reads `A1`; it only calls `forward(x)`, about 43.5k times in total.
+
+How it works:
+1. **Finding kinks:** it picks 30 random lines through input space and looks for points where the output stops changing in a straight line. Each such point is where one hidden neuron switches on or off. It finds them by repeatedly halving intervals until a piece is straight, then pins each point down exactly where the two straight pieces meet.
+2. **Reading off a neuron:** at each of those points, it measures the slope in all 10 input directions on both sides. The difference between the two sides equals that neuron's row of `A1`, multiplied by its output weight in `A2`.
+3. **Grouping:** it scales each of those rows to length 1 with a fixed sign, then groups rows that point the same way. Groups seen at least twice become the output rows, which filters out one-off false detections.
+
+The rows have length 1 and a fixed sign, which is allowed since you asked for `A1` up to scaling. The method doesn't need to know the number of hidden neurons in advance; it found 20.
+
+To run it again: `python steal.py`

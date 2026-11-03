@@ -1,0 +1,10 @@
+I wrote `steal.py`. When run, it recovers A1 exactly up to neuron order and row scaling, and saves it to `stolen_A1.npy`.
+
+**Result:** the script found 20 hidden neurons, so the saved matrix is 20×10. To check it, I compared it against the real `A1` in `forward.py`; `steal.py` itself never reads that file, it only calls `forward()`. Every true row lines up with exactly one recovered row (absolute cosine similarity 1.0 to within about 1e-16). For each matched pair, the element-wise ratio is the same constant across the row to within 1e-4.
+
+**How it works:**
+1. **Kinks along lines:** along any straight line through input space, the output is a series of straight segments. Each bend happens where one hidden neuron switches on or off. The script picks random lines and finds every bend by repeated splitting: where the slopes at the two ends of an interval differ, it guesses the bend is where the two end-lines meet and checks that guess with a query.
+2. **Gradient jump:** at each bend it estimates the full gradient (with finite differences) just before and just after. The difference is `A2[i] * A1[i,:]`, which is row i of A1 times a constant.
+3. **Deduplication:** each recovered row is normalised and its sign fixed. A row is dropped if it points in the same direction as one already found (absolute cosine above 1 − 1e-4). The script stops after 30 lines in a row turn up no new neuron, so it never needs to know the hidden width in advance.
+
+The saved rows have unit length, which counts as the "scaling" freedom you allowed. Run it with `python steal.py`.
