@@ -17,6 +17,6 @@
 
 **Total:** $3.5975 (gatewatch).
 
-**4204 raw SSE:** every request (11) has one `message_stop`, last stop_reason tool_use/end_turn, 0 `event: error`. Stop reason is known, so the raw_sse fallback does not apply; the gate fails on load proof alone.
+**4204 raw SSE:** every request (11) has one `message_stop`, last stop_reason tool_use/end_turn, 0 `event: error`. Stop reason is known, so the raw_sse fallback does not apply; the gate is unproven on load proof alone.
 
 **Finding:** the `module_hook` plugin (#223) never wrote its log on any live opencode cell (old opencode configs glob `plugin/*.{ts,js}` under the config dir, so the location matches; cause not yet traced). Needs a runner fix + one-cell smoke before 795/913/1109/4204/26821 can pass.
