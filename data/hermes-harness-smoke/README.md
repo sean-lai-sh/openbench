@@ -46,10 +46,15 @@ a fresh per-cell `HERMES_HOME` has none, so it attempts a source-update sync
 (which fails on the read-only mount) and runs with no dependencies
 (`No module named 'ruamel'`). The adapter instead runs the committed
 environment's interpreter on the checkout's entry script,
-`<venv>/bin/python $ROOT/src/hermes`, where `<venv>` comes from
-`$ROOT/home/installs/<key>/facts.json`, with `HERMES_DISABLE_LAZY_INSTALLS=1`
+`<venv>/bin/python $ROOT/src/hermes`, where `<venv>` is
+`packages.venv.environment` in `$ROOT/home/installs/<key>/facts.json`
+(PM's schema 1; any other shape fails the cell closed), with
+`HERMES_DISABLE_LAZY_INSTALLS=1`
 (no source-update or sync step at boot). The gateway daemon is spawned with
-the same interpreter.
+the same interpreter. `packages.venv.extras` (on the VM: `["all",
+"anthropic"]`; `prep.sh`'s installer adds `all`) is recorded in
+`harness_settings.launch.extras` and `summary.json` (`hermes_extras`), so the
+ledger shows which optional dependencies were installed.
 
 **Prep-time smoke.** `prep.sh` ends by running `hermes --version` and a
 dependency import check inside the cell image (`OBENCH_CELL_IMAGE`, default

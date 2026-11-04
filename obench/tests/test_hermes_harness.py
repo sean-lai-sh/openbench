@@ -64,12 +64,32 @@ def fake_install(root):
     launcher.write_text("#!/bin/sh\nexec store-python -I -c bootstrap \"$@\"\n")
     (src / "hermes").write_text("from hermes_cli.main import main\n")
     state = Path(root, "home", "installs", hh.install_key(str(src)))
-    venv = state / "environments" / "gen-1"
+    generation = state / "environments" / "728a8e5eb0f7423c837b5c99dddcb14d"
+    venv = generation / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "python").write_text("")
     (venv / "pyvenv.cfg").write_text("home = /x\n")
-    (state / "facts.json").write_text(json.dumps({"environment": str(venv)}))
+    (generation / "workspace").mkdir()
+    for name in ("inputs", "pm-runtime"):
+        (state / name).mkdir()
+    (state / "declined-packages.json").write_text("{}")
+    (state / "facts.json").write_text(json.dumps(vm_facts(state, venv), indent=2))
     return str(launcher), str(venv / "bin" / "python"), str(src / "hermes"), state
+
+
+def vm_facts(state, venv):
+    """facts.json exactly as `hermes pm install --extra anthropic` wrote it on the VM."""
+    return {
+        "packages": {
+            "venv": {
+                "environment": str(venv),
+                "extras": ["all", "anthropic"],
+                "resolved_lock": str(venv.parent / "workspace" / "uv.lock"),
+                "stamp": "198320d6",
+            }
+        },
+        "schema": 1,
+    }
 
 
 class CellEnv(unittest.TestCase):
@@ -315,11 +335,53 @@ class Launch(CellEnv):
         os.remove(self.state / "facts.json")
         self.assert_fails_closed(r"dependency record is unreadable: .*facts\.json")
 
+    def write_facts(self, mutate):
+        facts = json.loads((self.state / "facts.json").read_text())
+        mutate(facts)
+        (self.state / "facts.json").write_text(json.dumps(facts))
+
+    def test_vm_facts_shape_resolves_the_venv_and_records_extras(self):
+        launch = hh.resolve_launch(self.root, self.launcher)
+        self.assertEqual(launch["python"], self.python)
+        self.assertTrue(launch["environment"].endswith("/environments/728a8e5eb0f7423c837b5c99dddcb14d/venv"))
+        self.assertEqual(launch["extras"], ["all", "anthropic"])
+        row, _, _ = self.run_cell()
+        self.assertEqual(row["harness_settings"]["launch"]["extras"], ["all", "anthropic"])
+        settings = json.loads(Path(hh.settings_destination("cellh", self.ledger)).read_text())
+        self.assertEqual(settings["launch"]["extras"], ["all", "anthropic"])
+
     def test_environment_outside_the_install_fails_closed(self):
         outside = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, outside, True)
-        (self.state / "facts.json").write_text(json.dumps({"environment": outside}))
+        self.write_facts(lambda f: f["packages"]["venv"].update(environment=outside))
         self.assert_fails_closed("outside the install root")
+
+    def test_other_facts_shapes_fail_closed(self):
+        cases = [
+            (lambda f: f.update(schema=2), "schema 2, expected 1"),
+            (lambda f: f.pop("schema"), "schema None, expected 1"),
+            (lambda f: f["packages"].pop("venv"), r"names no environment \(packages\.venv\.environment\)"),
+            (lambda f: f["packages"]["venv"].pop("environment"), "names no environment"),
+            (lambda f: f.update(packages=[]), "names no environment"),
+            (lambda f: f["packages"]["venv"].update(extras="all"), "malformed packages.venv.extras"),
+        ]
+        original = (self.state / "facts.json").read_text()
+        for mutate, pattern in cases:
+            with self.subTest(pattern=pattern):
+                (self.state / "facts.json").write_text(original)
+                self.write_facts(mutate)
+                self.assert_fails_closed(pattern)
+        # The pre-schema flat shape (the old fixture) is rejected too.
+        (self.state / "facts.json").write_text(json.dumps({"environment": str(Path(self.python).parents[1])}))
+        self.assert_fails_closed("schema None")
+
+    def test_absent_extras_are_recorded_as_none(self):
+        self.write_facts(lambda f: f["packages"]["venv"].pop("extras"))
+        self.assertIsNone(hh.resolve_launch(self.root, self.launcher)["extras"])
+
+    def test_environment_without_pyvenv_cfg_fails_closed(self):
+        os.remove(Path(self.python).parents[1] / "pyvenv.cfg")
+        self.assert_fails_closed("no pyvenv.cfg")
 
     def test_missing_interpreter_fails_closed(self):
         os.remove(self.python)

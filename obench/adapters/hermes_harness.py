@@ -44,8 +44,9 @@ has no such record, so it tries a source-update sync (which fails on the
 read-only mount) and then runs with no dependencies. The cell instead runs
 the committed environment's own interpreter on the checkout's entry script,
 ``<venv>/bin/python <root>/src/hermes``, resolved from the install home's
-facts.json, with ``HERMES_DISABLE_LAZY_INSTALLS=1`` so the boot never tries
-the source-update or sync step. Every path must sit under
+facts.json (schema 1: ``packages.venv.environment``; ``packages.venv.extras``
+is recorded in harness_settings), with ``HERMES_DISABLE_LAZY_INSTALLS=1``
+so the boot never tries the source-update or sync step. Every path must sit under
 ``OBENCH_HERMES_ROOT`` (the read-only cell mount); otherwise the cell fails
 closed before any process starts.
 """
@@ -244,19 +245,43 @@ def resolve_launch(root: str, binary: str) -> dict:
     state = os.path.join(root, "home", "installs", install_key(src))
     facts = os.path.join(state, "facts.json")
     try:
-        environment = json.loads(Path(facts).read_text(encoding="utf-8-sig")).get("environment")
-    except (OSError, ValueError, AttributeError) as exc:
+        record = json.loads(Path(facts).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
         raise LaunchError(f"Hermes dependency record is unreadable: {facts} ({exc}); "
                           "re-run prep.sh (hermes pm install)") from exc
-    if not isinstance(environment, str) or not environment:
-        raise LaunchError(f"Hermes dependency record names no environment: {facts}")
+    environment, extras = parse_facts(record, facts)
     if not _under(environment, os.path.join(state, "environments")):
         raise LaunchError(f"Hermes dependency environment is outside the install root: {environment}")
+    if not os.path.isfile(os.path.join(environment, "pyvenv.cfg")):
+        raise LaunchError(f"Hermes dependency environment has no pyvenv.cfg: {environment}")
     python = os.path.join(environment, "bin", "python")
     if not os.path.isfile(python) or not _under(python, root):
         raise LaunchError(f"Hermes environment interpreter is missing or resolves outside the install root: {python}")
-    return {"python": python, "entry": entry, "environment": environment, "launcher": binary,
-            "command": [python, entry]}
+    return {"python": python, "entry": entry, "environment": environment, "extras": extras,
+            "launcher": binary, "command": [python, entry]}
+
+
+FACTS_SCHEMA = 1
+
+
+def parse_facts(record, facts: str = "facts.json") -> tuple[str, list[str] | None]:
+    """``packages.venv.environment`` and ``packages.venv.extras`` from PM's
+    schema-1 facts.json (``pm.environments._recorded_venv`` reads the same
+    key). Any other schema or a missing environment fails closed; absent
+    extras are recorded as None, malformed extras fail closed."""
+    if not isinstance(record, dict) or record.get("schema") != FACTS_SCHEMA:
+        schema = record.get("schema") if isinstance(record, dict) else None
+        raise LaunchError(f"Hermes dependency record has schema {schema!r}, expected {FACTS_SCHEMA}: {facts}")
+    venv = (record.get("packages") or {}).get("venv") if isinstance(record.get("packages"), dict) else None
+    environment = venv.get("environment") if isinstance(venv, dict) else None
+    if not isinstance(environment, str) or not environment:
+        raise LaunchError(f"Hermes dependency record names no environment (packages.venv.environment): {facts}")
+    extras = venv.get("extras")
+    if extras is None:
+        return environment, None
+    if not isinstance(extras, list) or not all(isinstance(e, str) for e in extras):
+        raise LaunchError(f"Hermes dependency record has malformed packages.venv.extras: {facts}")
+    return environment, list(extras)
 
 
 def pin_stamp_path(binary: str) -> str:
@@ -424,6 +449,7 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, la
         "install_root": os.environ.get("OBENCH_HERMES_ROOT", ""),
         "launch": None if launch is None else {
             "python": launch["python"], "entry": launch["entry"], "environment": launch["environment"],
+            "extras": launch["extras"],
             "env": dict(CELL_ENV),
         },
         "model": model,
@@ -616,7 +642,7 @@ def _smoke_main(argv: list[str] | None = None) -> int:
     except LaunchError as exc:
         print(f"hermes smoke: {exc}", file=sys.stderr)
         return 1
-    print(f"hermes smoke: python={launch['python']} entry={launch['entry']}", flush=True)
+    print(f"hermes smoke: python={launch['python']} entry={launch['entry']} extras={launch['extras']}", flush=True)
     for name, command in smoke_commands(launch):
         proc = subprocess.run(docker_smoke_argv(args.image, args.root, command), capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, timeout=300)
