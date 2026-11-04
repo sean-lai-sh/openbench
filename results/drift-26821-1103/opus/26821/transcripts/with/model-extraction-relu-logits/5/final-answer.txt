@@ -1,0 +1,14 @@
+I wrote `steal.py`. When run, it recovers A1 (up to permuting neurons and scaling) and saves it to `stolen_A1.npy`. The run takes about 2 seconds and finds 20 neurons, giving a 20×10 matrix.
+
+**How it works** (only by calling `forward(x)`):
+1. It takes random lines `x0 + t·d` and uses bisection to find the points where the output stops being linear. Each such point is where one hidden neuron's `A1[i]·x + b1[i]` crosses zero.
+2. At each of those points, it estimates the gradient just before and just after using finite differences. The difference between the two is `A2[i]·A1[i,:]`, which is row i of A1 up to scale.
+3. It drops a point if the gradient isn't steady on both sides, which means two crossings were too close together. It then normalises the rows, fixes their sign, and groups rows that point the same way. A row is kept only if it shows up at least twice.
+
+**Check:** I compared the result with the real `forward.A1` afterwards; the script itself never reads A1. Every true row matched a recovered row with |cosine| ≥ 0.9999999999999993, and there were no extra rows. This held for 5 different random seeds.
+
+**Issues found during testing:**
+- The first version returned 38 rows, about 18 of which were near-copies of real rows, caused by two crossings sitting close together on a line. The gradient-steadiness check removed them.
+- My first fix used stricter grouping and required three sightings, which lost a neuron with a very small output weight (|A2| ≈ 0.006). Looser grouping with two sightings got all 20 back.
+
+The script relies on a few fixed settings: tolerances of about 1e-11 for spotting non-linearity, and lines covering t in [−20, 20]. These suit weights of the size this network uses (about 0.1). A network with much larger or smaller weights, or hidden neurons with almost no effect on the output, might need them adjusted.

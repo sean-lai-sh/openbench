@@ -1,0 +1,11 @@
+I created `parallel_linear.py` with both classes. I tested it on CPU (the `gloo` backend) with world_size 1, 2 and 4 against a plain `nn.Linear` using the same weights. The outputs, the weight and bias gradients on each rank, and the input gradient all matched.
+
+The weight uses the standard `nn.Linear` layout, so `master_weight` must have shape `(out_features, in_features)`. In `y = x · Wᵀ`, a column of the math matrix is a row of the stored tensor, so the split dimensions look swapped:
+
+- **`ColumnParallelLinear`:** each rank keeps its block of `out_features // world_size` rows of `master_weight`. Its bias has that same size and starts at zero. The forward pass gathers the partial outputs from all ranks and joins them along the last dimension. In the backward pass, each rank gets its own slice of the output gradient, and the input gradient is summed across ranks.
+- **`RowParallelLinear`:** each rank keeps its block of `in_features // world_size` columns of `master_weight`. The forward pass sums the partial outputs across ranks, then adds the full bias, which starts at zero. If the input has the full `in_features` width, each rank takes its own slice of it. If the input is already sliced, it's used as is.
+
+**Limits:**
+- `out_features` (column layer) and `in_features` (row layer) must divide evenly by world_size, or the constructor raises an assertion error.
+- The column layer's input-gradient sum assumes every rank receives the same input.
+- If no distributed process group is initialised, both classes behave as world_size 1.

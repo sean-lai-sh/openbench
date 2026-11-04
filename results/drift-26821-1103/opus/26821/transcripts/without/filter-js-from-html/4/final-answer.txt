@@ -1,0 +1,30 @@
+I created `filter.py`. It edits the HTML file named in `argv[1]` in place. In my tests, clean HTML came back byte-for-byte identical, and none of the 39 attack strings I tried ran JavaScript in headless Chromium after filtering. That's a sample of common attacks, not proof that nothing can get through.
+
+**How it works:** it reads the file the way a browser does, finding tags and attributes. Anything safe is copied through unchanged, and only the dangerous parts are cut out. The file is written back only if something was removed. Line endings (including CRLF) and non-UTF-8 bytes are kept as they were.
+
+**What it removes:**
+- **Whole elements, including their content:** `<script>` (also inside `<svg>`) and `<iframe>`.
+- **Just the tags, keeping what's inside them:** `<object>`, `<embed>`, `<applet>`, `<frame>`, `<frameset>`, `<base>`, `<portal>` and a few older ones like `<layer>`.
+- **Attributes:**
+  - any `on*` event handler, and `srcdoc`
+  - any attribute value that is a `javascript:`, `vbscript:` or similar link, even when disguised with character codes like `&#106;` or `&colon;`, tabs, or control characters
+  - `data:` links, except plain images (`data:image/png` etc.) in image attributes like `src`
+  - inline styles using `expression()`, `behavior`, `-moz-binding` or `javascript:`, including escaped forms like `expr\65ssion`
+  - SVG `<animate>`/`<set>` that target `href` or event attributes
+- **Other cases:**
+  - `<meta http-equiv="refresh">` that points to a `javascript:` or `data:` URL
+  - `<link rel="import">`
+  - `<style>` blocks with dangerous CSS
+  - comments that hide markup, such as old Internet Explorer conditional comments
+
+**Tricky cases:**
+- **Content of `<style>`, `<textarea>`, `<noscript>`, `<title>` and similar:** browsers usually treat it as plain text, but inside `<svg>` or `<math>` they read it as HTML. The filter cleans it both ways.
+- **Pieces rejoining:** removing something could leave pieces that join into a new tag, as in `<<script></script>img onerror=...>`. To stop this, the filter keeps running until the output stops changing.
+
+**Testing:**
+- **Clean page:** a sample with a doctype, meta, style, comments, tables, forms, links, entities and a `data:image` picture came through unchanged.
+- **Attack strings:** I put each filtered vector in headless Chromium with a fake `alert`/`confirm`/`prompt` that records whether it's called. None was called. As a check that the test itself works, an unfiltered `<img onerror>` was caught.
+
+When an attribute is removed, its surrounding spaces stay, so `<img src=x onerror=…>` becomes `<img src=x >`. The filter also removes any attribute that contains the text `javascript:` anywhere in its value, so a harmless one like `title="javascript: basics"` would be dropped.
+
+The test scripts are in `/tmp/obench-cell-wfn14ogd/opencode/t/`, not in the project folder.

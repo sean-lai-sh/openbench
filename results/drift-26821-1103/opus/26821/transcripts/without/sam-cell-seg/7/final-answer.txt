@@ -1,0 +1,29 @@
+All three test sets pass. I wrote `/tmp/obench-cell-d9a_r63w/bench_opencode_sam-cell-seg_58v_2w1c/convert_masks.py`.
+
+**Usage** (named flags or the same four values in order):
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir \
+    --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+If `output_path` is a folder, the result is saved there under the input CSV's filename. If it ends in `.csv`, that exact file is written.
+
+**How it works**
+1. **Prompts:** every row, rectangle or polyline, is turned into a box prompt for MobileSAM (`vit_t`, the stock `mobile_sam` package, unmodified). It runs on CPU and uses a GPU only if one exists.
+2. **Large images:** these are split into 512 px tiles. Each cell is predicted on the tile that contains it, so small nuclei get more detail.
+3. **Choosing a mask:** SAM gives three candidate masks per cell and the script picks one. For polylines it favours the candidate that best matches the original outline. For rectangles it avoids candidates that just fill the box. Masks may extend only a small margin past the box. If SAM fails, the original shape is used (an ellipse inside the box for rectangles).
+4. **Rules you asked for:**
+   - **No overlap:** where masks compete for a pixel, the one SAM is most confident about keeps it.
+   - **One contiguous piece:** each cell keeps only its largest connected region, and thin pinch points are removed.
+   - **No cell surrounding another:** if a cell would enclose a neighbour, it gets a 1 px cut so its outline doesn't wrap around the neighbour.
+   - **No rectangles:** any result that is still box-shaped is trimmed to an ellipse.
+   - **No empty cells:** a crowded-out cell still gets a small disk inside its box.
+5. **Output:** the CSV has the same columns, index and other values as the input. Only `xmin, ymin, xmax, ymax, coords_x, coords_y` change, and the polylines are closed like the input format.
+
+**Testing**
+The local Python setup couldn't run it as-is: pandas is missing and torch and torchvision don't match. So I tested in a separate virtual environment at `/tmp/.../opencode/venv` and left the system Python alone. Results:
+- **Demo (48 cells):** 0 overlapping pixels (also checked as polygon intersections with shapely), every polygon valid, each mask one piece, no rectangles. The match with the original polylines (IoU) averages 0.78. On an overlay image the outlines follow the nuclei. It takes about 8 s on CPU.
+- **Larger 748×710 image (tiling path):** same checks pass.
+- **Stress test** (border, nested, overlapping, duplicate and identical boxes): same checks pass.
+  - In this test some identical boxes leave a cell with only a tiny fallback disk.
+
+The `type` column is left exactly as in the input, so rows that were rectangles still say `rectangle` even though their coordinates are now polylines. That follows "only update those columns"; changing it to `polyline` is a one-line edit if you'd prefer.

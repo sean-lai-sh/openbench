@@ -1,0 +1,13 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`, and on a small test model it matches a normal single-process run exactly for world sizes 1 and 2.
+
+**How it works:**
+- **Layer split:** the decoder layers are divided as evenly as possible, and any leftover layers go to the lowest ranks. For example, 5 layers on 2 ranks becomes 3 and 2. Rank 0 also runs the embedding. The last rank also runs the final norm, the output layer and the loss.
+- **Forward, all microbatches first:** rank 0 turns the input IDs into hidden states. Every other rank receives a `[microbatch, seq_len, hidden_size]` tensor from the rank before it and marks it as needing gradients. Each rank then runs only its own layers, rebuilding the attention mask and position encodings the same way `LlamaModel.forward` does, and sends the result on. The last rank computes `cross_entropy(logits, targets) / num_microbatches`. All stage inputs and outputs are kept for the backward pass.
+- **Backward, all microbatches after:** the last rank calls `loss.backward()`. The other ranks receive the gradient from the next rank and run the backward pass with it. Every rank except rank 0 sends the gradient of its received input back to the previous rank.
+- **Communication** uses `dist.P2POp` with `batch_isend_irecv`. With world size 1 nothing is sent. Hidden states and gradients are always moved to the given `device`/`dtype`. Input IDs are moved to `device` only, because the embedding needs integer IDs.
+- **No hooks** are used, and the model's structure isn't changed: each rank just runs its own slice of the layers.
+- **Return value:** the last rank returns the total loss (already detached). Other ranks return `None`.
+
+**Test:** I used a tiny Llama with 5 layers, 3 microbatches, the gloo backend and float32 on CPU. I compared it against an unchanged copy of the model run on each microbatch in turn. The loss was the same (4.6171) and the gradients matched exactly on every rank. With 2 ranks, rank 0 had gradients for 28 parameters and rank 1 for 20, which together cover all 48 parameters of the model. I haven't tested other dtypes, a GPU, or the official test.
+
+The test script is in a temporary folder at `/tmp/obench-cell-lv0f93xl/opencode/t.py`, not in the project.

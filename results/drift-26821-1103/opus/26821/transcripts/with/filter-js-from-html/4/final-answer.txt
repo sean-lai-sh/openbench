@@ -1,0 +1,23 @@
+I created `filter.py`. It takes the file path as `argv[1]`, removes JavaScript, and writes the result back to the same file. It only uses the Python standard library.
+
+I tested it with about 40 common XSS payloads, a clean sample page, and one run on a real file from the command line. Every payload came out harmless, the clean page came out byte-for-byte identical, and the command-line run kept the original Windows-style line endings. I didn't load the filtered output in a real browser.
+
+**How it works:** it reads the HTML as raw text and cuts out only the dangerous parts. It never rebuilds the document, so whitespace, letter case, quotes and encoded characters stay as they were. The way it reads tags, attributes, comments and elements like `<style>` and `<textarea>` follows the official HTML parsing rules, so it splits the text up the same way a browser does. If a file has no dangerous content, it isn't rewritten at all.
+
+**What gets removed:**
+- `<script>` elements, including everything inside them.
+- `<object>`, `<embed>`, `<applet>` and `<base>` tags. Whatever is inside them is kept.
+- Any attribute starting with `on` (`onclick`, `onerror`, etc.) and `srcdoc`.
+- Any attribute whose value contains `javascript:`, `vbscript:` or similar. This is checked after decoding character codes like `&#106;` and stripping hidden whitespace and control characters, which attackers use to disguise the text.
+- `data:` URLs in link and source attributes, except plain images such as PNG, JPEG, GIF and WebP.
+- `style` attributes, and the contents of `<style>` blocks, that use script-capable CSS such as `expression(`, `javascript:` or `-moz-binding`.
+- HTML comments that hide script-like markup, such as old Internet Explorer conditional comments. Comments aren't displayed, so this changes nothing visible.
+
+**Tricky cases it handles:**
+- **Content inside `<noscript>`, `<style>`, `<textarea>`, etc.:** a browser may read this either as plain text or as HTML, depending on where it appears (for example, inside an SVG). The filter cleans it both ways, so tricks like `<noscript><p title="</noscript><img onerror=...>">` and `<svg><style><img onerror=...>` don't get through.
+- **Pieces joining into a new tag:** removing something can make two harmless fragments join up, as in `<<script></script>img onerror=...>`. The filter keeps re-running until nothing more changes.
+
+**Side effects to be aware of:**
+- Plain text inside `<textarea>` or `<title>` that looks like dangerous markup is removed too.
+- Unfinished tags at the end of a file are dropped. Browsers ignore them anyway.
+- The `javascript:` check covers every attribute, so an `alt` or `title` containing that exact text would also lose that attribute.

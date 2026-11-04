@@ -1,0 +1,29 @@
+I wrote `/tmp/obench-cell-p1z4sdy9/bench_opencode_filter-js-from-html_rixtuwr2/filter.py`. Run it as `python3 filter.py file.html`; it rewrites the file in place, and only if something had to be removed.
+
+**Test results:**
+- A clean test page came out byte-for-byte identical. It had a doctype, meta, title, a `<style>` block, comments, headers, tables, forms, `<pre>`, `<textarea>`, inline SVG, `data:image` images, entities and a stray `1 < 2`.
+- I tried about 30 XSS vectors and all were neutralised. These included obfuscated `javascript:` links, mXSS tricks with `<noscript>`, SVG `<style>` and CDATA, `<!-->` comments, `<<script></script>img ...>` gluing, IE conditional comments and SVG `<animate attributeName="on…">`.
+- Running the filter twice gives the same result.
+- Python's built-in HTML parser (via BeautifulSoup) finds no script/iframe/object/embed elements, no `on*` attributes and no `javascript:` values in the output. The `lxml` and `html5lib` parsers aren't installed, so I couldn't cross-check with them, and I didn't test in a real browser.
+
+**How it works:**
+- It's a small tokenizer that follows the HTML5 rules browsers use to split a page into tags, attributes, comments, CDATA and raw-text elements like `<style>`. It does not rebuild the page from a parsed tree.
+- Anything safe is copied through exactly as written, so spacing, quoting, case and entities don't change. Only the harmful pieces are cut out.
+
+**What it removes:**
+- `<script>` and `<iframe>` elements, including their contents.
+- The tags of `<object>`, `<embed>`, `<applet>`, `<frame>`, `<frameset>`, `<param>` and `<portal>`. Any fallback content inside them stays and is filtered.
+- All `on*` event attributes, plus `srcdoc`.
+- Attributes whose value contains a `javascript:`, `vbscript:`, `livescript:` or `mocha:` URL. Values are decoded and stripped of whitespace and control characters before checking, so tricks like `jav&#x09;ascript&colon;` are caught.
+- Any `data:` URL except `data:image/...`.
+- `style` attributes and `<style>` contents containing `expression(`, a script URL, `-moz-binding` or `behavior:`. The attribute or the stylesheet's contents are removed, not just the bad part.
+- `<meta http-equiv="refresh">` that points to a script or `data:` URL.
+- IE conditional comments.
+- SVG animation attributes that target event handlers.
+- Malformed tags that would only become dangerous if parsed differently, such as `<scr<script>ipt>`.
+
+**Trade-offs (it errs on the side of removing too much):**
+- An ordinary attribute containing the text "javascript:", like `<meta content="Learn javascript: basics">`, is removed. Text attributes are exempt: `title`, `alt`, `placeholder`, `value`, `label`, `summary` and `aria-*`.
+- Text inside `<textarea>`, `<title>` and `<style>` is filtered as if it were HTML. A textarea that shows `<script>` as literal text will lose it.
+- An unfinished tag at the very end of the file is dropped. Browsers ignore it anyway.
+- The file is read and written byte-for-byte, so UTF-8 survives unchanged. UTF-16 files aren't handled.

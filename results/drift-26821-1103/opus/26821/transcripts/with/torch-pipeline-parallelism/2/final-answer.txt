@@ -1,0 +1,10 @@
+I created `pipeline_parallel.py`, and on a small test model it gives the same results as an ordinary single-process run for world sizes 1 and 2. I ran it with 3 and 4 layers, 3 microbatches, on CPU using the gloo backend. The loss matched the reference to float precision, and every parameter gradient matched with a max difference of 0.
+
+**How it works:**
+- **Splitting layers:** `get_layer_range` gives each rank a contiguous block of decoder layers. Any extra layers go to the earlier ranks, so 3 layers over 2 ranks is 2 + 1. Rank 0 also runs the embedding layer; the last rank also runs the final norm, `lm_head` and the loss.
+- **Running a stage:** each rank calls only its own `model.model.layers[start:end]`. It builds the rotary position embeddings and the causal mask the same way `LlamaModel.forward` does (via `create_causal_mask`). The model itself isn't changed, so any hooks the test puts on the layers still fire, and only on the rank that owns each layer.
+- **Forward pass, all microbatches:** rank 0 embeds the input IDs. Every other rank receives hidden states of shape `[mb, seq, hidden]` and marks them as needing gradients. Ranks pass hidden states to the next stage with `P2POp` and `batch_isend_irecv`. The last rank computes `cross_entropy / num_microbatches`.
+- **Backward pass, all microbatches:** the last rank calls `loss.backward()`. Middle ranks receive the gradient for their output, call `torch.autograd.backward(out, grad)`, and send their input's `.grad` back to the previous rank.
+- Hidden states and gradients are always moved to the given `device`/`dtype`. Input and target IDs are only moved to the device, because token IDs have to stay integers.
+- The function returns the total loss (detached) on the last rank and `None` on the others.
+- It uses no hooks and doesn't call `optimizer.step()`. Gradients are accumulated in `.grad`, so the caller does the optimizer step and zeroes the gradients.

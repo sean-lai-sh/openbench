@@ -1,0 +1,22 @@
+I've written `filter.py`. It takes the file path as `argv[1]`, removes the JavaScript, and rewrites the file in place. I tested it in headless Chromium with 52 XSS attacks, each run twice (once as a bare snippet, once inside `<html><body>`). After filtering, none of the 104 runs produced an alert. With the filter turned off, the same test caught 60 alerts, so the test does detect real attacks. A clean sample page came through byte-for-byte unchanged.
+
+**How it works:** it reads the HTML as raw text, closely following how browsers read HTML, and only cuts out the dangerous pieces. Everything else (whitespace, entities like `&amp;`, comments, quoting style, tables, headers, styles) is copied through exactly, so files with nothing harmful aren't touched at all. It uses only Python's standard library.
+
+**What gets removed:**
+- `<script>` elements, including their contents.
+- All `on*` event attributes (e.g. `onclick`, `onerror`) and `srcdoc`.
+- Attributes whose value is a `javascript:`, `vbscript:`, `livescript:` or `mocha:` URL, even when disguised with character codes like `&#x09;` or `&colon;`, control characters or spaces. This also covers `<meta http-equiv=refresh>` and SVG animation tricks (`values`/`to`/`from`, or `attributeName` set to an `on*` event).
+- `data:` URLs in link and source attributes, except plain image types (PNG, GIF, JPEG and similar; SVG images are removed).
+- Inline `style` attributes, or the contents of `<style>` blocks, that contain dangerous CSS: `expression()`, `-moz-binding`, `behavior:`, or `javascript:` URLs.
+
+**Trickier attacks it also handles:**
+- Content inside `<noscript>`, `<style>`, `<title>`, `<textarea>` and similar elements is checked whether the browser reads it as plain text or as markup (for example, inside `<svg>`/`<math>`).
+- Unclosed tags, comments and CDATA sections, which a browser could read differently from the filter, are made harmless by turning the `<` into `&lt;`.
+- The filter runs repeatedly until nothing changes. This stops pieces left behind after a removal from joining up into a new attack, such as `<<script>x</script>img onerror=…>`.
+
+**When it does change things you might want to keep:**
+- The text of `<noscript>`/`<textarea>` etc. can be altered if it contains half-finished markup.
+- Comments that contain `<script` or `javascript:` (such as old Internet Explorer conditional comments) are dropped.
+- A whole `<style>` block is emptied, not just trimmed, if it contains dangerous CSS.
+
+The test script is at `/tmp/obench-cell-5bask2n5/opencode/test_xss.py` if you want to re-run it.

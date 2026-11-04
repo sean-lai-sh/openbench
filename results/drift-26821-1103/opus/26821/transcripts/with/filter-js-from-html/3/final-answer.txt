@@ -1,0 +1,21 @@
+I've created `filter.py`. It edits the file in place (`python3 filter.py page.html`), uses only the Python standard library, and only ever deletes text. Everything it keeps is copied byte-for-byte, so whitespace, line endings, attribute quoting and capitalisation, entities and comments stay the same.
+
+**What it removes:**
+- **Script blocks:** `<script>` tags along with their content, including tricky cases like `<script><!--<script></script>…</script>`.
+- **Embedded-frame tags:** `<iframe>` elements with their content, plus the tags `frame`, `frameset`, `object`, `embed`, `applet` and `portal`. For `object` and `applet`, the fallback content inside is kept.
+- **Event-handler attributes:** any attribute starting with `on`, such as `onerror`, `onload` or `ontoggle`, and also `srcdoc`.
+- **Script links:** any attribute whose value is a `javascript:` or `vbscript:` (and similar) link. This still works when the link is disguised with HTML entities, tabs, newlines or control characters (e.g. `&#106;…`, `jav&#x09;ascript:`, `&colon;`). It also covers SVG animation values, meta-refresh `content` and `formaction`.
+- **Dangerous `data:` links:** ones that could run script, such as `data:text/html` or SVG data in `<use>`. Normal image data, like `<img src="data:image/png…">`, is kept.
+- **Script-capable CSS:** `style` attributes, and the content of `<style>` blocks, that use `expression()`, `-moz-binding`, `behavior` or `url(javascript:…)`. This is caught even through CSS escapes and comments.
+
+**How it avoids being tricked:** a small scanner reads tags, attributes and comments the same way browsers do. It also checks inside comments, CDATA sections and text-only elements like `<title>`, `<style>`, `<textarea>` and `<noscript>`. That blocks tricks such as `<!-- --!><img onerror=…>` and `<title><a title="</title><img onerror=…>">`. Because deleting text can join fragments into new markup (for example `<scr<script></script>ipt>`), it re-runs until nothing more changes. It does this under both normal HTML and SVG/MathML parsing rules.
+
+**Testing:**
+- **Normal page:** a hand-written page with a doctype, CRLF line endings, tables, headers, forms, SVG, `<pre>`, inline styles and data-URI images came out byte-for-byte identical.
+- **Attack examples:** I wrote about 70 common XSS examples, mostly from the OWASP cheat sheet, plus some designed to fool the scanner. After filtering, a pattern check found no script tags, event handlers, script links or dangerous embeds left in any of them. I haven't checked this in a real browser.
+- **Real page:** on Wikipedia's "HTML" article, the only changes were removing the `<script>` blocks and one `href="javascript:print();"`.
+
+**Things to know:**
+- It also removes a few harmless things that look like attacks, such as an attribute value containing `<script` or a `javascript:` link inside a comment.
+- It deletes `<style>` content as a whole block if it contains script-capable CSS.
+- It's built for modern browsers. It doesn't try to handle very old IE quirks like UTF-7 encoding or XML data islands.

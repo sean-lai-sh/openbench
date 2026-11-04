@@ -1,0 +1,14 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it against a reference model with world_size 1 and 2, and it matched exactly: same loss, and every parameter gradient on every rank differed by 0.
+
+**How it works:**
+- **Splitting the layers:** decoder layers are divided as evenly as possible, with any extra layers going to the lowest ranks (5 layers on 2 ranks becomes 3 + 2). Rank 0 also runs `embed_tokens`. The last rank also runs `norm`, `lm_head` and the loss.
+- **Each stage's forward:** each rank computes its own position ids, rotary embeddings and causal mask, the same way `LlamaModel.forward` does. Then it runs only its own layers.
+- **Forward phase:** for every microbatch, a rank receives the hidden states `[mb, seq, hidden]` from the previous rank and marks them `requires_grad`. It runs its stage and sends the detached output on to the next rank. The last rank computes `cross_entropy / num_microbatches` instead. Each rank keeps its inputs and outputs for the backward phase.
+- **Backward phase:** microbatches go back in the same order. The last rank calls backward on its loss. The other ranks receive the gradient from the next rank and call `torch.autograd.backward(output, grad)`. Every rank except rank 0 then sends its input's gradient back to the previous rank.
+- **Communication:** all of it goes through `dist.P2POp` with `batch_isend_irecv`. Tensors and gradients are moved to the given device and dtype. No hooks are used.
+- **Return value:** the function returns the total scaled loss on the last rank and `None` on the other ranks.
+
+**Things to know:**
+- The torchvision install in this environment is broken, so `transformers` won't import here as it is. To run my test (`/tmp/.../opencode/t/test_pp.py`, gloo backend, 5-layer model), I had to block torchvision from loading. Your test environment probably doesn't have this problem.
+- I tested with both the `sdpa` and `eager` attention implementations, using float32 on CPU only.
+- I only tested with transformers 5.22.1. There is fallback code for older versions of the causal-mask helper, but it hasn't been run.

@@ -1,0 +1,19 @@
+I created `/tmp/obench-cell-lfyal8kv/bench_opencode_torch-tensor-parallelism_hb19gpsz/parallel_linear.py` with both classes. I tested it with 1, 2 and 4 processes against a normal `nn.Linear`. Outputs, weight and bias gradients, and input gradients all matched. I didn't test the `bias=False` case.
+
+**`ColumnParallelLinear`**
+- **Weight:** each rank keeps its own `out_features / world_size` slice of the output dimension of `master_weight`.
+- **Bias:** zero-initialised and split the same way as the output.
+- **Forward:** each rank computes its slice of the output, then the slices are gathered and joined along the last dimension.
+- **Backward:** each rank keeps only its own slice of the incoming gradient. The input gradients from all ranks are summed, so the input gets the full, correct gradient.
+
+**`RowParallelLinear`**
+- **Weight:** each rank keeps its own `in_features / world_size` slice of the input dimension.
+- **Bias:** zero-initialised, kept full on every rank, and added once after the partial outputs are summed.
+- **Input:** it accepts either the full input, which it splits itself, or input that is already split per rank.
+- **Forward:** the partial outputs are summed across ranks.
+- **Backward:** the gradient passes straight back to each rank. If the layer split the input itself, the input-gradient slices are gathered back together.
+
+**Things to know:**
+- Weights use PyTorch's standard layout, `(out_features, in_features)`. Here "columns" means the output dimension, as in Megatron-LM. If your tests store the weight the other way round, the split will be on the wrong axis.
+- The split size must divide evenly by `world_size`, otherwise the constructor raises an error.
+- If `torch.distributed` isn't initialised, both classes act as if `world_size` is 1.

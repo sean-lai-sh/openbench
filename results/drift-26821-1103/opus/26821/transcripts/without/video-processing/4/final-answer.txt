@@ -1,0 +1,25 @@
+I wrote `jump_analyzer.py` and ran it on the example video. It writes `output.toml` with these values:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+To check these, I looked at close-ups of the feet. In frame 53 the back foot's toe is still on the track, and by frame 54 it has lifted. In frame 61 the lead foot is still in the air, and in frame 62 it touches down. Frames are numbered from 0.
+
+The script has only been tested on this one video, so I can't say how well it handles others. A full run takes about 34 seconds.
+
+**How it works:**
+1. **Separating the athlete from the background.** In the example, the lighting shifts noticeably after the runner leaves (clouds or the camera adjusting exposure). That made the first frame unreliable as an empty background. Instead, each frame is compared with the per-pixel median of frames from at least 10 frames before and after it. The script also tries to ignore the athlete's shadow, cleans up the result, and takes the largest moving region as the athlete.
+2. **Tracking the feet.** It records the lowest point of the athlete in every frame. The ground level is estimated from those values (the 85th percentile). A frame counts as "in the air" when the lowest point is clearly above the ground, by at least 8 px or 2% of the frame height.
+3. **Picking the jump.** The hurdle clearance is the longest run of in-air frames close to the hurdle, which sits at about x≈555. This keeps the short in-air moments of normal running strides (for example frames 65–67) from being mistaken for the jump. Takeoff is the last frame on the ground before that run, and landing is the first frame on the ground after it.
+
+**Usage:**
+```
+python jump_analyzer.py [input.mp4] [output.toml]
+```
+With no arguments it reads `example_video.mp4` and writes `output.toml`, both in the script's folder.
+
+**Possible weak points on other videos:**
+- **Hurdle position:** it is hard-coded for this camera setup, which you said is the same in every video.
+- **Shadows:** the shadow handling was never actually exercised, because the example is overcast. In bright sun, a shadow joined to the feet could make the athlete look grounded while in the air.

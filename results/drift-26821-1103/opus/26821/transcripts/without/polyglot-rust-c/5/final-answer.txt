@@ -1,0 +1,12 @@
+I wrote `polyglot/main.rs`. I compiled it with both rustc and g++ and ran both programs. They print the same numbers for N = 0, 1, 2, 5, 10 and 100: 1, 1, 2, 8, 89 and 573147844013817084101. I didn't check which compiler versions are installed here, so I haven't confirmed it on your exact rustc 1.75.0 and g++ 13.2.0. The code only uses long-standing features, so I don't expect a problem.
+
+**How one file works for both compilers:** it relies on two small differences in how they read comments.
+
+- **A backslash at the end of a `//` comment:** in C++ this makes the comment continue onto the next line. Rust ignores it, so the next line is read as normal code.
+- **Hiding code from each compiler:**
+  - The first two lines are `// \` and `/*`. C++ treats both as one comment. Rust sees `/*` and starts a block comment, so it skips all the C++ code that follows.
+  - After the C++ code, `#if 0` tells C++ to skip everything until `#endif`. Rust doesn't care, because it's still inside its comment.
+  - Next come `// \` and `*/`. This ends Rust's comment, and C++ is still skipping. So the Rust code that follows is compiled only by rustc.
+  - At the end, the same two-line trick hides `#endif` from Rust.
+
+**Large N:** both versions add numbers digit by digit, so the result is exact for any N. They don't overflow at N = 93 the way a 64-bit integer would.

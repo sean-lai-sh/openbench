@@ -1,0 +1,13 @@
+I wrote `jump_analyzer.py`. On the example video it outputs `jump_takeoff_frame_number = 53` and `jump_land_frame_number = 62`, and writes them to `output.toml`. I checked both numbers by looking at the frames around the jump, and they match what the athlete is doing. I haven't run it on any other video, so it's only been tested on this one example.
+
+**How it works:**
+1. **Find the athlete:** it compares each frame to frame 0, which is empty, and keeps the biggest area that has changed. It ignores frames where the athlete is cut off at the left or right edge, because the feet aren't fully visible then.
+2. **Track the feet:** in each frame it records the lowest point of the athlete's outline, which is the lowest foot.
+3. **Find the ground:** it estimates the ground level from those lowest points across the video (the 80th percentile, about y≈363 here). A frame counts as "in the air" when the lowest foot is more than 9 pixels above that level.
+4. **Pick the jump:** it chooses the longest run of in-the-air frames. Here that's frames 54–61, while normal running strides only leave the ground for one frame. The takeoff is the frame just before that run and the landing is the frame just after it.
+
+**Choices you may want to check:**
+- **Takeoff and landing:** I counted takeoff as the last frame the takeoff foot touches the ground (frame 53, where the toe is still pushing off), not the first frame in the air (54). Landing is the first frame the foot touches down again (62). If the expected answers use "first frame in the air" for takeoff, that number would be 54.
+- **Frame numbers start at 0**, the way OpenCV counts them.
+
+**Usage:** `python3 jump_analyzer.py [input.mp4] [output.toml]`. With no arguments, it reads `example_video.mp4` and writes `output.toml` in the script's folder.

@@ -1,0 +1,24 @@
+I wrote `filter.py`. When I tested it, a clean HTML page came through byte-for-byte unchanged, and about 30 XSS vectors were all removed. I also checked in headless Chromium: a test page whose payloads mark the page when they run got marked before filtering and didn't after.
+
+Usage: `python3 filter.py page.html` (it edits the file in place).
+
+**How it works**
+- It reads the file the way a browser does, following the HTML5 rules for where tags, attributes and comments start and end. Only the dangerous pieces are cut out, so the rest of the file (whitespace, entities, quoting, case, line endings, even bytes that aren't valid UTF-8) is left exactly as it was.
+- **Removed with their content:** `<script>` and `<iframe>`.
+- **Tag removed, inner content kept:** `<object>`, `<applet>`, `<embed>`, `<frame>`, `<frameset>`, `<portal>`. Anything inside them is still filtered.
+- **Attributes removed:**
+  - all `on*` event handlers and `srcdoc`
+  - any value containing `javascript:` / `vbscript:` (checked after decoding entities and stripping control characters and whitespace, so things like `jav&#x09;ascript:` are caught)
+  - `data:` URLs in link and source attributes, except plain images (SVG images are not allowed)
+  - `style` values containing `expression(`, `behavior:`, `-moz-binding` or `javascript:`
+- **Whole tags removed:** `<meta http-equiv=refresh>` pointing to a dangerous URL, and SVG `<animate>`/`<set>` tags that target `href` or event attributes.
+- **Comments:** IE conditional comments and comments containing anything dangerous are dropped. Normal comments are kept.
+- **Tricks that rely on how browsers read text inside `<noscript>`, `<style>`, `<textarea>` and similar tags** (e.g. `<noscript><p title="</noscript><img onerror=...>">`, or `<style>` inside `<svg>`/`<math>`): the text inside these tags is filtered as if it were HTML too.
+- **Pieces joining up after a removal:** for example, `<<iframe></iframe>script>` would become `<script>` once the iframe is cut. The filter repeats until nothing changes, which stops this.
+
+**What it changes on legitimate pages**
+- It can remove some harmless content:
+  - text inside a `<textarea>` or `<title>` that looks like dangerous HTML gets edited, even though the browser would only show it as text
+  - a whole `<style>` block is dropped if any part of it is dangerous
+  - an attribute is removed if `javascript:` appears anywhere in its value, e.g. `href="/search?q=javascript:"`
+- Fallback content inside `<object>` stays on the page, so it now shows where the object used to be.

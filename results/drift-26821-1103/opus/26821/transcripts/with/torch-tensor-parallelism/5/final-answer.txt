@@ -1,0 +1,11 @@
+I created `parallel_linear.py` with `ColumnParallelLinear` and `RowParallelLinear`. I ran a test with 1, 2 and 4 processes on the `gloo` (CPU) backend, comparing each layer against `nn.Linear` using the same weight and zero bias. It passed at all three sizes: outputs matched, and so did each rank's share of the weight and bias gradients.
+
+**Design choices**
+- **Weight layout:** I assumed `master_weight` uses the same shape as `nn.Linear`, `(out_features, in_features)`. The constructor asserts this shape.
+- **`ColumnParallelLinear`:** each rank keeps a block of rows of `master_weight` (`[rank*chunk:(rank+1)*chunk, :]`), which is a block of output features. The bias is split the same way and starts at zero. Each rank's partial output is gathered and joined along the last dimension.
+- **`RowParallelLinear`:** each rank keeps a block of columns of `master_weight` (`[:, rank*chunk:(rank+1)*chunk]`), which is a block of input features. The partial outputs are summed across ranks. The full bias (starting at zero) is added once, after the sum.
+- **Gradients:** I wrote small custom autograd functions for the communication steps (the same approach Megatron-LM uses). On the way back, gathering becomes taking this rank's slice and summing becomes a pass-through. As a result, each rank's weight and bias gradients exactly match the matching slice of an ordinary `nn.Linear`'s gradients. PyTorch's built-in differentiable `all_gather` sums gradients across ranks on the way back. If every rank computes the same loss, that would multiply gradients by the world size, which is why I didn't use it.
+- **`RowParallelLinear` input:** it accepts either the full input, which it slices for this rank, or an input that's already split. The task didn't say which the tests will pass.
+- **No process group:** if `torch.distributed` hasn't been initialized, both classes treat it as a world size of 1.
+
+The feature dimension being split must divide evenly by the world size; otherwise the constructor raises an assertion error.

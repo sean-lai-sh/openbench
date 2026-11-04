@@ -1,0 +1,27 @@
+I wrote `convert_masks.py` in your workspace. It uses MobileSAM to turn every mask in the CSV into a polyline. On the demo files, all 48 output masks pass my checks: no overlap, one contiguous region per cell, no rectangles, and no self-intersecting outlines. In an overlay of the outlines on the image, the new outlines inside the old rectangles sit on the nuclei, and the refined polylines stay close to the original annotations.
+
+**Running it**
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir --rgb_path img.png --csv_path meta.csv
+```
+The same four arguments can also be given without the flags, in that order. The result is saved as `out_dir/<input csv name>`. If `--output_path` ends in `.csv`, that exact file is written instead.
+
+**How it works**
+1. **SAM step:** Each cell's bounding box is the prompt for MobileSAM (`vit_t`, on CPU). SAM returns three candidate masks. The script picks one using SAM's own confidence, how well it matches the original annotation (the polyline, or an oval fitted to the rectangle), and how much of it stays inside the box. Masks can't extend more than a small margin past the box.
+2. **Fallbacks:**
+   - If SAM's result for a polyline cell barely matches the original annotation, or SAM finds almost nothing, the original annotation is used instead.
+   - If a mask comes out almost rectangular, it is cut down to the oval inside its box.
+   - If a cell gets squeezed out by its neighbours, it still gets a small mask, so every row has one.
+3. **Rules you asked for:**
+   - Where masks overlap, each pixel goes to the cell SAM is most confident about there.
+   - Each mask keeps only its largest connected piece, with any holes filled.
+   - Neighbouring masks are kept at least 1 pixel apart, so the outlines can't overlap even when drawn as shapes.
+   - Very thin necks and spurs are trimmed so outlines don't cross themselves.
+4. **Output:** The outline is traced exactly from the final mask. Coordinates are written as comma-separated integers, closed like your input format. Only `xmin, xmax, ymin, ymax, coords_x, coords_y` change; every other column is copied as-is.
+
+**Larger images:** Images bigger than 1024 px are processed in overlapping 1024 px tiles so small cells keep their resolution. To test this I tiled the demo 3×3 (1122×1065 px, 432 cells). It passed the same checks, used about 950 MB of memory and took 1–2 minutes on this CPU. The demo itself takes about 8–14 s.
+
+**Things to know:**
+- **The `type` column still says `rectangle` for cells that were rectangles,** because you said only the six coordinate columns should change. Changing it to `polyline` is a one-line edit if you want it.
+- **The default Python on this machine can't run MobileSAM.** Its torch and torchvision versions don't match (`operator torchvision::nms does not exist`), and pandas isn't installed. I tested with a cached environment that works (torch 2.5.1 / torchvision 0.20.1). Your test environment needs a working torch/torchvision pair.
+- The script imports only the packages you listed. I didn't change any MobileSAM source code.

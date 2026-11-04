@@ -1,0 +1,27 @@
+I created `filter.py`. It takes an HTML file as `argv[1]` and removes JavaScript in place. I tested it on 26 XSS payloads, a clean document and one in-place file run, all with my own scripts. I didn't open any output in a real browser, so the "no script runs" result rests on my reading of how browsers parse HTML, not on actually running the pages.
+
+**How it keeps formatting:** it never re-serializes the HTML. It reads the file the way the HTML5 spec tells browsers to, then cuts out only the dangerous parts and copies every other byte unchanged. That includes CRLF line endings, quoting style, odd spacing and non-UTF-8 bytes. If nothing is dangerous, the file isn't rewritten. A clean test document with a doctype, a style block, an Outlook-style conditional comment, a table, entities, a `data:image` image and a textarea came out byte-identical.
+
+**What it removes:**
+- **Whole elements, contents included:** `<script>` and `<iframe>`.
+- **Tags only, inner content kept:** `object`, `embed`, `applet`, `frame`, `frameset`, `portal`.
+- **Attributes:**
+  - Every `on*` attribute (e.g. `onclick`), and `srcdoc`.
+  - Any attribute whose value contains `javascript:` or `vbscript:`. This is checked after decoding entities like `&#106;` and `&colon;` and removing tabs, newlines and control characters.
+  - `data:` URLs, unless they're a harmless media type such as an image or font.
+  - `style` values containing `expression(` or similar.
+  - SVG `attributeName="on…"`.
+  - When an attribute is removed, its leading space goes with it, so `<a onclick="x" href="y">` becomes `<a href="y">`.
+- **Other:** `<meta http-equiv=refresh>` tags that point at a script or `data:` URL, and comments or CDATA sections that hide dangerous markup.
+
+**Other protections:**
+- **Repeat until stable:** the filter runs again and again until nothing changes. That stops tricks where removing one piece joins two fragments into a new script, e.g. `<<script></script>script>alert(1)…` comes out empty.
+- **Ambiguous text blocks:** `title`, `textarea`, `style`, `noscript` and `xmp` hold plain text in normal HTML but are parsed as markup inside `<svg>`/`<math>`. Their content is kept only if it's safe either way; otherwise `<` is escaped.
+- **Spliced attributes:** if removing an attribute would make its neighbours run together, a space is inserted.
+
+**Things that may surprise you:**
+- Some outputs look odd but are harmless. `<img/src=x/onerror=…>` is left alone because browsers read it as one long `src` value, not an event handler.
+- An attribute whose plain text mentions `javascript:` (e.g. a `title` tooltip) is removed even though it's harmless.
+- Any attribute whose name starts with `on` is removed, even if it isn't an event handler.
+- Escaping inside `textarea`, `title` and `noscript` doesn't change what the page shows. Inside `style` and `xmp` it can, but only in that rare ambiguous case.
+- Embedded content (iframes, objects, embeds) is removed even when it points to an ordinary website.

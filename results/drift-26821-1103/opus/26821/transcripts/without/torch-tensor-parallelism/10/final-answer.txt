@@ -1,0 +1,22 @@
+I created `parallel_linear.py` with both classes. I tested them with world sizes 1, 2 and 4 against a plain `nn.Linear` using the same weight. Outputs, weight gradients, bias gradients and input gradients all matched (test script: `/tmp/obench-cell-dg4lzlqf/opencode/t.py`).
+
+**How each class works:**
+
+- **`ColumnParallelLinear`**
+  - Each rank keeps a slice of the output features: rows `[r*out/ws : (r+1)*out/ws]` of the weight, which is shaped `(out_features, in_features)` like in `nn.Linear`.
+  - Its bias is the matching slice of `out_features/ws` values, set to zero.
+  - In the forward pass, each rank applies its slice to the full input. The partial outputs are then gathered from all ranks and joined along the last dimension.
+  - In the backward pass, each rank takes back only its own slice of the output gradient. The input gradients are summed across ranks.
+
+- **`RowParallelLinear`**
+  - Each rank keeps a slice of the input features: columns `[r*in/ws : (r+1)*in/ws]` of the weight.
+  - Its bias is the full `out_features` length, set to zero.
+  - Each rank computes a partial output from its slice. The partial outputs are summed across ranks, and the bias is added once after the sum.
+  - In the backward pass, the gradients for the input slices are gathered back from all ranks.
+
+PyTorch's built-in `all_gather` and `all_reduce` don't pass gradients back. So I wrapped each one in a small custom autograd function that defines the right backward step.
+
+**Things to check:**
+
+- **Input to `RowParallelLinear`:** if its last dimension is `in_features`, the layer splits it for the current rank. If it's already `in_features/ws`, it's used as is. This covers both ways the tests might pass input.
+- **Divisibility:** both classes assume the split dimension divides evenly by `world_size`, and fail with an error otherwise.

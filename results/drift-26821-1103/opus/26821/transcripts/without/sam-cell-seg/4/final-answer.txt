@@ -1,0 +1,34 @@
+I've written `convert_masks.py`. On the demo image it converted all 48 masks (19 rectangles and 29 polylines) in about 8 seconds on CPU, and the output passed my checks: no overlaps, one connected piece per cell, and no rectangles left.
+
+**How to run it** (it takes the arguments either by position or as `--flags`):
+```
+python convert_masks.py <weights_path> <output_path> <rgb_path> <csv_path>
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+If `output_path` is a folder, the CSV is saved there under the input CSV's file name. If it ends in `.csv`, it's written to that exact file.
+
+**What it does:**
+1. **Model:** it loads MobileSAM (`vit_t`) directly onto the CPU, so it works even if the weights were saved on a GPU machine. MobileSAM's source isn't changed.
+2. **Prompting:** it processes the image once, then asks MobileSAM for three candidate masks per cell, using the cell's bounding box as the prompt.
+   - For polylines, it picks the candidate that best matches your original drawing.
+   - For rectangles, it picks MobileSAM's most confident candidate, but rejects ones that are tiny or fill the whole box.
+   - Each mask is limited to its box plus a small margin, reduced to its largest connected piece, and has its holes filled.
+3. **Fallbacks:**
+   - If MobileSAM clearly fails on a polyline, the original polyline is kept.
+   - If it returns a mask that fills the whole box, the mask is trimmed to an ellipse.
+4. **Overlaps:** where masks overlap, each pixel goes to the cell MobileSAM is most confident about. Each cell then keeps only its largest connected piece. A cell that ends up with nothing gets a small core region of its own. As a final check, each outline is drawn back onto the image and compared against the others; any that would overlap are shrunk.
+5. **Output:** each mask is saved as a closed polyline in the same `"x1,x2,...,x1"` format as the input, with `xmin/xmax/ymin/ymax` recalculated. All other columns are unchanged, and the unnamed index column is kept as it was.
+
+**Testing:** I checked the demo output by drawing every saved polyline back onto the image:
+- the most masks covering any one pixel was 1, so nothing overlaps;
+- every mask is a single connected piece;
+- every mask has more than 4 distinct points, so none is a rectangle;
+- the bounding-box columns match the coordinates;
+- all other columns are identical to the input.
+
+Looking at an overlay of the results, the new outlines follow the nuclei well. I also tested with positional arguments, a `.csv` output path, and a CSV without the index column.
+
+**Things to know:**
+- **`type` column:** it still says `rectangle` for the rows that started as rectangles, because you asked that only the coordinate and bounding-box columns change. If you'd rather those rows say `polyline`, it's a one-line change.
+- **`timm`:** MobileSAM itself needs this package to load, even though it isn't in your list of installed packages. My script doesn't import it directly.
+- **Test setup:** the default Python here didn't have pandas, torchvision or mobile_sam, so I ran everything in a separate virtual environment at `/tmp/obench-cell-mkoyi07r/opencode/venv`.

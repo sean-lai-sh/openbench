@@ -1,0 +1,10 @@
+I wrote `steal.py`. When run, it recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. I checked the result against the real `A1` in `forward.py`: every true row lines up with a recovered row (cosine similarity 1.0 to about 1e-15), and there are no extra rows. The script took about 1 second and about 100k queries.
+
+The script only calls `forward(x)` and never reads the weights directly. That comparison was a separate check I ran afterwards.
+
+**How it works:**
+1. **Find the kinks.** It picks 60 random lines through the 10-dimensional input space, from t = −20 to 20. It checks whether the output along each line is a straight line, splitting the line into smaller pieces where it isn't. A bend happens wherever a hidden neuron switches on or off, and the script finds its exact position by intersecting the straight pieces on either side.
+2. **Read off a row of A1.** At each bend, it estimates the gradient just before and just after the bend using small finite-difference steps. The change in gradient equals `A2[i] * A1[i]` for the neuron that switched, so it's row i of A1 times an unknown scale.
+3. **Remove duplicates.** It scales each recovered vector to length 1 and fixes its sign, then groups vectors that point the same way (|cosine| > 0.9999). It keeps a direction only if it turned up at least twice, which filters out one-off errors. You never need to know the number of neurons in advance: the count comes out of this grouping.
+
+The rows have length 1, and each row's sign is set so its largest entry is positive. This is allowed under "up to scaling", but the scale and sign of each row won't match the original.

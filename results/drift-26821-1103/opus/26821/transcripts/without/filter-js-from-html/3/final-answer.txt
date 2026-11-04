@@ -1,0 +1,23 @@
+I've written `filter.py`. It edits the given HTML file in place and changes only the parts that can run JavaScript; everything else stays byte-for-byte the same.
+
+I tested it three ways:
+- **Clean file:** a page with a doctype, meta tags, a style block, a comment, tables, forms, a textarea, an SVG and entities came out byte-identical.
+- **Large file:** about 2,000 copies of that page joined together (roughly 1 MB) also came out identical, in under a second.
+- **Attack file:** about 20 common attack patterns were all removed. These included `<script>`, `onerror` and `onload`, `javascript:` links hidden with HTML entities and tabs, SVG animation tricks, `srcdoc`, `data:` URLs, meta refresh, CSS `url(javascript:)`, and tricks that rely on how browsers handle `<noscript>`, `<![CDATA[`, comments and `<math>`/`<style>`.
+
+I haven't tested it in a real browser.
+
+**How it works:** the script splits the file into tags and text, following the browser's (HTML5) rules for parsing. Tags that need no change are copied exactly as written. If an attribute has to go, only that attribute is cut and the rest of the tag keeps its original spacing and quotes. The script then re-runs until a pass changes nothing more, so pieces left behind can't recombine into something dangerous.
+
+**What it removes:**
+- `<script>` elements, including everything inside them.
+- Every event-handler attribute (anything starting with `on`).
+- Any attribute whose value, after HTML entities are decoded and tabs, line breaks and control characters are stripped, contains `javascript:`, `vbscript:` or a similar scheme.
+- `data:` URLs, except plain images (png, jpeg, gif, webp, bmp, icon, avif). This applies everywhere except text-style attributes such as `title`, `alt` and `value`.
+- `style` attributes and `<style>` blocks containing `expression(`, `javascript:`, `behavior:`, `-moz-binding`, `@import` or `url(javascript|data:…)`.
+- `srcdoc` attributes that contain active markup, and SVG `attributeName` values that target `on…`, `href` or `src`.
+- Comments, CDATA sections and the contents of text-only elements (`<noscript>`, `<textarea>`, `<title>`, `<style>`, etc.) if they would contain active markup when a browser reads them differently.
+
+**Things to be aware of:**
+- **It errs on the side of removing too much:** a safe `@import` in CSS removes the whole `<style>` block, and a `<textarea>` or comment that shows example `<script>` code gets that code stripped.
+- **Iframes, objects and embeds are kept.** Only their dangerous attributes are removed, so an iframe or embed pointing at an ordinary external page or file is left alone.

@@ -1,0 +1,17 @@
+I wrote `jump_analyzer.py`. On the example video it outputs **takeoff = frame 53** and **landing = frame 62**, and it writes them to `output.toml` in the format you asked for. It has only been run on that one video, so I don't know yet how well it holds up on others.
+
+**How it detects the jump**
+1. **Camera drift:** the camera isn't perfectly still. It drifts by up to about 3 pixels, which made a simple comparison against the first frame pick up false movement everywhere. The script lines every frame up with the first one to correct for this.
+2. **Empty-scene picture:** it builds a picture of the empty track by taking, for each pixel, the middle value across all the lined-up frames. This works because the athlete only covers any given spot for a few frames. Pixels that differ clearly from this picture are treated as the athlete.
+3. **Lowest foot:** in each frame, the lowest athlete pixel is taken as the lowest foot. The ground level is estimated from those values (about y≈360 px here).
+4. **In the air:** a frame counts as "in the air" when the lowest foot is well above the ground. Ordinary running strides also have one-frame flight phases, so the script picks the longest stretch in the air, favouring one where the athlete passes the hurdle (around x≈490–625 px).
+5. **Result:** takeoff is the last frame with a foot on the ground before that stretch, and landing is the first frame with a foot back on the ground after it.
+
+On the example, the lowest foot sits at about y≈360 up to frame 53, rises to 341 at frame 54 and to 229 at the top of the jump (frame 58), then is back at 366 by frame 62. I checked both frames against zoomed-in stills.
+
+**Things to check against your expected answers**
+- **Which frame counts as takeoff:** I report the last frame with the foot on the ground (53). If you count the first frame in the air instead, takeoff would be 54. By the same logic, landing could be counted as 61 (the last frame in the air) instead of 62.
+- **Frame numbering:** numbers start at 0 for the first frame.
+- **Hurdle position:** the hurdle's location is written into the script, which assumes it is in the same place in every video, as you said.
+
+**Usage:** `python jump_analyzer.py <video.mp4> [output.toml]`. With no output path it writes `output.toml` next to the script. It takes about 7 seconds on the example video.

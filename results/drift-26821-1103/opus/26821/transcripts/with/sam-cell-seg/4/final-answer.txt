@@ -1,0 +1,20 @@
+I wrote `convert_masks.py` in the workspace. It uses MobileSAM (`vit_t`) on CPU to redraw every mask in the csv, rectangles and polylines alike. On the demo it produced 48 polyline masks with no overlaps, one connected piece per cell and no rectangles left. I checked that by redrawing the masks as pixels and with shapely (a geometry library); every polygon was also valid.
+
+**Usage** (named flags or the same four values in order both work):
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+
+**How it works:**
+1. **Prompting SAM:** each annotation's bounding box is the prompt. SAM returns three candidate masks per cell, and the script keeps the best one, ignoring any that are much too small or too large for the box. For cells that were already polylines, it favours the candidate that best matches the original outline.
+2. **Fallback:** if none of SAM's candidates is plausible, it uses the original polyline, or an ellipse inside the box for rectangles.
+3. **Overlaps:** where two masks claim the same pixel, it goes to the cell SAM is more confident about. Each mask is then reduced to its largest connected piece, with holes filled and thin spurs removed.
+4. **No overlaps or shared edges:** masks are finalised smallest first, with a 1-pixel gap between neighbours, so the polygons can't overlap even when measured as geometry rather than pixels. One-pixel "necks" are removed too, since they would make a polygon touch itself.
+5. **Output:** each outline is saved as a closed polyline (first point repeated, like the input). `xmin`, `xmax`, `ymin`, `ymax`, `coords_x` and `coords_y` are recomputed; every other column and the index column are kept exactly as they were.
+6. **Large images:** images over 1024 px on a side are split into tiles that are processed separately. On a 1122×1065 test image with 434 cells this took about 45 s on CPU; the demo takes about 9 s.
+
+**Things to know:**
+- **`type` column:** I left it unchanged, because you asked for the output csv to match the input except for those six columns. So rows that were rectangles still say `rectangle`, even though their coordinates are now polylines. If you'd rather it say `polyline`, that's a one-line change.
+- **Output file name:** if `output_path` is a folder, the result is saved there under the input csv's file name. If it ends in `.csv`, it's used as the file path.
+- **Weights:** I load them myself with `map_location="cpu"` instead of passing the checkpoint to MobileSAM's builder. Its own `torch.load` call would fail on a CPU-only machine if the weights had been saved from a GPU. MobileSAM's source code is not modified.
+- **Setup:** the system Python here had no pandas, Pillow or mobile_sam, so I tested in a separate virtual environment. MobileSAM also needs `timm`, which isn't on your list of packages, and `torchvision` has to match the installed `torch` build. When installing `timm` here, I had to reinstall the CPU build of `torchvision` to fix a version mismatch.

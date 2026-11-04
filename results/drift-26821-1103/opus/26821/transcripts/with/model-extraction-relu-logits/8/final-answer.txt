@@ -1,0 +1,12 @@
+I wrote `steal.py`. It recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. The script only calls `forward()` and works out the number of neurons itself; the run takes about 1 second.
+
+**How it works:**
+1. **Find the kinks.** It picks 40 random lines through the 10-dimensional input space. Along each line the output bends wherever a neuron switches on or off, and the script finds those points by repeatedly halving intervals until the bend is pinned down.
+2. **Read off a row of A1.** At each bend it estimates the gradient just before and just after, using finite differences. The jump in gradient equals `A2[i] * A1[i]`, so it points along row `i` of A1.
+3. **Remove duplicates.** It scales each direction to length 1 and fixes the sign, then groups matching directions. A direction is kept only if it shows up at least twice, which filters out false hits.
+
+**Check:** to test it, I compared the result with the real `A1` inside `forward.py`; `steal.py` itself never reads it. Every recovered row lines up with a different true row (|cosine| ≈ 1.0 to 1e-15), and all 20 true neurons are covered. The rows come out at length 1 and their signs may be flipped relative to the original, which falls within "up to scaling".
+
+My first version found only 11 of the 20 neurons. The halving step kept narrowing an interval until the bend in it was too small to detect against the fixed tolerance, then gave up on it. It now stops narrowing at a width of 1e-3 and works out the exact spot by intersecting the straight-line pieces on either side.
+
+Run it with `python steal.py`.

@@ -1,0 +1,10 @@
+I wrote `steal.py`. It recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. It runs in about one second.
+
+**How it works.** The script only calls `forward(x)`:
+1. Along any straight line through input space, the output is made of straight segments. The bends happen where one hidden neuron switches on or off. The script picks random lines and finds each bend by intersecting the straight segments on either side and narrowing the interval when that doesn't line up.
+2. At each bend, it estimates the slope of the output just before and just after, by nudging each input slightly. The change in slope equals `A2[i] * A1[i,:]` for the neuron that switched, so it is row `i` of A1 times a constant.
+3. Each row is rescaled to length 1 with a fixed sign, and duplicates are merged. Rows seen only once are dropped as likely noise. It stops after 30 lines in a row turn up no new neuron.
+
+**Result.** To check it, I compared the output with the real `A1` stored in `forward.py`; the script itself never reads it. Each true row matches one recovered row, and the reverse holds too, with a similarity of 0.9999999999999998 (1 means identical up to scale). So the output equals A1 up to reordering the rows and scaling each one. The sign of each row isn't recoverable, so "scaling" here includes a possible factor of −1.
+
+One limit: a neuron that is never active for any input can't be found this way, though none of the 20 here are like that.

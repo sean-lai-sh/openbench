@@ -1,0 +1,15 @@
+I created `parallel_linear.py` with both classes. I tested them at world sizes 1, 2 and 4 against a plain `nn.Linear`, using the gloo backend, and they passed. The outputs matched the reference, and so did each rank's weight and bias gradients compared with the matching slice of the reference gradients.
+
+**`ColumnParallelLinear`**
+- `master_weight` has the `nn.Linear` shape `(out_features, in_features)`. "Columns" means the output dimension, so I split along dim 0 and each rank keeps `out_features / world_size` rows of that tensor.
+- The bias has the same per-rank size as the output slice and starts at zero.
+- Each rank computes its slice of the output, and an all-gather joins the slices along the last dimension.
+- In the backward pass, each rank keeps only its own part of the output gradient. The input gradient is summed across ranks so it's correct for the whole input.
+
+**`RowParallelLinear`**
+- The weight is split along the input dimension (dim 1), so each rank keeps `in_features / world_size` columns.
+- Every rank holds the full bias, starting at zero.
+- The partial outputs are summed with an all-reduce, and the bias is added once, after the sum.
+- **Input handling:** the spec didn't say whether this layer gets the full input or an already-split one, so it accepts both. A full input is split automatically, and the input gradient is gathered back to full size in the backward pass. A pre-split input of width `in_features / world_size` is used as is; any other width raises an error.
+
+`in_features` and `out_features` must divide evenly by the world size, and the layers also run without an initialized process group (treated as world size 1).

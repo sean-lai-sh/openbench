@@ -1,0 +1,24 @@
+I wrote `jump_analyzer.py`, and on the example video it outputs takeoff frame 53 and landing frame 62. Before writing the detection I looked at the frames by eye: the trailing toe is last on the ground at frame 53 and is off the ground at 54, and the lead foot first touches down at 62. The script's output matches that. I've only had the one real video to test on, so I don't know yet how it does with other athletes.
+
+`output.toml`:
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+Frame numbers count from 0, so the first frame of the video is frame 0.
+
+**How it works:**
+1. **Background:** the first frame (no runner) is used as the background. The camera actually drifts by up to about 2 pixels during the video, which made the whole fence light up as "motion". So each frame is lined up with the background before comparing, and small brightness changes from the camera's auto-exposure are corrected too.
+2. **Finding the runner:** the parts of each frame that differ from the background are grouped together, keeping the largest group plus nearby pieces such as separated legs. The lowest point of that group is taken as the feet.
+3. **Ground level:** the ground height in the runner's lane is worked out from the frames where the feet are lowest (about y=363 in the example).
+4. **The jump:** a frame counts as airborne when the feet are clearly above the ground. Normal running strides are only off the ground for 1–2 frames, while the hurdle clearance is the longest airborne stretch (7 frames here).
+   - **Takeoff** is the last frame with a foot on the ground before that stretch.
+   - **Landing** is the first frame with a foot on the ground after it.
+
+**Usage:** `python3 jump_analyzer.py [video.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml` next to the script. Set `JUMP_DEBUG=1` to print the foot height and position for each frame. It takes about 4 seconds on the example.
+
+**Things to know:**
+- **Takeoff definition:** "frame where takeoff begins" could mean either the last frame on the ground (53) or the first frame in the air (54). I used the last ground-contact frame. If you want the other one, it's a one-line change in `find_jump`.
+- **OpenCV quirk:** in the installed OpenCV 5.0.0, `cv2.phaseCorrelate` overwrites its input images, so the script passes it copies.
+- **Mirrored video:** a left-right flipped copy of the example gave the same result, so the script doesn't depend on which way the athlete runs.

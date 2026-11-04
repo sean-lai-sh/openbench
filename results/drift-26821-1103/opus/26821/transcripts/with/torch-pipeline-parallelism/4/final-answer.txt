@@ -1,0 +1,14 @@
+I created `pipeline_parallel.py`, which implements `train_step_pipeline_afab(model, inputs, targets, device, dtype)`. I tested it on CPU with the gloo backend at world_size 1 and 2, against a separate full model given the same weights. For each of my parameters that got a gradient, it matched the reference exactly (max difference 0). The loss also matched (4.6004). The ranks covered all 48 parameters between them: 28 on rank 0 and 20 on rank 1.
+
+That check compared gradients and loss. It didn't use your hook-based comparison of forward and backward activations, so the real test harness hasn't been run against this. The test model was small (5 layers, float32), with `tie_word_embeddings=False`.
+
+**How it works:**
+- **Splitting the layers:** decoder layers are divided as evenly as possible, and when they don't divide evenly the earlier ranks take one extra. The embedding runs on rank 0, and the final norm and `lm_head` run on the last rank. No hooks are used anywhere.
+- **Forward, all microbatches first:** rank 0 embeds the input IDs. Every other rank receives hidden states shaped `[mb, seq_len, hidden_size]` from the previous rank and marks them as needing gradients. Each rank then runs its own decoder layers, using the same rotary embeddings and causal mask that `LlamaModel` builds. All ranks except the last send their output to the next rank. The last rank computes cross-entropy against the targets and divides it by the number of microbatches.
+- **Backward, all microbatches after:** the last rank calls `loss.backward()`. Other ranks receive the output gradient from the next rank and backpropagate with it. Every rank except rank 0 then sends the gradient of its received input back to the previous rank.
+- **Communication:** stages talk through `dist.P2POp` and `batch_isend_irecv`. Hidden states and gradients are moved to the given device and dtype. Input IDs are moved to the device but kept as integers.
+- **Return value:** the last rank returns the summed, scaled loss with gradients detached; other ranks return `None`. The function doesn't run an optimizer step, so gradients just build up in `.grad`.
+
+**Two assumptions to check:**
+- Every rank works out the hidden-state shape from `inputs[i]`, so each rank needs to be passed the input list, not just rank 0.
+- The loss compares logits to targets position by position, with no next-token shift. That matches your description, but if the reference shifts them, the loss will differ.

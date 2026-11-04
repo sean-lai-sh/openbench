@@ -1,0 +1,24 @@
+I wrote `jump_analyzer.py`. On the example video it outputs takeoff at frame 53 and landing at frame 62, and it saves `output.toml` to the required path. I checked those two frames by zooming in on the athlete's feet. The example video is the only real footage it has been run on.
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+**Usage:** `python jump_analyzer.py <video.mp4> [output.toml]`. If you don't give an output path, it writes `output.toml` next to the script. It takes about 5 seconds on the example video.
+
+**How it works:**
+1. **Background:** it builds an empty-track image by taking the median of frames from across the video, which removes the runner.
+2. **Runner detection:** it compares each frame against that background, allowing for a 2-pixel camera shake. Without that allowance, the fence and track lines showed up as false movement. In frames with no runner, the result was exactly zero changed pixels.
+3. **Feet:** it groups the changed pixels into the runner and finds the lowest point, which is the feet.
+4. **Ground level:** it fits a ground line from the lowest foot positions. The ground is about 5px lower on the left of the frame than on the right, and the fit allows for that. A frame counts as airborne when the feet are clearly above the ground (more than about 3% of the runner's height).
+5. **Picking the jump:** sprinters are briefly in the air on every stride, so it picks the airborne stretch where the feet go highest, which is the hurdle clearance.
+
+**How I defined the two frames (you may need to change this):**
+- **Frame numbers start at 0** (the first frame is frame 0).
+- **Takeoff** is the last frame where the foot is still on the ground. In frame 53 the toe is touching; in frame 54 it's off.
+- **Landing** is the first frame where the foot touches down. In frame 61 the foot is still about 17px in the air; in frame 62 it's on the ground.
+
+If the test expects "first frame in the air" for takeoff, the answer would be 54, and if it expects 1-based numbering, both numbers go up by one. Each is a one-line change.
+
+**Robustness check:** with no other real videos to test on, I mirrored the example video left-to-right and cut off its first 20 frames. The script gave 33 and 42, which is the same jump shifted by exactly 20 frames. It doesn't depend on which way the runner goes or where the hurdle is.

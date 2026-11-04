@@ -1,0 +1,18 @@
+I wrote `jump_analyzer.py`. On the example video it outputs takeoff frame 53 and landing frame 62, and writes them to `output.toml`. I checked those two frames against the video by eye, but no answer key was provided, so I couldn't confirm against official values.
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+**How it works:**
+1. **Background:** the first frame (no runner) is the reference. Comparing frames directly against it didn't work: in the second half of the video the camera shifts by up to about 2 px and the brightness changes, so fence and stand edges showed up as false "athlete" pixels. To fix this, each frame is first lined up with the background, its brightness is matched, and a pixel only counts as changed if it falls outside the colour range of its immediate neighbourhood. After that, the empty frames come out completely clean.
+2. **Tracking:** for each frame it finds the athlete's lowest point (the feet) and horizontal position.
+3. **Ground level:** this is estimated from frames where the athlete is fully in view (about y=360–368). A frame counts as airborne if the feet are more than 12 px above it.
+4. **Picking the jump:** normal running strides also have short airborne moments (frames 66–67, for example). So it picks the airborne stretch where the athlete crosses the hurdle (x≈455), preferring the longest and highest one.
+
+**Frame-numbering choice:** the frames are counted from 0. Takeoff is the last frame with a foot on the ground before the flight, and landing is the first frame with a foot back on the ground. If your answer key instead means the first airborne frame for takeoff, or a foot that is about to touch down for landing, the values would be 54 and 61. Each is a one-line change in the script.
+
+**Testing:** I also ran it on a mirrored copy of the video, with the athlete running the other way, and it returned the same frames (53 and 62). This is the only other test so far, since there's just the one example video.
+
+**Usage:** `python3 jump_analyzer.py [input.mp4] [output.toml]`. Both arguments are optional; it defaults to `example_video.mp4` and `output.toml` in the script's folder. It uses only cv2, numpy and toml, and takes about 6 seconds on the example video.

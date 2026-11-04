@@ -1,0 +1,22 @@
+I created `parallel_linear.py` with both classes. I tested them against `nn.Linear` using real multi-process runs at world sizes 1, 2 and 4. The outputs, the weight and bias gradients, and the input gradients all matched (within 1e-4 for gradients).
+
+**How the weights are laid out:** `master_weight` is expected in `nn.Linear`'s shape, `(out_features, in_features)`. The constructor checks this and stops with an error if the shape is wrong.
+
+**`ColumnParallelLinear`**
+- Each rank gets one slice of the rows of `master_weight` (`out_features / world_size` rows). In the usual Y = XA notation, that is a column split of A.
+- The bias is split the same way and starts at zero.
+- The forward pass computes the local piece of the output, then all-gathers the pieces along the last dimension, so every rank returns the full output.
+- In the backward pass, each rank keeps only its own slice of the output gradient. The input gradient is summed across ranks.
+
+**`RowParallelLinear`**
+- Each rank gets one slice of the columns of `master_weight` (`in_features / world_size` columns).
+- The bias is full size on every rank and starts at zero.
+- The forward pass splits the input along its last dimension, multiplies the local slice, sums the partial outputs across ranks (all-reduce), and then adds the bias once.
+- In the backward pass, the input gradient pieces are all-gathered so the input gets a full gradient.
+
+**Things to be aware of:**
+- `out_features` (for the column version) or `in_features` (for the row version) must divide evenly by `world_size`, or the constructor stops with an error.
+- If `torch.distributed` hasn't been initialised, both classes behave as a single process (world size 1, rank 0).
+- `RowParallelLinear` also accepts an input that's already split: if the last dimension equals `in_features / world_size`, it uses that input as this rank's slice instead of splitting it again.
+
+The communication steps are custom autograd functions, which is why the gradients come out right across ranks.

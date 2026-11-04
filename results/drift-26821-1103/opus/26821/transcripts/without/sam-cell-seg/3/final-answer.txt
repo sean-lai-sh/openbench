@@ -1,0 +1,28 @@
+I wrote `convert_masks.py`. It uses MobileSAM (`vit_t`) on CPU to turn every mask in the CSV into a polyline. It ran on the demo files and on a larger stitched test image, and the output met all your requirements in both cases.
+
+**Usage** (positional or `--flag` style both work):
+```
+python convert_masks.py <weights_path> <output_path> <rgb_path> <csv_path>
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+
+**How it works:**
+1. **Prompts:** each mask's bounding box is sent to MobileSAM twice: once on its own, and once with a positive point at the cell's centre. That gives 6 candidate masks per cell. The script picks the one with the best combination of SAM's own score, overlap with the original annotation (an ellipse inside the box for rectangles, the original shape for polylines), and how well it fits inside the box.
+2. **Large images:** the model is run on 1024×1024 tiles, and nearby cells share the same tile, so cells in big images keep full resolution. Each cell's data is stored as a small crop, so memory use stays low.
+3. **Weights:** the script builds the model empty and loads the weights itself, forcing them onto the CPU. The MobileSAM source code is not changed.
+4. **Clean-up:**
+   - Where masks overlap, each pixel goes to the cell SAM is most confident about.
+   - Each cell keeps only its largest connected piece, with holes filled.
+   - A 1-pixel gap is enforced between cells, so the output polygons can't overlap, even geometrically.
+5. **Fallback:** if a cell's mask comes out empty or rectangular, it is replaced with a small octagon placed in free space, so every row still gets one non-rectangular polygon.
+
+**Test results** (checked with a separate script):
+- **Demo (48 cells):** no overlapping pixels, no rectangles, and each mask is one connected piece. Runtime is about 10 seconds. Overlap with the original annotations is 0.64–0.87 for polylines and 0.31–0.82 for boxes; low numbers for boxes are expected, since a cell fills only part of its box. A visual overlay looked good.
+- **Large image (1496×1420, 768 cells):** same checks passed, in about 85 seconds.
+
+**Decisions you may want to change:**
+- **Output filename:** if `output_path` is a folder, the result is saved there under the input CSV's filename (e.g. `out/demo_metadata.csv`). If `output_path` ends in `.csv`, it's used as the file path.
+- **`type` column:** I left it unchanged (rectangles still say `rectangle`), because you said only the coordinate and bounding-box columns should change. All other columns and the unnamed index column are kept exactly as they were. If you'd prefer every row to say `polyline`, that's a one-line change.
+- **Polylines are redone too:** existing polylines are also re-segmented by SAM, as you asked, so they change slightly.
+
+Packages: MobileSAM itself needs `timm`, which gets installed along with `mobile_sam`. Nothing in your environment had these packages, so I tested in a temporary virtual environment.

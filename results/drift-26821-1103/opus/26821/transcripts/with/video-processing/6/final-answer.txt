@@ -1,0 +1,26 @@
+I wrote `jump_analyzer.py`. On the example video it outputs takeoff frame 53 and landing frame 62 and writes them to `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I only had the one example video, so this is untested on any other video. On the example, I checked both frames by eye on zoomed crops of the feet.
+
+**How it detects the jump** (uses only `cv2`, `numpy` and `toml`):
+1. The first frame, which has no runner in it, is used as the empty background. Each later frame is compared against it to find the pixels that changed.
+2. Only the track area below the fence (y ≥ 245) is used to find the athlete's lowest point, which is the feet.
+3. The ground level is estimated from that lowest point across all frames. A frame counts as touching the ground if the feet are within 14 px of it.
+4. The jump is the stretch of off-the-ground frames during which the athlete's centre passes the hurdle (x ≈ 555). This is what tells the jump apart from the normal airborne moments between running strides.
+
+**Frame definitions:** numbering starts at 0, matching OpenCV's frame order.
+- **Takeoff** is the last frame where the foot is still on the ground. In the example, the toe is still pushing off in frame 53 and the athlete is fully in the air in frame 54.
+- **Landing** is the first frame where the foot touches down again: frame 62. In frame 61 the foot is just above the track.
+
+If your expected answers use "first frame in the air" for takeoff instead, the result would be 54, one frame later.
+
+**Things that could break it on other videos:**
+- The track area (y ≥ 245) and the hurdle position (x ≈ 555) are fixed values taken from the example. That relies on the camera and hurdle being in the same place in every video, as you said they would be.
+- The 14 px ground tolerance was tuned on this one video, so it's the setting most likely to need adjusting if a frame is off.
+
+To run it: `python3 jump_analyzer.py [video.mp4] [output.toml]`. With no arguments it uses `example_video.mp4` and writes `output.toml` in the script's folder.

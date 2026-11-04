@@ -1,0 +1,17 @@
+I wrote `jump_analyzer.py`. On the example video it outputs **takeoff = frame 53** and **landing = frame 62** (frames counted from 0) and writes them to `output.toml`. To check this, I looked at enlarged frames: in frame 53 the toe is still touching the ground and in 54 the athlete is in the air. In frame 61 the lead foot is still about 20 px above the track, and in frame 62 it is on the ground.
+
+I've only tested it on this one video, so I don't know yet how it does on other athletes or lighting conditions.
+
+`toml` wasn't installed in this environment, so I installed it with pip to run the script.
+
+**Usage:** `python3 jump_analyzer.py <video.mp4> [output.toml]`. With no arguments it uses `example_video.mp4` and writes `output.toml` next to the script. Setting `JUMP_DEBUG=1` prints the measurements for each frame.
+
+**How it detects the jump:**
+1. **Empty background:** the first frame is used as the picture of the track with no runner.
+2. **Camera shake:** the camera drifts by 1–2 px later in the video. Without correction, the high-contrast fence produced fake "athlete" detections in frames 91–119. Each frame is shifted back into line with the first frame, and small pixel differences are tolerated. After this, those fake detections disappeared.
+3. **Lighting:** each frame's overall brightness is adjusted to match the background, so cloud or exposure changes aren't mistaken for the athlete.
+4. **Finding the athlete:** the largest changed area is taken as the athlete, with nearby pieces (such as feet that come out separate from the body) added back in. The lowest point of that shape gives the foot height.
+5. **Picking the jump:** the athlete counts as airborne when their lowest point is more than 12 px above the usual ground level. Several short airborne stretches appear during normal running strides. The one chosen is the longest and highest, and closest to the moment the athlete passes the fixed hurdle position.
+6. **Result:** takeoff is the last frame with a foot on the ground before that stretch, and landing is the first frame with a foot on the ground after it.
+
+**Fixed settings:** the hurdle position and the strip of the image searched for the athlete are hard-coded from the example video. That relies on your statement that the camera and hurdle are the same in every video.

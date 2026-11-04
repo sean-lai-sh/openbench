@@ -1,0 +1,12 @@
+I wrote `steal.py`. When run, it saves a 20×10 matrix to `stolen_A1.npy`. Each of its rows matches one row of the real `A1`, apart from row order and a scale factor.
+
+**How it works** (it only ever calls `forward(x)`; it never reads the weights stored in `forward.py`):
+1. It picks 30 random lines through the 10-dimensional input space. Along each line the output is made of straight segments, with a bend wherever one hidden neuron switches on or off. A recursive bisection search finds these bends to within 1e-7.
+2. At each bend it measures the gradient just before and just after, using finite differences. The difference between the two is that neuron's row of `A1`, multiplied by an unknown factor.
+3. It normalises each estimate to unit length and gives it a fixed sign. Estimates of the same neuron from different lines are averaged together. This gives the number of hidden neurons, which is 20.
+
+**Check:** I compared the output against the real `A1` in `forward.py`. All 20 neurons were found, with a match in both directions, and every row's cosine similarity to its true row is above 1 − 5e-11. The script takes about 1 second.
+
+**Sign:** each recovered row is scaled to unit length and flipped so its largest entry is positive. So a row may come out as a negative multiple of the true row. That still counts as "up to scaling", but if your checker wants positive scale factors only, the sign will need handling separately.
+
+My first version found only 14 of the 20 neurons. The bend search was giving up on very narrow intervals before recording the bend inside them. I fixed the order of those checks, and the second run found all 20.

@@ -1,0 +1,24 @@
+I've written `filter.py`. It edits the file in place, removes the JavaScript, and leaves every other byte exactly as it was. I checked it in headless Chromium against 43 XSS payloads, and none of them triggered an alert after filtering. A realistic clean page came out byte-for-byte identical, with tables, comments, entities, inline styles, `data:image` URLs, CRLF line endings and UTF-8 all preserved.
+
+**How it works**
+- It reads the file as raw bytes (decoded as latin-1, so nothing gets reformatted) and only writes it back if something was removed. Each tag is rebuilt only when one of its attributes is dropped; everything else is copied through untouched.
+- Tags and attributes are read the same way a browser reads them. That covers `/` used as a separator, attribute names with stray quotes, quoted and unquoted values, and tags left unclosed at the end of the file.
+
+**What gets removed**
+- `<script>` elements and everything inside them.
+- `<object>`, `<embed>` and `<applet>` tags.
+- All `on*` event handler attributes, and `srcdoc`.
+- Any attribute whose value contains a `javascript:`, `vbscript:` or `livescript:` URL. This is checked after decoding entities like `&#106;` and `&colon;` and removing tabs, newlines and control characters. Text attributes like `title` and `alt` are skipped.
+- `data:` URLs in URL attributes (`src`, `href`, `action`, meta `content`, and so on), unless they're plain raster images like `data:image/png`. SVG is treated as unsafe.
+- `style` attributes containing `expression(`, `-moz-binding`, `behavior:` or `javascript`.
+- SVG animation tags that set `attributeName` to an event handler or `href`.
+
+**Protection against parser tricks**
+- It looks for tags everywhere, including inside comments, `<style>`, `<textarea>`, `<noscript>` and `CDATA`. That way it can't be fooled by attacks that depend on the browser reading those sections differently, such as `<style><!--</style><img onerror=…>`, `<noscript><p title="</noscript><img onerror=…>">` or `<svg><style><img onerror=…>`.
+- If a tag itself contains a `<` (for example inside an attribute value), the text inside it is filtered too.
+- The whole filter runs repeatedly until nothing changes, so removing one piece can't join the leftovers into a new attack (e.g. `<scr<script>x</script>ipt>`).
+
+**Things to know**
+- It sometimes removes more than strictly necessary. A `<script>` mentioned inside a comment is removed, including IE conditional comments.
+- A `title` attribute containing literal `<script>` text could get cut short.
+- `<iframe>` is kept, with its `src` and `srcdoc` filtered, so an iframe pointing to an external `https://` page stays.

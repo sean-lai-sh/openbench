@@ -1,0 +1,25 @@
+I wrote `convert_masks.py` in the workspace. On the demo image it turns all 48 masks (19 rectangles, 29 polylines) into polylines using MobileSAM, on CPU. I checked the output with a validation script: no two masks overlap, each mask is one connected piece, none is a rectangle, the bounding boxes match the new coordinates, and every other column is unchanged. I also looked at a side-by-side picture of the old and new masks, and the new outlines follow the nuclei well.
+
+**How to run it:**
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir \
+    --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+The same four arguments also work without the `--` names, in that order. If `output_path` is a folder, the result is saved there under the input CSV's file name. If it ends in `.csv`, it is written to exactly that file.
+
+**How it works:**
+1. **Model setup:** it builds MobileSAM (`vit_t`) and loads the weights onto the CPU itself, because MobileSAM's own loader can fail on machines without a GPU. MobileSAM's source code is not modified.
+2. **Larger images:** an image bigger than 512 px is cut into overlapping 512 px tiles. Each cell is processed in the tile that best contains it, which gives small cells more detail. The demo image fits in a single tile.
+3. **Prompting:** each cell's bounding box is the prompt, and MobileSAM returns three candidate masks.
+   - For polylines, it picks the candidate that best matches the original outline, weighted with MobileSAM's own confidence score.
+   - For rectangles, it uses the confidence score plus a check on how much of the box the mask fills.
+4. **Cleanup:** each mask is limited to a slightly enlarged box, smoothed, has holes filled, and is cut down to its largest piece.
+5. **Fallbacks:** if MobileSAM returns nothing usable, the script uses the original polyline, or an ellipse inside the box for rectangles.
+6. **Overlaps:** where cells compete for a pixel, it goes to the cell MobileSAM is most confident about. A cell that would lose almost everything gets its core area back. A final pass guarantees no overlap and one piece per cell.
+7. **Output:** each mask's outline is saved as a closed, comma-separated list of x and y coordinates in the same format as the input, and `xmin`/`xmax`/`ymin`/`ymax` are recalculated from it.
+
+**Tests and speed:** the demo takes about 8 seconds on CPU. I also tested a 3×3 tiled copy of the demo (1122×1065 px, 432 cells), which passed the same checks in about 47 seconds.
+
+**Things to know:**
+- **`type` column:** it still says `rectangle` for cells that were rectangles, because you asked for only the coordinate and bounding-box columns to change. If you'd rather mark them all `polyline`, that's a one-line change.
+- **Packages:** MobileSAM needs `timm`, which isn't on your list of installed packages, so the test machine must have it. This environment had neither `mobile_sam` nor `pandas`, so I tested in a separate virtual environment under `/tmp/obench-cell-wvvnexs_/opencode` rather than changing the system Python.

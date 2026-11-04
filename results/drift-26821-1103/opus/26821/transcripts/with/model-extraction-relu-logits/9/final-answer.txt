@@ -1,0 +1,8 @@
+I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy`, and that matrix matches the real `A1` up to the order and scale of its rows. To check the result, I compared it against the real `A1` in `forward.py`. Every true row has a recovered row pointing the same way, and every recovered row matches a true row (worst-case cosine similarity 0.9999999999999997). The script only calls `forward()` and never reads the weights.
+
+How it works:
+1. **Find the kinks:** The network's output is linear except where a hidden neuron switches on or off, which makes a kink. The script walks along 60 random straight lines through input space and finds the exact kink points by recursive splitting. To get each kink's exact position, it intersects the two straight pieces on either side of it.
+2. **Measure each kink:** At each kink, it estimates the gradient just before and just after, using small finite differences. The jump between them is that neuron's row of `A1` times its output weight in `A2`, so it gives the row's direction.
+3. **Group the results:** It scales each recovered direction to unit length and fixes its sign. Then it groups directions that point the same way (matching to within 1e-3 cosine) and averages each group. It keeps only groups seen at least twice.
+
+It found 20 hidden neurons, each seen between 19 and 38 times; the script didn't need to know the hidden size in advance. One limitation: it can't recover a neuron that is never active or whose output weight is effectively zero, because that neuron never makes a visible kink.

@@ -1,0 +1,13 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it against an unsplit copy of the model and it matches exactly: same loss, and zero difference in parameter gradients, with 1 and 2 ranks and with both the `sdpa` and `eager` attention backends.
+
+**How it works:**
+- **Splitting the layers:** decoder layers are divided as evenly as possible, with the extra layers going to the lowest ranks. Rank 0 also gets the embedding, and the last rank gets the final norm and `lm_head`. With 5 layers on 2 ranks, rank 0 gets 3 layers and rank 1 gets 2.
+- **Forward pass, all microbatches first:** rank 0 embeds the input IDs. Other ranks receive hidden states shaped `[mb, seq_len, hidden_size]` from the previous rank, on the given device and dtype, and mark them as needing gradients. Each rank then runs its own layers, building the position IDs, causal mask and rotary embeddings the same way `LlamaModel` does. The last rank computes cross-entropy against the targets and divides it by the number of microbatches; every other rank sends its output to the next rank.
+- **Backward pass, all microbatches second:** the last rank calls `loss.backward()`. Other ranks receive the gradient from the next rank and backpropagate their saved outputs with it. Every rank except 0 then sends the gradient of its input back to the previous rank.
+- **Communication** uses `dist.P2POp` with `batch_isend_irecv`, and there are no hooks anywhere.
+- **Return value:** the function returns the summed scaled loss on the last rank and `None` on the others. It leaves the gradients in place and doesn't zero them or step an optimizer.
+
+**Things to know:**
+- **Microbatch shapes:** every rank works out the shape of what it receives from its own `inputs[i]`, so every rank needs to be given the full `inputs` list, not just rank 0.
+- **Testing:** `torchvision` is broken in this environment and stops `transformers` from importing. My test script got around this by blocking `torchvision` during import. Your test environment will need a working install, or the same trick.
+- **Older `transformers` versions:** the code includes fallbacks for older APIs (layers that return tuples, a different `create_causal_mask` signature, and a hand-built mask if that fails). I only tested against the installed version, 5.22.1.

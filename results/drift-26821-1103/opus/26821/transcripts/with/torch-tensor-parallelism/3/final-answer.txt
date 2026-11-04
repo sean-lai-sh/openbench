@@ -1,0 +1,15 @@
+I created `parallel_linear.py` with both classes. I tested them with the gloo backend at world sizes 1, 2 and 4, comparing against a plain `nn.Linear` using the same weights and a zero bias. Outputs, input gradients, and each rank's slice of the weight and bias gradients all matched. That test script was a temporary file outside the workspace, so it isn't part of the deliverable.
+
+**What each class does:**
+- **`ColumnParallelLinear`**: each rank keeps rows `[r*O/ws : (r+1)*O/ws]` of `master_weight` (shape `(out, in)`), so the output dimension is what gets split. Its bias is also split and starts at zero. Each rank computes its slice of the output, and the slices are joined along the last dimension with an all-gather.
+- **`RowParallelLinear`**: each rank keeps columns `[r*I/ws : (r+1)*I/ws]` of the weight. Each rank's partial output is summed across ranks with an all-reduce. The full zero bias is added after the sum, so it's only counted once.
+
+**Two assumptions to check against your tests:**
+- **Weight layout:** I assumed `master_weight` uses PyTorch's `nn.Linear` layout, `(out_features, in_features)`. This means "split by columns" was taken to mean splitting the output features, as in Megatron-LM. The constructor asserts this shape, so a transposed weight will fail with an error.
+- **Row-parallel input:** `RowParallelLinear` accepts either the full input or an input that's already split per rank. If the last dimension equals `in_features`, it takes this rank's slice itself; otherwise it uses the input as-is.
+
+**Gradients:** the collectives are wrapped in custom autograd functions, so gradients flow correctly in the backward pass:
+- The column layer all-reduces the input gradient, and its all-gather passes back only this rank's slice of the gradient.
+- The row layer all-gathers the input gradient when it did the input slicing itself, and its all-reduce passes the gradient through unchanged.
+
+If `torch.distributed` hasn't been initialised, both classes fall back to world size 1 and rank 0.

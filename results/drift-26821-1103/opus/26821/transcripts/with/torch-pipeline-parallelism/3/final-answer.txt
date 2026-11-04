@@ -1,0 +1,9 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on a small 5-layer LLaMA model on CPU with world_size 1 and 2, using both the `sdpa` and `eager` attention implementations. In all four cases the loss and every parameter gradient matched a normal single-process training step exactly (the largest gradient difference was 0). I didn't run your hook-based test suite, so the per-layer activation checks and the layer-count check haven't been run yet.
+
+**What it does:**
+- **Splitting the layers:** the decoder layers are divided as evenly as possible, and the first ranks take one extra layer when it doesn't divide evenly. Rank 0 also runs the token embedding, and the last rank runs the final norm, the output head and the loss. The model itself isn't changed: each rank simply runs only its own slice of layers.
+- **Each stage's computation:** it reproduces what `LlamaModel` does internally: position ids, the causal mask (built with transformers' own helper, with a manual fallback) and the rotary position embeddings. It handles layers that return either a tensor or a tuple.
+- **Forward pass:** all microbatches go forward first. Later stages receive hidden states of shape `[microbatch, seq_len, hidden_size]` from the previous rank and mark them as needing gradients; earlier stages send their outputs on. The last rank computes cross-entropy without shifting the targets and divides by the number of microbatches.
+- **Backward pass:** then all microbatches go backward. The last rank backpropagates the loss directly; other ranks receive the output gradient from the next rank, backpropagate, and send their input gradient to the previous rank.
+- **Communication:** done with `dist.P2POp` and `batch_isend_irecv`. Inputs, hidden states and gradients are always moved to the given `device` and `dtype`, and no hooks are used.
+- **Return value:** the summed scaled loss on the last rank and `None` on the other ranks.

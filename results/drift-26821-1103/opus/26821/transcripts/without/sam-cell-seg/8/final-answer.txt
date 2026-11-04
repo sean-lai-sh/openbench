@@ -1,0 +1,24 @@
+I've written `convert_masks.py`. On the demo it converts all 48 masks to polylines: no two masks overlap, each cell is one contiguous region, and none of the outputs is a rectangle. The demo runs in about 9 seconds on CPU.
+
+**How it works**
+- **Prompts:** it loads MobileSAM (`vit_t`) on CPU and uses each row's bounding box, whether rectangle or polyline, as the prompt.
+- **Choosing a mask:** SAM proposes three masks per cell. For polylines, the script keeps the one that best matches your original outline. For rectangles, it keeps SAM's most confident mask, but skips any that fill almost the whole box or are tiny fragments. Each mask is kept within its box plus 3 pixels, cut down to its largest connected piece, and has any holes filled.
+- **Overlaps:** where two masks claim the same pixel, the cell SAM is more confident about gets it. After that, every cell is checked again so it is one piece, doesn't wrap around another cell, and isn't tiny or empty.
+- **Polylines:** outlines are written as closed integer polylines (first point repeated at the end, like your input), and `xmin/xmax/ymin/ymax` are recalculated. If a result would still be an exact rectangle, an ellipse fitted inside it is used instead. If SAM returns nothing usable for a cell, the original shape is used.
+- **Large images:** images bigger than 1024 px are split into overlapping 1024 px tiles before going to SAM, so small cells keep their resolution.
+
+**Things you should know**
+- **`type` column:** I set it to `polyline` for every row, since every mask now is one. You only listed the coordinate columns as changing, so if you need the original values kept, delete one line (`out["type"] = "polyline"`).
+- **`output_path`:** if it's a folder, the file is saved there with the input CSV's name. If you pass a path ending in `.csv`, it's written to exactly that path. Note that pointing it at the input CSV's own folder will overwrite the input.
+- **Arguments** work either positionally in your order (`weights_path output_path rgb_path csv_path`) or as `--weights_path …` flags. The CSV's unnamed index column is kept if present, and CSVs without one also work.
+
+**Testing**
+The system Python here couldn't run MobileSAM: pandas isn't installed, and the installed torchvision doesn't match torch. I left it alone and tested in a separate environment under the temp folder, with the official `mobile_sam.pt` weights and the unmodified MobileSAM package. Checks run on the output:
+- the demo;
+- a 1870×1420 tiled image with 960 cells;
+- a CSV without an index column;
+- a stress test with duplicate boxes, a 3×3 px box, a box covering the whole image, and a box that goes past the image edge.
+
+All of them had no overlap, one region per cell, no rectangles, and recalculated coordinates that matched the outlines. The 3×3 box's mask came out at only 5 pixels.
+
+One demo cell (row 6) looks almost like its box. That's genuine: the nucleus fills the box and is cut off by the top edge of the image, and all three of SAM's candidates cover about 85–88% of the box.

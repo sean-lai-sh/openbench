@@ -1,0 +1,21 @@
+I wrote `convert_masks.py`. On the demo it converted all 48 masks (19 rectangles, 29 polylines) to polylines in about 10 seconds on CPU. A separate check script found no rectangles left, no overlapping pixels when the polygons are drawn, and exactly one connected region per cell. In an overlay image, the former rectangles now follow the nucleus outlines.
+
+**How it works**
+- It loads the MobileSAM `vit_t` model on CPU with the stock `mobile_sam` package, unchanged, and encodes the image once.
+- Each cell is prompted with its bounding box, both with and without a positive point placed deep inside the original mask. SAM gives 3 candidate masks per prompt.
+- It picks the best candidate per cell. Rectangles favour masks that sit inside the box without filling all of it. Polylines favour masks that match the original polygon. Masks are limited to a slightly enlarged box so they can't spill into neighbouring cells.
+- Where two masks claim the same pixel, the cell with the higher SAM confidence gets it. Each cell then keeps only its largest connected piece, holes are filled using unclaimed pixels only, and small spurs are smoothed away.
+- A 1-pixel gap is kept between neighbouring cells, so the saved polygons never overlap once drawn. If a cell ends up empty, it falls back to an ellipse in free space.
+- It saves each cell's outline as a closed polyline and recomputes `xmin/xmax/ymin/ymax` from it. All other columns and the leading index column are kept as in the input.
+
+**Usage**: both styles work.
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir --rgb_path img.png --csv_path meta.csv
+python convert_masks.py mobile_sam.pt out_dir img.png meta.csv
+```
+If `output_path` is a folder, the CSV is saved there under the input CSV's file name. If it ends in `.csv`, it's used as the output file name.
+
+**Things to check**
+- **`type` column**: I also changed it to `"polyline"` for every row, which goes beyond the columns you listed. If the output should leave `type` exactly as it was, delete the line `out["type"] = "polyline"`.
+- **Environment**: the system Python here was missing `pandas`, `Pillow`, `mobile_sam` and `timm`. `mobile_sam` needs `timm` even though it wasn't on your list. I tested in a separate environment under `/tmp/.../opencode/venv` and didn't change the system Python. I also had to install the CPU build of `torchvision` to match `torch` 2.14.1.
+- **Agreement with original polylines**: the refined masks overlap the hand-drawn ones by 0.64 to 0.87 (IoU). SAM usually draws tighter around the nucleus than the annotations do.

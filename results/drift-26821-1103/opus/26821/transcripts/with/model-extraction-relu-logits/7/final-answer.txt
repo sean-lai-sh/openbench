@@ -1,0 +1,10 @@
+I wrote `steal.py`, and it recovers all 20 hidden neurons. Running it saves a 20×10 matrix to `stolen_A1.npy`.
+
+To check the result, I compared each saved row with the true `A1` that `forward.py` defines internally. After normalising, every saved row lines up with exactly one true row, and every true row is covered, with |cosine| = 1.0 up to rounding error. I did that check separately. The script itself never reads `A1`, `b1` or `A2`; it only calls `forward()`. It runs in under a second.
+
+**How it works:**
+1. **Find the bends:** It walks along 60 random straight lines through input space, each 60 units long. Along a line, the output is made of straight segments, and each bend is where one neuron switches on or off. The script finds the bends by splitting the line repeatedly and testing whether each piece is still straight.
+2. **Read off a row at each bend:** It estimates the gradient of the output just before and just after the bend. The difference is that neuron's row of `A1` multiplied by its output weight `A2_i`. The script then normalises it (positive sign on the largest entry) to remove the unknown scale and sign.
+3. **Group and filter:** It groups matching directions. Each real neuron was found 44–56 times. There were also 10 one-off directions caused by numerical noise, so only directions seen at least 3 times are kept. That leaves exactly 20 rows.
+
+The rows match `A1` only up to reordering and scaling, as you asked, and the sign of each row can also be flipped. The script prints the match counts each time it runs, so you can see the gap between real neurons and noise.

@@ -1,0 +1,23 @@
+I wrote `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++` and ran both programs for N = 0, 1, 2, 3, 10, 50, 100 and 300. Each time the two printed the same number, starting 1, 1, 2, 3, … as you asked. I didn't check which compiler versions were installed here, so it hasn't specifically been run on rustc 1.75.0 and g++ 13.2.0.
+
+**How it works:** Rust allows a comment to open inside another comment, but C++ doesn't.
+- `/* /* */` ends the comment for C++. For Rust, the comment is still open.
+- `// */` is just a line comment for C++, but it closes the comment for Rust.
+
+The file uses these two lines to fence off each section:
+```
+/* /* */      <- C++: comment over      | Rust: still inside a comment
+#if 0         <- C++: skip from here    | Rust: (inside the comment)
+// */         <- C++: line comment      | Rust: comment closes
+...Rust code...
+/* /* */      <- Rust: comment opens
+#endif        <- C++: stop skipping
+// */         <- Rust: comment closes
+/* /* */      <- C++: comment over; Rust: comment opens
+...C++ code...
+// */         <- Rust: comment closes
+```
+
+Both versions do the maths with their own big-number code (base 10⁹ digits), so large N gives the exact value instead of overflowing. For example, N = 100 gives `573147844013817084101`.
+
+One limit: the C++ section can't contain `/*` or `*/`, and the Rust section can't contain an unmatched `'` or `"`. If you edit the file, keep to that or one of the compilers will break.

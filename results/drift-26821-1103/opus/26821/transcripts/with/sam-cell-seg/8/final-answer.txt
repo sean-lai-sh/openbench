@@ -1,0 +1,25 @@
+I wrote `convert_masks.py`. On the demo it refines all 48 masks (19 rectangles, 29 polylines) with MobileSAM (`vit_t`) on the CPU, in about 10 seconds. Every output mask is a closed polyline, each cell is a single connected region, and no two masks overlap.
+
+**How it works**
+- **Prompts:** every row gets its bounding box plus one positive point placed deep inside the cell.
+- **Choosing a mask:** SAM gives three candidate masks per cell.
+  - For polyline rows, it picks the one that best matches the original outline, weighted with SAM's own confidence score.
+  - For rectangle rows, it picks the one whose extent best fits the rectangle, also weighted with SAM's score.
+- **Large images:** images bigger than 512 px are processed in overlapping tiles. This keeps small cells at a usable size for SAM; the demo image fits in a single tile.
+- **Cleanup:** each mask is limited to its box plus a small margin, thin spurs are removed, only the largest connected piece is kept, and holes are filled.
+- **Overlaps:** where two masks claim the same pixel, it goes to the one SAM is more confident about. A one-pixel gap is then kept between neighbouring cells, so the outlines don't overlap even as geometric shapes.
+- **Fallbacks:** if SAM produces nothing usable, the script falls back to the original polyline or an ellipse inside the box. A mask that comes out as a perfect rectangle has its corners trimmed, so no output is ever rectangular.
+- **Output:** the CSV keeps all original columns and the unnamed index. Only `xmin`, `xmax`, `ymin`, `ymax`, `coords_x` and `coords_y` change, written in the same closed `"x1,...,x1"` format. MobileSAM's source isn't modified.
+
+**Usage** (both forms work):
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+python convert_masks.py mobile_sam.pt out/ demo_rgb.png demo_metadata.csv
+```
+If `output_path` is a folder, the result is saved there under the input CSV's file name. If it ends in `.csv`, it's used as the output file path.
+
+**Testing:** I checked the output with a separate script I wrote (not part of the deliverable). It confirmed the columns are unchanged, every outline is closed and not a rectangle, each fills to one region, nothing overlaps (checked pixel by pixel and as shapes), and every outline is a valid polygon. It passed on the demo and on a 3×3 tiled copy of the demo (432 cells), which exercises the tiling. Visually, the outlines follow the nuclei well; a few rectangle annotations in low-contrast areas include a bit of nearby tissue.
+
+**Things to know:**
+- **Your system Python can't run this as-is:** pandas isn't installed, and the torch and torchvision versions don't match, so importing `mobile_sam` fails. I ran all tests in a separate environment at `/tmp/obench-cell-muzys6mf/opencode/venv` and didn't touch the system packages. The script itself only uses the packages you listed.
+- **The `type` column still says `rectangle` for the old rectangle rows**, because you asked for only the six coordinate columns to change. The shapes themselves are now polylines. If you'd rather that column read `polyline`, it's a one-line change.

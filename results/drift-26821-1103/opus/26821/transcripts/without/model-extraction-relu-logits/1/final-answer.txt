@@ -1,0 +1,12 @@
+I wrote `steal.py` and ran it. It found 20 hidden neurons and saved a 20×10 matrix to `stolen_A1.npy`.
+
+**Result:** I compared the output against the real `A1` in `forward.py`, which I only opened to check the answer; `steal.py` itself only calls `forward()`. Every real row lines up with exactly one recovered row, with a cosine similarity of 0.9999999999999988, about as close to exact as floating point allows. The recovered rows match `A1` up to reordering and scaling, where the scale can be negative and each row is normalised to length 1. The run took under half a second.
+
+**How it works:**
+1. **Find the kinks.** Along a random straight line through input space, the network's output is made of straight pieces. Each bend happens where one hidden neuron switches on or off, i.e. where `A1_i·x + b1_i = 0`. The script finds each bend's exact position by repeatedly halving the search interval, then working out where the two straight pieces meet.
+2. **Read off a row.** At each bend, it estimates the gradient just before and just after, using finite differences. The jump between the two equals `A2_i · A1_i`, which is row `i` of `A1` times an unknown scale.
+3. **Remove duplicates.** It normalises each recovered row and drops any that point the same way (or the opposite way) as one it already has. It keeps trying new random lines until 15 in a row turn up nothing new, so it never needs to know the hidden layer's size in advance. In this run that took 17 lines.
+
+One limitation: a neuron whose output weight in `A2` is exactly zero has no effect on the output, so it can't be detected and would be missing from the result.
+
+Run it with `python steal.py`.

@@ -1,0 +1,22 @@
+I've created `filter.py`, which removes JavaScript from an HTML file in place (`python3 filter.py page.html`). Clean HTML comes out byte-for-byte unchanged. When something is removed, only the dangerous part goes; everything around it stays exactly as it was.
+
+**Testing:** I ran 82 XSS vectors through the filter, each on its own and inside a full page, and loaded every output in headless Chromium with `alert`/`confirm`/`prompt` hooked to flag any execution. None fired after filtering. Unfiltered, 20 runs fired (vectors that need a click or hover don't fire on their own), so the harness does catch real XSS. A clean page with headers, tables, forms, comments, entities, inline SVG, `<pre>` and CRLF line endings came back identical. It uses only the Python standard library.
+
+**How it works:** it reads the file the way a browser does (tags, attributes, comments, and elements like `<style>` or `<textarea>` whose contents aren't parsed as tags) and copies the original text through, cutting out only what's dangerous.
+
+**What it removes:**
+- `<script>` and `<iframe>` elements, including their contents.
+- The tags of `object`, `embed`, `applet`, `frame`, `frameset` and a few other legacy elements. Anything between them is kept and filtered.
+- Every `on*` event handler attribute, and `srcdoc`.
+- Attributes whose value contains `javascript:`, `vbscript:` or similar, even when disguised with character codes or hidden whitespace.
+- `data:` URLs in link/source attributes, unless they're plain images, audio, video, fonts, plain text or CSS.
+- Styles containing `expression()`, `behavior`, `-moz-binding` or `javascript:`.
+- SVG animations that set `href` or event attributes.
+
+**Tricks it defends against:** it also handles markup that browsers can read two ways, such as `<noscript>`, `<style>` inside `<svg>`/`<math>`, CDATA sections and odd comment endings. Where the two readings disagree, it cleans or escapes the content so no hidden tag gets through.
+
+**Cases where it changes more than strictly necessary:**
+- Any attribute containing the text `javascript:` is dropped, even plain text like `title="javascript: tutorial"`.
+- A `<style>` block with dangerous CSS is emptied completely rather than edited.
+- Inside a `<style>`, `<textarea>`, `<title>` or `<noscript>` that could be read as markup in an unsafe way, every `<` is escaped. That's `&lt;`, or `\3c ` in CSS.
+- `data:image/svg+xml` image sources are removed.

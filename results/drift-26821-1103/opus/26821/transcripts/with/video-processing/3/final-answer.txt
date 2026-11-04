@@ -1,0 +1,28 @@
+I wrote `jump_analyzer.py` and ran it on the example video. It wrote `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I checked these two numbers by looking at zoomed-in frames from the example video, and they match what I saw. That's the only video I could test it on, so I don't know yet how well it holds up on others.
+
+**How the jump is detected:**
+1. **Background:** the first frame (no runner) is the reference image.
+2. **Camera shake:** the camera moves slightly during the video, and a simple frame difference flagged the whole fence and track as changed. So each frame is first lined up with the first frame (OpenCV's ECC alignment). After that, comparing it to the first frame leaves an almost clean outline of the athlete.
+3. **Feet:** in each frame, the lowest point of the athlete's outline is taken as the feet.
+4. **Ground level:** for each frame, the ground is taken as the lowest foot position within ±7 frames. If the feet are more than about 10 px above that, the athlete counts as in the air.
+5. **Picking the jump:** sprinters are also briefly in the air between running strides. The script picks the airborne stretch that passes over the hurdle (around x≈480–630 px at 960 px wide) and is the longest. In the example that's frames 54–61, versus 1–2 frames for running strides.
+
+**Frame numbering:** frames are counted from 0, the way OpenCV counts them.
+- **Takeoff** is the last frame with the takeoff foot still on the ground.
+- **Landing** is the first frame where the lead foot touches down.
+
+If the expected answers use a different rule, the numbers will be off by one. If they mean the first frame in the air, takeoff would be 54. If they count from 1 instead of 0, add 1 to both numbers. Either is a one-line change in `find_jump`.
+
+The hurdle position is hard-coded from your note that the camera and hurdle are the same in every video. The script takes about 15 seconds on the example.
+
+To run it (both arguments are optional; the defaults are `example_video.mp4` and `output.toml` in the script's folder):
+```
+python jump_analyzer.py [video.mp4] [output.toml]
+```

@@ -1,0 +1,8 @@
+I wrote the polyglot file at `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`, and neither printed any warnings. I haven't checked which compiler versions are installed here, so this wasn't confirmed against your exact rustc 1.75.0 and g++ 13.2.0. Both programs gave the same output for N = 0, 1, 2, 3, 10, 50, 92, 93, 100 and 300: 1, 1, 2, 3, 89, … , and the 63-digit f(300).
+
+**How it works:** it relies on two differences between the languages. Rust lets block comments nest and C++ doesn't, and only C++ has a preprocessor.
+
+- **Hiding the C++ code from Rust:** `/* /* */` opens a nested comment in Rust (two levels deep). C++ closes it at the first `*/`, so the C++ code is live. Later, `/* */ // */` brings Rust's comment back to depth 0. C++ just sees an empty comment followed by a line comment.
+- **Hiding the Rust code from C++:** the C++ part ends with `#if 0`, so C++ skips the Rust code. The closing `#endif` sits inside another `/* /* */ … /* */ // */` block, so Rust treats it as a comment while the C++ preprocessor still reads it.
+
+Both versions use simple big-number addition in base 10⁹. That means large N gives exact results instead of overflowing 64 bits. With no argument, both default to N = 0 and print 1.

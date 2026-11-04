@@ -1,0 +1,26 @@
+I've created `filter.py`. I tested it in headless Chromium against 39 XSS payloads: 27 of them pop an alert when run unfiltered, and none do after filtering. A sample page with a doctype, `<style>`, comments, tables, forms, `<textarea>`, `<pre>`, inline SVG and `data:image` images came out byte-for-byte unchanged. 3,000 random inputs ran without crashes, and filtering an already-filtered file changes nothing.
+
+Run it as `python3 filter.py file.html`. It edits the file in place and only rewrites it if something was removed.
+
+**What it removes:**
+- `<script>` elements and everything inside them.
+- `<object>`, `<embed>` and `<applet>` tags. Any fallback content between the tags stays.
+- Any attribute whose name starts with `on` (event handlers), and `srcdoc`.
+- Attribute values that start with `javascript:`, `vbscript:`, `livescript:` or `mocha:`. Encoded tricks like `&#106;`, `&colon;` and tabs inside the scheme are caught. For attributes that hold lists, such as SVG `values`/`to`/`from`, `srcset` and meta-refresh `content`, the scheme is caught anywhere in the value.
+- `data:` URLs in link and source attributes, except `data:image/...` (SVG images still count as unsafe).
+- Dangerous CSS in `style` attributes and `<style>` blocks: `expression(`, `javascript:`, `-moz-binding`, `behavior:`.
+
+**Keeping everything else intact:**
+- It doesn't rebuild the page. It copies the original text and cuts out only the harmful pieces, so whitespace, case, quoting, entities and comments stay exactly as they were.
+- It splits tags and attributes the way a browser does. That covers forms like `<svg/onload=…>`, attributes with no space between them, unclosed tags, and the different ways comments can end.
+- When it removes an attribute, it keeps the surrounding spacing correct, so the attributes on either side don't merge into one.
+
+**Resisting tricks that make the filter and the browser read the page differently:**
+- Comments, attribute values and the contents of elements like `<title>` and `<textarea>` are also checked as if they were HTML. This catches payloads like `<noscript><p title="</noscript><img onerror=…>">`.
+- It checks the page several ways, because elements such as `<style>` inside `<svg>`/`<math>` are parsed differently there. It repeats until nothing more changes, so a removal can't leave behind a new attack. For example, `<<script>x</script>img onerror=…>` would otherwise collapse into a working `<img onerror>`.
+
+**Trade-offs:**
+- It leans towards removing too much. An attribute is dropped if its value starts with `javascript:` even when it's harmless text, like a `title`, and any attribute starting with `on` is removed.
+- `<iframe>`, `<base>` and `<link>` tags are kept with their dangerous attributes removed. Their normal `src`/`href` values can still point to outside pages, which the filter can't inspect.
+
+The test scripts are in `/tmp/obench-cell-4mh307f5/opencode/t/`.

@@ -1,0 +1,13 @@
+I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy`, and that matrix matches the real `A1` up to the order of the neurons and the scale of each row. It takes about 1.5 seconds.
+
+**How it works** (it only ever calls `forward(x)`):
+1. **Find the kinks:** Along 60 random lines through the input space, the output is made of straight segments. The script splits each line in half repeatedly to find the points where the slope changes. Each of those points is where one hidden neuron switches on or off.
+2. **Recover a row:** At each kink, it estimates the gradient just before and just after by small finite differences. The difference between the two equals `A2[i] * A1[i]`, which is row `i` of `A1` times a constant.
+3. **Reject bad estimates:** It drops a kink if the point doesn't sit on both neighbouring segments, which happens when two kinks are very close together. It also drops it if the gradient difference changes when the step size changes.
+4. **Group the rows:** It groups the unit-length rows that point the same way (or exactly opposite), averages each group, and keeps groups seen at least 20% as often as the largest. Real neurons were seen 41–57 times each; noise was seen 1–2 times.
+
+**Check:** After the script ran, I compared the result with the true `A1` in `forward.py`, using that file only to score the answer, never to produce it. Exactly 20 neurons came back, and every recovered row matches a true row (and the other way round) with |cosine| ≥ 0.99999999. Getting there took two rounds of tightening the filters; the first run had included up to 9 spurious rows.
+
+**Limitations:**
+- The rows are scaled to length 1 and their signs are arbitrary, as your "up to scaling" allows.
+- A neuron that never switches on or off over the region searched (each line runs 20 units either side of a random start point) can't be detected. Such a neuron could never be found from outputs anyway.

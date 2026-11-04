@@ -1,0 +1,13 @@
+I wrote `steal.py`, ran it, and it recovered all 20 hidden neurons. It took about 0.6 seconds and used only `forward()` calls.
+
+**How it works:** the network's output is piecewise linear in the input. Each hidden neuron switches on or off along one flat boundary (a hyperplane) in input space, and the output's slope changes there.
+1. The script picks random lines through input space. On each line it uses bisection to find the points where the slope changes ("kinks").
+2. At each kink it estimates the gradient just before and just after the kink, using finite differences. The difference between the two is proportional to that neuron's row of A1.
+3. It scales each such vector to unit length, fixes its sign, and drops duplicates. It stops after 30 lines in a row find no new neuron.
+4. It saves the stack of rows to `stolen_A1.npy`, with shape (20, 10).
+
+**Check:** I compared the output against the real `A1` in `forward.py`; `steal.py` itself never reads it. Every recovered row lines up with exactly one true row and vice versa: the worst-case match (cosine similarity, compared up to sign) is 0.99999999999992. So the result equals A1 up to reordering the neurons and scaling each row.
+
+Two things to be aware of:
+- The rows come back at unit length, and the sign of each row is chosen arbitrarily. That fits "up to scaling" only if negative scale factors are allowed. Flipping a row's sign does change the real network, because ReLU isn't symmetric.
+- The method can only see neurons that actually change the output. A neuron whose output weight is zero, or whose boundary never crosses the search range (±20 along each line), would be missed. Neither happens with this model.

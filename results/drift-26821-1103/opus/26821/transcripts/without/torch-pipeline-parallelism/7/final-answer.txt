@@ -1,0 +1,24 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. In a small test it produced exactly the same gradients as a normal single-process run, at world sizes 1 and 2.
+
+**How it works:**
+- **Splitting the layers:** `_partition_layers` gives each rank a contiguous block of decoder layers of roughly equal size. If the layers don't divide evenly, the earlier ranks get one extra (5 layers on 2 ranks → 3 and 2).
+- **What each stage runs:**
+  - Rank 0 also does the token embedding.
+  - Every stage builds its own position ids, causal mask and rotary embeddings, so nothing besides hidden states has to be sent between ranks.
+  - The last rank also runs the final norm and `lm_head`, then computes `cross_entropy(logits, targets) / num_microbatches`.
+- **Forward phase:** it runs every microbatch forward first.
+  - Ranks after the first receive hidden states of shape `[mb, seq, hidden]` from the previous rank. These are marked to track gradients so the gradient can be sent back later.
+  - Ranks before the last send their output (cut off from the autograd graph) to the next rank.
+  - Communication uses `dist.P2POp` with `batch_isend_irecv`.
+- **Backward phase:** it then runs every microbatch backward.
+  - The last rank backpropagates from the loss.
+  - Other ranks receive the output gradient from the next rank and call `torch.autograd.backward`.
+  - Every rank except the first then sends the gradient of its input back to the previous rank.
+- Inputs, received buffers and gradients are all moved to the given `device`/`dtype`. No hooks are used.
+- The function returns the summed loss on the last rank and `None` on other ranks.
+
+**Assumption:** received buffers are created in the given `dtype`, so the model's weights need to be in that same dtype already.
+
+**Testing:** I compared parameter gradients against a deep-copied reference model on a tiny 5-layer LLaMA (gloo backend, 3 microbatches). The max difference was 0 on every rank. I didn't reproduce the hook-based activation checks your test will use.
+
+**Environment problem:** the installed torchvision 0.29.2 doesn't work with torch 2.14.1+cpu, and it breaks `from transformers import LlamaConfig` (`operator torchvision::nms does not exist`). My test script worked around it by hiding torchvision (`sys.modules["torchvision"] = None`). If your test environment has the same problem, it may need the same workaround or a matching torchvision.

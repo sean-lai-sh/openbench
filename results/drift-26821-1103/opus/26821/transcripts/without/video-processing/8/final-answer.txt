@@ -1,0 +1,22 @@
+I wrote `jump_analyzer.py`. On the example video it outputs takeoff frame 53 and landing frame 62 to `output.toml`, which matches what I saw when I looked through the frames one by one.
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I only had the one example video, so this hasn't been tested on any others.
+
+**Usage:** `python3 jump_analyzer.py [input.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml` in the same folder as the script.
+
+**How it works:**
+1. **Steadying the picture:** the camera drifts by up to about 2–3 px during the clip, and that was enough to make the whole fence and track look like movement. The script lines every frame up with the first (empty) frame, which removes that.
+2. **Finding the athlete:** it builds an empty-scene picture from the per-pixel median of all frames and compares each frame against it, allowing a small tolerance so leftover slight misalignment doesn't count as movement. The largest group of changed pixels is taken as the athlete.
+3. **Air vs ground:** in each frame, the lowest point of the athlete is taken as the feet. The ground level comes from frames where she is fully in view. A frame counts as airborne when the feet are more than about 15 px (2.8% of frame height) above the ground.
+4. **Choosing the jump:** normal running strides also have short airborne moments, so the script picks the airborne stretch where the athlete passes the hurdle (otherwise the longest one). It finds the hurdle automatically from the background.
+   - **Takeoff** is the last frame with a foot on the ground before that stretch.
+   - **Landing** is the first frame with a foot back on the ground after it.
+
+**Things to be aware of:**
+- **Takeoff convention:** I counted takeoff as the last frame the foot is on the ground (53). If your answer key uses the first frame in the air instead, takeoff would be 54. That's a one-line change (`takeoff = s - 1` → `takeoff = s`).
+- **Landing margin:** in frame 61 the landing foot is about 18 px above the ground, close to the 15 px cutoff. A video where the foot comes down more slowly could shift landing by one frame.

@@ -1,0 +1,20 @@
+I wrote `convert_masks.py` in the workspace. It runs on CPU and refines every mask in the csv with MobileSAM (`vit_t`). On the demo files the output met all your rules, and the masks follow the nuclei closely when I drew them over the image.
+
+**Usage** (named or positional arguments both work):
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+The output csv goes into the `output_path` folder with the same file name as the input csv. If `output_path` ends in `.csv`, it's used as the file path instead.
+
+**How it works:**
+1. **Prompting:** each annotation's bounding box is given to MobileSAM as a box prompt, and SAM returns three candidate masks.
+   - For polylines, it picks the candidate that best matches the original polygon.
+   - For rectangles, it picks by SAM's confidence score, preferring masks that stay inside the box.
+2. **Large images:** images bigger than 1024 px are split into overlapping 1024 px tiles, and each cell is predicted from the tile where it sits most centrally.
+3. **One piece per cell:** each mask keeps only its largest connected piece, with holes filled and thin spurs removed. If SAM returns nothing usable, the script falls back to the original polygon, or an ellipse inside the rectangle.
+4. **No overlap:** where two cells compete for a pixel, it goes to the cell SAM is more confident about. The script also leaves a 1-pixel gap between neighbouring cells, so the saved outlines can't touch or cross.
+5. **Output:** each outline is saved as a closed polyline in the input's format (comma-separated, first point repeated at the end). `xmin`, `xmax`, `ymin`, `ymax`, `coords_x` and `coords_y` are updated and `type` is set to `polyline`. All other columns, including the unnamed index column, are unchanged.
+
+**Results on the demo:** all 48 masks (19 of them rectangles) came out as polylines. Every polygon is valid, each one fills to exactly one region, and there are zero overlaps, checked both on pixels and on the polygon shapes. The run took about 8 seconds on CPU. I also ran the 1024 px tiling on a 4× upscaled copy of the demo; it completed, but I didn't check that output for overlaps.
+
+**Environment:** the system Python here has neither `pandas` nor `mobile_sam`, so I tested in a separate virtual environment. I installed the MobileSAM copy that was already on the machine, unmodified. MobileSAM itself imports `timm`, so `timm` needs to be installed wherever you run the script, even though it isn't on your package list.

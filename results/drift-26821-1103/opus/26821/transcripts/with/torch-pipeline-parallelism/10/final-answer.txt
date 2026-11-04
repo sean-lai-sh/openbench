@@ -1,0 +1,13 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. Its gradients and loss matched a single-process reference model exactly.
+
+**How it works:**
+- **Splitting the model:** the decoder layers are divided as evenly as possible, with any extra layers going to the earlier ranks. Rank 0 also runs the embedding layer. The last rank also runs the final norm, `lm_head` and the loss. The model's own modules are called directly, so the test's hooks will fire on them.
+- **Forward (all microbatches first):** rank 0 embeds the input IDs. Other ranks receive hidden states shaped `[mb, seq, hidden]` from the previous rank, with gradient tracking turned on. Each rank builds the causal mask and rotary embeddings, then runs its layers. The last rank computes the cross-entropy loss divided by the number of microbatches; the other ranks send their output to the next rank.
+- **Backward (then all microbatches):** the last rank backpropagates its loss. Other ranks receive the gradient for their output and backpropagate it. Every rank except rank 0 then sends the gradient of its input back to the previous rank.
+- **Communication:** all sends and receives use `dist.P2POp` with `batch_isend_irecv`. Hidden states and gradients are moved to the given `device` and `dtype`. Input and target IDs are only moved to `device`, because casting token IDs to a float dtype would break the embedding lookup.
+- **Return value:** the summed, scaled loss on the last rank and `None` on other ranks. Gradients build up in the parameters; the function doesn't zero them or step an optimizer.
+- **No hooks**, and it handles transformers versions where layers return tuples or `create_causal_mask` has a different signature.
+
+**Testing:** I used a 5-layer Llama on CPU (gloo backend) with world sizes 1 and 2, for both `eager` and `sdpa` attention, and compared against a standard non-pipelined run. The loss and every parameter gradient matched with a max difference of 0. With 2 ranks, rank 0 got the embedding plus 3 layers and rank 1 got 2 layers plus the norm and `lm_head`.
+
+**Environment problem:** `torchvision` is broken here, so `transformers` won't import normally. My test script got around this by telling `transformers` that torchvision isn't available; I didn't change anything installed. Your test environment may need the same workaround or a working torchvision.

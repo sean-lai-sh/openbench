@@ -1,0 +1,17 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. In a test I ran with world sizes 1 and 2, its loss and parameter gradients matched an ordinary single-process run of the same model exactly (zero difference). The test used a small 5-layer LLaMA on CPU with the gloo backend, under both the `sdpa` and `eager` attention modes. I couldn't run your own test harness, because importing `transformers` fails here: the installed `torchvision` doesn't match `torch`. I worked around that in my test script by blocking the `torchvision` import.
+
+**How it works:**
+- **Layer split:** decoder layers are divided as evenly as possible, and the first ranks take any extra layer (5 layers on 2 ranks gives 3 and 2). Rank 0 also runs `embed_tokens`; the last rank also runs the final `norm` and `lm_head`.
+- **Forward, all microbatches first:**
+  - Rank 0 moves the input IDs to `device`, embeds them and casts the result to `dtype`.
+  - Every other rank receives a `[microbatch, seq_len, hidden_size]` buffer from the previous rank and marks it as needing gradients.
+  - Each rank builds its own position embeddings and causal mask the same way `LlamaModel.forward` does, then calls its layers directly.
+  - The last rank computes `cross_entropy(logits, targets) / num_microbatches`; the other ranks send their hidden states to the next rank.
+  - Sends and receives use `dist.P2POp` with `batch_isend_irecv`.
+- **Backward, all microbatches after:** the last rank backpropagates each loss. Other ranks receive the output gradient from the next rank, backpropagate it, and send the gradient of their received input to the previous rank. Everything is moved to `device` and `dtype` before sending.
+- **No hooks:** the embedding, layers, norm and head are called as normal modules, so the test's own hooks still fire.
+- **Return value:** the last rank returns the total loss (detached); other ranks return `None`. Gradients build up in each rank's own parameters.
+
+**Assumptions to check:**
+- If `inputs` aren't given on ranks other than 0, the receive buffer's shape is taken from `targets`.
+- If the model ties `lm_head` to the embedding weights, the gradients for that shared weight end up split across the first and last ranks, and the code does nothing to combine them.

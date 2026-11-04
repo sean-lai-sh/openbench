@@ -1,0 +1,10 @@
+I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy` that matches A1 up to permuting and rescaling the neurons. It takes about 0.7 seconds.
+
+**How it works:** it learns everything through `forward()` calls alone and never reads the weights in `forward.py`.
+1. It draws 60 random lines `x0 + t·d` for t in [-50, 50]. Along each line, f is piecewise linear, and each kink is a point where one hidden neuron switches on or off. It finds the kinks by bisecting each interval, and pins down a kink's exact position by intersecting the straight lines on either side of it.
+2. At each kink it estimates the gradient of f just before and just after (using central differences). The jump between the two equals `A2_i · A1_i`, which is row i of A1 times a constant.
+3. It scales each jump to unit length and fixes the sign so the largest entry is positive. It then groups jumps that point the same way, keeps groups found at least twice, and takes the median of each group as that neuron's row. It doesn't need to know the hidden width in advance; it found 20 neurons.
+
+**Check:** to test it, I compared the result against the real `forward.A1`, outside the script itself. Every recovered row lines up with exactly one true row and vice versa, with cosine similarity above 0.99999999999999 in every case.
+
+Each saved row has length 1. Because the sign is normalised too, a row may be the negative of the true one, so "scaling" here includes multiplying by a negative number. If you need the scale to be positive only, the sign can be recovered too, but the script doesn't do that yet.
