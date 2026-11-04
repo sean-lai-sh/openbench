@@ -1,0 +1,22 @@
+I wrote `convert_masks.py` in the working directory. On the demo image it turned all 48 masks (19 rectangles, 29 polylines) into polylines using MobileSAM, and it takes about 8 seconds on CPU. I checked the output by drawing every polygon back onto the image: there were no overlapping pixels, each cell had exactly one connected region, none of the masks were rectangles, and the new bounding-box columns matched the new coordinates.
+
+**Usage** (both forms give identical output):
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+python convert_masks.py mobile_sam.pt out/ demo_rgb.png demo_metadata.csv
+```
+
+**What it does:**
+1. **Loads the model:** MobileSAM (`vit_t`) runs on the CPU through `SamPredictor`, and the image is encoded once.
+2. **Prompts SAM for each row:** it uses the annotation's bounding box plus one positive point at the centre of the original shape, and asks for three candidate masks.
+3. **Picks a candidate:** it chooses by SAM's own quality score plus how closely the mask matches the original annotation. For rectangles it compares against an ellipse drawn inside the box. Candidates that fill nearly the whole box or are tiny are penalised, and masks can't spread far outside the box.
+4. **Removes overlaps:** a pixel claimed by more than one cell goes to the cell SAM is most confident about there.
+5. **One region per cell:** each cell keeps only its largest connected piece, and holes inside it are filled. If a hole contains another cell, the script cuts a thin channel instead so the two outlines can't overlap.
+6. **Fallback:** if SAM produces nothing usable for a cell, it uses a non-rectangular shape based on the original annotation, so every row still gets a polyline.
+7. **Final check:** each polygon is redrawn to confirm it doesn't overlap any polygon already placed.
+
+**Output:** the CSV has the same columns, row order and unnamed index column as the input. Only `xmin`, `ymin`, `xmax`, `ymax`, `coords_x` and `coords_y` change, and polylines are closed by repeating the first point, as in your file. If `output_path` is a folder, the file is saved there under the input CSV's name; if it ends in `.csv`, it's used as the file path.
+
+**Things to be aware of:**
+- **Python environment:** the default Python here couldn't run the script — pandas isn't installed, and torch and torchvision are mismatched (`operator torchvision::nms does not exist`). I tested in a separate temporary environment in `/tmp/obench-cell-wes_ynof/opencode/tvenv` using the local MobileSAM code and `weights/mobile_sam.pt`. I didn't change any system packages or the MobileSAM source.
+- **`type` column:** I left it as it was (rows still say `rectangle`), because you asked for only those six columns to change. If you'd rather every row say `polyline`, that's a one-line change.

@@ -1,0 +1,25 @@
+I wrote `convert_masks.py` in the working directory. On the demo files it turned all 48 masks (19 rectangles, 29 polylines) into polylines. My checks found no overlapping masks, every mask is one contiguous piece, and none is a rectangle.
+
+**What the script does**
+1. **Inputs:** it reads the CSV and image. Each cell's box comes from its `coords_x`/`coords_y` values, falling back to `xmin`/`xmax`/`ymin`/`ymax`.
+2. **MobileSAM:** it loads the model (`sam_model_registry["vit_t"]`) on CPU and computes the image embedding once. Then it uses every row's box as a prompt in batches, so rectangles and existing polylines are both refined.
+3. **No overlap:** where two cells claim the same pixel, the one MobileSAM is more confident about gets it. Cells are then placed smallest first with a 1-pixel gap between them, so the final polygons can't touch or cross.
+4. **One contiguous piece:** it keeps only the largest connected part of each mask and fills holes. If one cell would completely surround another, it cuts a channel so the outline doesn't enclose its neighbour.
+5. **Fallbacks:** if MobileSAM returns almost nothing for a box, the script uses the original polygon or an ellipse inside the box instead.
+6. **Output:** it converts each mask to a closed polyline in the same `"x1,x2,...,x1"` format and recomputes the four box columns. All other columns and the unnamed index column are left exactly as they were.
+
+**Usage**
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out.csv --rgb_path img.png --csv_path meta.csv
+```
+- The four arguments can also be given positionally, in that order.
+- If `output_path` ends in `.csv`, that's the output file. Otherwise it's treated as a folder and the result is saved there under the input CSV's file name.
+
+**Testing**
+- **Environment:** the default `python` here doesn't have `pandas` or `mobile_sam`. I tested with a Python 3.11 environment I found in the uv cache that has both (plus `timm`, which MobileSAM needs), and with the `mobile_sam.pt` weights from the cached MobileSAM checkout. The MobileSAM source was not modified.
+- **Demo run:** it takes about 8 seconds on CPU. I drew the outlines on the image and they follow the nuclei closely. Overlap between new and original polylines (intersection over union) averages 0.75.
+- **Stress test:** I also ran 121 random, heavily overlapping and nested boxes, with a CSV that has no index column. All three checks passed there too.
+
+**Two judgement calls**
+- **`type` column:** I didn't change it, because you said only the box and coordinate columns should change. So former rectangles still say `rectangle` even though their coordinates are now polylines. If your tests expect `polyline` there, it's a one-line change.
+- **Box prompts:** every cell, including existing polylines, is prompted by its bounding box. That's what "refine all of the masks" called for, so original polylines are replaced by MobileSAM's outlines rather than kept.

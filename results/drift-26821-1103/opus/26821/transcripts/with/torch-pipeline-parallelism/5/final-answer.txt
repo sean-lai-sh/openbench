@@ -1,0 +1,16 @@
+I created `pipeline_parallel.py`, and on my test its gradients match a single-process reference model exactly. I tested it with `world_size` of 1 and 2 on CPU using gloo, with both eager and SDPA attention. I couldn't run it against your hook-based test because that test isn't in the workspace.
+
+**How it works:**
+- **Splitting the layers:** decoder layers are divided as evenly as possible, and no two ranks differ by more than one layer. Rank 0 also runs the embedding, and the last rank also runs the final norm and output layer (`lm_head`). Each rank only runs its own layers. With 5 layers on 2 ranks, rank 0 gets 3 and rank 1 gets 2.
+- **Forward pass (all microbatches):** rank 0 embeds the input IDs, and every other rank receives the hidden states from the rank before it. It sends and receives them with `torch.distributed.P2POp` and `batch_isend_irecv`. Each rank calls its decoder layers directly, so hooks you register on those layers will fire. It supplies the same causal mask, position IDs and rotary embeddings that `LlamaModel` would. The last rank computes `cross_entropy` against the targets and divides it by the number of microbatches.
+- **Backward pass (all microbatches):** the last rank calls `loss.backward()`. Every other rank receives the gradient from the next rank and runs `output.backward(grad)`. Every rank except rank 0 then sends the gradient of its input back to the previous rank.
+- **Device and dtype:** input IDs are moved to the device. Hidden states and gradients are moved to the given device and dtype before being sent or received.
+- **No hooks** are used anywhere in the implementation.
+
+**What I tested:** a small 5-layer LLaMA model with 3 microbatches. On every rank, each parameter's gradient matched the reference with a maximum difference of 0, and the loss matched (4.6171).
+
+Two choices the spec didn't settle:
+- **Return value:** the function returns the summed, scaled loss on the last rank and `None` on the others.
+- **Targets:** they're used as given and not shifted inside the function, so they need to be shifted already.
+
+My test script is at `/tmp/obench-cell-5ysos2bf/opencode/t.py`.

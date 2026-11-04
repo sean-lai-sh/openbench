@@ -1,0 +1,19 @@
+I created `parallel_linear.py` with both classes. I compared them against `torch.nn.Linear` on CPU with world sizes 1, 2 and 4, and at every size the outputs, weight and bias gradients, and input gradients matched.
+
+The weight follows `nn.Linear`'s layout: `master_weight` has shape `(out_features, in_features)`.
+
+**`ColumnParallelLinear`**
+- Each rank keeps its own block of output rows from `master_weight`, of shape `(out_features/ws, in_features)`, plus a bias of size `out_features/ws` that starts at zero.
+- In the forward pass, each rank computes its slice of the output and an all-gather joins the slices along the last dimension.
+- In the backward pass, each rank keeps only the gradient for its own slice. The input gradient is summed across ranks, so it is also correct.
+
+**`RowParallelLinear`**
+- Each rank keeps its own block of input columns, of shape `(out_features, in_features/ws)`, plus a full-size bias of size `out_features` that starts at zero.
+- In the forward pass, each rank computes a partial output, an all-reduce sums them, and the bias is added once after the sum.
+- The input can be either full-width (each rank takes its own slice) or already split per rank. If it's full-width, the backward pass gathers the input gradient back to full width.
+
+**Limitations:**
+- `out_features` (for column) or `in_features` (for row) must divide evenly by the world size. Otherwise the constructor raises an error.
+- If `torch.distributed` hasn't been initialised, the layers act as a single rank (world size 1, rank 0).
+
+The communication steps are written as custom autograd functions so that gradients flow correctly through the gather and reduce steps.

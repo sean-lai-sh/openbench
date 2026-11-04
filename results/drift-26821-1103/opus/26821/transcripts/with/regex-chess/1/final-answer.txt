@@ -1,0 +1,16 @@
+I've written `re.json` (2,088 regex/replacement pairs, about 300 KB). It gives the exact expected output for your example position, and every test I ran against python-chess passed. A full run takes about 0.6 seconds per position, mostly spent compiling the patterns.
+
+**Testing:**
+- **`check.py`:** passes (all 18 Opera Game positions). The script reads `/app/re.json`, so I ran a copy pointed at your file.
+- **About 800 random positions:** half from random games, half picked because castling or en-passant was possible. All matched python-chess, including the known tricky test positions for castling, pins and promotion.
+- **Hand-written edge cases:** all passed. They covered castling out of, through and into check (and with b1 attacked, which is allowed); en-passant that would expose the king along a rank or diagonal; and promotion captures on a8/h8 that should remove black's castling rights.
+
+**One limitation:** if white has no legal moves (checkmate or stalemate), the function returns `[""]` rather than an empty list. That can't be avoided, because `"".split("\n")` always gives `[""]`. `check.py` only tests positions where white is about to make a move, so it never hits this case.
+
+**How it works** (the generator is `gen.py`; run `python3 gen.py` to rebuild `re.json`):
+1. **Parse:** the FEN becomes a working line: `S`, then the 64 squares with empty squares as `.`, then a fixed 4-character castling field like `--kq`. If there's an en-passant square, it's marked `*` on the board.
+2. **Generate moves:** each rule checks one specific from-square/to-square pair on the `S` line: the piece type, whether the path is clear, and whether the target is empty or black. If it matches, it adds a new line with that move made. This covers sliding pieces, knights, the king, pawn pushes, double pushes (which record the en-passant square), captures, promotion to queen only, and en-passant.
+3. **Castling:** a castling line temporarily puts king markers on the king's start square, the square it crosses, and where it lands. The check filter then deletes the line if any of those squares is attacked.
+4. **Remove illegal moves:** one rule per king square deletes any line where a white king or marker is attacked by a pawn, knight, king or sliding piece with a clear path.
+5. **Castling rights:** each right is dropped if its king or rook is no longer on its starting square. That covers king moves, rook moves and rooks being captured, and matches how python-chess tracks rights.
+6. **Output:** each line is turned back into a FEN with ` b `, the en-passant square after any double push (`check.py` accepts that or `-`), and ` 0 0`.

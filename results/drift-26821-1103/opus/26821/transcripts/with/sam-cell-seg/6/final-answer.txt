@@ -1,0 +1,25 @@
+I've written `convert_masks.py` in your workspace. On the demo it turns all 48 masks (19 rectangles, 29 polylines) into polylines, and every check passed: no overlaps, one contiguous piece per cell, and no rectangles left. On CPU it takes about 10 seconds.
+
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ \
+    --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+
+It also accepts the four arguments by position in that order. If `output_path` ends in `.csv`, it's used as the output filename. Otherwise it's treated as a folder, and the result is saved there under the input csv's name (e.g. `out/demo_metadata.csv`).
+
+**How it works:**
+1. **MobileSAM:** loads the `vit_t` model on CPU (GPU if one is available) without changing the MobileSAM source. Each cell's bounding box is the prompt, and every mask goes through SAM, including the ones that are already polylines.
+2. **Picking SAM's answer:** SAM gives three candidate masks per box.
+   - For polyline cells, the script picks the candidate that best matches your original outline.
+   - For rectangle cells, it picks the one SAM is most confident in, skipping candidates that are far too small or too large for the box.
+   - Each mask is limited to its box plus a 10% margin. If SAM fails, it falls back to your original outline or an ellipse inside the box.
+3. **Overlaps:** where two masks claim the same pixel, the one SAM is more confident about keeps it. A 1-pixel gap is kept between neighbouring cells so the outlines never cross.
+4. **One piece per cell:** each mask keeps only its largest piece, holes are filled, and stray 1-pixel spurs or pinch points are trimmed so each outline is a clean, valid polygon. Any outline that would come out as an exact rectangle has a corner clipped.
+5. **Output:** coordinates are written in your original format (comma-separated integers, with the first point repeated at the end). The box columns are recomputed from the new outline, and all other columns and the unnamed index column are unchanged.
+
+**Testing:** besides the demo, I ran two stress tests: a 4×4 tiled copy of the demo (1496×1420 px, 768 cells, about 1 minute) and the demo with every cell duplicated and shifted 5 px. All three passed the same checks, plus a geometry check that found no invalid or overlapping polygons. In the duplicate test some masks end up only a few pixels in size, because two cells are fighting over the same nucleus. Visually, the SAM outlines follow the nuclei well, including on the rectangle annotations.
+
+**Things to be aware of:**
+- **The `type` column still says `rectangle`.** You asked for only the box and coordinate columns to change, so I left it alone. If you'd rather it say `polyline`, that's a one-line change.
+- **MobileSAM needs `timm`,** which isn't on your package list. It won't import without it, so the test environment needs it installed along with `mobile_sam`.
+- **Large images are cut into tiles.** For images over 1024 px, the script runs SAM on overlapping 512 px tiles. This is because MobileSAM shrinks every input to 1024 px, which would make small cells too blurry in a large image.

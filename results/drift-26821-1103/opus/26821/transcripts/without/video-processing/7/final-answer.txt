@@ -1,0 +1,20 @@
+I wrote `jump_analyzer.py`. On the example video it finds takeoff at frame 53 and landing at frame 62, and writes them to `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I checked these against the frames themselves. In frame 53 the back foot is still pushing off the ground, and in frame 54 both feet are in the air. In frame 61 the front foot is just above the ground, and in frame 62 it touches down. I've only tested on this one video.
+
+**How it detects the jump:**
+1. **Remove camera movement.** The camera isn't perfectly still; it drifts by up to about 3 pixels. The script lines every frame up with the first one before comparing them.
+2. **Find the runner.** It builds an empty-track picture by taking the middle value of each pixel across all the frames. Anything that differs from that picture is treated as the runner. Nearby pieces are joined into one shape, and the lowest point of that shape is taken as the feet.
+3. **Find the jump.** It picks the frame where the feet are highest above the ground. The ground level is taken from the frames just before and after. It then steps backwards and forwards from that frame while the feet stay more than 10 pixels above the ground.
+   - **Takeoff** is the last frame the foot is on the ground before the jump.
+   - **Landing** is the first frame the foot is back on the ground after it.
+
+**Things to be aware of:**
+- **Frame numbers start at 0**, which is what OpenCV uses. If the expected answers start at 1, add 1 to both.
+- **Definition of takeoff and landing.** I used the last frame on the ground and the first frame back on it. If your answers mean the first and last frames in the air instead, the results would be 54 and 61.
+- **Running it:** `python3 jump_analyzer.py [input.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml` in the same folder as the script.

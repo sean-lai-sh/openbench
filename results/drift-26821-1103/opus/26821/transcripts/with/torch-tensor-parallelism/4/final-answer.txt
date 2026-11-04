@@ -1,0 +1,19 @@
+I created `parallel_linear.py` with both classes. I tested them with world sizes 1, 2 and 4 on CPU (the gloo backend). On every rank, the outputs, weight gradients and bias gradients matched a regular `nn.Linear` given the same weight.
+
+In PyTorch the weight is stored as `(out_features, in_features)`, and the split follows the behaviour you described:
+
+- **`ColumnParallelLinear`**:
+  - Each rank keeps an equal slice of the output features: `master_weight[rank*k:(rank+1)*k, :]`.
+  - The bias is sharded the same way and starts at zero.
+  - The forward pass computes this rank's slice of the output, then gathers all slices and joins them along the last dimension.
+  - In the backward pass, each rank keeps only its own slice of the incoming gradient. The input gradient is summed across ranks so it comes out complete.
+
+- **`RowParallelLinear`**:
+  - Each rank keeps an equal slice of the input features: `master_weight[:, rank*k:(rank+1)*k]`.
+  - The bias stays full on every rank and starts at zero.
+  - The forward pass computes a partial output, sums the partial outputs across ranks, and then adds the bias once.
+  - The input can be the full tensor or a slice that's already been split. If the last dimension equals `in_features`, the layer takes this rank's slice itself, and in the backward pass the input gradient is gathered back to full size.
+
+The gathering and summing across ranks are wrapped as custom autograd functions, so gradients flow through them correctly. If `torch.distributed` hasn't been initialised, both layers run as world size 1. Feature counts that don't divide evenly by the world size fail an assertion when the layer is created.
+
+The test script is a temporary file outside the workspace (`/tmp/obench-cell-x0opg50g/opencode/t.py`) and isn't part of the deliverable.

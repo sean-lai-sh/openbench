@@ -1,0 +1,14 @@
+I created `parallel_linear.py` and tested it against a regular `nn.Linear` using the CPU (gloo) distributed backend at world sizes 1, 2 and 4. Outputs, weight and bias gradients, and input gradients all matched.
+
+**How the weights are split:** `master_weight` is assumed to be laid out like `nn.Linear`'s weight, i.e. shaped `(out_features, in_features)`; the code checks this when the layer is built. Each rank copies its own slice.
+- **`ColumnParallelLinear`**: the weight is split along `out_features`, so each rank gets `(out_features / world_size, in_features)`. The bias is split the same way and starts at zero.
+- **`RowParallelLinear`**: the weight is split along `in_features`, so each rank gets `(out_features, in_features / world_size)`. Every rank keeps the full bias, which starts at zero.
+- The split dimension must divide evenly by the world size, or construction fails with an error.
+
+**Forward and backward:** `torch.distributed`'s collectives don't pass gradients back on their own, so I wrapped them in small custom autograd functions.
+- **`ColumnParallelLinear`**: each rank computes its slice of the output, and the slices are gathered and joined along the last dimension. On the way back, each rank keeps its own slice of the output gradient, and the input gradient is summed across ranks.
+- **`RowParallelLinear`**: each rank computes a partial output, the partials are summed across ranks, then the bias is added once. On the way back, the input gradient is gathered back to full width.
+
+**Input handling in `RowParallelLinear`:** it accepts either the full input (last dimension `in_features`), which it slices for the local rank, or an input that's already split (last dimension `in_features / world_size`). Your spec didn't say which the tests will pass, so I made it handle both.
+
+If `torch.distributed` hasn't been initialised, both classes act as a single process (world size 1, rank 0).

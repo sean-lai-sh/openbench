@@ -1,0 +1,24 @@
+I've created `filter.py`. It takes an HTML file as `argv[1]` and strips JavaScript from it in place. I tested it against 54 XSS payloads in headless Chromium (for links and forms, the test also clicked every element and submitted every form) and none of them ran after filtering. A sample of ordinary HTML came out byte-for-byte identical; it included CRLF line endings, a doctype, a meta tag, a stylesheet, CSS, a comment, entities, tables, forms, a data-image, SVG and non-ASCII text.
+
+**How it works:** it reads the file and identifies tags, attributes and comments the same way a browser does. Anything judged safe is copied through unchanged, and only dangerous parts are cut out. The file isn't rewritten at all if nothing needs removing. It runs repeatedly until nothing more changes, so a removal can't stitch together a new attack (e.g. `<scr<script>x</script>ipt>`).
+
+**What it removes:**
+- **Script blocks:** `<script>` elements along with their contents.
+- **Plugin tags:** `<object>`, `<embed>` and `<applet>` tags.
+- **Event handlers:** every `on*` attribute (`onerror`, `onload`, `onclick`, …), plus `srcdoc`.
+- **Script links:** any attribute whose value, once decoded, starts with `javascript:`, `vbscript:` or `data:`. This catches hidden forms like `&#106;…`, `&colon;` or tabs inside the word. Only `data:image/png`, jpeg, gif and similar image data is kept.
+- **SVG animation:** animations that try to set `href` or an `on*` attribute, and script links inside their `values`/`to`/`from`/`by` lists.
+- **Dangerous CSS:** `expression(`, `behavior`, `-moz-binding` and `javascript:` URLs, in both `style` attributes and `<style>` blocks.
+- **Redirects and encodings:** `<meta http-equiv=refresh>` pointing at a script URL, and UTF-7 charset declarations.
+- **Hidden payloads:** comments that hide active content, unfinished tags or comments at the end of the file, and tricks that rely on the browser reading `<title>`, `<textarea>`, `<style>`, `<noscript>`, `<iframe>` or `<xmp>` contents differently inside `<svg>` or `<select>`.
+
+**Things you might notice:**
+- Some harmless content will be removed along with the dangerous parts:
+  - all `on*` attributes, even benign ones;
+  - `<object>`/`<embed>` media;
+  - non-image `data:` links;
+  - example HTML shown inside a `<textarea>` or `<title>` that contains attack patterns.
+- Leftover pieces of a broken attack, such as the stray `">` in `<title>…</title><img src=x>">`, stay as plain visible text. They are inert.
+- External links, iframes pointing to normal URLs, and `<base>` tags are kept. They can send the user elsewhere, but they can't run script in your page.
+
+The test harness is in `/tmp/obench-cell-wfywb769/opencode/t/harness.py` if you want to add more payloads.

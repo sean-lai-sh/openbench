@@ -1,0 +1,18 @@
+I've written `re.json`: 3,953 [regex, replacement] pairs, about 409 KB, so well under both limits. It's built by `gen.py`, which is in the same folder.
+
+**Test results:**
+- **Your example:** the output matches the three expected positions exactly.
+- **`check.py`:** all 18 positions from Morphy's Opera Game pass. I ran it on a temporary copy with the path changed from `/app/re.json` to the local file, since `/app` doesn't exist here.
+- **Random games:** about 590 white-to-move positions match python-chess move-for-move, with no extras and no duplicates.
+- **Targeted cases:** about 320 more positions focused on castling, en passant (including a pinned capture), promotion and checks also all match. These start from standard tricky test positions and play a few random moves.
+
+**How it works:**
+1. **Read the input:** the board is expanded to a fixed 64-character string with `.` for empty squares. Castling rights become a fixed four-character field (`KQkq`, with `-` for each missing right), and the en-passant square becomes a single file letter or `-`.
+2. **List candidate moves:** there is one rule per piece, start square and target square, including the requirement that a sliding piece's path is empty. Each rule that applies adds a new line with that move made, while the original line stays in place. Pawn rules cover single and double pushes (the double push records the en-passant square), captures, promotion to queen only, and en passant. Castling requires that right, the king and rook on their home squares, and empty squares between them.
+3. **Remove illegal moves:** one combined rule per square of the board marks a candidate illegal if a white king on that square is attacked by a black pawn, knight, king, or a rook/bishop/queen with a clear line. For castling, the king is temporarily placed on every square it starts on or passes through. That way "not castling out of, through, or into check" falls out of the same test. The marked lines and the original line are then deleted, and castling lines get the rook put back in its real place.
+4. **Update castling rights:** white loses rights if its king leaves e1 or a rook leaves a1/h1. Black loses rights if a rook on a8/h8 is captured.
+5. **Write the output:** each line is turned back into a FEN with `b` to move. After a double pawn push it always shows the en-passant square, which `check.py`'s comparison accepts. Move counters are written as `0 0`.
+
+Each position takes about 0.7 seconds to process. If a position had no legal moves, the function would return `[""]` rather than an empty list. That can't happen in `check.py`, which only tests positions where white has a move to play.
+
+To change the rules, edit `gen.py` and run `python3 gen.py` to rebuild `re.json`.

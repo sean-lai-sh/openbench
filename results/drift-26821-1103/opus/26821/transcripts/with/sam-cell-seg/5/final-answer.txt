@@ -1,0 +1,25 @@
+I wrote `convert_masks.py` in the working directory and ran it on the demo files. It finished on CPU in about 12 seconds and refined all 48 masks (19 rectangles and 29 polylines). A separate checker confirmed the output meets every requirement:
+
+- All 48 masks are now polylines, and none is a rectangle.
+- Each mask is one connected piece with no holes.
+- No two masks overlap (0 shared pixels).
+- The output CSV has the same columns as the input. Every column except `xmin`, `ymin`, `xmax`, `ymax`, `coords_x` and `coords_y` is unchanged, and the four bounds match the new coordinates.
+
+I also drew the old and new outlines on the image and looked at them: the new outlines follow the cell edges.
+
+```
+python convert_masks.py <weights_path> <output_path> <rgb_path> <csv_path>
+```
+
+**How it works:**
+1. It loads MobileSAM (`vit_t`) from the weights file on the CPU and processes the image once.
+2. For each cell it asks MobileSAM for several candidate masks, using the cell's box and a point inside the cell. For cells that were already polylines it also passes the original outline as a hint.
+3. It picks the best candidate by MobileSAM's own confidence score plus how closely it matches the original annotation (for rectangles it compares against an ellipse drawn inside the box). Size checks reject candidates that are far too small or spill well outside the box.
+4. It cleans each mask: removes thin spurs, keeps only the largest piece and fills holes.
+5. Where masks overlap, each pixel goes to the cell MobileSAM is most confident about. It then leaves a 1-pixel gap between neighbouring cells, so their polygons can't overlap however they are drawn.
+6. It traces each mask's outline into a closed polyline, with the first point repeated at the end like your input. If a cell ever comes out empty or still rectangular, it falls back to an ellipse inside the box.
+
+**Things you should know:**
+- **Output filename:** your spec calls `output_path` a folder but also says the file is saved with it. If it ends in `.csv`, the script writes to that exact file. Otherwise it creates the folder and saves the result there under the input CSV's filename (e.g. `demo_metadata.csv`). If your test expects a different filename, this needs changing.
+- **`type` column:** I left it unchanged as you specified, so former rectangles still say `rectangle` even though their coordinates are now polylines. If anything downstream reads `type`, it should probably be updated to `polyline`.
+- **Packages:** this machine's default Python had neither `mobile_sam` nor `pandas`, so I tested in a temporary environment that also contains `timm`. MobileSAM itself needs `timm`, though it isn't in your list. The script doesn't import it directly, and I didn't modify MobileSAM's source.

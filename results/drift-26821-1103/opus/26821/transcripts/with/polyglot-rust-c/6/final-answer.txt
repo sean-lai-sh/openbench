@@ -1,0 +1,9 @@
+I wrote `polyglot/main.rs`, and it builds with both commands. For N = 0, 1, 2, 3, 10, 50, 100 and 200 the two programs printed the same numbers, and they match your indexing (f(0)=1, f(1)=1, f(2)=2, …). For example, N=100 gives `573147844013817084101`. Neither compiler gave any warnings. I tested with whatever `rustc` and `g++` were installed here, not specifically with rustc 1.75.0 and g++ 13.2.0.
+
+**How it works:** the file relies on one difference between the languages. Rust lets block comments nest (a `/*` inside a comment opens another level), and C++ doesn't.
+
+- **Start of file, `/* /* */`:** C++ treats this as a complete comment and goes on to compile the C++ code that follows. Rust is still one level deep in the comment, so it skips the C++ code.
+- **`#if 0` then `// */`:** C++ starts skipping everything until the matching `#endif`. For Rust, the `*/` closes the comment, so Rust compiles the Rust code that follows. The `//` hides that `*/` from C++.
+- **End of file, `/* /* */`, `#endif`, `// */`:** C++ sees a short comment and then `#endif`, which ends the skipped section; the last line is just a comment to C++. Rust goes two levels deep, back up one, keeps `#endif` inside the comment, and the final `*/` closes it.
+
+Both versions use simple big-number addition (numbers stored in chunks of 9 decimal digits), so large N won't overflow. They exit with an error if N is missing.

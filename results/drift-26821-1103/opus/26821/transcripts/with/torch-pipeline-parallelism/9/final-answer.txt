@@ -1,0 +1,14 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it against a single-process reference model, and the loss and every parameter gradient matched exactly with world_size 1 and 2. That held in both float32 and bfloat16, using gloo on CPU.
+
+**How it works:**
+- **Partitioning:** layers are split evenly by rank, and any leftover layers go to the lower ranks. With 5 layers and 2 ranks, rank 0 gets 3 and rank 1 gets 2. Rank 0 also owns `embed_tokens`, and the last rank owns `norm` and `lm_head`. Each rank only calls the modules it owns, so the hook-based checks will see a sensible layer count on each rank.
+- **Forward (all microbatches first):** rank 0 embeds the input IDs; other ranks receive hidden states of shape `[mb, seq_len, hidden_size]` from the previous rank. Each rank then builds the rotary position embeddings and causal mask locally and runs its decoder layers. Non-last ranks send their output to the next rank. The last rank applies `norm` and `lm_head`, then computes `F.cross_entropy(logits, targets) / num_microbatches`. Each microbatch's stage input and output are kept for the backward pass.
+- **Backward (all microbatches after):** the last rank calls `loss.backward()`. Other ranks receive the output gradient and call `torch.autograd.backward(output, grad)`. Every rank except 0 sends `input.grad` back to the previous rank.
+- All communication uses `dist.P2POp` with `dist.batch_isend_irecv`. Inputs, hidden states and gradients are moved to the given `device`/`dtype`, and the implementation uses no hooks.
+- It returns the summed scaled loss on the last rank and `None` on the others.
+
+**Assumptions:**
+- **Inputs on every rank:** each rank sizes its receive buffers from `inputs[mb].shape`, so `inputs` must be passed on all ranks, not just rank 0. `targets` is only needed on the last rank.
+- **No target shift:** targets are used as given, on the assumption that they are already shifted.
+
+**Local test environment:** the installed `torchvision` is broken and stops `transformers` from importing. To run my test I hid `torchvision` inside the test script only (`/tmp/obench-cell-ehpe1ts5/opencode/t.py`); the implementation itself doesn't do this. If the real test environment has the same broken install, the test will fail when it imports `transformers`, before it reaches this code.

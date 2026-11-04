@@ -1,0 +1,22 @@
+I've written `convert_masks.py`. On the demo data it refines all 48 masks (19 rectangles, 29 polylines) and finishes in about 14 seconds on CPU. My check script confirmed that the output has no overlapping pixels, each cell has exactly one contiguous polygon, and none of the masks are rectangles.
+
+**Your current Python environment can't run it.** The installed torch (2.14.1) and torchvision (0.29.2) don't match, so `import mobile_sam` fails with `operator torchvision::nms does not exist`, and pandas isn't installed. I didn't change the system packages. For testing I used a separate venv in the temp directory (torch 2.5.1, torchvision 0.20.1, pandas, timm and MobileSAM from GitHub, with the source untouched). Your test environment will need a torch/torchvision pair that work together.
+
+**Usage** (arguments work as flags or positionally, in this order):
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path img.png --csv_path meta.csv
+```
+
+**How it works:**
+1. **Prompts:** the image is encoded once with MobileSAM (`vit_t`). Each annotation's bounding box is used as a box prompt, and SAM returns three candidate masks.
+2. **Picking a mask:** for polylines, it picks the candidate that best matches the original outline, weighted by SAM's own confidence score. For rectangles, it uses SAM's score, with penalties for masks that are very small or spill outside the box. Masks can extend at most 15% beyond the original box.
+3. **No overlap:** where masks compete for a pixel, the pixel goes to the cell whose SAM output is most confident there. Each cell then keeps only its largest connected piece, with holes filled and small spurs removed.
+4. **Polylines:** outlines are traced from the masks, smallest cells first. Before each polygon is accepted, it's filled in and checked against the pixels already taken, so the saved polygons themselves can't overlap.
+5. **Fallbacks:** if SAM produces nothing usable, the cell gets its original outline, or an ellipse inside the box for rectangles, limited to free pixels. So every cell always gets a mask.
+6. **Output:** only `xmin`, `ymin`, `xmax`, `ymax`, `coords_x` and `coords_y` change. The coordinates use the input's comma-separated format, with the first point repeated at the end to close the shape, and the min/max columns are recomputed from them. The index column is kept if the input has one.
+
+**Choices you may want to change:**
+- The `type` column still says `rectangle` for cells that were rectangles, because you asked for only the coordinate columns to change. If you'd rather it say `polyline`, that's a one-line change.
+- If `output_path` ends in `.csv`, it's used as the output file name. Otherwise it's treated as a folder (created if needed), and the result is saved there under the input CSV's file name.
+
+Matching the refined masks against the original polylines gave overlaps (IoU) of about 0.64–0.87. Rectangles match their boxes less closely, as expected, since the cell doesn't fill its box.

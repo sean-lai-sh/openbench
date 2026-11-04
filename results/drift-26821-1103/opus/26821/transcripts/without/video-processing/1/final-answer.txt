@@ -1,0 +1,21 @@
+I wrote `jump_analyzer.py`. On the example video it outputs:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I checked both numbers against zoomed-in crops of the feet. Frame 53 is the last frame where the takeoff foot's toe is still on the ground; in frame 54 it is in the air. Frame 62 is the first frame where the lead foot is back on the ground. It has only been run on this one video, since there were no other clips to test with.
+
+**Usage:** `python3 jump_analyzer.py [video.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml`, both next to the script. One run takes about 7 seconds.
+
+**How it works:**
+1. **Background:** frame 0, which has no runner, is the background. Each frame is compared to it after correcting for the camera's automatic brightness changes, to find what's new in the picture. Dark pixels on the light track are also counted, which picks up the shoes well.
+2. **Lowest foot:** within the runner's horizontal extent, the lowest new point on the track is taken as the lowest foot.
+3. **Ground contact:** the script fits a ground line through the lowest-foot points and counts a frame as "contact" when the foot is within 8 px of that line. On the example, feet on the ground were within about ±6 px and feet in the air were at least 18 px above, so the cutoff has a reasonable margin.
+4. **Picking the jump:** contact frames are grouped into steps. The jump is the gap between two steps whose foot positions are on opposite sides of the hurdle (fixed at x≈495 px). If no gap crosses the hurdle, it falls back to the longest gap. Takeoff is the last contact frame before the gap and landing is the first contact frame after it.
+
+**Things to check:**
+- **Frame numbering:** frames are counted from 0, the same way OpenCV reads them. If your expected answers count from 1, both numbers will be one too low.
+- **Takeoff definition:** "takeoff" here means the last frame with the foot on the ground. If your answers mean the first frame in the air, takeoff would be 54 instead of 53.
+- **`toml` wasn't installed** in this environment, so the script has a small built-in writer it uses only when `toml` can't be imported. When `toml` is available, it uses that.

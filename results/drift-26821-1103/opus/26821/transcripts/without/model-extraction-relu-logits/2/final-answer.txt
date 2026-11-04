@@ -1,0 +1,10 @@
+I wrote `steal.py`. When run, it saves a 20×10 matrix to `stolen_A1.npy`. I ran it once (about 1.3 seconds) and checked the result against the real `forward.A1`. All 20 hidden neurons came back, each stolen row matches exactly one true row, and every match has cosine similarity of at least 0.9999999997. That means the matrix equals A1 up to row order and scaling.
+
+`steal.py` only gets information by calling `forward(x)`. I used `forward.A1` just for that one-off check.
+
+How it works:
+1. **Find the kinks.** Along a random straight line through input space, the output changes in straight-line pieces, with a kink wherever one hidden neuron switches on or off. The script finds these kinks precisely by working out where neighbouring straight pieces cross, and splits the line into smaller sections when there's more than one kink.
+2. **Read off a row.** At each kink it estimates the slope of the output in each of the 10 input directions, just before and just after the kink. The change in slope is proportional to the A1 row of the neuron that switched.
+3. **Combine the results.** It does this on 60 random lines, scales each recovered row to unit length with a consistent sign, and groups rows pointing the same way. It keeps groups seen at least twice and outputs one representative row per group (the median).
+
+A neuron whose input never crosses zero along any of the 60 lines can't be detected, so it would be left out of the output. That wasn't a problem here: all 20 were found.

@@ -1,0 +1,21 @@
+I wrote `jump_analyzer.py`. On the example video it outputs takeoff frame 53 and landing frame 62, and writes `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I checked both frames by eye: frame 53 is the last one where the take-off toe is still on the ground, and frame 62 is the first where the landing foot touches down. Frame numbers start at 0, as OpenCV counts them.
+
+**What I can't confirm:** there's no reference answer to check against. If the expected answer counts the first frame fully in the air as the takeoff, it would be 54. The fix is one line in `analyze()`: `takeoff = s` instead of `s - 1`.
+
+**How it detects the jump:**
+1. **Background:** the first frame (empty track) is the background. Each frame is shifted to line up with it first, because the camera moves by about 1–2 px over the clip. Without that correction the method picked a false "jump" at frames 111–113.
+2. **Finding the runner:** the runner is whatever differs from the background in colour, cleaned up to remove small noise. The lowest point of that shape is taken as the feet.
+3. **Ground level:** this is estimated from the frames where the feet are lowest. A frame counts as "in the air" if the feet are more than about 3.5% of the runner's height above the ground.
+4. **Picking the jump:** normal running strides also leave the ground briefly, so the script picks the longest in-air stretch. It gives extra weight to a stretch that crosses the hurdle's horizontal position, which is hard-coded at about x = 490–625 pixels. That only works if the camera and hurdle are always in the same place, as you said they would be.
+5. **Result:** takeoff is the last ground-contact frame before that stretch, and landing is the first contact frame after it.
+
+**Robustness checks:** I made three altered copies of the example. Adding 20 empty frames at the start moved both answers by exactly 20 (73/82). Adding noise with a brightness change, and adding random camera shake of ±3 px, both still gave 53/62.
+
+**Usage:** `python3 jump_analyzer.py [input.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml` in the script's folder.

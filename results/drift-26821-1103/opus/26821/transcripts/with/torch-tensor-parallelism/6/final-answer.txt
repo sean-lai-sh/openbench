@@ -1,0 +1,10 @@
+I've written `parallel_linear.py` with both classes. I ran a test across 1, 2 and 4 processes on CPU: outputs and the gradients for input, weight and bias all matched an ordinary `nn.Linear` given the same weight.
+
+**Assumption to check:** I treated `master_weight` as having the same layout as `nn.Linear`'s weight, i.e. shape `(out_features, in_features)`. The code checks this and raises an error if the shape is different. If your tests pass it the other way round, the slicing needs to be swapped.
+
+- **`ColumnParallelLinear`**: each rank keeps its own block of `out_features // world_size` output rows of `master_weight`, and its bias is a zero vector of that same length. The forward pass computes the local piece of the output, then gathers all pieces and joins them along the last dimension. In the backward pass, each rank keeps only its own slice of the output gradient. The input gradient is summed across ranks so it equals the full gradient.
+- **`RowParallelLinear`**: each rank keeps its own block of `in_features // world_size` input columns of `master_weight`, and every rank has the full bias, initialised to zero. The input can be either full width, in which case each rank takes its own slice, or already split. The partial outputs are summed across ranks and then the bias is added. In the backward pass, the input gradient is reassembled to full width.
+
+Both classes need the feature dimension they split to be divisible by `world_size`. If `torch.distributed` hasn't been initialised, they run as a single process (`world_size=1`).
+
+The communication steps are written as custom autograd functions so the gradients are correct across ranks. This assumes every rank computes the same loss on the full output, which is the setup I tested.

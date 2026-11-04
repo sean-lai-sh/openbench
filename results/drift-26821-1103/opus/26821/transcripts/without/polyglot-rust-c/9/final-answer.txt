@@ -1,0 +1,19 @@
+I wrote the polyglot to `polyglot/main.rs`. It compiles with both `rustc` and `g++ -x c++`, and both programs print the same results. The toolchains installed here may not be exactly rustc 1.75.0 and g++ 13.2.0, but the code only uses basic features that both of those versions support.
+
+| N | Output (both) |
+|---|---|
+| 0 | 1 |
+| 1 | 1 |
+| 2 | 2 |
+| 5 | 8 |
+| 10 | 89 |
+| 50 | 20365011074 |
+| 90 | 4660046610375530309 |
+
+**How it works:** the two languages handle comments differently.
+- **Rust** allows comments inside comments, so `/* /* */` leaves a comment still open. On the first line, Rust treats `#if 0` as comment text, and the `*/` on the next line closes the comment, so Rust compiles `fn main`. Further down, `/* /* */ #endif` opens another comment that hides all the C++ code. The final `// */` closes it.
+- **C++** ends a comment at the first `*/`, so `/* /* */` is a complete comment. The C++ preprocessor then reads `#if 0 … #endif`, which skips the Rust code. The final `// */` is just a line comment to C++.
+
+**Limits:**
+- If no argument is given, or it isn't a number, N defaults to 0 and the program prints 1.
+- Both versions use 128-bit integers, so results are exact up to N = 184. Above that, the numbers overflow and wrap around without an error.

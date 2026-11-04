@@ -1,0 +1,31 @@
+I wrote `convert_masks.py` in the working directory. On the demo, all 48 cells came out as polylines, with no overlaps, no rectangles, and one connected piece per cell.
+
+**Usage**
+```
+python convert_masks.py <weights_path> <output_path> <rgb_path> <csv_path>
+```
+If `output_path` ends in `.csv`, it's used as the output file name. Otherwise it's treated as a folder (created if needed) and the result is saved there under the same file name as the input csv.
+
+**How it works**
+1. **MobileSAM:** it loads the `vit_t` model on CPU. I load the weights myself with `map_location="cpu"` because the library's own loader would fail on a CPU-only machine if the checkpoint was saved from a GPU. The MobileSAM source isn't changed. Every row's bounding box is sent to SAM as a box prompt, in batches.
+2. **Picking SAM's output:** SAM gives 3 candidate masks per box.
+   - For existing polylines, it keeps the candidate that best matches the original outline, with SAM's confidence as a tie-breaker.
+   - For rectangles, it keeps the most confident candidate, but avoids ones that fill almost the whole box or very little of it.
+   - Masks are limited to their box plus a 2-pixel allowance, so they can't spread into neighbouring cells.
+3. **Overlaps:** where masks compete for a pixel, it goes to the cell SAM is most confident about there. Each mask is then cleaned up one cell at a time:
+   - only its largest connected piece is kept and holes are filled;
+   - a 1-pixel gap is left between neighbouring cells, so the saved outlines don't overlap when drawn;
+   - any mask that comes out as a perfect rectangle has its corners clipped.
+   
+   If a cell would end up with no mask (for example, two identical boxes), it gets an ellipse inside its box in whatever space is free.
+4. **Output:** outlines are traced from the final masks and saved as closed, comma-separated integer lists, the same format as the input. `xmin`/`xmax`/`ymin`/`ymax` are recalculated from those points. The other columns and the index are copied unchanged, which means the `type` column still says `rectangle` for rows that started as boxes. Tell me if you want it changed to `polyline`.
+
+**Testing**
+The Python on this machine can't run the script as-is: its torch and torchvision installs don't work together (`torchvision::nms does not exist`), and pandas isn't installed. So I tested in a separate virtual environment in `/tmp`, using the MobileSAM copy and weights already on the machine.
+
+My checker drew every output outline and confirmed: no overlapping pixels, no rectangles, one piece per cell, bounding boxes that match the points, and columns and index identical to the input. It passed on:
+- the demo (about 11 s on CPU);
+- a stress test with duplicate boxes and tiny boxes at the image corners;
+- a 4× enlarged copy of the image. For large images the script uses smaller batches so SAM's full-size output fits in about 400 MB of memory per batch.
+
+Looking at an overlay of the results, the masks fit the nuclei well. A few rectangles that cover elongated or partly overlapping cells come out with irregular edges where they had to give pixels to a neighbouring cell.

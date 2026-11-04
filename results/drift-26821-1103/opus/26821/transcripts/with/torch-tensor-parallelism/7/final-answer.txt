@@ -1,0 +1,12 @@
+I created `parallel_linear.py` with both classes. I tested it with a multi-process gloo run at world sizes 1, 2 and 4, comparing against a plain `nn.Linear` using the same weight. On every rank, the outputs and the gradients for weight, bias and input all matched.
+
+**How the weights are split.** `master_weight` is taken in the usual `nn.Linear` shape, `(out_features, in_features)`.
+
+- **`ColumnParallelLinear`:** each rank keeps one slice of the output rows, so its weight is `(out_features/ws, in_features)`. The bias is split the same way and starts at zero. The forward pass runs the local linear layer, then gathers the pieces along the last dimension so every rank gets the full output. In the backward pass, each rank keeps only its own slice of the output gradient, and the input gradient is summed across ranks.
+- **`RowParallelLinear`:** each rank keeps one slice of the input columns, so its weight is `(out_features, in_features/ws)`. The bias stays full size and starts at zero. Each rank computes a partial output, the partials are summed across ranks, and the bias is added once after the sum. In the backward pass, the input gradient is gathered back to full width.
+
+**Things to be aware of:**
+- **Input to `RowParallelLinear`:** it accepts either the full input (last dimension `in_features`) or an input that's already split (last dimension `in_features/ws`). If it gets the full input, it splits it itself. At world size 1 the two are the same.
+- **Divisibility:** the code asserts that the dimension being split divides evenly by the world size.
+- **Without a process group:** if distributed isn't initialised, both classes run as a normal single-process linear layer.
+- **Gradients:** the gather and sum steps are written as custom autograd functions, so the gradients for weight, bias and input come out right.

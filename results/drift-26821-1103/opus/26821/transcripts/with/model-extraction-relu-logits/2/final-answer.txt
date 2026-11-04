@@ -1,0 +1,10 @@
+I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy`, and the run takes about 0.6 s. When I checked it against the real `A1` in `forward.py`, every recovered row matched a different real row with cosine similarity above 0.9999999999998, so all 20 neurons were found.
+
+The script itself only uses `forward(x)`; I read the real weights only for that one-off check afterwards.
+
+**How it works:**
+1. **Find the kinks.** Along any straight line through input space, the network's output is piecewise linear. Each bend happens where one hidden neuron's value `a_j·x + b_j` crosses zero. The script takes random lines and finds these bends by splitting the line in halves: if the midpoint value isn't the average of the endpoints, there's a bend in there. It then pins the exact location by intersecting the two straight pieces on either side.
+2. **Read off the row.** At each bend, it estimates the gradient (by finite differences) just before and just after. The difference between the two is `±A2_j · a_j`, which is that neuron's row of `A1` up to a scale factor.
+3. **Remove duplicates.** Each row is normalised to unit length and given a fixed sign. A row counts as new only if its cosine similarity with every row already found is below 0.9999. The script stops after 30 lines in a row turn up nothing new, so the number of hidden neurons isn't hard-coded.
+
+**Sign of each row:** the rows match only up to a scale factor that may be negative. A single bend can't separate the sign of `a_j` from the sign of `A2_j`, so each row is set to have its largest entry positive. If you need the true signs, that would take an extra global fitting step that I haven't added.

@@ -1,0 +1,11 @@
+I wrote `pipeline_parallel.py` with `train_step_pipeline_afab`. I ran it against a reference `LlamaForCausalLM` (5 layers, 3 microbatches, gloo backend) with world_size 1 and 2. The loss matched the reference (4.6004), and every gradient the pipeline produced matched the reference exactly.
+
+One thing in the environment affects testing: `transformers` won't import here because the installed `torchvision` is broken (`operator torchvision::nms does not exist`). My test script got around it with `sys.modules['torchvision'] = None`. My file doesn't import `transformers` itself, but your test does, so it will hit the same error unless `torchvision` is fixed or blocked in the same way.
+
+How it works:
+- **Splitting the layers:** layers are divided as evenly as possible across ranks, with any extra layers going to the lower ranks (helper at `pipeline_parallel.py:9`). With 5 layers and 2 ranks, that's 3 and 2. Rank 0 also runs the embedding, and the last rank runs the final norm, `lm_head` and the loss.
+- **Calling the layers:** each rank calls the model's own layer modules directly, so the test's hooks see real activations. It builds the rotary position embeddings and the causal mask the same way `LlamaModel.forward` does, using `create_causal_mask` from the model's own module. If that function isn't there, it falls back to an explicit causal mask.
+- **Forward phase:** all microbatches go forward first. Each non-first rank receives hidden states of shape `[mb, seq, hidden]` in the given device/dtype and marks them as needing gradients. Each non-last rank sends its output to the next rank using `P2POp` with `batch_isend_irecv`.
+- **Loss:** on the last rank it's `cross_entropy(logits, targets) / num_microbatches`, with no shift applied to the targets.
+- **Backward phase:** all microbatches go backward after that. The last rank calls `loss.backward()`. Other ranks receive the gradient from the next rank and backpropagate it through their saved output. Every rank except the first then sends its input gradient back to the previous rank.
+- **Inputs and return value:** input IDs are moved to the device but kept as integers, since the embedding needs integer IDs. There are no hooks in the implementation. The last rank returns the summed loss and the other ranks return `None`.

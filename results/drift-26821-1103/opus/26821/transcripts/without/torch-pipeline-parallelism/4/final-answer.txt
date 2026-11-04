@@ -1,0 +1,14 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. In a local check it gave exactly the same loss and gradients as an unpartitioned reference model at world_size 1 and 2.
+
+**How it works:**
+- **Splitting the layers:** each rank gets a contiguous block of decoder layers. If they don't divide evenly, the first ranks get one extra each (5 layers on 2 ranks becomes 3 + 2).
+- **Rank 0** also runs the token embedding. **The last rank** also runs the final norm and the output head, then computes cross-entropy against the targets divided by the number of microbatches.
+- **Forward phase:** every microbatch goes forward first. Middle and last ranks receive `[microbatch, seq_len, hidden_size]` hidden states from the previous rank, and every rank except the last sends its output on. Each stage keeps its inputs and outputs for the backward phase.
+- **Backward phase:** then every microbatch goes backward. The last rank backpropagates from its loss; the other ranks receive the gradient from the next rank and backpropagate with it. Every rank except rank 0 sends the gradient of its input back to the previous rank.
+- **Communication** uses `torch.distributed.P2POp` with `batch_isend_irecv`.
+- Inputs, hidden states and gradients are moved to `device`/`dtype`. Token IDs are only moved to `device`, because the embedding needs integer IDs. There are no hooks, and the model's structure isn't changed: each rank just runs its own slice of `model.model.layers`.
+- The function returns the summed loss on the last rank and `None` on the others.
+
+**What I tested:** a small LLaMA config (5 layers, 2 microbatches) on CPU with the gloo backend. Per-rank gradients matched the reference exactly; rank 0 had gradients for 28 parameters and rank 1 for 20.
+
+**One thing to check:** the function doesn't cast the model to `dtype`. If you pass a lower precision such as bf16 while the model is still float32, the layers will fail on mismatched types. I assumed your test converts the model to that dtype before calling the function.

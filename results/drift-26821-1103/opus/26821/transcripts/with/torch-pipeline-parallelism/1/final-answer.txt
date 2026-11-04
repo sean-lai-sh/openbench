@@ -1,0 +1,12 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. Because `transformers` wasn't installed, I installed it (version 5.22.1) to test. On a small 5-layer LLaMA on CPU with world_size 1 and 2, the loss and every parameter gradient exactly matched a normal non-pipelined training run (max difference 0.0). I compared the gradients directly rather than with hooks, so I haven't run your actual test harness.
+
+**How it works:**
+- **Splitting the layers:** layers are divided as evenly as possible, with any leftovers going to the lower ranks. Rank 0 also does the token embedding. The last rank also does the final norm, the output layer and the loss. In the 5-layer test, rank 0 ran 3 layers and rank 1 ran 2.
+- **Forward pass:** all microbatches run forward first. Rank 0 embeds the input IDs. Each later rank receives hidden states shaped `[mb, seq, hidden]` from the rank before it and runs its layers. It then either sends the result on, or (on the last rank) computes `cross_entropy / num_microbatches`.
+- **Backward pass:** then all microbatches run backward. The last rank calls `loss.backward()`. Other ranks receive the gradient from the next rank and backpropagate it through their saved outputs. Every rank except 0 then sends the gradient of its input back to the previous rank.
+- **Communication:** stages talk to each other with `dist.P2POp` and `batch_isend_irecv`. Inputs, hidden states and gradients are always moved to the given `device` and `dtype`. No hooks are used.
+- **Version handling:** the code calls the model's internal pieces (attention mask, positional encoding, layer call signature) in different ways depending on which `transformers` version is installed. Only the installed version was tested; the code paths for older versions have never been run.
+
+The function returns the summed loss on the last rank and `None` on every other rank; the task didn't specify a return value, so check that this suits the test.
+
+The test script is at `/tmp/obench-cell-93o6xmxa/opencode/t.py`.

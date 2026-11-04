@@ -1,0 +1,29 @@
+I created `filter.py`. It removes JavaScript from an HTML file in place and leaves every other byte exactly as it was.
+
+**How I tested it:**
+- **Clean page:** I ran it on a normal page with a doctype, meta, title, CSS, tables, headings, comments, links, a `data:image` image, a textarea and a `<pre>` block. The file came out byte-for-byte identical.
+- **Attack examples:** I ran it on 34 attack examples and checked the results in headless Chromium.
+  - Before filtering, 11 of them ran script in the browser and none did after.
+  - The other 23 didn't fire unfiltered, so they didn't really test the filter. That's because they need a click or hover, only work in old browsers, or (for 4 iframe/embed ones) Chromium timed out. For those I only checked by reading the output that the dangerous part was gone.
+
+**What it removes:**
+- `<script>` elements with their contents, and the `<object>`, `<embed>` and `<applet>` tags.
+- Event-handler attributes (`onload`, `onerror`, etc.) and `srcdoc`.
+- Any attribute whose value contains `javascript:`, `vbscript:` or `livescript:`. It checks after decoding HTML entities and removing hidden whitespace, so disguised forms like `jav&#x09;ascript:` are caught too.
+- `data:` URLs in link and source attributes, except `data:image/...` on `<img>` and similar media tags, which can't run script.
+- Inline styles and `<style>` contents that use old script-running CSS tricks such as `expression()`, `-moz-binding`, `behavior:` or `url(javascript:...)`.
+- `<meta http-equiv="refresh">` tags that redirect to a `javascript:` or `data:` URL.
+- SVG animation tricks that set a link to `javascript:` or animate an event handler.
+
+**How it avoids changing anything else:**
+- The file is read and written byte for byte, so encodings and line endings are untouched. When something is cut, only that attribute (plus the space before it) or tag is removed. A file with nothing dangerous isn't rewritten at all.
+- It reads tags, attributes, comments and text-only elements (`title`, `textarea`, `style`, `noscript`, …) the same way a browser does. That catches tricks like closing a `</noscript>` inside an attribute, or an `<img>` hidden behind a comment.
+- Inside `<svg>`/`<math>`, the same markup can be read two different ways. In those cases it cleans up both readings to be safe.
+- It runs repeatedly until nothing changes, so removing one piece can't join the leftovers into a new attack (e.g. `<scr<script>ipt>`).
+
+**Things to know:**
+- Comments are left as they are, since browsers never run anything inside them. Old Internet Explorer "conditional comments" containing a script would therefore stay in the file.
+- `<iframe>` tags are kept, minus any dangerous `src`/`srcdoc`. An iframe pointing to an ordinary external page is left alone.
+- In rare malformed cases, text inside a `<textarea>` or `<title>` may change slightly: a `<` can become `&lt;`, or dangerous-looking attributes inside it get cut.
+
+Usage: `python3 filter.py page.html`

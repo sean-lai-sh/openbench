@@ -1,0 +1,27 @@
+I've written `convert_masks.py` in the working directory. It uses MobileSAM (`vit_t`, unmodified) on CPU to turn every mask, both rectangles and polylines, into a polyline. On the demo it converted all 48 masks in about 8 seconds, with no overlaps, one connected region per cell and no rectangles. The overlay I checked shows the new outlines follow the cell nuclei closely.
+
+**How to run it:** arguments can be passed by name or in order:
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+python convert_masks.py mobile_sam.pt out_dir demo_rgb.png demo_metadata.csv
+```
+If `output_path` is a folder, the result is saved there under the input csv's file name (e.g. `out_dir/demo_metadata.csv`). If it ends in `.csv`, it's written to exactly that path.
+
+**What it does:**
+1. **Prompting SAM:** each row's box is given to MobileSAM as a prompt, and the model suggests three candidate masks. I pick the best by combining SAM's own confidence with how well the candidate matches the original shape (the polygon for polylines, an oval inside the box for rectangles). Masks can extend only slightly past the original box. If SAM finds nothing usable, the original shape is used instead.
+2. **No overlap:** where two masks claim the same pixel, it goes to the mask SAM is most confident about there. If a cell would lose its mask entirely (e.g. two identical boxes), it gets a small protected area in the middle of its box.
+3. **One region per cell:** small specks are removed, only the largest connected piece is kept, and holes are filled (but never into another cell's pixels).
+4. **Writing the polylines:** each mask's outline is traced and checked against the masks already saved, and is adjusted if it would overlap them. A mask that came out as a perfect rectangle has its corners cut. Polylines are closed by repeating the first point, as in your input file.
+5. **Large images:** images over 1024 px are processed in overlapping tiles so small cells aren't shrunk too much.
+
+**Output file:** it has the same rows, columns and header as the input; only `xmin, ymin, xmax, ymax, coords_x, coords_y` change. I left the `type` column alone because you listed which columns to update, so rows that were rectangles still say `rectangle` even though they're now polylines. That's a one-line change if you'd rather they say `polyline`.
+
+**Testing:** I also tested:
+- a CSV without the index column
+- duplicate boxes
+- a 1×1 box in the image corner
+- the image scaled up 3× so the tiling is used
+
+All cases passed both a pixel-level check and a polygon check with shapely: no invalid polygons and zero overlap area. A bug with duplicate boxes, where one cell's outline wrapped around the other, came up during testing and is fixed.
+
+**Environment:** the system Python here doesn't have `pandas` or `mobile_sam`, so I ran everything in a separate environment at `/tmp/obench-cell-e0lj7tl5/opencode/venv`. MobileSAM also needs `timm`, which isn't on your list of packages but gets installed along with `mobile_sam`.

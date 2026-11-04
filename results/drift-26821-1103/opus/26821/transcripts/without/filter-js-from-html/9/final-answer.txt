@@ -1,0 +1,26 @@
+I've written `filter.py`. When given a file as `argv[1]`, it strips the JavaScript and rewrites the file in place. It uses only the Python standard library.
+
+I tested it with a script outside the workspace. Two clean documents came back byte-for-byte unchanged, and about 50 XSS attacks were all removed. Running the script on a real file worked, a 3 MB file took about 1.2 seconds, and running the filter a second time on its own output changes nothing. I did not test it in a real browser.
+
+**How it works:** it reads the HTML piece by piece using the same rules a browser uses to split HTML into tags, attributes and comments. Anything safe is copied out exactly as it was, so formatting, whitespace, line endings, tables, headers, inline styles and normal attributes are untouched. Only dangerous parts are cut out.
+
+**What gets removed:**
+- `<script>` and `<iframe>` elements, along with everything inside them.
+- `<object>`, `<embed>`, `<applet>`, `<frame>` and `<portal>` tags. Any fallback content inside them is kept and checked.
+- Event handlers such as `onclick` or `onerror` (any attribute starting with `on`), and `srcdoc`.
+- Links like `javascript:` or `vbscript:` in any attribute. These are caught even when disguised with character codes or hidden tabs and newlines.
+- `data:` links in URL attributes, unless they are images.
+- Styles that can run code, such as `expression()`, `behavior:` or `-moz-binding`, including disguised versions. A risky `style` attribute is removed; a risky `<style>` block is removed whole.
+- A `<meta http-equiv=refresh>` that redirects to `javascript:` or a `data:` link, and `<link rel=import>`.
+- Comments with dangerous code in them, such as old IE `<!--[if IE]><script>` comments, and `CDATA` sections that contain markup.
+
+**Tricks it guards against:**
+- Removing one piece can't leave a new attack behind. For example, `<scr<script></script>ipt>` would turn into `<script>` after one cut, so the filter repeats until the output stops changing.
+- Text inside `<title>`, `<textarea>`, `<style>` and `<noscript>` is checked as HTML too. Browsers read it as markup in some cases, such as inside SVG.
+- Tags are matched the way browsers match them, so look-alike characters like `ſ` can't disguise a tag name.
+
+**Things that may lose legitimate content:**
+- All iframes and embedded objects are removed, even ones pointing to ordinary sites such as video players.
+- Any attribute whose value contains `javascript:` is dropped, even if harmless (e.g. `title="javascript: a tutorial"`).
+- Example code shown inside a `<textarea>` gets cleaned too, so its event handlers disappear from the displayed text.
+- Where an attribute is removed, there can be a leftover space (e.g. `<img src=x >`). Browsers treat this exactly the same.

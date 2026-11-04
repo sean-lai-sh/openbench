@@ -1,0 +1,18 @@
+I wrote `jump_analyzer.py`. On the example video it outputs takeoff at frame 53 and landing at frame 62 and saves them to `output.toml`. I checked those two frames by looking at close-up crops of the feet, but I only had this one video, so I couldn't test the script on any others.
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+**Usage:** `python3 jump_analyzer.py [video.mp4] [output.toml]`. Both arguments are optional and default to `example_video.mp4` and `output.toml` in the script's folder.
+
+**How it detects the jump:**
+1. The first frame (empty track) is used as the background. Each frame is compared against it to pick out the athlete. Everything above row 150 is ignored, because the trees and sky flicker and create false detections.
+2. For each frame it finds the athlete's lowest point, which is the feet. Pieces of the body that got split off (feet or legs separated from the torso) are joined back in.
+3. It works out where the ground is from the lowest foot positions across the clip. A frame counts as "in the air" when the lowest foot point is more than 12 px above that level.
+4. The jump is the longest stretch of "in the air" frames, preferring the one where the athlete passes the hurdle (around x ≈ 490). Takeoff is the last frame with a foot on the ground before that stretch, and landing is the first frame with a foot back down after it.
+
+**Things that could make it miss on other videos:**
+- **Frame numbering and definitions:** frames are counted from 0, in OpenCV's reading order. "Takeoff" means the last frame the foot touches the ground, so the athlete is first airborne one frame later, at 54. If your expected answers use first-airborne frames or count from 1, the results will be off by one.
+- **Fixed values:** the 12 px threshold, the hurdle position and the ignored top region were all set from this one video. They rely on every video having the same camera position and scale, as you said they would. A very different athlete, or strong shadows under the feet, could still change the result by a frame.

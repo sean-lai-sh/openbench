@@ -1,0 +1,18 @@
+I wrote `jump_analyzer.py`. On the example video it gives **takeoff = 53** and **landing = 62**, and I checked both against the frames by eye.
+
+**How it detects the jump:**
+1. It uses the first frame (empty track) as the background.
+2. For each frame it evens out small brightness changes, subtracts the background and removes noise. What's left is the athlete's shape.
+3. It tracks the lowest point of that shape, which is the feet. While she runs, this stays around y≈360 px (the ground). During the hurdle jump it rises to about y≈236.
+4. It sets a ground level from how the foot height is spread across the video, then finds the stretches where the feet are more than 10 px above it. Each stretch is scored by how high and how long it is. The hurdle jump in the example scores about 20 times higher than the short airborne moments of normal running strides, so it is easy to tell apart.
+5. **Takeoff** is the last frame with a foot on the ground before that stretch. **Landing** is the first frame with a foot back on the ground after it.
+
+**Frame numbering starts at 0**, the way OpenCV reads frames. If the expected answers count the first frame as 1, both numbers would be 1 higher. The example came with no answer key, so I couldn't check which convention is wanted.
+
+**Usage:**
+```
+python3 jump_analyzer.py [video.mp4] [output.toml]
+```
+With no arguments it reads `example_video.mp4` and writes `output.toml`, both in the script's folder. It uses only `cv2`, `numpy` and `toml`, and takes about 9 seconds on the 120-frame example.
+
+The only test was the one example video. The 10 px ground tolerance and the other thresholds are tuned to it, so they may need adjusting if other videos differ much in lighting, the athlete's clothing, or shadows.

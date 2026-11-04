@@ -1,0 +1,24 @@
+I wrote `jump_analyzer.py` and ran it on `example_video.mp4`. It wrote `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I checked these against the video frames: frame 53 is the last one where the back foot is still on the ground, and frame 62 is the first where the front foot is back down. I only had the one example video, so the script hasn't been tested on any others.
+
+**How it works:**
+1. **Background:** the first frame (which has no runner) is used as the empty scene.
+2. **Camera shake:** the camera drifts by up to about 2.5 pixels, and near the end of the video that drift made the whole fence show up as movement. Each frame is now lined up with the first frame before comparing them (`align_to_background`).
+3. **Finding the runner:** the script compares each frame to the background, allowing for overall brightness changes, then cleans up the result and takes the largest moving shape as the runner. It ignores shapes that are too small or too short to be a person, and records where the runner's lowest point is.
+4. **Ground level:** this is estimated from the runner's lowest point across the frames where the whole body is in view.
+5. **Detecting the jump:** a frame counts as "in the air" when the lowest point is more than 9 pixels above ground level. The jump is the in-air stretch that passes over the hurdle (x ≈ 480–630); if more than one does, the longest wins, which rules out the short airborne moments of normal running strides.
+   - Takeoff is the last frame on the ground before that stretch.
+   - Landing is the first frame back on the ground after it.
+
+**Usage:** `python3 jump_analyzer.py [input.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml`, both in the script's own folder.
+
+**Things to know:**
+- **Missing `toml` package:** `toml` isn't installed here, so the script falls back to writing the same two lines itself. It uses `toml` whenever it's available.
+- **Frame numbering:** frames are counted from 0.
+- **Takeoff/landing definition:** takeoff and landing are the last and first frames with a foot on the ground. If your answers count the first and last frames in the air instead, the results would be 54 and 61; that's a small change in `analyze()`.

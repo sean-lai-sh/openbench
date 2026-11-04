@@ -1,0 +1,17 @@
+I created `parallel_linear.py` with both classes. I tested them against `nn.Linear` with world sizes 1, 2 and 4 on the CPU `gloo` backend, and outputs, weight gradients and bias gradients all matched.
+
+**How the weights are split.** I assumed `master_weight` has the same shape as an `nn.Linear` weight, `(out_features, in_features)`. If the shape is different, the constructor raises an error.
+- **`ColumnParallelLinear`:** each rank keeps rows `[rank*out/ws : (rank+1)*out/ws]` of the weight, which are the columns of Wᵀ. The bias is the same slice of the output dimension and starts at zero. Each rank computes its part of the output, and the parts are all-gathered and joined along the last dimension.
+- **`RowParallelLinear`:** each rank keeps one slice of `in_features`, i.e. `weight[:, rank*in/ws : (rank+1)*in/ws]`. Each rank multiplies its slice of the input by its slice of the weight, and the partial results are summed with all_reduce. Every rank holds the full bias, starting at zero, and it is added once after the sum so it isn't counted multiple times.
+
+**Gradients.** The communication steps are written as custom autograd functions, so gradients flow through them correctly:
+- The column layer's gather sends back only this rank's part of the gradient.
+- The row layer's all_reduce passes the gradient through unchanged.
+- The gradient for the input is all-reduced in the column layer and all-gathered in the row layer, the same way Megatron does it.
+
+**Things that might matter for your tests:**
+- **Input to `RowParallelLinear`:** it accepts either the full input, which it splits itself, or an input already split to `in_features/world_size`.
+- **Dimensions must divide evenly.** `out_features` (column layer) or `in_features` (row layer) has to be divisible by the world size, or the constructor raises a `ValueError`.
+- **No process group needed for one process.** If `torch.distributed` isn't initialised, both layers act as world size 1 on rank 0.
+
+My test script is at `/tmp/obench-cell-e0uhqfty/opencode/t.py` if you want to rerun it.

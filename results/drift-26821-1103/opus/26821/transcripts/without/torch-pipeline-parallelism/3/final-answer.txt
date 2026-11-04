@@ -1,0 +1,25 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on CPU against an unmodified copy of the model, with world sizes 1 and 2. The loss matched and the gradients were identical, with zero difference.
+
+**How it works:**
+- **Splitting the layers:** `partition_layers` divides the decoder layers as evenly as possible, and any leftover layers go to the lowest ranks. With 5 layers and 2 ranks, rank 0 runs layers 0–2 and rank 1 runs layers 3–4. Rank 0 also does the embedding, and the last rank also does the final norm and `lm_head`.
+- **Forward pass:** every microbatch goes forward before any backward starts.
+  - Rank 0 converts the input IDs into hidden states.
+  - Every other rank receives a `[microbatch, seq_len, hidden_size]` tensor on the given device and dtype, and marks it as needing gradients.
+  - Each rank runs its own decoder layers, building the causal mask and position embeddings the same way `LlamaModel` does.
+  - The last rank computes cross-entropy against the targets and divides it by the number of microbatches. Every other rank sends its output to the next rank.
+- **Backward pass:** then every microbatch goes backward.
+  - The last rank backpropagates the loss.
+  - Every other rank receives the output gradient from the next rank and backpropagates it.
+  - Every rank except rank 0 then sends the gradient of its received input back to the previous rank.
+- **Communication:** stages talk through `dist.P2POp` with `batch_isend_irecv`. With a world size of 1 there is no communication at all.
+- **No hooks:** the function adds none. It calls each decoder layer module directly, so the test's hooks on those layers still fire.
+- **Return value:** the last rank gets the summed scaled loss; other ranks get `None`. The function only accumulates gradients — it doesn't step an optimizer or zero gradients.
+
+**The test I ran:** a tiny LLaMA model (5 layers, 3 microbatches), using the `gloo` backend and hooks on the layers to compare outputs. I checked that:
+- each rank ran exactly its assigned layers;
+- each layer's output matched the reference;
+- every gradient matched the reference exactly.
+
+The test script is at `/tmp/obench-cell-jffslhhd/opencode/t.py`.
+
+I didn't test a model whose input embedding and output head share one weight (my test model kept them separate). In that case rank 0 and the last rank would each end up with only part of that weight's gradient, because they aren't combined.

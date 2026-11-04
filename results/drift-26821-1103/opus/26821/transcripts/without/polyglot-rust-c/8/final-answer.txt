@@ -1,0 +1,18 @@
+I wrote `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`, and both builds give the same output for N = 0, 1, 2, 3, 10, 50, 100 and 300. For example, N=10 prints 89 and N=100 prints 573147844013817084101. Both compiled without warnings.
+
+**How it works:** Rust lets block comments nest inside each other, but C++ doesn't. The file uses that difference:
+
+```
+/* /* */        C++: a complete comment.  Rust: one comment is still open
+...C++ code...  (Rust skips this: it's inside the open comment)
+#if 0
+// */           C++: a line comment.  Rust: this closes the open comment
+...Rust code... (C++ skips this: it's inside #if 0)
+/* /* */        C++: a complete comment.  Rust: opens a comment again
+#endif          (Rust skips this: it's inside the comment)
+// */           C++: a line comment.  Rust: closes the comment
+```
+
+Both versions use simple big-number addition (base 10⁹), so large N won't overflow. N is read from the first command-line argument and defaults to 0 if missing or invalid.
+
+One thing to know: `rustc /full/path/main.rs` puts the `main` binary in your current directory, not next to the source file. Your exact command only works if you run it from inside `polyglot/`. Otherwise, add `-o /tmp/obench-cell-vrah1j8l/bench_opencode_polyglot-rust-c_c6aaj1pw/polyglot/main` to the `rustc` command.

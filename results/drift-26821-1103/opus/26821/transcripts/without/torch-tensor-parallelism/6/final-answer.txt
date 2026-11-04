@@ -1,0 +1,19 @@
+I created `parallel_linear.py` with both classes. I tested them against a plain `nn.Linear` using the `gloo` backend on 1, 2 and 4 processes. Outputs, input gradients, and each rank's weight and bias gradients all matched the reference.
+
+Weights use `nn.Linear` layout, shape `(out_features, in_features)`. If `master_weight` has any other shape, the constructor raises an error.
+
+**`ColumnParallelLinear`**
+- Each rank keeps its share of the output rows: `master_weight[rank*k:(rank+1)*k, :]`, where `k = out_features / world_size`.
+- The bias is sharded the same way, with `k` elements per rank, initialised to zero.
+- The forward pass computes this rank's slice of the output, then gathers all slices and joins them along the last dimension.
+- The output and input gradients are routed back correctly between ranks during the backward pass.
+
+**`RowParallelLinear`**
+- Each rank keeps its share of the input columns: `master_weight[:, rank*k:(rank+1)*k]`, where `k = in_features / world_size`.
+- The bias is full size on every rank, initialised to zero, and added after the partial outputs are summed.
+- The input can be either the full tensor, which is split per rank automatically, or a slice that is already split. The full tensor's input gradient is reassembled in the backward pass.
+- Partial outputs are summed across ranks.
+
+Two behaviours you might not expect:
+- If `torch.distributed` hasn't been initialised, both classes run as a single process (world size 1, rank 0).
+- Both feature sizes that get split must divide evenly by `world_size`, or the constructor raises an error.

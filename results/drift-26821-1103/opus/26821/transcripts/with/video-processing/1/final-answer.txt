@@ -1,0 +1,20 @@
+I wrote `jump_analyzer.py`. On the example video it finds takeoff at frame 53 and landing at frame 62, and writes them to `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+I checked these against contact sheets of the frames. In frame 53 the takeoff foot is still on the ground, and by frame 55 it is clearly in the air. Frame 61 shows the lead foot just above the track, and frame 62 is the first frame where it touches down. The example is the only video I've tested it on.
+
+**Frame numbering:** frames are counted from 0. Takeoff is the **last frame with the foot on the ground** before the jump; landing is the **first frame with a foot back on the ground**. If you meant takeoff as the first frame in the air, it's a one-line change and the answer would be 54.
+
+**`toml` isn't installed here.** I added a fallback that writes the same two lines when the library is missing, and that fallback is what produced the output above. If `toml` is available, the script uses it.
+
+**Usage:** `python jump_analyzer.py [video.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml`, both in the script's folder.
+
+**How it works:**
+1. **Background:** frame 0, which has no runner, is used as the empty background.
+2. **Camera shake:** the camera drifts by up to about 2 pixels, which made simple frame subtraction pick up the fence and lane lines. Each frame is first lined up with frame 0, and then compared with a small tolerance for edges that don't quite line up.
+3. **Finding the athlete:** the athlete is the largest moving area in the frame. Each frame, the script records the lowest pixel of that area, which is the feet.
+4. **Detecting the jump:** the ground level of the feet is estimated from the running frames (about y = 360 here). The jump is the stretch where the feet stay clearly above the ground for longest and highest. Normal running strides also leave the ground briefly, but only by a little, so they aren't mistaken for the jump.

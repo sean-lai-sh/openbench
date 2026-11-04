@@ -1,0 +1,11 @@
+I wrote `polyglot/main.rs`, and it works with both commands. I compiled it with `rustc` and with `g++ -x c++` and ran both programs for N = 0, 1, 2, 3, 10, 50, 100 and 200. The two programs printed the same answers every time, starting 1, 1, 2, 3 and giving 89 for N = 10. My local compiler versions may not be exactly 1.75.0 and 13.2.0, but nothing in the file depends on newer features.
+
+**How the file works for both compilers:**
+- **Line 1 is `/* /* */`.** Rust allows comments inside comments, so it reads this as an open comment with a smaller one inside it, and it ignores the C++ code that follows. C++ doesn't nest comments, so for it the comment simply ends on line 1 and it compiles the C++ code.
+- **After the C++ `main`, the file opens a C++ raw string with `R"rust(`.** Rust is still inside its comment there, so it doesn't see this.
+- **The line `// */` closes the comment for Rust.** Rust then compiles the Rust `fn main` that follows. For C++, those lines are just text inside the raw string.
+- **The last line, `// )rust";`, ends the raw string for C++.** Rust sees it as an ordinary line comment.
+
+Both versions use their own big-number arithmetic, so large N gives exact results rather than overflowing a 64-bit integer.
+
+If you build with `g++ -Wall`, you'll get one harmless warning: `"/*" within comment`. Your command doesn't use `-Wall`, so it compiles cleanly as given.

@@ -1,0 +1,21 @@
+I created `filter.py`. It edits the given file in place: it removes only the dangerous parts and leaves every other byte exactly as it was.
+
+**Testing:** I ran it against 24 XSS samples, and none of the outputs still contained JavaScript. I also ran it on a normal HTML page (doctype, meta, a style block, comments, a table, links, a form, odd spacing and quoting); the result was byte-for-byte identical to the input. That's my own small set of examples, not a full XSS test suite or a check in a real browser.
+
+**How it works:** it reads the HTML with a small parser that follows the browser's rules for splitting tags and attributes. It reads the document four ways: once the way a browser normally would, and three more times ignoring the usual special handling of comments and of elements like `<style>`, `<noscript>` and `<textarea>`. It repeats this until nothing changes. This catches tricks that rely on the browser reading the markup differently than a simple filter would, such as `<noscript><p title="</noscript><img onerror=...>">` or the `<svg>`/`<math>` variants.
+
+**What it removes:**
+- `<script>` elements and everything inside them, including a script tag that is never closed.
+- The tags of `iframe`, `frame`, `frameset`, `object`, `embed`, `applet`, `base`, `portal` and `fencedframe`. Whatever is between the tags is kept and checked again.
+- Event handler attributes (`on*`) and `srcdoc`.
+- Link and address attributes (`href`, `src`, `action`, `formaction`, `xlink:href`, `data`, `background`, and SVG animation `values`/`to`/`from`) that use `javascript:`, `vbscript:` or `data:`. It decodes HTML entities and strips control characters and spaces first, so disguises like `jav&#x09;ascript:` or `javascript&colon;` are caught. Inline images (`data:image/png` and similar) are kept.
+- `style` attributes containing `javascript:`, `expression(`, `-moz-binding` or `behavior:`; matching text inside `<style>` blocks is cut out.
+- `<meta http-equiv="refresh">` tags that redirect to a dangerous address, and `<link rel="import">`.
+
+When an attribute is removed, only that attribute and the space before it are deleted, so everything else in the tag stays as written. The file is read and written as raw bytes, so the encoding can't change it.
+
+**Things to know:**
+- Ordinary iframes and embedded objects with safe web addresses also lose their tags.
+- In a few odd cases it removes more than strictly needed. For example, `<scr<script>ipt>alert(1)</script>` becomes just `<scr`, even though a browser wouldn't run that code.
+
+Usage: `python3 filter.py page.html`

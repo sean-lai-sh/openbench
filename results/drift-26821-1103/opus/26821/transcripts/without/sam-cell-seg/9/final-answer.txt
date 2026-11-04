@@ -1,0 +1,25 @@
+I wrote `convert_masks.py`. It runs MobileSAM on the CPU and converts all 48 demo masks (19 rectangles, 29 polylines) to polylines in about 13 seconds. In my checks, no two polygons intersect, each cell has exactly one contiguous polygon, and none of the outputs is a rectangle.
+
+**Running it:**
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir --rgb_path img.png --csv_path meta.csv
+```
+You can also pass the four arguments in that order without the flags. The output gets the same file name as the input csv and is saved inside `output_path`. If `output_path` ends in `.csv`, that exact file is written instead.
+
+**How it works:**
+1. **Prompting:** each annotation's bounding box is the prompt. The script runs MobileSAM once with the box alone and once with the box plus a point inside the cell, giving 6 candidate masks.
+2. **Picking a mask:** it chooses the candidate with the best combination of SAM's own confidence score, overlap with the original shape (for rectangles, an ellipse drawn inside the box), and how little of the mask spills outside the box. It is penalised if SAM simply filled the whole rectangle.
+3. **Cleanup:** small specks are removed, only the largest connected piece is kept, and holes are filled. If SAM produces nothing usable, the original polyline (or the ellipse, for rectangles) is used instead.
+4. **No overlap:** pixels claimed by two cells go to the one SAM is more confident about. A 1-pixel gap is then kept between neighbouring cells, so the output polygons can't overlap or touch. If one cell completely surrounds another, a thin cut is made so the outer outline doesn't enclose the inner cell. The script re-checks the final polygons and repeats this step until they pass.
+5. **Large images:** SAM works at 1024 px, so images bigger than 512 px are split into overlapping 512 px tiles. I tested this on a 3×3 tiled copy of the demo (1122×1065, 432 cells): it took about 90 seconds and also had no overlaps.
+
+**Results on the demo:**
+- **Agreement with your annotations:** the outlines overlap your polylines by about 0.78 on average (intersection over union).
+- **Size:** the former rectangles shrink to roughly 64% of the box area, which is expected since boxes include background.
+- **Visual check:** I overlaid the results on the image and they follow the nuclei well. Two weak spots: the box at the top edge picks up some pale area, and some outlines have straight edges where they're cut off at the box limit.
+
+**Environment problems found and how I handled them:**
+- **torchvision crashes on import here, so `import mobile_sam` fails.** The installed torchvision is a CUDA build sitting next to a CPU-only torch. The script works around this itself, and only when the problem is detected: it registers two stub operator definitions that MobileSAM never calls. I didn't change MobileSAM or the installed packages. Installing the CPU build of torchvision would be the proper fix.
+- **pandas isn't installed** in the system Python. To test, I made a separate virtual environment in `/tmp/obench-cell-tpayrgix/opencode/venv` with pandas added; the system install is untouched. The script itself still assumes pandas is available, as you specified.
+
+**Decision for you:** I left the `type` column as it was ("rectangle" stays "rectangle"), because you said only the coordinate and bounding-box columns should change. If you'd rather every row say "polyline", that's a one-line change.

@@ -1,0 +1,11 @@
+I wrote `steal.py` and ran it. It found all 20 hidden neurons and saved a 20×10 matrix to `stolen_A1.npy`. The script only learns the network by calling `forward()`; it never reads the weights.
+
+**How it works:**
+1. It picks random lines through the input space and evaluates `forward()` along them. On a line, the output is made of straight segments, and it bends wherever one neuron switches on or off.
+2. It finds each bend by repeatedly halving the segment, then pins down the exact spot by extending the two straight pieces on either side and seeing where they meet.
+3. At each bend, it estimates the full input gradient (by finite differences) just before and just after. The difference between the two equals `A2_i * A1_i`, which is one row of A1 up to scaling.
+4. It checks each row a second time with a smaller step, scales it to length 1, and drops duplicates. It stops after 60 lines in a row turn up no new neuron. In this run that took 63 lines and about 2 seconds.
+
+**Check:** I only used the real `A1` in `forward.py` to verify the result afterwards. Each recovered row matches a true row with |cosine similarity| = 1.0, and the ratio between matching entries stays constant to within about 8e-7.
+
+**Sign:** scaling may include a factor of −1. I'm not certain the overall sign of a neuron can be recovered from queries alone, so the script fixes it by making each row's largest-magnitude entry positive. Some rows may therefore be negative multiples of the true ones. If your checker needs positive scaling only, the script would need an extra sign-resolution step.

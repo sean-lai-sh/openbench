@@ -1,0 +1,15 @@
+I wrote `steal.py`. It runs in about 3 seconds, prints how many neurons it found, and saves a 20×10 matrix to `stolen_A1.npy`.
+
+**Result:** it found all 20 hidden neurons. I checked the output against the real `A1` in `forward.py`, with each row scaled to unit length. Every stolen row matches exactly one true row. The signs are right too, and the largest difference in any entry is about 8e-9. That check was a separate one-off command; `steal.py` itself only calls `forward()` and never reads the weights.
+
+**How it works:**
+1. **Finding the bends:** along a straight line through input space, the network's output is made of straight pieces. It bends wherever a hidden neuron switches on or off. The script follows 120 random lines and splits each one in half repeatedly until it pins down each bend. It then gets the exact spot by intersecting the straight pieces on either side.
+2. **Reading off a row:** at each bend it measures the slope of the output in all 10 input directions, just before and just after the bend. The difference between the two points the same way as that neuron's row of `A1`. The bend's position also gives the neuron's bias. Measurements that disagree when repeated with two different step sizes are thrown away, since that usually means another bend is too close.
+3. **Removing duplicates:** many bends belong to the same neuron. The script groups rows pointing the same way (or exactly opposite) and averages each group. A group has to be seen at least twice to count.
+4. **Fixing signs:** the slope differences alone can't tell a row from its negative. To decide, the script fits a model using the recovered neurons plus an extra linear term. Wrong signs show up as a leftover linear term. It then tries every combination of sign flips (split into two halves to keep it fast) and picks the one that makes that leftover zero. The leftover came out at about 7e-11.
+
+**Limits:**
+- A neuron that is never active, or whose switching point never crosses a sampled line, can't be detected. Lines run 15 units each way from their starting points.
+- The sign check tries every combination, which only works for up to 22 neurons. With more, the script skips the check and leaves the signs as found.
+
+My first version missed one neuron with a very small output weight (about 0.006). Its bends were too faint for the original tolerance. Switching to the intersect-the-two-sides method fixed that.

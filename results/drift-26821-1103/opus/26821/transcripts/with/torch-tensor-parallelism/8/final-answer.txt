@@ -1,0 +1,15 @@
+I created `parallel_linear.py` with both classes. I tested them against `nn.Linear` using real multi-process runs (gloo backend) at world sizes 1, 2 and 4. At every size, the outputs, the input gradients, and the weight and bias gradients for each rank's slice all matched.
+
+**`ColumnParallelLinear`**
+- `master_weight` has the usual `nn.Linear` shape `(out_features, in_features)`. Each rank keeps its own block of rows of size `out_features / world_size`, so each rank computes its share of the output features.
+- The bias is split the same way and starts at zero.
+- In the forward pass, each rank computes its partial output and the pieces are joined along the last dimension with `all_gather`. In the backward pass, the gradient is split back so each rank gets its own piece.
+- The gradient for the input is summed across ranks with `all_reduce`, so it equals the gradient from the full layer.
+
+**`RowParallelLinear`**
+- Each rank keeps the slice `[:, rank*k:(rank+1)*k]` of the weight, where `k = in_features / world_size`.
+- The bias is full size on every rank, starts at zero, and is added after the reduction so it is only counted once.
+- If the input's last dimension is `in_features` (and there is more than one rank), the input is split automatically. If it's already `in_features / world_size`, it is used as is.
+- The partial outputs are summed with `all_reduce`. When the layer splits the input itself, the backward pass gathers the gradient back to full size.
+
+The collective operations are wrapped in custom autograd functions, because PyTorch's `all_gather` doesn't pass gradients back on its own. The split dimension must divide evenly by `world_size`, and the constructors check this with asserts. If `torch.distributed` isn't initialised, both classes run as a single rank.

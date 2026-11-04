@@ -1,0 +1,20 @@
+I wrote `jump_analyzer.py`. On the example video it detects takeoff at frame 54 and landing at frame 62, and it has written `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 54
+jump_land_frame_number = 62
+```
+
+I checked these numbers by looking at the frames myself. The rear foot is still on the ground in frame 53 and off it in 54. The lead foot is still in the air in 61 and touches down in 62. I also ran it on a copy of the video that was mirrored, brightened and shifted by 15 frames, and it gave 69 and 77, the same jump moved by 15 frames. That's still only the one example clip, so I haven't measured accuracy on other athletes.
+
+**How it works:**
+1. **Background:** the first frame (empty track) is the reference. Each frame's overall brightness is adjusted to match it first, because exposure drifts during the clip.
+2. **Finding the athlete:** pixels that differ from the background are grouped, and the biggest person-shaped group is taken as the athlete. The script keeps only the longest unbroken stretch of frames where that group appears. This was needed because background changes late in the video, around frames 87–119, looked like a second "person". Before I added this step, the script reported a jump at frames 107–119.
+3. **Feet and ground:** the lowest point of the athlete is taken as the feet in each frame. Ground level is worked out from how low the feet usually are, since they're on the ground most of the time.
+4. **The jump:** a frame counts as airborne when the feet are more than 10 px above the ground. Normal running strides are only off the ground for 1–3 frames, so the jump is the longest airborne stretch, with extra weight for how high the feet get.
+
+**Things to check against your answer key:**
+- **Frame convention:** takeoff is the first frame with both feet off the ground, and landing is the first frame where a foot touches down again. Frames start at 0. If your key uses the last frame on the ground for takeoff instead, takeoff would be 53, one frame earlier.
+- **Fixed values:** the difference threshold (25), the airborne margin (10 px) and the size and shape limits for a person are set for this camera setup and 960×540 video.
+
+Run it with `python3 jump_analyzer.py [video.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml` in the script's folder.

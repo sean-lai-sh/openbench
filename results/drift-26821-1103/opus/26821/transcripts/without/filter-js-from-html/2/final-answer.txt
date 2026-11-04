@@ -1,0 +1,23 @@
+I've written `filter.py`. Run it as `python3 filter.py file.html` and it removes JavaScript from the file in place. It only uses the Python standard library. It never rewrites the whole document: it just cuts out the dangerous parts, so everything else stays byte-for-byte the same.
+
+**Testing:** I ran 132 XSS payloads through the filter and loaded each result in headless Chromium using Selenium, clicking or hovering where a payload needs it. Before filtering, 128 of them triggered an alert (the other 4 don't work in Chromium anyway). After filtering, none did. A clean test page with doctype, meta tags, styles, tables, forms, an external iframe, SVG, video, textarea and comments came out byte-identical. I also ran it on about 300 HTML files found on the system; the only real files that changed were ones with a `<script>` tag or a `<` inside an attribute value.
+
+**What gets removed:**
+- **Scripts:** `<script>` elements with their content, and stray `</script>` tags.
+- **Plugin tags:** `<object>`, `<embed>` and `<applet>` (the tags only; anything inside them is kept and checked like the rest of the page).
+- **Event handlers:** every `on*` attribute, plus `srcdoc`, and SVG animations that target an `on*` attribute (`attributeName="on…"`).
+- **Script links:** any attribute whose value contains `javascript:`, `vbscript:`, `livescript:` or `mocha:`. This catches tricks like `&#106;avascript:`, `java&Tab;script:` and control characters.
+- **`data:` URLs:** removed, except image data on media elements (such as `<img>` or `<video>`) and safe image types like PNG, GIF and JPEG.
+- **Inline styles:** `style` attributes containing `expression(`, `-moz-binding`, `behavior:` or `javascript:` (CSS escapes and comments are taken into account).
+
+**How it avoids being tricked:**
+- It splits tags into attributes using the same rules a browser does, so payloads like `<img/src/onerror=…>`, `<a <img onerror=…>` or `"x"onerror=` are read the same way the browser would read them.
+- It checks everything as markup, including comments, `<style>`, `<textarea>`, `<noscript>` and CDATA sections. No `<` is left inside any tag it outputs, which blocks tricks that hide a tag inside an attribute, such as `<noscript><p title="</noscript><img onerror=…>">`.
+- It repeats the cleanup until nothing changes, so removing one piece can't join the leftovers into a new attack (e.g. `<<script>x</script>script>…`).
+
+**Trade-offs:**
+- If a quoted attribute value contains `<`, it gets written as `&lt;`. The browser reads this exactly the same, but the bytes in the file change. On the system files this happened once, in a `meta generator` tag.
+- An attribute is dropped if its value mentions `javascript:` anywhere, even in harmless text like a title.
+- Iframes pointing to ordinary `https://` addresses are kept. Their `src`, `srcdoc` and event handlers are still checked.
+
+The test scripts are in `/tmp/obench-cell-svmxc22d/opencode/` (`harness.py`, `vectors.py`).

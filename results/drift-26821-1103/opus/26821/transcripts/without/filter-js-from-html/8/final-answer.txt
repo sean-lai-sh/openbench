@@ -1,0 +1,22 @@
+I've created `filter.py`, which strips JavaScript from an HTML file in place (`python3 filter.py file.html`). I tested it on a clean document and about 40 common XSS tricks. The clean document came out byte-for-byte identical, and all the attacks were neutralised. Only the standard library is used.
+
+**How it works:** the script reads the HTML the same way a browser does, following the HTML5 parsing rules. Anything it doesn't remove is copied through unchanged, including whitespace, CRLF line endings, attribute quoting and bytes that aren't valid UTF-8. If nothing dangerous is found, the file isn't rewritten at all.
+
+**What gets removed:**
+- **Removed with everything inside them:** `script`, `iframe`, `noscript`, `noembed`, `noframes`, and any `<style>` block containing CSS that can run code (`expression(`, `javascript:`, `behavior:`, `-moz-binding`, including when disguised with CSS escapes or comments).
+- **Tag removed, content kept:** `object`, `applet`, `embed`, `param`, `base`, `svg`, `math`, `portal`, `fencedframe`, and tags with garbled names like `<scr<script>`.
+- **Attributes removed:**
+  - all `on*` event handlers and `srcdoc`.
+  - any attribute containing `javascript:`, `vbscript:` and similar, checked after decoding HTML entities and stripping whitespace, so `jav&#x09;ascript&colon;` is caught.
+  - `data:` URLs in link/source attributes, except images.
+  - `style` attributes with dangerous CSS.
+  - `<link rel=import>` tags.
+- **Comments removed:** only ones containing markup or old Internet Explorer conditional syntax. Other comments are kept.
+- Inside `<title>` and `<textarea>`, a `<` that starts something tag-like becomes `&lt;`. It looks exactly the same on the page but can't be read as a tag. Text inside `<style>` and `<xmp>` is also checked for tags.
+
+**Trade-offs you might hit, all chosen for safety:**
+- **Inline SVG and MathML stop drawing.** The `<svg>` and `<math>` tags are removed but their inner elements stay. Those tags make browsers read the markup under different rules, which is a common way to sneak scripts past filters.
+- **`<iframe>`, `<object>`, `<embed>` and `<noscript>` are always removed**, even if they look harmless.
+- **The value check can be over-cautious.** Any attribute whose value contains `javascript:` is dropped, even in plain text like `title="what is javascript: ..."`.
+
+Plain text is never changed. Text such as `3 < 5` or `javascript is fun` stays exactly as written, since it can't run.

@@ -1,0 +1,14 @@
+I wrote `/tmp/obench-cell-wejj75xo/bench_opencode_polyglot-rust-c_gfky91b2/polyglot/main.rs`. It builds with `rustc` and with `g++ -x c++`, and both programs print the same answers. I tested N = 0, 1, 2, 3, 10, 50 and 150, and got 1, 1, 2, 3, 89, 20365011074 and a 32-digit number for N = 150.
+
+**How it works:** the file uses the ways the two languages handle comments differently.
+- **Backslash at the end of a `//` line:** in C++, a `//` comment ending in `\` carries on to the next line. Rust ignores the backslash. So the pairs `//\` + `/*` and `//\` + `*/` are entirely comments to C++, but Rust sees a block comment start or end on the second line.
+- **Hiding the C++ code from Rust:** the C++ code sits inside a Rust block comment.
+- **Hiding the Rust code from C++:** the Rust code sits inside `#if 0 … #endif`. The `#endif` is itself inside a Rust block comment, so Rust never sees it.
+
+**Limits:**
+- Both versions use 128-bit unsigned integers, so the result is exact up to N = 184. From N = 185 the number is too big: the C++ version silently wraps around, and the Rust binary stops with an overflow error.
+- If N is missing or isn't a number, both programs treat it as 0 and print 1.
+
+**If you edit the file:** two rules keep it working.
+- The C++ section can't contain `/*` or `*/`.
+- The Rust section can't contain apostrophes, so no lifetimes or `'c'` character literals, because C++ still reads that text even inside `#if 0`.

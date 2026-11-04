@@ -1,0 +1,16 @@
+I created `parallel_linear.py` with both classes. I tested it with gloo at world_size 1, 2 and 4 against a plain `nn.Linear` using the same weights. The outputs, input gradients, weight-shard gradients and bias gradients all matched.
+
+The code assumes `master_weight` has the standard `nn.Linear` shape, `(out_features, in_features)`, and checks for it.
+
+**`ColumnParallelLinear`**
+- Each rank keeps its slice of the output dimension: `master_weight[rank*out/ws : (rank+1)*out/ws, :]`. In this layout the output features are the rows, so that matches your "split by columns" in the `Y = X·Wᵀ` view.
+- The bias is set to zero and split into the same per-rank slices as the output.
+- The forward pass computes this rank's share of the output, then gathers all the shares and concatenates them along the last dimension (`all_gather`). In the backward pass, each rank takes back its own slice of the gradient, and the input gradient is summed across ranks (`all_reduce`).
+
+**`RowParallelLinear`**
+- Each rank keeps its slice of the input dimension: `master_weight[:, rank*in/ws : (rank+1)*in/ws]`.
+- The bias is the full size on every rank, set to zero.
+- The forward pass takes a full input, splits it, computes a partial result and sums the partials across ranks (`all_reduce`). The bias is added once, after the sum. In the backward pass the input gradient is gathered back to full size.
+- It also accepts an input that is already split: if the last dimension is `in_features / world_size`, it uses the input as is. That would only fail to tell the cases apart if the per-rank size equalled the full size, which can't happen when world_size is above 1.
+
+The communication steps are custom autograd functions, so gradients flow correctly through `all_gather` and `all_reduce`. If `torch.distributed` isn't initialised, both classes fall back to world_size 1, rank 0. Both layers require the dimension being split to divide evenly by world_size, and stop with an error if it doesn't.

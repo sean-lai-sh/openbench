@@ -1,0 +1,11 @@
+I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy` in about a second. The script only uses `forward()`: it finds A1's rows from the outside and doesn't need to know the hidden-layer width beforehand.
+
+**How it works:**
+1. It picks random lines through the 10-dimensional input space and searches along each one for "kinks", the points where one hidden neuron switches on or off. It narrows each kink down precisely by finding where the straight pieces on either side meet.
+2. At each kink, it estimates the gradient just before and just after using finite differences. The difference between the two equals `A2[i] * A1[i]`, so it gives row `i` of A1 up to a scale factor. Each row is then scaled to length 1.
+3. To filter out mistakes, it measures each row at two different distances from the kink and throws it out if they disagree. It also only keeps a row if it was seen on at least two separate lines. My first version had neither check and produced 2 junk rows out of 22, probably from pairs of kinks sitting very close together.
+4. It stops once 30 lines in a row turn up no new confirmed neuron.
+
+**Check:** As a test, separately from the script, I compared the output with the real `A1` stored in `forward.py`. Each of the 20 stolen rows matches a different real row, with an absolute cosine similarity of 0.9999999999999991 (essentially exact). For each pair, the element-by-element ratio is constant to within a relative spread of about 5e-7.
+
+**Sign:** Each row's sign is fixed so that its largest entry is positive, so a row can come out as `-1 ×` the true row. The sign can in principle be worked out from the network, but kinks and gradients alone don't show it, so the script doesn't try. This is fine if "up to scaling" allows negative factors. If you need the exact signs, the script would need an extra step.

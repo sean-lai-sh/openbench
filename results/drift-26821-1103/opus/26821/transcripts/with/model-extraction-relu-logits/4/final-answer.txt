@@ -1,0 +1,13 @@
+I wrote `steal.py`. Running it saves `stolen_A1.npy`, which matches the real A1 up to row order and a positive scale per row. It takes about 2 seconds.
+
+**Check:** I compared the output against the real weights in `forward.py`, which `steal.py` never reads. All 20 hidden neurons were recovered, with no extra or missing rows. For each matched row, the ratio between the true and stolen values is the same across all 10 entries to within about 1e-6, and always positive, so the signs are right too. I also ran it on three other random networks (different seeds, with 12, 20 and 30 hidden neurons) and every neuron came back exactly in each case.
+
+**How it works:**
+1. **Find kinks:** it walks along 150 random lines through input space and uses bisection to find the points where the output stops being a straight line. Each such point is where one neuron switches on or off.
+2. **Get the row direction:** at each kink it measures the gradient just before and just after, using finite differences. The difference between them points along that neuron's row of A1. Kinks closer than 0.01 to another kink are skipped so two neurons don't get mixed together.
+3. **Group:** results pointing the same way (and with the same switching boundary) are grouped. Groups seen at least 3 times count as real neurons, and the median of each group is used and normalised to length 1.
+4. **Fix signs:** one kink can't tell a row from its negative, because a·ReLU(z) and −a·ReLU(−z) differ only by a linear term. So the script fits the whole network to 4000 sample queries, then searches for the set of sign flips that makes that leftover linear term zero. The real network has no such term.
+
+**Limitations:**
+- A neuron that is never active in the range searched (inputs out to about 20 from random starting points) causes no kink, so it won't be found. That's a limit of this approach, not something more queries would fix.
+- The search in step 4 tries every combination of flips, split into two halves. That's fast at these sizes but grows quickly with neuron count, so it would get slow with roughly 40 or more hidden neurons.

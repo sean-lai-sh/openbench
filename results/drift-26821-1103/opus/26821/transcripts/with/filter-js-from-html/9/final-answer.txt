@@ -1,0 +1,25 @@
+I created `filter.py`. It edits the HTML file given as `argv[1]` in place, cuts out only the dangerous pieces of text, and leaves every other byte as it was.
+
+**How it works**
+- It reads the file the same way a browser splits HTML into tags (following the HTML5 rules), so it deals with odd inputs like `<img/src=x>`, `<svg/onload=...>`, unquoted or unclosed attributes and stray quotes the way a browser would.
+- Removing an attribute takes out the attribute and the space before it. Nothing else is reformatted: whitespace, CRLF line endings, comments, entities and non-UTF-8 bytes all stay the same.
+
+**What it removes**
+- **`<script>` elements**, including everything inside them.
+- **Embedding and SVG/MathML tags**: `iframe`, `frame`, `frameset`, `object`, `embed`, `applet`, `base`, `portal`, `param`, `svg`, `math` and SVG animation tags. Only the tag itself goes; the text inside is kept.
+- **Imports**: `<link rel=import>`.
+- **Event handlers and `srcdoc`**: every attribute starting with `on`, plus `srcdoc`.
+- **Script links**: any attribute whose value contains `javascript:`, `vbscript:` or similar. Character codes like `&#106;` or `&colon;` and hidden whitespace or control characters are decoded before checking.
+- **`data:` links** in link and source attributes (`href`, `src`, `action`, a refresh `content`, and so on). `data:image/png`, `jpeg`, `gif` and similar raster images are allowed.
+- **Script-capable CSS** in `style` attributes or `<style>` blocks: `expression()`, `-moz-binding`, `behavior:` and `javascript:` links.
+- **Hidden tags inside attribute values**: if a quoted value contains HTML tags, those are cleaned too. This blocks tricks like `<noscript><p title="</noscript><img onerror=...>">`.
+- The whole pass repeats until nothing changes, so split tricks like `<scr<script>ipt>` can't rebuild a tag after something is removed.
+
+**Testing**
+- I ran 74 attack inputs through the installed headless Chromium, with `alert`, `confirm` and `prompt` swapped for a detector. Several of them ran script before filtering, including the mutation-XSS ones; none did afterwards. That browser test can only catch attacks that fire on page load. The ones that need a click (`javascript:` links, `formaction`) were checked by looking at the output, which has the dangerous attribute removed.
+- A normal test document (doctype, meta tags, CSS, tables, comments, entities, CRLF, UTF-8, forms, `srcset`, a base64 PNG) came out byte-for-byte identical.
+
+**Trade-offs**
+- Attribute values are checked strictly, so a harmless attribute containing text like "javascript:" (for example a title) is removed too.
+- Embedded iframes, objects and embeds are removed even when they look harmless, which goes beyond the "preserve as much as possible" goal for those tags.
+- Removing the `<svg>`/`<math>` tags leaves their contents as plain HTML elements, so inline SVG graphics won't display.

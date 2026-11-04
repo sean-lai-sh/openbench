@@ -1,0 +1,11 @@
+I wrote `steal.py`. Running it recovers all 20 hidden neurons from queries to `forward()` alone, and saves a 20×10 matrix to `stolen_A1.npy`. It takes about a second.
+
+**How it works:**
+1. **Find the kinks.** Along a straight line through input space, the network's output is piecewise linear. Each bend happens where one hidden neuron switches on or off. The script finds these bends by comparing slopes and splitting the line in half recursively, then pins each one down exactly by intersecting the straight pieces on either side.
+2. **Read off a row.** At each bend, the gradient changes by `A2[i] * A1[i,:]`. That is row *i* of A1 times a scale factor. The script estimates the gradient on both sides with small test steps, takes the difference and normalises it.
+3. **Reject bad estimates.** Each row is computed twice with different step sizes and dropped if the two disagree. This is needed because a test step can cross a different neuron's boundary. Before I added this check, the output had 25 rows, 5 of them spurious.
+4. **Remove duplicates.** It samples 60 random lines, treats rows that point the same way (ignoring sign) as one neuron, and keeps only rows seen more than once.
+
+**Check:** `steal.py` itself never reads the true A1. To grade the result, I compared it separately against `forward.A1`. Each true row lines up with exactly one recovered row, with cosine similarity above 0.9999999999999 (|cos| ≈ 1 − 1e-13). I also reran with three other random seeds and got all 20 neurons with the same accuracy each time.
+
+The saved rows are scaled to length 1 and their sign is set so the largest entry is positive. That matches A1 up to the permutation and scaling you allowed.

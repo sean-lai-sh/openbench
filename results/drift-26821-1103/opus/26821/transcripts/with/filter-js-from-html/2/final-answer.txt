@@ -1,0 +1,22 @@
+I've created `filter.py`. It edits the given file in place and removes only the dangerous parts. Everything else is written back byte-for-byte, including line endings and non-UTF-8 bytes, and a file with nothing dangerous in it is never rewritten.
+
+**Testing:** I ran 85 XSS attacks through headless Chromium before and after filtering. 63 of them ran JavaScript in the original files; none did after filtering. The other 22 didn't fire even unfiltered, so they say nothing either way. Two clean sample documents came out identical to the input. A 4 MB file took about 3.5 seconds.
+
+**How it works:** it reads the HTML the same way Chrome does, including how quotes and tag endings are handled. That way, text hidden inside an attribute value can't later be read by the browser as a real tag.
+
+**What gets removed:**
+- **Removed along with their contents:** `<script>` and `<iframe>`.
+- **Tags removed, inner content kept:** `object`, `embed`, `applet`, `frame`, `frameset`, `portal`, and tags with suspicious names (e.g. `<scr<script>ipt>`).
+- **Removed only when dangerous:** `<meta>` refreshes to `javascript:` or `data:` URLs, `<link rel=import>`, SVG animations that change `href` or `on*` attributes, and `<style>` blocks containing `expression(`, `javascript:` and similar.
+- **Attributes:** all `on*` event handlers and `srcdoc`. Also any attribute whose value, once HTML entities and hidden whitespace are decoded, contains a `javascript:` or `vbscript:` URL or a literal `<script`. `data:` URLs are removed from link and source attributes unless they are ordinary images (PNG, JPEG, GIF and so on). Dangerous `style` attributes go too.
+- **Mutation-XSS defence:** the contents of comments and of elements like `textarea`, `title`, `style` and `noscript` are also checked as if they were HTML. This blocks the `<noscript><p title="</noscript><img onerror=…>">` and `<svg><style><img onerror=…>` styles of attack.
+- **Final check:** the filter runs repeatedly until nothing changes. This catches attacks that only appear once a removal joins two pieces of text together.
+
+**Things that change even in non-malicious files:**
+- Every `iframe`, `object` and `embed` is removed, including ordinary ones like a YouTube embed.
+- `data:image/svg+xml` URLs are removed even in `<img>`, where they would be safe.
+- Text inside `<textarea>` or `<title>` that happens to look like a dangerous tag gets cleaned too.
+
+These are deliberate trade-offs in favour of safety.
+
+To use it: `python3 filter.py file.html`

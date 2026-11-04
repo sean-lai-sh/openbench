@@ -1,0 +1,26 @@
+I wrote the polyglot at `polyglot/main.rs`. I built it with both `rustc` and `g++ -x c++`, and both binaries printed the same output for every N I tried:
+
+| N | output |
+|---|---|
+| 0, 1, 2, 3 | 1, 1, 2, 3 |
+| 10 | 89 |
+| 50 | 20365011074 |
+| 90 | 4660046610375530309 |
+| 150 | 16130531424904581415797907386349 |
+
+**How it works:** Rust lets block comments nest, but C++ doesn't. Each compiler reads a different part of the file:
+
+```
+/* /* */        <- C++: a complete comment.  Rust: still inside a comment (depth 1)
+#if 0           <- C++: start skipping.      Rust: hidden in the comment
+// */           <- C++: line comment.        Rust: closes the comment
+...Rust code... <- C++ skips this because of #if 0
+/* /* */        <- C++: a complete comment.  Rust: opens a comment again
+#endif          <- C++: stop skipping.       Rust: hidden in the comment
+...C++ code...  <- Rust: hidden in the comment
+// */           <- C++: line comment.        Rust: closes the comment
+```
+
+**Notes:**
+- Both versions use 128-bit unsigned integers (`u128` in Rust, `unsigned __int128` in C++), so results are exact up to about N = 184. Above that the number overflows. Both versions overflow the same way, so their outputs still match, but they're no longer correct Fibonacci numbers.
+- `rustc` writes the `main` binary into whatever directory you run it from. Your command `.../polyglot/main N` will only find it if you run `rustc` from inside `polyglot/`, or add `-o /tmp/obench-cell-4d2shwud/bench_opencode_polyglot-rust-c_nf8a5ans/polyglot/main` to the `rustc` command.

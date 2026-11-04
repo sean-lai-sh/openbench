@@ -1,0 +1,18 @@
+I wrote `polyglot/main.rs`. It compiles with both `rustc` and `g++ -x c++`, and both programs print the same answers. I tested N = 0, 1, 2, 3, 10, 50 and 100 and got 1, 1, 2, 3, 89, 20365011074 and 573147844013817084101. The tests ran with whatever compiler versions are installed here; I didn't check whether those are your rustc 1.75.0 and g++ 13.2.0.
+
+**How it works:** Rust lets one `/* */` comment sit inside another, but C++ ends a comment at the first `*/` it finds.
+
+```
+/* /* */        C++: one full comment.  Rust: still inside a comment (one level left open)
+...C++ code...  Rust skips all of this
+#if 0           C++ ignores everything from here to #endif
+// */           C++: just a line comment.  Rust: this closes its comment
+...Rust code... C++ skips this because of #if 0
+/* /* */        C++: one full comment.  Rust: opens a comment again
+#endif          only C++ sees this
+// */           Rust: closes its comment.  C++: just a line comment
+```
+
+**Two details:**
+- Both versions add numbers digit by digit instead of using a fixed-size integer, so they don't overflow at large N (a 64-bit integer would overflow after f(92)).
+- The Rust code has no `'` characters. C++ still scans the text inside `#if 0`, and an unmatched `'` makes it complain. That's why it uses `b"0"[0]` rather than `b'0'`.

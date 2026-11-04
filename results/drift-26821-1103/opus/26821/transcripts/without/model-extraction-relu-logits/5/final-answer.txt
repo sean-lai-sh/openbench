@@ -1,0 +1,12 @@
+I wrote `steal.py`, and running it saves a 20×10 matrix to `stolen_A1.npy` that matches the real `A1` up to row order and scaling.
+
+**How it works (queries to `forward()` only):**
+1. It picks random lines `x0 + t·d` with `t` from −30 to 30 and finds every point where the output stops being linear. Each such bend is a hidden neuron switching on or off. It narrows each bend down by halving the interval, then gets the exact location by intersecting the straight pieces on either side.
+2. At each bend it estimates the gradient just before and just after, using central finite differences. The jump in gradient equals `A2[i]·A1[i,:]`, which is one row of `A1` times a constant.
+3. It scales each row to length 1, fixes its sign, and groups matching rows (cosine > 1−1e-6), averaging them for precision. It stops once 15 lines in a row turn up no new neuron. Rows seen only once are dropped as likely noise.
+
+**Check:** the script never reads `forward.A1`. To check the result afterwards, I compared it with the true `A1` from `forward.py`. All 20 true neurons were found, each matched with absolute cosine similarity of at least 0.9999999999999997, and there were no extra rows. The run takes about 0.5 s.
+
+My first version found only 13 of the 20 neurons. It used a fixed tolerance to decide whether a stretch was straight, and as the intervals shrank, real bends fell under that tolerance and were missed. I fixed it by solving for the bend location directly once an interval is small, instead of halving until it disappears.
+
+**Limitation:** the search assumes each neuron's switching point falls inside the `t` range on at least some lines. That holds for this network, but a network with very large biases might need a wider range.

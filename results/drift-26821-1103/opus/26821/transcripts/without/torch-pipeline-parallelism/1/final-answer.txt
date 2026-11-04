@@ -1,0 +1,17 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it with world_size 1 and 2 against a reference model, and it matched the reference loss and parameter gradients exactly. My test only compared the loss and gradients. It did not use hooks to check activations the way your test will, so the per-layer activation and layer-count checks have not been run.
+
+**How it works:**
+- **Splitting the layers:** `model.model.layers` is divided across ranks as evenly as possible, with any leftover layers going to the earliest ranks. In my test, 5 layers became 3 on rank 0 and 2 on rank 1. Each rank calls only its own layer modules, so any hooks the test puts on the layers still fire, and the model itself is not changed.
+- **What each stage runs:**
+  - Rank 0 does the token embedding first.
+  - Every stage then runs its layers with the same causal mask and positional encoding setup the HF model uses.
+  - The last rank adds the final norm and output head, computes cross-entropy, and divides it by the number of microbatches.
+- **Order of work:**
+  1. All forward passes run first. Each non-first rank receives the hidden states (`[mb, seq, hidden]` in `dtype`) through `torch.distributed.P2POp` / `batch_isend_irecv`, and the result is sent on to the next rank.
+  2. Then all backward passes run. Each rank receives the output gradient from the next rank, runs backward, and sends the input gradient back to the previous rank.
+- **Return value:** the last rank returns the summed, scaled loss; other ranks return `None`.
+- **Device and dtype:** hidden states and gradients are always moved to `device`/`dtype`. Input and target IDs are moved to `device` only, because token IDs have to stay integers.
+
+**Things that may differ from your test:**
+- Non-first ranks get the shape for incoming hidden states from `inputs[i]`, or from `targets[i]` if the inputs aren't there. Your test needs to pass one of these lists on every rank; the shape is not sent between ranks.
+- If the model ties its output head to its input embeddings, each rank's copy of the shared weight only gets part of its gradient. My test model didn't tie them, so this wasn't tested.

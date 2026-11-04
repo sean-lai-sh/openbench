@@ -1,0 +1,24 @@
+I wrote `jump_analyzer.py` and ran it on the example video. It found takeoff at frame 53 and landing at frame 62, which matches what I saw when I checked the frames one by one. That's the only video I could test on, so other runners haven't been checked.
+
+It wrote this to `output.toml`:
+
+```toml
+jump_takeoff_frame_number = 53
+jump_land_frame_number = 62
+```
+
+**How it works:**
+1. **Background:** it builds a picture of the empty scene by taking the middle value of each pixel across a sample of frames.
+2. **Finding the runner:** in each frame it marks the pixels that differ from the background and takes the largest tall shape. Small pieces near it, such as a foot that got cut off, are added back in.
+3. **Tracking the feet:** it records the lowest point of the runner in each frame. Ground level is taken as the lowest that point gets within 7 frames either side. A frame counts as airborne when the feet are more than about 12 px above that.
+4. **Picking the jump:** the runner is also briefly airborne between normal running strides. To tell the jump apart, it picks the airborne stretch during which the runner passes the hurdle (x ≈ 490). If that fails, it picks the longest stretch.
+5. **Result:** takeoff is the last frame on the ground before the jump, and landing is the first frame back on the ground.
+
+On the example, the feet are near ground level (about y = 359–366) at frames 53 and 62 and clearly above it in frames 54–61, rising to about y = 226 at the top of the jump.
+
+**Things to know:**
+- The hurdle position and the 12 px threshold are set from this video's 960×540 frame size and camera position. They'll only hold if the other videos match, as you said they would.
+- It works whichever direction the athlete runs.
+- Frames where the runner is cut off at the left or right edge are ignored when deciding airborne vs. on the ground.
+- It uses only cv2, numpy and toml.
+- Run it with `python3 jump_analyzer.py [input.mp4] [output.toml]`. With no arguments it reads `example_video.mp4` and writes `output.toml` in the same folder as the script.

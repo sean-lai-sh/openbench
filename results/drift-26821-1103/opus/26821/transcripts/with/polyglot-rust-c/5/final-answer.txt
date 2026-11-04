@@ -1,0 +1,28 @@
+I wrote the file at `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`, and both programs print the same results:
+
+| N | Output |
+|---|---|
+| 0 | 1 |
+| 1 | 1 |
+| 2 | 2 |
+| 3 | 3 |
+| 10 | 89 |
+| 50 | 20365011074 |
+| 100 | 573147844013817084101 |
+
+I didn't check which compiler versions were installed here, so I can't confirm it was tested on exactly rustc 1.75.0 and g++ 13.2.0. The code uses only basic features, so those versions should work.
+
+**How it works:** Rust lets block comments nest inside each other, but C++ doesn't.
+
+```
+/* /* */        Rust: still inside a comment (2 opens, 1 close). C++: comment is closed.
+...C++ code...  Only C++ compiles this.
+#if 0           Rust: still in the comment. C++: skip what follows.
+// */           Rust: comment closes. C++: this is just a line comment.
+...Rust code... Only Rust compiles this; C++ skips it because of #if 0.
+/* /* */        Rust: opens a comment again. C++: a complete comment.
+#endif          Rust: inside the comment. C++: ends the #if 0.
+// */           Rust: closes the comment. C++: a line comment.
+```
+
+To keep this working, the C++ section can't contain `/*` or `*/`. The Rust section should avoid single quotes (char literals, lifetimes), because the C++ preprocessor still reads the skipped text and may complain about them. Both versions add numbers digit by digit as decimal strings, so large N gives an exact answer instead of overflowing. If no N is given, it defaults to 0.

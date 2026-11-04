@@ -1,0 +1,18 @@
+I wrote `polyglot/main.rs`. It compiles with both `rustc` and `g++ -x c++`, and both programs print the same results. Here is what I ran with each binary:
+
+| N | output |
+|---|---|
+| 0, 1, 2, 3 | 1, 1, 2, 3 |
+| 10 | 89 |
+| 50 | 20365011074 |
+| 90 | 4660046610375530309 |
+| 150 | 16130531424904581415797907386349 |
+
+**How it works:** Rust lets block comments nest, but C++ doesn't.
+- In C++, the first line `/* /* */` is a complete comment, so the C++ `main` that follows gets compiled. In Rust the comment is still open, so Rust skips that code.
+- C++ then hits `#if 0`, which hides everything until `#endif`. Inside that hidden part, the line `// */` closes Rust's comment, so Rust compiles its own `fn main`.
+- A second `/* /* */` puts Rust back inside a comment, so it skips the `#endif`, which C++ needs to see. The final `// */` closes that comment.
+
+**Limits:**
+- Both versions use 128-bit unsigned integers, so results are exact up to N = 184. Past that the number no longer fits and both versions wrap around without warning.
+- If N is missing or isn't a valid number, Rust treats it as 0. C++ does the same for a missing or non-numeric N, but reads a value like `12abc` as 12.
