@@ -385,6 +385,45 @@ class LauncherTests(unittest.TestCase):
         ok = cell.check_out_dir(Path(tempfile.gettempdir()) / "codex-harness-smoke")
         self.assertTrue(ok.is_absolute())
 
+    def evidence_rows(self, cache_reads=(0, 9000, 9500, 9800), sent="adaptive", tools=(1000, 1000)):
+        rows = []
+        for i, read in enumerate(cache_reads, 1):
+            rows.append({"usage": {"input_tokens": 1}, "cache_read": read, "thinking_sent": sent,
+                         "cc_identity_stripped": {"responses": {
+                             "responses_raw_request_file": f"c.responses/{i:04d}.request.json",
+                             "responses_system_bytes": 9000, "responses_raw_system_bytes": 9000,
+                             "responses_tools_bytes": tools[0], "responses_raw_tools_bytes": tools[1]}}})
+        return rows
+
+    def test_smoke_evidence_all_pass(self):
+        cell = self.load()
+        rows = self.evidence_rows()
+        evidence = cell.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows,
+                                       {"pi": ["adaptive"]})
+        self.assertEqual({k: v["pass"] for k, v in evidence.items()},
+                         {"1_traced": True, "2_cache_read": True, "3_thinking_sent": True, "4_prompt_bytes": True})
+        self.assertEqual(evidence["2_cache_read"]["per_call"], [0, 9000, 9500, 9800])
+        self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["raw_request_file"], "c.responses/0001.request.json")
+
+    def test_smoke_evidence_reports_each_failure(self):
+        cell = self.load()
+        evidence = cell.smoke_evidence(
+            {"trace_requests": 1, "untraced_requests": 3},
+            self.evidence_rows(cache_reads=(0, 0, 0, 0), sent="none", tools=(1100, 1000)),
+            {"pi": ["adaptive"], "opencode": ["none"]})
+        self.assertFalse(evidence["1_traced"]["pass"])
+        self.assertFalse(evidence["2_cache_read"]["pass"])
+        self.assertEqual(evidence["3_thinking_sent"]["matches"], {"pi": False, "opencode": True})
+        self.assertFalse(evidence["3_thinking_sent"]["pass"])
+        self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["tools_delta"], 0.1)
+        self.assertFalse(evidence["4_prompt_bytes"]["pass"])
+
+    def test_reference_thinking_comes_from_the_196_ledgers(self):
+        """Pi and OpenCode recorded different thinking_sent for Sonnet 5.5 in #196."""
+        cell = self.load()
+        self.assertEqual(cell.reference_thinking(ROOT, "claude-sonnet-5-5"),
+                         {"pi": ["adaptive"], "opencode": ["none"]})
+
     def test_launcher_defaults_match_the_other_arms(self):
         cell = self.load()
         self.assertEqual(cell.MODEL_ID, "claude-sonnet-5-5")

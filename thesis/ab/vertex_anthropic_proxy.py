@@ -885,6 +885,53 @@ def cell_bytes_path(directory: Path, cell_id: str) -> Path:
 _BYTE_TOTALS: dict[str, int] = {}
 
 
+_REDACTED_HEADERS = frozenset({
+    "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "cookie", "set-cookie",
+})
+
+
+def redact_headers(headers) -> dict:
+    """Header map with credentials replaced by ``<redacted>``."""
+    items = headers.items() if hasattr(headers, "items") else []
+    return {
+        str(name): ("<redacted>" if str(name).lower() in _REDACTED_HEADERS else str(value))
+        for name, value in items
+    }
+
+
+def responses_capture_path(directory: Path, cell_id: str, index: int) -> Path:
+    """Raw ``/v1/responses`` body as Codex sent it, before translation."""
+    return Path(directory) / f"{_cell_file_stem(cell_id)}.responses" / f"{index:04d}.request.json"
+
+
+def write_responses_capture(directory: Path | None, cell_id: str | None, index: int, raw: bytes) -> str:
+    if directory is None or not cell_id:
+        return ""
+    path = responses_capture_path(directory, cell_id, index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return str(path.relative_to(Path(directory)))
+
+
+def cache_miss_headers_path(directory: Path, cell_id: str) -> Path:
+    return Path(directory) / f"{_cell_file_stem(cell_id)}.cache-miss-headers.jsonl"
+
+
+def note_cache_miss(directory: Path | None, cell_id: str | None, usage, record: dict) -> bool:
+    """Append request/upstream headers for a call that read no cache."""
+    if directory is None or not cell_id or not isinstance(usage, dict):
+        return False
+    if _int_token(usage.get("cache_read_input_tokens")) != 0:
+        return False
+    line = {"timestamp": datetime.now(timezone.utc).isoformat(), **record,
+            "usage": {k: usage.get(k) for k in ("input_tokens", "output_tokens",
+                                                 "cache_read_input_tokens", "cache_creation_input_tokens")}}
+    path = cache_miss_headers_path(directory, cell_id)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(line, sort_keys=True) + "\n")
+    return True
+
+
 def note_cell_bytes(directory: Path | None, cell_id: str | None, n: int) -> None:
     """Add ``n`` streamed bytes to the cell's on-disk counter.
 
@@ -1980,6 +2027,7 @@ class Proxy:
         self._faults: dict[str, dict] = {}
         self._fault_lock = threading.Lock()
         self._message_index: dict[str, int] = {}
+        self._responses_index: dict[str, int] = {}
         self._reached: set[str] = set()
         self._bridge = None
 
@@ -1988,6 +2036,13 @@ class Proxy:
         with self._fault_lock:
             index = self._message_index.get(cell_id, 0) + 1
             self._message_index[cell_id] = index
+            return index
+
+    def note_responses(self, cell_id: str) -> int:
+        """1-based index of a ``/responses`` POST for this cell."""
+        with self._fault_lock:
+            index = self._responses_index.get(cell_id, 0) + 1
+            self._responses_index[cell_id] = index
             return index
 
     def note_reached(self, cell_id: str) -> None:
@@ -2150,8 +2205,13 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                                   "type": "invalid_request_error"},
                     }).encode("utf-8")))
                     return
+                raw_file = ""
+                if ledger is not None and cell:
+                    raw_file = write_responses_capture(
+                        ledger, cell, holder["proxy"].note_responses(cell), raw)
                 try:
                     parsed, responses_ctx = responses_to_anthropic(parsed)
+                    responses_ctx.raw_request_file = raw_file
                 except ResponsesError as exc:
                     self._send(400, "application/json", responses_error_bytes(json.dumps({
                         "error": {"message": str(exc), "type": "invalid_request_error"},
@@ -2436,6 +2496,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     elif not translate_out:
                         self._write_chunk(chunk)
                 usage = finish_usage()
+                if kind != "count" and ledger is not None and cell:
+                    note_cache_miss(ledger, cell, usage, {
+                        "presentation": presentation,
+                        "requested_model": requested_model,
+                        "upstream_model": called,
+                        "request_headers": redact_headers(self.headers),
+                        "upstream_headers": redact_headers(headers),
+                        "responses_raw_request_file": (
+                            responses_ctx.raw_request_file if responses_ctx is not None else None),
+                    })
                 if kind != "count":
                     self._record(
                         cell, usage, status, identity, thinking_sent, call_role, called,

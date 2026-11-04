@@ -47,3 +47,31 @@ It prints `proxy-reached cell=<id> reached=yes calls=<n>` and a one-line JSON
 summary with the ledger token split (`input_uncached`, `output`,
 `cache_read`, `cache_write`) and `proxy_cost_usd`. The full row is in
 `<out>/claude-sonnet-5-5.json`.
+
+## Re-smoke evidence (four criteria)
+
+`summary.json` has an `evidence` block per cell, and `evidence_pass` with one
+boolean per criterion. `smoke.log` gets the same booleans on one
+`evidence {...}` line.
+
+1. **`1_traced`:** `trace_requests` equals the ledger request count, and
+   `untraced_requests` is 0. Codex model calls are counted from its session
+   rollout's `token_count` events.
+2. **`2_cache_read`:** `cache_read` for each call. The criterion passes when
+   every call from the second one on reads more than 0 tokens.
+3. **`3_thinking_sent`:** the Codex `thinking_sent` values next to each
+   reference arm's values for the same model, read from the committed #196
+   ledgers. For Sonnet 5.5, Pi recorded `adaptive` and OpenCode recorded
+   `none`, so `matches` is reported per arm.
+4. **`4_prompt_bytes`:** for each call, the system and tool bytes the proxy
+   forwarded, the bytes Codex itself sent, and the relative difference. The
+   tolerance is 5%.
+
+Evidence files in `<out>/proxy-ledger/`:
+
+- `<cell>.responses/NNNN.request.json`: every raw `/v1/responses` body,
+  exactly as Codex 0.144.5 sent it, before translation. Use these to count
+  the real Codex system and tool bytes.
+- `<cell>.cache-miss-headers.jsonl`: one line per call with `cache_read == 0`.
+  It holds the request headers and the upstream headers (credentials
+  redacted), the token usage, and the matching raw-body file.

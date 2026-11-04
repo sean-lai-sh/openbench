@@ -19,7 +19,12 @@ from pathlib import Path
 
 from obench.tests.test_vertex_proxy_harness_api import MESSAGE, STREAM, _post, _Vertex
 from thesis.ab.responses_api import decode_reasoning, encode_reasoning
-from thesis.ab.vertex_anthropic_proxy import read_call_totals, start_proxy
+from thesis.ab.vertex_anthropic_proxy import (
+    cache_miss_headers_path,
+    read_call_totals,
+    responses_capture_path,
+    start_proxy,
+)
 
 FIXTURES = Path(__file__).resolve().parents[2] / "thesis" / "ab" / "fixtures" / "responses"
 _METER_KEYS = ("input_uncached", "output", "cache_read", "cache_write", "usage", "upstream_model",
@@ -169,6 +174,50 @@ class ResponsesNonStream(ResponsesEndpointTests):
         self.assertEqual(status, 400)
         self.assertIn("input", json.loads(payload)["error"]["message"])
         self.assertEqual(self.httpd.seen, [])
+
+
+class ResponsesEvidenceTests(ResponsesEndpointTests):
+    def test_raw_codex_body_is_captured_before_translation(self):
+        body = codex_request()
+        raw = json.dumps(body).encode("utf-8")
+        _post(self.url("cell-raw", "responses"), raw)
+        _post(self.url("cell-raw", "responses"), raw)
+        first = responses_capture_path(self.ledger, "cell-raw", 1)
+        self.assertEqual(first.read_bytes(), raw)  # exactly what Codex sent
+        self.assertTrue(responses_capture_path(self.ledger, "cell-raw", 2).is_file())
+        record = ledger_rows(self.ledger, "cell-raw")[0]["cc_identity_stripped"]["responses"]
+        self.assertEqual(record["responses_raw_request_file"], "cell-raw.responses/0001.request.json")
+        instructions = body["instructions"]
+        developer = body["input"][0]["content"][0]["text"]
+        self.assertEqual(record["responses_raw_system_bytes"], len(f"{instructions}\n\n{developer}".encode()))
+        self.assertEqual(record["responses_system_bytes"], record["responses_raw_system_bytes"])
+        self.assertEqual(record["responses_raw_tools_bytes"],
+                         len(json.dumps(body["tools"], sort_keys=True, separators=(",", ":")).encode()))
+        self.assertGreater(record["responses_tools_bytes"], 0)
+
+    def test_cache_miss_dumps_redacted_headers_and_hits_do_not(self):
+        miss = json.loads(json.dumps(MESSAGE))
+        miss["usage"]["cache_read_input_tokens"] = 0
+        self.httpd.queue.append((json.dumps(miss).encode("utf-8"), False))
+        _post(self.url("cell-h", "responses"), codex_request(),
+              headers={"Authorization": "Bearer secret", "x-api-key": "k", "X-Probe": "1"})
+        path = cache_miss_headers_path(self.ledger, "cell-h")
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertEqual(line["presentation"], "responses")
+        self.assertEqual(line["usage"]["cache_read_input_tokens"], 0)
+        request_headers = {k.lower(): v for k, v in line["request_headers"].items()}
+        self.assertEqual(request_headers["authorization"], "<redacted>")
+        self.assertEqual(request_headers["x-api-key"], "<redacted>")
+        self.assertEqual(request_headers["x-probe"], "1")
+        upstream = {k.lower(): v for k, v in line["upstream_headers"].items()}
+        self.assertEqual(upstream["authorization"], "<redacted>")
+        self.assertIn("thinking-binding-controls-2026-08-01", upstream["anthropic-beta"])
+        self.assertEqual(line["responses_raw_request_file"], "cell-h.responses/0001.request.json")
+        # MESSAGE has cache_read 4: a hit appends nothing.
+        _post(self.url("cell-h", "responses"), codex_request())
+        self.assertEqual(len(path.read_text().splitlines()), 1)
 
 
 class ResponsesStreamTests(ResponsesEndpointTests):

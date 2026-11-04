@@ -159,6 +159,20 @@ class RequestTranslation(unittest.TestCase):
         self.assertFalse(ctx.cache_emulation)
         self.assertNotIn("cache_control", json.dumps(body))
 
+    def test_byte_counts_of_raw_and_translated_prompt(self):
+        request = codex_request()
+        raw_system = request["instructions"] + "\n\n" + request["input"][0]["content"][0]["text"]
+        self.assertEqual(self.ctx.raw_system_bytes, len(raw_system.encode("utf-8")))
+        self.assertEqual(self.ctx.system_bytes, self.ctx.raw_system_bytes)
+        raw_tools = json.dumps(request["tools"], sort_keys=True, separators=(",", ":"))
+        self.assertEqual(self.ctx.raw_tools_bytes, len(raw_tools.encode("utf-8")))
+        sent_tools = json.dumps(strip_cache(self.body["tools"]), sort_keys=True, separators=(",", ":"))
+        self.assertEqual(self.ctx.tools_bytes, len(sent_tools.encode("utf-8")))
+        record = self.ctx.record()
+        for key in ("responses_raw_system_bytes", "responses_raw_tools_bytes",
+                    "responses_system_bytes", "responses_tools_bytes"):
+            self.assertIsInstance(record[key], int)
+
     def test_dropped_fields_defaults_and_passthrough(self):
         self.assertEqual(self.body["max_tokens"], 32000)
         self.assertTrue(self.body["stream"])

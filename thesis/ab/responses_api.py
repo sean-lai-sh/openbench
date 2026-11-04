@@ -100,6 +100,14 @@ class ResponsesContext:
     inline_developer: int = 0
     tools_sha: str = ""
     system_sha: str = ""
+    # Byte counts (UTF-8). raw_* are Codex's own request (instructions plus
+    # leading developer text; the tools array as Codex sent it); the others
+    # are what goes to Vertex after translation.
+    raw_request_file: str = ""
+    raw_system_bytes: int = 0
+    raw_tools_bytes: int = 0
+    system_bytes: int = 0
+    tools_bytes: int = 0
 
     def record(self) -> dict:
         """Ledger ``identity`` fields for this request."""
@@ -118,6 +126,12 @@ class ResponsesContext:
             out["responses_inline_developer"] = self.inline_developer
         out["responses_tools_sha"] = self.tools_sha
         out["responses_system_sha"] = self.system_sha
+        if self.raw_request_file:
+            out["responses_raw_request_file"] = self.raw_request_file
+        out["responses_raw_system_bytes"] = self.raw_system_bytes
+        out["responses_raw_tools_bytes"] = self.raw_tools_bytes
+        out["responses_system_bytes"] = self.system_bytes
+        out["responses_tools_bytes"] = self.tools_bytes
         return out
 
 
@@ -275,9 +289,11 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
     if not isinstance(data, dict):
         raise ResponsesError("request body must be an object")
     system: list = []
+    raw_system_parts: list = []
     instructions = data.get("instructions")
     if isinstance(instructions, str) and instructions:
         system.append({"type": "text", "text": instructions})
+        raw_system_parts.append(instructions)
     items = data.get("input")
     if isinstance(items, str):
         items = [{"type": "message", "role": "user", "content": items}]
@@ -299,6 +315,7 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
             if role in {"system", "developer"}:
                 if not messages:
                     system.extend(blocks)
+                    raw_system_parts.extend(b.get("text", "") for b in blocks if b.get("type") == "text")
                 else:
                     # Later developer notes stay in place so ``system`` is
                     # stable across turns (cache prefix).
@@ -428,7 +445,26 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
         inline_developer=inline_developer,
         tools_sha=_digest(out.get("tools") or []),
         system_sha=_digest(out.get("system") or []),
+        raw_system_bytes=_text_bytes(raw_system_parts),
+        raw_tools_bytes=_json_bytes(data.get("tools") or []),
+        system_bytes=_text_bytes([b.get("text", "") for b in system if isinstance(b, dict)]),
+        tools_bytes=_json_bytes(out.get("tools") or []),
     )
+
+
+def _text_bytes(parts) -> int:
+    return len("\n\n".join(p for p in parts if p).encode("utf-8"))
+
+
+def _json_bytes(value) -> int:
+    """Canonical JSON size with cache markers removed."""
+    def strip(x):
+        if isinstance(x, dict):
+            return {k: strip(v) for k, v in x.items() if k != "cache_control"}
+        if isinstance(x, list):
+            return [strip(v) for v in x]
+        return x
+    return len(json.dumps(strip(value), sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
 def _digest(value) -> str:
