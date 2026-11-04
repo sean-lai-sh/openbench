@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a39307cd001Rfwp2EtHPqZtBi",
+  "sessionID": "ses_e5c6e6849ffeY6HbjnhCgUAHl0",
+  "messageID": "msg_1a392de3c0011xTtsZYT7NLD1C",
+  "type": "tool",
+  "callID": "toolu_vrtx_01JzdzZGhnzXq5wQAqjca1aP",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-ej7nwof1/bench_opencode_model-extraction-relu-logits_hgklc8km; python - <<'EOF'\ns=open('steal.py').read()\nstart=s.index(\"    # ---- sign recovery ----\")\nend=s.index(\"    np.save(OUT\")\nnew='''    # ---- sign recovery ----\n    # gradient(x) = sum_i p_i r_i h_i(x) + c,  h_i = 1[n_i.x+beta_i>0]\n    # If neuron i is active on the + side of its hyperplane it contributes\n    # nothing to c; if active on the - side it contributes -p_i r_i to c.\n    # So find z in {0,1}^k with sum_i z_i (-p_i r_i) = c  (z_i=1 => flip).\n    rowsM, rhs = [], []\n    for _ in range(max(40, 6 * k)):\n        x = rng.normal(size=D) * 3\n        gx = grad(x, 1e-8)\n        hx = (N @ x + B > 0).astype(float)\n        rowsM.append(np.concatenate([N.T * hx, np.eye(D)], axis=1))\n        rhs.append(gx)\n    sol, *_ = np.linalg.lstsq(np.vstack(rowsM), np.concatenate(rhs), rcond=None)\n    p, c = sol[:k], sol[k:]\n    V = -(p[:, None] * N)  # k x D, candidate contributions to c\n\n    def subset_sums(idx):\n        m = len(idx)\n        bits = ((np.arange(2 ** m)[:, None] >> np.arange(m)) & 1).astype(float)\n        return bits, bits @ V[idx]\n\n    h1 = list(range(k // 2))\n    h2 = list(range(k // 2, k))\n    bits1, s1 = subset_sums(h1)\n    bits2, s2 = subset_sums(h2)\n    best, bi, bj = np.inf, 0, 0\n    target = c - s2  # want s1 = c - s2\n    for j0 in range(0, len(target), 256):\n        T = target[j0:j0 + 256]\n        dist = ((s1[:, None, :] - T[None, :, :]) ** 2).sum(-1)\n        a, b = np.unravel_index(np.argmin(dist), dist.shape)\n        if dist[a, b] < best:\n            best, bi, bj = dist[a, b], a, j0 + b\n    z = np.concatenate([bits1[bi], bits2[bj]])\n    print(\"sign-fit residual:\", np.sqrt(best), \" |c| =\", np.linalg.norm(c))\n    signs = 1.0 - 2.0 * z\n    A1_hat = N * signs[:, None]\n\n'''\ns=s[:start]+new+s[end:]\nopen('steal.py','w').write(s)\nEOF\npython steal.py | head -2; python -c \"\nimport numpy as np, forward\nA=forward.A1; S=np.load('stolen_A1.npy'); An=A/np.linalg.norm(A,axis=1,keepdims=True)\nC=S@An.T; print(S.shape); print(np.round(C.max(1),10)); print(np.round(C.max(0),10))\"",
+      "description": "Implement subset-sum sign recovery, test",
+      "timeout": 600000
+    },
+    "output": "found 20 neurons using 17 lines, 25720 queries\nsign-fit residual: 2.7954182233092633e-08  |c| = 0.04703864413701448\n(20, 10)\n[1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]\n[1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]\n",
+    "title": "Implement subset-sum sign recovery, test",
+    "metadata": {
+      "output": "found 20 neurons using 17 lines, 25720 queries\nsign-fit residual: 2.7954182233092633e-08  |c| = 0.04703864413701448\n(20, 10)\n[1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]\n[1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]\n",
+      "exit": 0,
+      "description": "Implement subset-sum sign recovery, test"
+    },
+    "time": {
+      "start": 1793745692534,
+      "end": 1793745693182
+    }
+  }
+}

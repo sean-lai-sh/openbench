@@ -1907,7 +1907,12 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         pin = _anthropic_pin(proxy) if isinstance(proxy, dict) else ""
         if pin:
             row["anthropic_pin"] = pin
-            row.update(_load_proof_evidence(env, proxy, exe))
+            # Read before the finally block removes iso_home (the log lives
+            # there); on the success path _stamp runs after that rmtree.
+            evidence = observed.get("load_proof")
+            if evidence is None:
+                evidence = _load_proof_evidence(env, proxy, exe)
+            row.update(evidence)
         mismatch = _loaded_mismatch_text(pin, version, loaded_source)
         if mismatch:
             row = _attach_loaded_mismatch(row, mismatch)
@@ -1926,6 +1931,8 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         observed["drift"] = _provider_sdk_drift(env, proxy)
         observed["installed"] = _installed_provider_sdk(env, proxy)
         observed["versions"] = _resolved_provider_versions(env, proxy)
+        if isinstance(proxy, dict) and _anthropic_pin(proxy):
+            observed["load_proof"] = _load_proof_evidence(env, proxy, exe)
         _preserve_opencode_evidence(env)
 
     turn_state = {"mode": None, "exit": None, "failure": None}

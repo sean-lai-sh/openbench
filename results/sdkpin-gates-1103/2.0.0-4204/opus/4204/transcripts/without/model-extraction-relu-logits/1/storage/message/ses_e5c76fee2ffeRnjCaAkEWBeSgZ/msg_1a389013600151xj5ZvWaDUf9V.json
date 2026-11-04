@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a389013600151xj5ZvWaDUf9V",
+  "sessionID": "ses_e5c76fee2ffeRnjCaAkEWBeSgZ",
+  "role": "user",
+  "time": {
+    "created": 1793745027382
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. When run, it recovers A1 using only calls to `forward()` and saves the result to `stolen_A1.npy`.\n\n**Result:** it found 20 hidden neurons. I checked the output against the real `A1` in `forward.py`, which `steal.py` itself never reads. Each true neuron's weight row matches exactly one recovered row, and the reverse is also true. After adjusting for sign and length, the agreement is about 0.9999999999999998, where 1.0 is a perfect match. Each saved row has length 1 and an arbitrary sign. That's expected, since rows can only be recovered up to a scale factor.\n\n**How it works:**\n1. **Find the kinks.** The script tests the network along random straight lines through the input space. The output changes in straight segments, and each bend happens where one hidden neuron switches on or off. It finds those bends by repeatedly splitting segments that aren't straight, then pins each one down exactly by working out where the straight pieces on either side would meet.\n2. **Read off a row.** At each bend it estimates the gradient just before and just after. The difference between the two equals one row of A1 multiplied by that neuron's output weight, which gives the row up to scale.\n3. **Remove noise and duplicates.** It discards a bend if the gradient on either side isn't steady, for example when two bends are very close together. It normalises each direction and fixes its sign, then merges near-identical directions. A direction is kept only if it was found at least twice.\n\nMy first version produced 21 rows, one of them a noisy near-copy of a real row. The steadiness check and the \"found at least twice\" rule fixed that.\n\nOne limitation: a neuron that never switches on for any input causes no bends, so no query-only method can detect it. That doesn't happen with this network.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

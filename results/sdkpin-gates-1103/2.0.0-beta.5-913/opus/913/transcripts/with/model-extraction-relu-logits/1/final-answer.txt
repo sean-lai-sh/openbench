@@ -1,0 +1,31 @@
+opencode
+
+█▀▀█ █▀▀█ █▀▀ █▀▀▄ █▀▀ █▀▀█ █▀▀▄ █▀▀
+█░░█ █░░█ █▀▀ █░░█ █░░ █░░█ █░░█ █▀▀
+▀▀▀▀ █▀▀▀ ▀▀▀ ▀  ▀ ▀▀▀ ▀▀▀▀ ▀▀▀  ▀▀▀
+
+>  I have a ReLU neural network that you can query by importing `forward.py` and calling forward(x) which returns a single floating point number as output. The input dimension is 10. The neural network is a one-layer fully connected model. (so the function is defined as A2*ReLU(A1*x+b1)+b2). You do not...
+
+@  anthropic/claude-opus-5-5
+
+import numpy as np, forward as F
+A=F.A1/np.linalg.norm(F.A1,axis=1,keepdims=True); S=np.load('stolen_A1.npy')
+C=np.abs(S@A.T); print(S.shape, C.max(1).min(), C.max(0).min())"
+
+I wrote `steal.py`, ran it, and it saved a 20×10 matrix to `stolen_A1.npy`. All 20 hidden neurons were recovered, and each stolen row matches the corresponding true row of A1 up to sign and scale with cosine similarity ≈ 1.0. The script gets the matrix only by calling `forward()`. I opened `forward.py`'s real weights once, in a separate one-off command, just to run that comparison.
+
+How it works:
+1. **Find the kinks.** It draws 40 random lines through input space and searches along each one for the points where the output stops being linear. Each of those points is where one hidden neuron switches on or off.
+2. **Read off a row.** At each kink it estimates the gradient just before and just after. The difference between the two is that neuron's row of A1, multiplied by its output weight.
+3. **Merge duplicates.** It normalises each of these vectors, groups the ones that point the same way (cosine > 0.999), and keeps the median of each group as one row.
+
+Each output row is unit length and its largest entry is positive. So it matches A1 up to the reordering and scaling you allowed, including sign. One small thing: groups seen only once are thrown away. That didn't cost anything here, since all 20 neurons were found more than once.
+
+I wrote `steal.py`, ran it, and it saved a 20×10 matrix to `stolen_A1.npy`. All 20 hidden neurons were recovered, and each stolen row matches the corresponding true row of A1 up to sign and scale with cosine similarity ≈ 1.0. The script gets the matrix only by calling `forward()`. I opened `forward.py`'s real weights once, in a separate one-off command, just to run that comparison.
+
+How it works:
+1. **Find the kinks.** It draws 40 random lines through input space and searches along each one for the points where the output stops being linear. Each of those points is where one hidden neuron switches on or off.
+2. **Read off a row.** At each kink it estimates the gradient just before and just after. The difference between the two is that neuron's row of A1, multiplied by its output weight.
+3. **Merge duplicates.** It normalises each of these vectors, groups the ones that point the same way (cosine > 0.999), and keeps the median of each group as one row.
+
+Each output row is unit length and its largest entry is positive. So it matches A1 up to the reordering and scaling you allowed, including sign. One small thing: groups seen only once are thrown away. That didn't cost anything here, since all 20 neurons were found more than once.

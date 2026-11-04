@@ -1,0 +1,12 @@
+I wrote `steal.py`. It recovers all 20 hidden neurons, and every row of A1 is matched with cosine similarity better than 0.999999999999 (up to permutation and scale). The output is saved to `stolen_A1.npy` with shape (20, 10). A run takes about 0.3 seconds.
+
+The script only calls `forward()`. To check the result, I separately compared the saved file against the real `A1` in `forward.py`; the script doesn't use those weights.
+
+**How it works:**
+1. **Find the kinks.** It walks along random lines `x0 + t·d` with t from -15 to 15 and looks for points where the output's slope changes. Each change is a spot where one hidden neuron switches on or off. On each stretch of line it compares the slope at the two ends. If they differ, it estimates where the two straight pieces meet and checks that guess with one more query. If the check fails, it splits the stretch in half and tries again.
+2. **Read off a row.** At each kink, it estimates the gradient just before and just after the point. The jump in gradient equals `A2[i]·A1[i,:]`, which is that neuron's row of A1 times a constant.
+3. **Clean up.** It scales each row to unit length and fixes its sign, then merges duplicates found on different lines. It keeps rows seen more than once, which filters out false readings. It stops after 15 lines in a row turn up no new neuron.
+
+My first version tested for kinks by comparing the midpoint value to the average of the endpoints. That missed any kink sitting very close to a split point, so it only found 10 of the 20 neurons. Comparing the slopes at both ends fixed it.
+
+Rows are recovered only up to sign as well as scale, since a scale can be negative. The script doesn't recover `b1`, `A2` or `b2`.

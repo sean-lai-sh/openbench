@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a3ac64d20014Vt8Gv3QDLg1HP",
+  "sessionID": "ses_e5c53d3dcffep4VK5b9uQ0BQ6o",
+  "messageID": "msg_1a3ac3a1a001oe17QkUR72MB7l",
+  "type": "tool",
+  "callID": "toolu_vrtx_01J81CzYqfs7p2MCX4eTDoFm",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-7_15zgmv/bench_opencode_model-extraction-relu-logits_mlhvlj_7/steal.py",
+      "content": "import os\nimport numpy as np\nfrom forward import forward\n\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nDIM = 10\nrng = np.random.default_rng(12345)\nNQ = [0]\n\n\ndef f(x):\n    NQ[0] += 1\n    return forward(x)\n\n\ndef find_kinks(x0, d, lo, hi, n_init=200, tol=1e-11):\n    \"\"\"Return t values of kinks of g(t)=f(x0+t d) in [lo, hi].\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n\n    def rec(a, fa, b, fb, depth):\n        m = 0.5 * (a + b)\n        fm = g(m)\n        if abs(fm - 0.5 * (fa + fb)) < tol * max(1.0, abs(fa) + abs(fb)):\n            # check also quarter points to reduce false \"linear\"\n            q = a + 0.25 * (b - a)\n            fq = g(q)\n            if abs(fq - (0.75 * fa + 0.25 * fb)) < tol * max(1.0, abs(fa) + abs(fb)):\n                return\n        if b - a < 1e-3:\n            # try to locate single kink via two-line intersection\n            h = (b - a) * 1e-3\n            sa = (g(a + h) - fa) / h\n            sb = (fb - g(b - h)) / h\n            if abs(sa - sb) < 1e-12:\n                return\n            t = (fb - fa + sa * a - sb * b) / (sa - sb)\n            if a < t < b:\n                # verify: predicted value matches\n                ft = g(t)\n                pred = fa + sa * (t - a)\n                if abs(ft - pred) < 1e-9:\n                    kinks.append(t)\n                    return\n            if b - a < 1e-9:\n                return\n        rec(a, fa, m, fm, depth + 1)\n        rec(m, fm, b, fb, depth + 1)\n\n    ts = np.linspace(lo, hi, n_init + 1)\n    fs = [g(t) for t in ts]\n    for i in range(n_init):\n        rec(ts[i], fs[i], ts[i + 1], fs[i + 1], 0)\n    return kinks\n\n\ndef grad(x, h=1e-6):\n    f0 = f(x)\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - f0) / h\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    i = np.argmax(np.abs(v))\n    return v * np.sign(v[i])\n\n\nrows = []\nfor line in range(30):\n    x0 = rng.normal(size=DIM)\n    d = rng.normal(size=DIM)\n    d /= np.linalg.norm(d)\n    for t in find_kinks(x0, d, -20.0, 20.0):\n        xs = x0 + t * d\n        eps = 1e-4\n        # gradients on each side (forward differences stepping away from kink)\n        gp = grad(xs + eps * d, h=1e-7)\n        gm = grad(xs - eps * d, h=1e-7)\n        diff = gp - gm\n        if np.linalg.norm(diff) < 1e-8:\n            continue\n        rows.append(normalize(diff))\n\n# cluster directions\nclusters = []\nfor r in rows:\n    for c in clusters:\n        if np.linalg.norm(c[0] - r) < 1e-3:\n            c.append(r)\n            break\n    else:\n        clusters.append([r])\n\n# keep clusters observed multiple times (robust to spurious detections)\nclusters = [c for c in clusters if len(c) >= 2]\nA1 = np.array([np.median(np.array(c), axis=0) for c in clusters])\nA1 = np.array([normalize(r) for r in A1])\nprint(\"queries:\", NQ[0], \"neurons found:\", A1.shape[0])\nprint(A1)\nnp.save(OUT, A1)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-7_15zgmv/bench_opencode_model-extraction-relu-logits_mlhvlj_7/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-7_15zgmv/bench_opencode_model-extraction-relu-logits_mlhvlj_7/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793747357672,
+      "end": 1793747363428
+    }
+  }
+}
