@@ -7,11 +7,19 @@
 #
 #   bash data/hermes-harness-smoke/prep.sh            # installs under ~/h1/hermes/<pin>
 #   HERMES_ROOT=/opt/hermes bash data/hermes-harness-smoke/prep.sh
+#   OBENCH_CELL_IMAGE=h1-env:1027-strace bash data/hermes-harness-smoke/prep.sh
 #
+# Ends with a smoke inside the cell image (docker run, the install root
+# mounted read-only at its own path, HOME=/root, a fresh HERMES_HOME, no
+# network): `hermes --version` plus a dependency import check, both with the
+# exact interpreter, entry script and env the adapter uses
+# (obench/adapters/hermes_harness.py: resolve_launch, smoke_commands).
 # Prints the two exports cell.py needs (OBENCH_HERMES_ROOT, OBENCH_HERMES_BIN).
 set -euo pipefail
 
 PIN=4dcef215cfe41bd2d02c2d1dad6e257a18101216
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+IMAGE="${OBENCH_CELL_IMAGE:-h1-env:1027-strace}"
 ROOT="${HERMES_ROOT:-$HOME/h1/hermes/$PIN}"
 SRC="$ROOT/src"
 HOME_DIR="$ROOT/home"
@@ -40,18 +48,22 @@ if [ "$HEAD" != "$PIN" ]; then
   exit 1
 fi
 
-BIN=""
-for candidate in "$SRC/.venv/bin/hermes" "$HOME_DIR/bin/hermes" "$HOME/.local/bin/hermes"; do
-  if [ -x "$candidate" ]; then BIN="$candidate"; break; fi
-done
-if [ -z "$BIN" ]; then
-  echo "could not find the hermes launcher under $SRC or $HOME_DIR; set OBENCH_HERMES_BIN by hand" >&2
+# The installer's in-root launcher. Not ~/.local/bin/hermes: that shim is
+# outside the root, so it is not mounted in the cell.
+BIN="$SRC/.hermes/bin/hermes"
+if [ ! -x "$BIN" ]; then
+  echo "the in-root hermes launcher is missing: $BIN" >&2
   exit 1
 fi
 
 HERMES_HOME="$HOME_DIR" "$BIN" pm install --extra anthropic
 
 printf '%s\n' "$PIN" > "$ROOT/PIN"
+
+# Cells do not exec $BIN (its store Python finds no dependencies under a fresh
+# per-cell HERMES_HOME); they run the committed environment's python on
+# $SRC/hermes. Check that launch inside the cell image now, not mid-cell.
+(cd "$REPO" && python3 -m obench.adapters.hermes_harness --image "$IMAGE" --root "$ROOT" --binary "$BIN")
 echo "hermes $PIN installed (MIT)"
 echo "export OBENCH_HERMES_ROOT=$ROOT"
 echo "export OBENCH_HERMES_BIN=$BIN"

@@ -35,10 +35,24 @@ Trace parity: ``turns`` = main-loop API calls + every auxiliary task's calls
 background gateway daemon; the adapter stops it after the cell
 (``hermes gateway stop``, then any process still carrying this cell's
 ``HERMES_HOME``) and removes the home.
+
+Launch (``resolve_launch``): the cell does not exec the install's
+``<root>/src/.hermes/bin/hermes`` launcher. That launcher boots PM's store
+Python with no packages and finds the dependency environment through
+``$HERMES_HOME/installs/<key>/facts.json``; a fresh per-cell ``HERMES_HOME``
+has no such record, so it tries a source-update sync (which fails on the
+read-only mount) and then runs with no dependencies. The cell instead runs
+the committed environment's own interpreter on the checkout's entry script,
+``<venv>/bin/python <root>/src/hermes``, resolved from the install home's
+facts.json, with ``HERMES_DISABLE_LAZY_INSTALLS=1`` so the boot never tries
+the source-update or sync step. Every path must sit under
+``OBENCH_HERMES_ROOT`` (the read-only cell mount); otherwise the cell fails
+closed before any process starts.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -92,12 +106,24 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _STRIPPED_ENV = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENROUTER_API_KEY", "NOUS_API_KEY",
-    "HERMES_HOME", "HERMES_DUMP_REQUESTS",
+    "HERMES_HOME", "HERMES_DUMP_REQUESTS", "HERMES_RUNTIME_DIR", "HERMES_PYTHON_SRC_ROOT",
     "OPENBENCH_PROXY_BASE_URL", "OPENBENCH_PROXY_CELL_TOKEN",
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONSAFEPATH", "VIRTUAL_ENV",
 )
+# Forced in every Hermes child (the gateway daemon inherits it). The first
+# skips hermes_bootstrap's source-update completion and dependency sync.
+CELL_ENV = {
+    "HERMES_DISABLE_LAZY_INSTALLS": "1",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+}
 
 
 class PinError(Exception):
+    pass
+
+
+class LaunchError(Exception):
     pass
 
 
@@ -167,18 +193,70 @@ def benchmark_config(cell_base: str, model: str) -> dict:
     }
 
 
-def build_command(binary: str, instruction: str, usage_file: str) -> list[str]:
+def build_command(entry: list[str], instruction: str, usage_file: str) -> list[str]:
     """One-shot headless run. Model and provider come from config.yaml (no
     ``-m``/``--provider``: they trigger a consent guard)."""
-    return [binary, "-z", instruction, "--usage-file", usage_file]
+    return [*entry, "-z", instruction, "--usage-file", usage_file]
 
 
 def child_env(home: str) -> dict:
     env = dict(os.environ)
     for name in _STRIPPED_ENV:
         env.pop(name, None)
+    env.update(CELL_ENV)
     env["HERMES_HOME"] = home
     return env
+
+
+def _under(path: str, root: str) -> bool:
+    path, root = os.path.realpath(path), os.path.realpath(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def install_key(src: str) -> str:
+    """Hermes's per-checkout key (``pm.environments.install_key``)."""
+    return hashlib.sha256(str(Path(src).resolve()).encode("utf-8")).hexdigest()[:16]
+
+
+def resolve_launch(root: str, binary: str) -> dict:
+    """The interpreter and entry script the cell runs, all under ``root``.
+
+    ``binary`` (prep.sh's in-root launcher) is only checked to sit under the
+    root; the command is ``[<venv>/bin/python, <root>/src/hermes]`` where
+    ``<venv>`` is the environment PM committed for this checkout in the
+    install home (``<root>/home/installs/<key>/facts.json``).
+    """
+    if not root:
+        raise LaunchError("Hermes harness comparison needs OBENCH_HERMES_ROOT (the install root from prep.sh)")
+    if not os.path.isabs(root) or not os.path.isdir(root):
+        raise LaunchError(f"OBENCH_HERMES_ROOT is not an existing absolute directory: {root}")
+    if not binary or not _under(binary, root):
+        raise LaunchError(f"OBENCH_HERMES_BIN ({binary or 'unset'}) is not under OBENCH_HERMES_ROOT ({root}); "
+                          "only the install root is mounted in the cell. Use the in-root launcher "
+                          "prep.sh prints (<root>/src/.hermes/bin/hermes)")
+    src = os.path.join(root, "src")
+    entry = os.path.join(src, "hermes")
+    if not os.path.isfile(entry):
+        raise LaunchError(f"Hermes entry script is missing: {entry}; re-run prep.sh")
+    state = os.path.join(root, "home", "installs", install_key(src))
+    facts = os.path.join(state, "facts.json")
+    try:
+        environment = json.loads(Path(facts).read_text(encoding="utf-8-sig")).get("environment")
+    except (OSError, ValueError, AttributeError) as exc:
+        raise LaunchError(f"Hermes dependency record is unreadable: {facts} ({exc}); "
+                          "re-run prep.sh (hermes pm install)") from exc
+    if not isinstance(environment, str) or not environment:
+        raise LaunchError(f"Hermes dependency record names no environment: {facts}")
+    if not _under(environment, os.path.join(state, "environments")):
+        raise LaunchError(f"Hermes dependency environment is outside the install root: {environment}")
+    python = os.path.join(environment, "bin", "python")
+    if not os.path.isfile(python) or not _under(python, root):
+        raise LaunchError(f"Hermes environment interpreter is missing or resolves outside the install root: {python}")
+    return {"python": python, "entry": entry, "environment": environment, "launcher": binary,
+            "command": [python, entry]}
 
 
 def pin_stamp_path(binary: str) -> str:
@@ -260,13 +338,13 @@ def _proc_pids_with_home(home: str, proc_root: str = "/proc") -> list[int]:
     return found
 
 
-def stop_gateway(binary: str, home: str, runner=subprocess.run, find_pids=_proc_pids_with_home,
+def stop_gateway(entry: list[str], home: str, runner=subprocess.run, find_pids=_proc_pids_with_home,
                  kill=os.kill, sleep=time.sleep) -> dict:
     """Stop the per-run gateway daemon: ``hermes gateway stop``, then signal
     any process still carrying this cell's ``HERMES_HOME``."""
     result = {"stop_command": None, "signalled": [], "survivors": []}
     try:
-        proc = runner([binary, "gateway", "stop"], capture_output=True, text=True, timeout=20,
+        proc = runner([*entry, "gateway", "stop"], capture_output=True, text=True, timeout=20,
                       stdin=subprocess.DEVNULL, env=child_env(home))
         result["stop_command"] = proc.returncode
     except (OSError, subprocess.SubprocessError) as exc:
@@ -335,7 +413,7 @@ def _observe_totals(ledger_dir: str, cell_id: str):
         return None, str(exc)
 
 
-def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str) -> dict:
+def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, launch: dict | None = None) -> dict:
     return {
         "harness": "hermes",
         "pin": PIN,
@@ -344,6 +422,10 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str) ->
         "nearest_tags": NEAREST_TAGS,
         "binary": binary,
         "install_root": os.environ.get("OBENCH_HERMES_ROOT", ""),
+        "launch": None if launch is None else {
+            "python": launch["python"], "entry": launch["entry"], "environment": launch["environment"],
+            "env": dict(CELL_ENV),
+        },
         "model": model,
         "provider": f"custom:{PROVIDER_NAME}",
         "wire": {"transport": TRANSPORT, "path": WIRE_PATH, "base_url": cell_base},
@@ -411,24 +493,29 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
     binary = os.environ.get("OBENCH_HERMES_BIN", "").strip()
     try:
         require_pin(binary)
-    except PinError as exc:
+        launch = resolve_launch(os.environ.get("OBENCH_HERMES_ROOT", "").strip(), binary)
+    except (PinError, LaunchError) as exc:
         return _fail(str(exc))
+    entry = launch["command"]
 
     cell_base = cell_proxy_base(rewrite_loopback(proxy), cell_id)
     home = tempfile.mkdtemp(prefix="hermes_harness_home_")
     usage_file = os.path.join(home, "usage.json")
     gateway = None
+    start_error = None
     usage = {"present": False, "main_calls": None, "aux_calls": {}, "total_calls": None, "raw": None}
     timed_out = False
     try:
         with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as fh:
             json.dump(benchmark_config(cell_base, model), fh, indent=2, sort_keys=True)
             fh.write("\n")
-        cmd = build_command(binary, instruction, usage_file)
+        cmd = build_command(entry, instruction, usage_file)
         try:
             proc = runner(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout_s,
                           stdin=subprocess.DEVNULL, env=child_env(home))
             stdout, stderr, returncode = proc.stdout or "", proc.stderr or "", proc.returncode
+        except OSError as exc:
+            start_error = f"Hermes harness comparison could not start {cmd[0]}: {exc}"
         except subprocess.TimeoutExpired as exc:
             timed_out = True
             stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
@@ -437,13 +524,17 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
         usage = parse_usage(usage_file)
     finally:
         try:
-            gateway = gateway_stopper(binary, home)
+            gateway = gateway_stopper(entry, home)
         finally:
             shutil.rmtree(home, ignore_errors=True)
 
+    if start_error is not None:
+        failed = _fail(start_error)
+        failed["cmd"] = cmd
+        return failed
     combined = (stdout or "") + (stderr or "")
     totals, totals_error = _observe_totals(ledger_dir, cell_id)
-    settings = planned_settings(model, timeout_s, cell_base, binary)
+    settings = planned_settings(model, timeout_s, cell_base, binary, launch)
     settings.update({
         "turns": usage["total_calls"],
         "main_calls": usage["main_calls"],
@@ -477,3 +568,66 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
     if timed_out:
         result["failure_class"] = "timeout"
     return result
+
+
+# Modules the cell needs past hermes_bootstrap: hermes_yaml (ruamel) is what
+# failed in the first VM smoke; anthropic is the Messages transport.
+SMOKE_IMPORTS = ("hermes_bootstrap", "hermes_yaml", "ruamel.yaml", "anthropic", "hermes_cli.main")
+SMOKE_HOME = "/tmp/hermes_smoke_home"
+SMOKE_FAILURE_MARKERS = ("source-update completion failed", "ModuleNotFoundError", "run `hermes pm repair`")
+
+
+def smoke_commands(launch: dict) -> list[tuple[str, list[str]]]:
+    """Prep-time checks with the cell's exact interpreter, entry and env.
+
+    ``--version`` alone is not enough: it is a metadata flag, answered before
+    any dependency import, so it passed even with no dependencies on the path.
+    """
+    src = os.path.dirname(launch["entry"])
+    probe = (f"import sys; sys.path.insert(0, {src!r}); "
+             f"import importlib; [importlib.import_module(m) for m in {list(SMOKE_IMPORTS)!r}]; "
+             "print('hermes imports ok', sys.executable)")
+    return [("version", [*launch["command"], "--version"]),
+            ("imports", [launch["python"], "-c", probe])]
+
+
+def docker_smoke_argv(image: str, root: str, command: list[str]) -> list[str]:
+    """``docker run`` the way a cell sees Hermes: root mounted read-only at
+    its own path, HOME=/root, a fresh HERMES_HOME, the forced child env, and
+    no network."""
+    argv = ["docker", "run", "--rm", "--network", "none",
+            "-v", f"{os.path.abspath(root)}:{os.path.abspath(root)}:ro",
+            "-e", "HOME=/root", "-e", f"HERMES_HOME={SMOKE_HOME}"]
+    for name, value in CELL_ENV.items():
+        argv += ["-e", f"{name}={value}"]
+    return argv + ["-w", "/tmp", image, "sh", "-c", 'mkdir -p "$HERMES_HOME" && exec "$@"', "sh", *command]
+
+
+def _smoke_main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Hermes cell launch smoke (data/hermes-harness-smoke/prep.sh)")
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--root", default=os.environ.get("OBENCH_HERMES_ROOT", ""))
+    parser.add_argument("--binary", default=os.environ.get("OBENCH_HERMES_BIN", ""))
+    args = parser.parse_args(argv)
+    try:
+        launch = resolve_launch(args.root, args.binary)
+    except LaunchError as exc:
+        print(f"hermes smoke: {exc}", file=sys.stderr)
+        return 1
+    print(f"hermes smoke: python={launch['python']} entry={launch['entry']}", flush=True)
+    for name, command in smoke_commands(launch):
+        proc = subprocess.run(docker_smoke_argv(args.image, args.root, command), capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=300)
+        output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        print(f"hermes smoke {name}: exit {proc.returncode}\n{output}", flush=True)
+        bad = [marker for marker in SMOKE_FAILURE_MARKERS if marker in output]
+        if proc.returncode != 0 or bad:
+            print(f"hermes smoke {name}: FAILED{' (' + ', '.join(bad) + ')' if bad else ''}", file=sys.stderr)
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_smoke_main())

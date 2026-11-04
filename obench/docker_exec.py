@@ -679,9 +679,10 @@ def _codex_comparison_mounts(args):
 def _hermes_comparison_mounts(args):
     """Mount the pinned Hermes install root read-only at its own path.
 
-    Hermes's launcher and its borrowed Python environment hard-code absolute
-    paths under the install root (data/hermes-harness-smoke/prep.sh), so the
-    root keeps the same path in the cell. Each cell gets a fresh HERMES_HOME
+    The committed Python environment the cell runs (hermes_harness.resolve_launch)
+    hard-codes absolute paths under the install root
+    (data/hermes-harness-smoke/prep.sh), so the root keeps the same path in
+    the cell. Each cell gets a fresh HERMES_HOME
     inside the container.
     """
     root = os.environ.get("OBENCH_HERMES_ROOT", "").strip()

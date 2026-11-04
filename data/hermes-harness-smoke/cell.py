@@ -113,7 +113,8 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["OBENCH_HERMES_ROOT"] = str(root)
     os.environ["OBENCH_HERMES_BIN"] = str(binary)
 
-    from obench.adapters.hermes_harness import CONTEXT_LENGTH, PIN, PinError, require_pin
+    from obench.adapters.hermes_harness import (CONTEXT_LENGTH, PIN, LaunchError, PinError, require_pin,
+                                                resolve_launch)
     from thesis.ab.proxy_bridge import bridge_egress_probe, cell_network, read_proxy_observed
     from thesis.ab.run_ab import PROTOCOL_LOCATION, attach_proxy_trace, proxy_trace_public
     from thesis.ab.smoke_evidence import reference_thinking, smoke_evidence
@@ -122,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         require_pin(str(binary))
-    except PinError as exc:
+        launch = resolve_launch(str(root), str(binary))
+    except (PinError, LaunchError) as exc:
         raise SystemExit(str(exc)) from exc
 
     repo = _repo_root()
@@ -138,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["OBENCH_VERTEX_LEDGER_DIR"] = str(ledger)
     proxy = start_from_env(ledger_dir=ledger, thinking_mode="default", model=args.vertex_model)
     os.environ["OBENCH_VERTEX_PROXY_URL"] = proxy.base_url
-    print(f"proxy {proxy.base_url} hermes {PIN} binary {binary}", flush=True)
+    print(f"proxy {proxy.base_url} hermes {PIN} python {launch['python']} entry {launch['entry']}", flush=True)
     network_mode = cell_network(args.exec, [])
     if args.exec == "docker":
         bridge = proxy.publish_on_docker_bridge()
@@ -189,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             "vertex_model": args.vertex_model,
             "binary": str(binary),
             "install_root": str(root),
+            "launch": {"python": launch["python"], "entry": launch["entry"]},
             "task": args.task,
             "network_mode": network_mode,
             "proxy_observed": observed,

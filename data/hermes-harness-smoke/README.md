@@ -34,9 +34,32 @@ bash data/hermes-harness-smoke/prep.sh
 
 `prep.sh` runs Hermes's own installer at the pin
 (`scripts/install.sh --commit … --non-interactive`), which brings uv,
-Python 3.14, Node, ripgrep and ffmpeg. It then installs the `anthropic` extra
-and writes `$ROOT/PIN`. Docker cells mount `OBENCH_HERMES_ROOT` read-only at
-the same path.
+Python 3.14, Node, ripgrep and ffmpeg. It then installs the `anthropic` extra,
+writes `$ROOT/PIN`, and prints the in-root launcher
+`$ROOT/src/.hermes/bin/hermes` as `OBENCH_HERMES_BIN`. Docker cells mount
+`OBENCH_HERMES_ROOT` read-only at the same path; a `OBENCH_HERMES_BIN` outside
+the root fails the cell before it starts.
+
+**Launch.** The cell does not exec that launcher. Its store Python finds the
+dependency environment through `$HERMES_HOME/installs/<key>/facts.json`, and
+a fresh per-cell `HERMES_HOME` has none, so it attempts a source-update sync
+(which fails on the read-only mount) and runs with no dependencies
+(`No module named 'ruamel'`). The adapter instead runs the committed
+environment's interpreter on the checkout's entry script,
+`<venv>/bin/python $ROOT/src/hermes`, where `<venv>` comes from
+`$ROOT/home/installs/<key>/facts.json`, with `HERMES_DISABLE_LAZY_INSTALLS=1`
+(no source-update or sync step at boot). The gateway daemon is spawned with
+the same interpreter.
+
+**Prep-time smoke.** `prep.sh` ends by running `hermes --version` and a
+dependency import check inside the cell image (`OBENCH_CELL_IMAGE`, default
+`h1-env:1027-strace`), with the root mounted read-only, `HOME=/root`, a fresh
+`HERMES_HOME` and no network. To re-run only the smoke on an existing install:
+
+```bash
+python3 -m obench.adapters.hermes_harness --image h1-env:1027-strace \
+  --root "$OBENCH_HERMES_ROOT" --binary "$OBENCH_HERMES_BIN"
+```
 
 ## Run the one smoke cell
 

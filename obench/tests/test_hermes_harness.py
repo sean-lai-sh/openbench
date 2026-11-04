@@ -6,6 +6,8 @@ stopper are fakes.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -49,9 +51,25 @@ class GatewaySpy:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, binary, home):
-        self.calls.append((binary, home, os.path.isdir(home)))
+    def __call__(self, entry, home):
+        self.calls.append((entry, home, os.path.isdir(home)))
         return {"stop_command": 0, "signalled": [], "survivors": []}
+
+
+def fake_install(root):
+    """The layout install.sh + `hermes pm install` leave under the root."""
+    src = Path(root, "src")
+    launcher = src / ".hermes" / "bin" / "hermes"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\nexec store-python -I -c bootstrap \"$@\"\n")
+    (src / "hermes").write_text("from hermes_cli.main import main\n")
+    state = Path(root, "home", "installs", hh.install_key(str(src)))
+    venv = state / "environments" / "gen-1"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("")
+    (venv / "pyvenv.cfg").write_text("home = /x\n")
+    (state / "facts.json").write_text(json.dumps({"environment": str(venv)}))
+    return str(launcher), str(venv / "bin" / "python"), str(src / "hermes"), state
 
 
 class CellEnv(unittest.TestCase):
@@ -63,15 +81,17 @@ class CellEnv(unittest.TestCase):
         self.root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.root, True)
         Path(self.root, "PIN").write_text(hh.PIN + "\n")
+        self.launcher, self.python, self.entry, self.state = fake_install(self.root)
         env = {
             "OBENCH_HERMES_HARNESS": "1",
             "OBENCH_VERTEX_PROXY_URL": "http://127.0.0.1:4567",
             "OBENCH_VERTEX_CELL_ID": "cellh",
             "OBENCH_VERTEX_LEDGER_DIR": self.ledger,
-            "OBENCH_HERMES_BIN": os.path.join(self.root, "bin", "hermes"),
+            "OBENCH_HERMES_BIN": self.launcher,
             "OBENCH_HERMES_ROOT": self.root,
             "ANTHROPIC_API_KEY": "sk-ant-should-not-leak",
             "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+            "PYTHONPATH": "/somewhere/else",
         }
         patcher = patch.dict(os.environ, env)
         patcher.start()
@@ -168,8 +188,8 @@ class Config(unittest.TestCase):
             self.assertTrue(why)
 
     def test_command_is_one_shot_with_usage_file_and_no_model_flags(self):
-        cmd = hh.build_command("/r/bin/hermes", "do it", "/h/usage.json")
-        self.assertEqual(cmd, ["/r/bin/hermes", "-z", "do it", "--usage-file", "/h/usage.json"])
+        cmd = hh.build_command(["/r/venv/bin/python", "/r/src/hermes"], "do it", "/h/usage.json")
+        self.assertEqual(cmd, ["/r/venv/bin/python", "/r/src/hermes", "-z", "do it", "--usage-file", "/h/usage.json"])
         self.assertNotIn("--ignore-rules", cmd)
         self.assertNotIn("-m", cmd)
 
@@ -253,6 +273,106 @@ class Run(CellEnv):
         self.assertTrue(runner.config["providers"]["proxy"]["api"].endswith("/c/cellh"))
 
 
+class Launch(CellEnv):
+    def test_cell_runs_the_committed_environment_on_the_entry_script(self):
+        row, runner, gateway = self.run_cell()
+        cmd, kwargs = runner.calls[-1]
+        self.assertEqual(cmd[:2], [self.python, self.entry])
+        self.assertNotIn(self.launcher, cmd)
+        env = kwargs["env"]
+        self.assertEqual(env["HERMES_DISABLE_LAZY_INSTALLS"], "1")
+        self.assertEqual(env["PYTHONNOUSERSITE"], "1")
+        self.assertNotIn("PYTHONPATH", env)
+        self.assertEqual(gateway.calls[0][0], [self.python, self.entry])
+        launch = row["harness_settings"]["launch"]
+        self.assertEqual((launch["python"], launch["entry"]), (self.python, self.entry))
+        self.assertEqual(launch["env"]["HERMES_DISABLE_LAZY_INSTALLS"], "1")
+
+    def assert_fails_closed(self, pattern):
+        row, runner, gateway = self.run_cell()
+        self.assertFalse(row["completed"])
+        self.assertRegex(row["error"], pattern)
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(gateway.calls, [])
+
+    def test_binary_outside_the_root_fails_closed(self):
+        outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, outside, True)
+        shim = Path(outside, "hermes")
+        shim.write_text("")
+        with patch.dict(os.environ, {"OBENCH_HERMES_BIN": str(shim)}):
+            self.assert_fails_closed(r"OBENCH_HERMES_BIN .* is not under OBENCH_HERMES_ROOT .*src/\.hermes/bin/hermes")
+        # A symlink inside the root that points outside it is outside too.
+        link = Path(self.root, "src", ".hermes", "bin", "hermes-link")
+        link.symlink_to(shim)
+        with patch.dict(os.environ, {"OBENCH_HERMES_BIN": str(link)}):
+            self.assert_fails_closed("is not under OBENCH_HERMES_ROOT")
+
+    def test_missing_root_or_dependency_record_fails_closed(self):
+        with patch.dict(os.environ, {"OBENCH_HERMES_ROOT": ""}):
+            with self.assertRaisesRegex(hh.LaunchError, "needs OBENCH_HERMES_ROOT"):
+                hh.resolve_launch("", self.launcher)
+        os.remove(self.state / "facts.json")
+        self.assert_fails_closed(r"dependency record is unreadable: .*facts\.json")
+
+    def test_environment_outside_the_install_fails_closed(self):
+        outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (self.state / "facts.json").write_text(json.dumps({"environment": outside}))
+        self.assert_fails_closed("outside the install root")
+
+    def test_missing_interpreter_fails_closed(self):
+        os.remove(self.python)
+        self.assert_fails_closed("interpreter is missing")
+
+    def test_unstartable_interpreter_is_a_clean_error_not_a_traceback(self):
+        def broken(cmd, **kw):
+            raise FileNotFoundError(2, "No such file or directory", cmd[0])
+        gateway = GatewaySpy()
+        row = hh.run("fix", self.workdir, "claude-sonnet-5-5", 60, runner=broken, gateway_stopper=gateway)
+        self.assertFalse(row["completed"])
+        self.assertIn(f"could not start {self.python}", row["error"])
+        self.assertEqual(len(gateway.calls), 1)
+
+    def test_docker_smoke_mirrors_the_cell(self):
+        launch = hh.resolve_launch(self.root, self.launcher)
+        commands = dict(hh.smoke_commands(launch))
+        self.assertEqual(commands["version"], [self.python, self.entry, "--version"])
+        self.assertEqual(commands["imports"][:2], [self.python, "-c"])
+        for module in ("hermes_bootstrap", "hermes_yaml", "ruamel.yaml", "anthropic"):
+            self.assertIn(module, commands["imports"][2])
+        argv = hh.docker_smoke_argv("h1-env:1027-strace", self.root, commands["version"])
+        root = os.path.abspath(self.root)
+        self.assertEqual(argv[:3], ["docker", "run", "--rm"])
+        self.assertIn(f"{root}:{root}:ro", argv)
+        for assignment in ("HOME=/root", f"HERMES_HOME={hh.SMOKE_HOME}", "HERMES_DISABLE_LAZY_INSTALLS=1"):
+            self.assertIn(assignment, argv)
+        self.assertEqual(argv[argv.index("--network") + 1], "none")
+        self.assertEqual(argv[-3:], commands["version"])
+        self.assertIn("h1-env:1027-strace", argv)
+
+    def test_smoke_main_fails_on_the_first_vm_symptoms(self):
+        quiet = contextlib.ExitStack()
+        quiet.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        quiet.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        self.addCleanup(quiet.close)
+        outputs = iter([
+            subprocess.CompletedProcess([], 0, "Hermes Agent v0.0.0\n", ""),
+            subprocess.CompletedProcess([], 0, "", "hermes: source-update completion failed: an update is "
+                                                   "still running\nModuleNotFoundError: No module named 'ruamel'"),
+        ])
+        argv = ["--image", "h1-env:1027-strace", "--root", self.root, "--binary", self.launcher]
+        with patch.object(hh.subprocess, "run", side_effect=lambda *a, **k: next(outputs)) as run:
+            self.assertEqual(hh._smoke_main(argv), 1)
+        self.assertEqual(run.call_count, 2)
+        ok = subprocess.CompletedProcess([], 0, "ok\n", "")
+        with patch.object(hh.subprocess, "run", return_value=ok):
+            self.assertEqual(hh._smoke_main(argv), 0)
+        with patch.object(hh.subprocess, "run") as run:
+            self.assertEqual(hh._smoke_main(["--image", "x", "--root", self.root, "--binary", "/usr/bin/true"]), 1)
+        run.assert_not_called()
+
+
 class Usage(unittest.TestCase):
     def test_parse_usage_variants(self):
         with tempfile.TemporaryDirectory() as d:
@@ -276,10 +396,10 @@ class Gateway(unittest.TestCase):
             calls.append((cmd, kw["env"]["HERMES_HOME"]))
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        result = hh.stop_gateway("/r/bin/hermes", "/tmp/h1", runner=runner,
+        result = hh.stop_gateway(["/r/py", "/r/src/hermes"], "/tmp/h1", runner=runner,
                                  find_pids=lambda home: rounds.pop(0) if rounds else [],
                                  kill=lambda pid, sig: kills.append((pid, sig)), sleep=lambda s: None)
-        self.assertEqual(calls, [(["/r/bin/hermes", "gateway", "stop"], "/tmp/h1")])
+        self.assertEqual(calls, [(["/r/py", "/r/src/hermes", "gateway", "stop"], "/tmp/h1")])
         self.assertEqual(kills, [(101, signal.SIGTERM), (102, signal.SIGTERM), (102, signal.SIGKILL)])
         self.assertEqual(result["signalled"], [101, 102])
         self.assertEqual(result["survivors"], [102])
@@ -295,7 +415,7 @@ class Gateway(unittest.TestCase):
     def test_stop_survives_a_missing_binary(self):
         def broken(cmd, **kw):
             raise FileNotFoundError(cmd[0])
-        result = hh.stop_gateway("/missing/hermes", "/tmp/h1", runner=broken, find_pids=lambda h: [])
+        result = hh.stop_gateway(["/missing/python", "/r/src/hermes"], "/tmp/h1", runner=broken, find_pids=lambda h: [])
         self.assertTrue(str(result["stop_command"]).startswith("error"))
 
 
@@ -343,6 +463,14 @@ class Launcher(unittest.TestCase):
         self.assertIn("--commit \"$PIN\"", text)
         self.assertIn("pm install --extra anthropic", text)
         self.assertIn("refusing to install under results/ or data/", text)
+
+    def test_prep_script_prints_the_in_root_launcher_and_smokes_in_the_image(self):
+        text = (ROOT / "data" / "hermes-harness-smoke" / "prep.sh").read_text()
+        self.assertIn('BIN="$SRC/.hermes/bin/hermes"', text)
+        self.assertNotIn('"$HOME/.local/bin/hermes"', text)
+        self.assertIn('IMAGE="${OBENCH_CELL_IMAGE:-h1-env:1027-strace}"', text)
+        self.assertIn('python3 -m obench.adapters.hermes_harness --image "$IMAGE" --root "$ROOT" --binary "$BIN"', text)
+        self.assertLess(text.index("obench.adapters.hermes_harness --image"), text.index("export OBENCH_HERMES_BIN"))
 
 
 if __name__ == "__main__":
