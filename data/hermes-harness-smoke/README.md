@@ -20,8 +20,11 @@ translation. The adapter is `obench/adapters/hermes_harness.py`.
 - **Context length:** `CONTEXT_LENGTH = 1000000`, set explicitly and recorded
   per cell. **Pending the Researcher's call:** 1M for Pi and stock Hermes, or
   200K as in Codex's AD-1.
-- **Title side call:** on (stock). It is tagged `side` at the proxy and counted
-  in the traces.
+- **Title side call:** on (stock). Counted in the traces. The proxy tags it
+  `side` / `title` (`heuristic:title-schema`): it is the only tool-less call
+  whose reply schema (`output_config.format`) has `title` as its sole
+  property. Its system prompt ("You name chat sessions…") doesn't match the
+  older title regex, and its `max_tokens` is above the short-call limit.
 - **Gateway:** every Hermes run starts a gateway daemon. The adapter stops it
   after every cell and removes the per-cell `HERMES_HOME`.
 
@@ -82,9 +85,20 @@ holds:
 - the token split and `proxy_cost_usd`;
 - `main_calls` and `aux_calls`, from Hermes's `--usage-file`;
 - `gateway_stop`, showing how the daemon was stopped;
+- `hermes_extras`, the venv's installed extras;
 - `evidence` and `evidence_pass` for the four checks: traced, `cache_read`
   from call 2, `thinking_sent` vs OpenCode, and prompt bytes within 5%;
+- `2_cache_read` judges main calls only, and lists side calls in `calls`.
+  On the Vertex `global` endpoint, a miss on call 2 is often a region split:
+  call 2 reads 0 and rewrites the whole prefix, then call 3 reads call 1's
+  prefix rather than call 2's. `misses` flags this pattern. OpenCode shows
+  it on call 2 in 28 of 90 reference cells, and Pi in 14 of 66
+  (`reference_call2_miss`). The pass rule itself is unchanged.
 - `server_thinking_tokens_per_call`.
+
+`main_calls`, `aux_calls`, `gateway_stop` and `hermes_extras` come from the
+adapter's `harness_settings`, which `run_cell` carries back from the docker
+cell.
 
 Raw request bodies, exactly as Hermes sent them, are in
 `proxy-ledger/<cell>.requests/`. Any call with `cache_read == 0` appends its

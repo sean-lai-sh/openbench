@@ -560,6 +560,34 @@ class VertexHarnessApiTests(unittest.TestCase):
 
 
 class CallRoleTests(unittest.TestCase):
+    HERMES_TITLE = {
+        # Hermes's title call at 4dcef215 through the anthropic_messages transport:
+        # strict JSON schema in output_config.format, no tools, an aux max_tokens floor.
+        "model": "claude-sonnet-5-5", "max_tokens": 4096,
+        "system": "You name chat sessions. Given the user's opening message, write a title ...",
+        "messages": [{"role": "user", "content": "Write a polyglot program ..."}],
+        "output_config": {"format": {"type": "json_schema", "schema": {
+            "type": "object", "properties": {"title": {"type": "string"}},
+            "required": ["title"], "additionalProperties": False}}},
+    }
+
+    def test_hermes_title_schema_is_side_title_at_any_max_tokens(self):
+        self.assertEqual(classify_call_role(self.HERMES_TITLE, None),
+                         {"call_role": "side", "call_role_reason": "heuristic:title-schema",
+                          "call_role_detail": "title"})
+        openai = {k: v for k, v in self.HERMES_TITLE.items() if k != "output_config"}
+        openai["response_format"] = {"type": "json_schema", "json_schema": {
+            "name": "session_title", "schema": self.HERMES_TITLE["output_config"]["format"]["schema"]}}
+        self.assertEqual(classify_call_role(openai, None)["call_role_detail"], "title")
+
+    def test_title_schema_needs_no_tools_and_title_as_the_only_property(self):
+        with_tools = dict(self.HERMES_TITLE, tools=[{"name": "terminal", "input_schema": {"type": "object"}}])
+        self.assertEqual(classify_call_role(with_tools, None)["call_role"], "main")
+        wider = json.loads(json.dumps(self.HERMES_TITLE))
+        wider["output_config"]["format"]["schema"]["properties"]["summary"] = {"type": "string"}
+        self.assertEqual(classify_call_role(wider, None)["call_role_reason"], "heuristic:main")
+        self.assertEqual(classify_call_role(self.HERMES_TITLE, "main")["call_role"], "main")  # header wins
+
     def test_header_wins_and_heuristics_cover_side_calls(self):
         title = {
             "max_tokens": 32,

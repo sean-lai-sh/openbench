@@ -77,6 +77,23 @@ def requests_cost_usd(model: str, ledger: Path, cell_id: str):
     return cost, totals
 
 
+def cell_settings(row: dict, ledger: Path, cell_id: str) -> dict:
+    """The adapter's harness_settings: from the row (run_cell carries the
+    adapter result's copy back, the only path out of a docker cell), else the
+    settings file the adapter wrote beside the ledger (local cells)."""
+    settings = row.get("harness_settings")
+    if isinstance(settings, dict) and settings:
+        return settings
+    from obench.adapters.hermes_harness import settings_destination
+
+    path = Path(settings_destination(cell_id, str(ledger)))
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def _resolve(explicit: Path | None, env: str, what: str) -> Path:
     raw = explicit or (Path(os.environ[env]) if os.environ.get(env) else None)
     if raw is None:
@@ -117,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
                                                 resolve_launch)
     from thesis.ab.proxy_bridge import bridge_egress_probe, cell_network, read_proxy_observed
     from thesis.ab.run_ab import PROTOCOL_LOCATION, attach_proxy_trace, proxy_trace_public
-    from thesis.ab.smoke_evidence import reference_thinking, smoke_evidence
+    from thesis.ab.smoke_evidence import reference_call2_miss, reference_thinking, smoke_evidence
     from thesis.ab.vertex_anthropic_proxy import cell_ledger_path, start_from_env
     from obench.run import read_proxy_ledger, run_cell
 
@@ -179,10 +196,11 @@ def main(argv: list[str] | None = None) -> int:
             require_model_match=args.require_model_match,
         )
         trace = proxy_trace_public(row)
-        evidence = smoke_evidence(row, ledger_rows, reference_thinking(repo, args.vertex_model))
+        evidence = smoke_evidence(row, ledger_rows, reference_thinking(repo, args.vertex_model),
+                                  reference_cache=reference_call2_miss(repo, args.vertex_model))
         cost, totals = requests_cost_usd(args.vertex_model, ledger, cell_id)
         tokens = (totals or {}).get("all") or {}
-        settings = row.get("harness_settings") or {}
+        settings = cell_settings(row, ledger, cell_id)
         record = {
             "cell_id": cell_id,
             "harness": "hermes",

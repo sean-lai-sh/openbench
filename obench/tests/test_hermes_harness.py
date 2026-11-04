@@ -435,6 +435,70 @@ class Launch(CellEnv):
         run.assert_not_called()
 
 
+# What `hermes -z ... --usage-file F` writes at the pin (hermes_cli/oneshot.py
+# _write_usage_file + _auxiliary_report): _USAGE_KEYS, failed, service_tier,
+# auxiliary {_AUX_COUNTERS totals, total_tokens, by_task}, total_including_auxiliary.
+REAL_USAGE = {
+    "estimated_cost_usd": 0.1291, "cost_status": "estimated", "cost_source": "models.dev",
+    "input_tokens": 2310, "output_tokens": 3120, "cache_read_tokens": 17159, "cache_write_tokens": 36214,
+    "reasoning_tokens": 2720, "total_tokens": 5430, "api_calls": 3,
+    "model": "claude-sonnet-5-5", "provider": "custom:proxy", "session_id": "20261103_101500_ab12cd",
+    "completed": True, "partial": False, "interrupted": False, "turn_exit_reason": None,
+    "failed": False, "service_tier": None,
+    "auxiliary": {
+        "api_calls": 1, "input_tokens": 262, "output_tokens": 14, "cache_read_tokens": 0,
+        "cache_write_tokens": 0, "reasoning_tokens": 0, "estimated_cost_usd": 0.0047, "total_tokens": 276,
+        "by_task": {"title_generation": {
+            "api_calls": 1, "input_tokens": 262, "output_tokens": 14, "cache_read_tokens": 0,
+            "cache_write_tokens": 0, "reasoning_tokens": 0, "estimated_cost_usd": 0.0047}},
+    },
+    "total_including_auxiliary": {"estimated_cost_usd": 0.1338, "total_tokens": 5706, "api_calls": 4},
+}
+
+
+class SummaryPlumbing(CellEnv):
+    """main_calls / aux_calls / gateway_stop / hermes_extras reach summary.json."""
+
+    def test_real_usage_file_shape_counts_main_and_title(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "usage.json")
+            path.write_text(json.dumps(REAL_USAGE, indent=2) + "\n")
+            parsed = hh.parse_usage(str(path))
+        self.assertEqual((parsed["main_calls"], parsed["aux_calls"], parsed["total_calls"]),
+                         (3, {"title_generation": 1}, 4))
+        self.assertEqual(parsed["total_calls"], REAL_USAGE["total_including_auxiliary"]["api_calls"])
+
+    def test_settings_survive_run_cell_into_the_summary_fields(self):
+        row, _, _ = self.run_cell(runner=FakeRunner(usage=REAL_USAGE))
+        settings = row["harness_settings"]
+        self.assertEqual((settings["main_calls"], settings["aux_calls"]), (3, {"title_generation": 1}))
+        self.assertEqual(settings["gateway_stop"], {"stop_command": 0, "signalled": [], "survivors": []})
+        self.assertEqual(settings["launch"]["extras"], ["all", "anthropic"])
+        # run_cell carries the adapter's harness_settings onto the row (the docker path back).
+        from obench.tests.test_phase_timing import TestPhaseTiming
+
+        class _Fold(TestPhaseTiming):
+            def runTest(self):
+                pass
+        fold = _Fold()
+        fold.setUp()
+        self.addCleanup(fold.tearDown)
+        folded = fold._run_with_fakes(exec_used="docker", extra_result={"harness_settings": settings})
+        self.assertEqual(folded["harness_settings"], settings)
+        self.assertNotIn("harness_settings", fold._run_with_fakes())
+        cell = Launcher().load()
+        got = cell.cell_settings(folded, Path(self.ledger), "cellh")
+        self.assertEqual((got["main_calls"], got["aux_calls"], got["gateway_stop"]["stop_command"],
+                          got["launch"]["extras"]), (3, {"title_generation": 1}, 0, ["all", "anthropic"]))
+
+    def test_local_cells_fall_back_to_the_settings_file(self):
+        self.run_cell(runner=FakeRunner(usage=REAL_USAGE))
+        cell = Launcher().load()
+        got = cell.cell_settings({}, Path(self.ledger), "cellh")
+        self.assertEqual(got["main_calls"], 3)
+        self.assertEqual(cell.cell_settings({}, Path(self.ledger), "missing"), {})
+
+
 class Usage(unittest.TestCase):
     def test_parse_usage_variants(self):
         with tempfile.TemporaryDirectory() as d:

@@ -73,6 +73,45 @@ class Evidence(unittest.TestCase):
         self.assertEqual(se.server_thinking_tokens({"reasoning_tokens": 5, "output_tokens_details":
                                                     {"reasoning_tokens": 2}}), 7)
 
+    def test_hermes_smoke_ledger_check2_is_main_only_with_the_region_split_signature(self):
+        # The four calls of the first Hermes VM cell (df4934f90f6f8d26).
+        rows = [
+            {"usage": {}, "cache_read": 0, "cache_write": 17159, "call_role": "main"},
+            {"usage": {}, "cache_read": 0, "cache_write": 17977, "call_role": "main"},
+            {"usage": {}, "cache_read": 17159, "cache_write": 1078, "call_role": "main"},
+            {"usage": {}, "cache_read": 0, "cache_write": 0, "call_role": "side",
+             "call_role_reason": "heuristic:title-schema"},
+        ]
+        check = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE,
+                                  reference_cache={"opencode": {"cells": 90, "call2_miss": 28}})["2_cache_read"]
+        self.assertEqual(check["per_call"], [0, 0, 17159])  # the title call is not in the rule
+        self.assertEqual(check["side_calls_excluded"], 1)
+        self.assertEqual([c["call_role"] for c in check["calls"]], ["main", "main", "main", "side"])
+        self.assertEqual(check["misses"], [{
+            "main_call": 2, "cache_write": 17977, "region_split_signature": True,
+            "later_read_of_earlier_prefix": {"main_call": 3, "read": 17159, "matches_prefix_of_main_call": 1}}])
+        self.assertFalse(check["pass"])
+        self.assertEqual(check["reference_call2_miss"]["opencode"]["call2_miss"], 28)
+
+    def test_side_call_without_cache_does_not_fail_check2(self):
+        rows = capture_rows(cache_reads=(0, 9000, 9500, 0), roles={4: "side"})
+        check = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE)["2_cache_read"]
+        self.assertTrue(check["pass"])
+        self.assertEqual(check["misses"], [])
+
+    def test_plain_miss_has_no_region_split_signature(self):
+        rows = [{"usage": {}, "cache_read": 0, "cache_write": 500},
+                {"usage": {}, "cache_read": 0, "cache_write": 900},
+                {"usage": {}, "cache_read": 900, "cache_write": 40}]
+        misses = se.cache_misses(rows)
+        self.assertEqual(misses[0]["main_call"], 2)
+        self.assertFalse(misses[0]["region_split_signature"])
+
+    def test_opencode_reference_also_misses_call2(self):
+        rate = se.reference_call2_miss(ROOT, "claude-sonnet-5-5")
+        self.assertGreater(rate["opencode"]["cells"], 0)
+        self.assertGreater(rate["opencode"]["call2_miss"], 0)
+
     def test_reference_comes_from_the_196_ledgers(self):
         self.assertEqual(se.reference_thinking(ROOT, "claude-sonnet-5-5"), REFERENCE)
 

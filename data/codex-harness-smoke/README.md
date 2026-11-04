@@ -57,8 +57,12 @@ boolean per criterion. `smoke.log` gets the same booleans on one
 1. **`1_traced`:** `trace_requests` equals the ledger request count, and
    `untraced_requests` is 0. Codex model calls are counted from its session
    rollout's `token_count` events.
-2. **`2_cache_read`:** `cache_read` for each call. The criterion passes when
-   every call from the second one on reads more than 0 tokens.
+2. **`2_cache_read`:** `cache_read` for each main call. The criterion passes
+   when every main call from the second one on reads more than 0 tokens.
+   Side calls are listed in `calls` but kept out of the rule. Each miss
+   records whether it has the region-split signature, and
+   `reference_call2_miss` gives the OpenCode and Pi baseline (see the Hermes
+   README).
 3. **`3_thinking_sent`:** the Codex `thinking_sent` values next to each
    reference arm's values for the same model, read from the committed #196
    ledgers. It passes against **OpenCode**, the Researcher's thinking

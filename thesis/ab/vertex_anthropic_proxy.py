@@ -1405,6 +1405,28 @@ def _request_max_tokens(data: dict):
     return None
 
 
+def _structured_output_schema(data: dict):
+    """The JSON schema a request asks the reply to follow: Anthropic
+    ``output_config.format`` or OpenAI ``response_format.json_schema``."""
+    output_config = data.get("output_config")
+    fmt = output_config.get("format") if isinstance(output_config, dict) else None
+    if isinstance(fmt, dict) and fmt.get("type") == "json_schema" and isinstance(fmt.get("schema"), dict):
+        return fmt["schema"]
+    response_format = data.get("response_format")
+    json_schema = response_format.get("json_schema") if isinstance(response_format, dict) else None
+    if isinstance(json_schema, dict) and isinstance(json_schema.get("schema"), dict):
+        return json_schema["schema"]
+    return None
+
+
+def _is_title_schema(data: dict) -> bool:
+    """A reply schema whose only property is ``title`` (Hermes's title call:
+    ``agent/title_generator.py`` ``_TITLE_RESPONSE_FORMAT``)."""
+    schema = _structured_output_schema(data)
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    return isinstance(properties, dict) and set(properties) == {"title"}
+
+
 def _role(role: str, reason: str, detail: str | None = None) -> dict:
     out = {"call_role": role, "call_role_reason": reason}
     if detail:
@@ -1440,7 +1462,10 @@ def classify_call_role(data, header: str | None) -> dict:
     tools, ``max_tokens`` at most ``SHORT_CALL_MAX_TOKENS``, and a matching
     system prompt. Memory and helper prompts are tagged when the wording is
     specific. A short call with no tools and no matching prompt is ``side``
-    with reason ``heuristic:short-no-tools``. Everything else is ``main``.
+    with reason ``heuristic:short-no-tools``. A tool-less call whose reply
+    schema has ``title`` as its only property is ``side`` / ``title``
+    (``heuristic:title-schema``) at any ``max_tokens``. Everything else is
+    ``main``.
     """
     parsed = parse_call_role_header(header)
     if parsed is not None:
@@ -1457,6 +1482,8 @@ def classify_call_role(data, header: str | None) -> dict:
         and not isinstance(max_tokens, bool)
         and max_tokens <= SHORT_CALL_MAX_TOKENS
     )
+    if not tools and _is_title_schema(data):
+        return _role("side", "heuristic:title-schema", "title")
     if not tools and _MEMORY_RE.search(system):
         return _role("side", "heuristic:memory", "memory")
     if not tools and _HELPER_RE.search(system):

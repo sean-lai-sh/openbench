@@ -5,7 +5,14 @@ cell's proxy ledger rows:
 
 1. ``1_traced``: every proxy request is traced by the harness
    (``trace_requests`` == ledger requests, ``untraced_requests`` == 0).
-2. ``2_cache_read``: ``cache_read`` > 0 on every call from call 2 on.
+2. ``2_cache_read``: ``cache_read`` > 0 on every main call from main call 2
+   on. Side calls (``call_role == "side"``, e.g. Hermes's title call) are
+   listed in ``calls`` but kept out of ``per_call`` and the pass rule: they
+   share no prefix with the main loop. Each miss carries the region-split
+   signature (``misses``): a later main call that reads exactly the prefix an
+   earlier call wrote. That is how a miss on the Vertex ``global`` endpoint
+   looks when consecutive calls land in different regions, and OpenCode shows
+   it too (``reference_call2_miss``).
 3. ``3_thinking_sent``: ``thinking_sent`` equals the reference arm's value
    for the same model. OpenCode is the Researcher's thinking reference;
    other arms are listed for context. Server-side thinking tokens (usage
@@ -46,6 +53,62 @@ def reference_thinking(repo: Path, model: str, pattern: str = REFERENCE_LEDGERS)
                     values.add(row["thinking_sent"])
         found[arm] = sorted(values)
     return found
+
+
+def _reference_rows(repo: Path, arm: str, pattern: str):
+    for path in sorted(Path(repo).glob(pattern.format(arm=arm))):
+        rows = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        yield rows
+
+
+def reference_call2_miss(repo: Path, model: str, pattern: str = REFERENCE_LEDGERS) -> dict:
+    """Per reference arm: cells (>= 2 main calls on ``model``) whose main
+    call 2 read no cache. Context for check 2, not part of its pass rule."""
+    found: dict = {}
+    for arm in REFERENCE_ARMS:
+        cells = misses = 0
+        for rows in _reference_rows(repo, arm, pattern):
+            main = [r for r in rows if r.get("upstream_model") == model and r.get("call_role") != "side"]
+            if len(main) < 2:
+                continue
+            cells += 1
+            misses += not (main[1].get("cache_read") or 0)
+        found[arm] = {"cells": cells, "call2_miss": misses,
+                      "rate": round(misses / cells, 3) if cells else None}
+    return found
+
+
+def _int(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def cache_misses(main_rows: list) -> list:
+    """Each main call after the first that read nothing, with the region-split
+    signature: a later main call whose ``cache_read`` equals the prefix
+    (``cache_read + cache_write``) some call before the miss wrote."""
+    prefixes = [_int(r.get("cache_read")) + _int(r.get("cache_write")) for r in main_rows]
+    out = []
+    for k in range(1, len(main_rows)):
+        if _int(main_rows[k].get("cache_read")) > 0:
+            continue
+        later = None
+        for j in range(k + 1, len(main_rows)):
+            read = _int(main_rows[j].get("cache_read"))
+            earlier = [i + 1 for i in range(k) if read and read == prefixes[i]]
+            if earlier:
+                later = {"main_call": j + 1, "read": read, "matches_prefix_of_main_call": earlier[-1]}
+                break
+        out.append({"main_call": k + 1, "cache_write": _int(main_rows[k].get("cache_write")),
+                    "later_read_of_earlier_prefix": later,
+                    "region_split_signature": later is not None})
+    return out
 
 
 def _delta(captured, real):
@@ -102,12 +165,17 @@ def _within(delta, raw) -> bool:
 
 
 def smoke_evidence(row: dict, ledger_rows: list, reference: dict | None = None,
-                   reference_arm: str = THINKING_REFERENCE_ARM) -> dict:
+                   reference_arm: str = THINKING_REFERENCE_ARM, reference_cache: dict | None = None) -> dict:
     rows = [r for r in ledger_rows if isinstance(r, dict) and isinstance(r.get("usage"), dict)]
     calls = len(rows)
     traced = row.get("trace_requests")
     untraced = row.get("untraced_requests")
-    cache_reads = [r.get("cache_read") for r in rows]
+    main_rows = [r for r in rows if r.get("call_role") != "side"]
+    cache_reads = [r.get("cache_read") for r in main_rows]
+    call_detail = [{"call": i, "call_role": r.get("call_role") or "main",
+                    "call_role_reason": r.get("call_role_reason"),
+                    "cache_read": r.get("cache_read"), "cache_write": r.get("cache_write")}
+                   for i, r in enumerate(rows, 1)]
     sent = sorted({str(r.get("thinking_sent")) for r in rows})
     thinking_tokens = [server_thinking_tokens(r.get("usage")) for r in rows]
     reference = reference or {}
@@ -132,7 +200,11 @@ def smoke_evidence(row: dict, ledger_rows: list, reference: dict | None = None,
         },
         "2_cache_read": {
             "per_call": cache_reads,
-            "pass": calls >= 2 and all(isinstance(v, int) and v > 0 for v in cache_reads[1:]),
+            "calls": call_detail,
+            "side_calls_excluded": calls - len(main_rows),
+            "misses": cache_misses(main_rows),
+            "reference_call2_miss": reference_cache,
+            "pass": len(main_rows) >= 2 and all(isinstance(v, int) and v > 0 for v in cache_reads[1:]),
         },
         "3_thinking_sent": {
             "harness": sent, "reference_arm": reference_arm, "reference": reference,
