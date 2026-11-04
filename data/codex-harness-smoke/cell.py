@@ -33,6 +33,9 @@ FORBIDDEN_OUT_PARTS = ("results", "data")
 # Same-model reference arms (#196, Sonnet 5.5): committed proxy ledgers.
 REFERENCE_LEDGERS = "results/pi-vs-oc-180-1029/cells/*/{arm}/proxy-ledger/*.jsonl"
 REFERENCE_ARMS = ("pi", "opencode")
+# Researcher ruling (PR #236): OpenCode is the thinking reference; Pi is shown
+# for context only.
+THINKING_REFERENCE_ARM = "opencode"
 BYTE_TOLERANCE = 0.05
 
 
@@ -113,7 +116,8 @@ def smoke_evidence(row: dict, ledger_rows: list, reference: dict | None = None) 
 
     1. every request traced (``trace_requests`` == ledger requests, 0 untraced);
     2. ``cache_read`` > 0 on every call from call 2 on;
-    3. ``thinking_sent`` equals what each reference arm sends for the model;
+    3. ``thinking_sent`` equals what the OpenCode arm sends for the model
+       (the Researcher's thinking reference; other arms are listed for context);
     4. system and tool bytes the proxy forwards are within 5% of what
        Codex 0.144.5 itself sent (``responses_raw_*``; raw bodies are under
        ``proxy-ledger/<cell>.responses/``).
@@ -157,9 +161,9 @@ def smoke_evidence(row: dict, ledger_rows: list, reference: dict | None = None) 
             "pass": calls >= 2 and all(isinstance(v, int) and v > 0 for v in cache_reads[1:]),
         },
         "3_thinking_sent": {
-            "codex": sent, "reference": reference,
+            "codex": sent, "reference_arm": THINKING_REFERENCE_ARM, "reference": reference,
             "matches": matches,
-            "pass": bool(matches) and all(matches.values()),
+            "pass": bool(matches.get(THINKING_REFERENCE_ARM)),
         },
         "4_prompt_bytes": {
             "tolerance": BYTE_TOLERANCE, "per_call": byte_rows, "pass": within,

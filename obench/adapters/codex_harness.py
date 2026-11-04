@@ -17,13 +17,12 @@ Stage 4 AD-1 fixes (briefs/stage4-slot-contract-AD1-note-2026-10-26.md):
   Claude's real limit. ``model_context_window = 200000`` is set.
 * AD1-codex-edit (no change): stock Codex on Claude registers no
   ``apply_patch`` tool; edits go through the shell. Nothing is added.
-* AD2-codex-reasoning: the same fallback metadata sets
+* Thinking: none. The same fallback metadata sets
   ``supports_reasoning_summaries: false`` (models-manager/src/model_info.rs),
-  so Codex sends no ``reasoning`` at all and Claude gets no thinking config.
-  ``model_supports_reasoning_summaries=true`` with
-  ``model_reasoning_summary="auto"`` makes Codex send ``reasoning`` (effort
-  ``medium``), which the proxy maps to the exact thinking wire the Pi arm
-  sends (row 9 ruling; ``thesis/ab/responses_api.py``).
+  so stock Codex sends no ``reasoning`` for a Claude id and Claude gets no
+  thinking config. That matches the OpenCode arm, the Researcher's thinking
+  reference (#196: ``thinking_sent=none`` on Sonnet 5.5), so nothing is
+  overridden; the proxy also ignores ``reasoning`` on this path.
 
 Trace parity with Pi: ``turns`` (the harness's own model-call count, which
 ``attach_proxy_trace`` compares with the proxy ledger) is the number of
@@ -70,8 +69,8 @@ PROXY_KEY_ENV = "OBENCH_CODEX_PROXY_KEY"
 PROXY_KEY_VALUE = "openbench-vertex-proxy"
 CONTEXT_WINDOW = 200_000  # AD1-codex-ctx
 REASONING_EFFORT = "medium"
-REASONING_SUMMARY = "auto"
-ADAPTER_FIXES = ("AD1-codex-ctx", "AD2-codex-reasoning")
+ADAPTER_FIXES = ("AD1-codex-ctx",)
+THINKING_REFERENCE = "opencode"  # Researcher ruling: Codex on Claude sends no thinking
 # Shipped defaults for an unknown (Claude) model id at PIN. Not passed on
 # the command line; recorded in the settings sidecar.
 MODEL_INFO = "fallback"
@@ -177,8 +176,6 @@ def build_command(binary: str, instruction: str, model: str, workdir: str, cell_
         *provider_config(cell_base),
         "-c", f"model_context_window={CONTEXT_WINDOW}",
         "-c", f'model_reasoning_effort="{REASONING_EFFORT}"',
-        "-c", "model_supports_reasoning_summaries=true",
-        "-c", f'model_reasoning_summary="{REASONING_SUMMARY}"',
         "-m", model,
         instruction,
     ]
@@ -335,8 +332,7 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, ve
         "model_context_window": CONTEXT_WINDOW,
         "auto_compact_at_tokens": int(CONTEXT_WINDOW * AUTO_COMPACT_FRACTION),
         "reasoning_effort": REASONING_EFFORT,
-        "reasoning_summary": REASONING_SUMMARY,
-        "model_supports_reasoning_summaries": True,
+        "thinking": "none (stock fallback metadata; OpenCode is the thinking reference)",
         "trace_source": "CODEX_HOME/sessions rollout token_count events (one per model response)",
         "edit_path": EDIT_PATH,
         "output_truncation_bytes": OUTPUT_TRUNCATION_BYTES,

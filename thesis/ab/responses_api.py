@@ -29,15 +29,11 @@ Request mapping (Responses -> Anthropic):
   with one string field ``input``. Hosted tools (web search, local shell,
   image generation, MCP) cannot be served by Claude on Vertex and are dropped;
   their types are recorded.
-* ``reasoning.effort`` -> exactly what the Pi arm sends for Claude
-  (pi-ai ``anthropic-messages.ts`` at the Pi pin, "effort messages" path):
-  ``thinking: {"type": "adaptive", "display": "summarized", "block_binding":
-  {"prefix_mismatch_behavior": "drop_block"}}``, a fixed top-level
-  ``output_config: {"effort": "low"}`` (part of the cached prompt, so it never
-  varies), and the real effort as ``{"role": "system", "content": [],
-  "output_config": {"effort": E}}`` markers before every assistant message
-  and at the end, with the ``mid-conversation-output-config`` and
-  ``thinking-binding-controls`` betas. ``effort == "none"`` sends no thinking.
+* ``reasoning`` (effort/summary) is ignored: no ``thinking`` and no
+  ``output_config`` are sent, so Codex on Claude matches the OpenCode arm,
+  the Researcher's thinking reference (OpenCode sends no thinking on
+  Sonnet 5.5; #196 ledgers record ``thinking_sent=none``). The ignored effort
+  is recorded per request as ``responses_reasoning_ignored``.
 * ``prompt_cache_key`` (OpenAI's automatic caching hint) -> ephemeral
   ``cache_control`` on the last tool, the last system block, the last real
   message, and the last real message before the newest assistant turn (the
@@ -66,11 +62,6 @@ import time
 from dataclasses import dataclass, field
 
 DEFAULT_MAX_TOKENS = 32000
-# Pi's Claude thinking wire (pi-ai anthropic-messages.ts, "effort messages").
-MID_CONVO_EFFORT_BETA = "mid-conversation-output-config-2026-07-01"
-THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
-TOP_LEVEL_EFFORT = "low"
-_EFFORT_MAP = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh"}
 REASONING_ENVELOPE = "obench-thinking-v1:"
 HOSTED_TOOL_TYPES = frozenset({
     "web_search", "web_search_preview", "local_shell", "image_generation",
@@ -78,7 +69,7 @@ HOSTED_TOOL_TYPES = frozenset({
 })
 _DROPPED_FIELDS = (
     "store", "include", "text", "service_tier", "metadata", "client_metadata",
-    "prompt_cache_key", "truncation", "user", "previous_response_id",
+    "prompt_cache_key", "truncation", "user", "previous_response_id", "reasoning",
 )
 
 
@@ -96,7 +87,7 @@ class ResponsesContext:
     dropped_fields: tuple = ()
     cache_emulation: bool = False
     thinking: str = "none"
-    betas: tuple = ()
+    reasoning_ignored: str = ""
     inline_developer: int = 0
     tools_sha: str = ""
     system_sha: str = ""
@@ -120,8 +111,8 @@ class ResponsesContext:
             out["responses_dropped_fields"] = list(self.dropped_fields)
         out["responses_cache_emulation"] = self.cache_emulation
         out["responses_thinking"] = self.thinking
-        if self.betas:
-            out["responses_betas"] = list(self.betas)
+        if self.reasoning_ignored:
+            out["responses_reasoning_ignored"] = self.reasoning_ignored
         if self.inline_developer:
             out["responses_inline_developer"] = self.inline_developer
         out["responses_tools_sha"] = self.tools_sha
@@ -396,20 +387,9 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
             out[key] = data[key]
 
     thinking = "none"
-    betas: tuple = ()
     reasoning = data.get("reasoning")
     effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
-    if isinstance(effort, str) and effort and effort != "none":
-        active = _EFFORT_MAP.get(effort, "high")
-        out["thinking"] = {
-            "type": "adaptive",
-            "display": "summarized",
-            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
-        }
-        out["output_config"] = {"effort": TOP_LEVEL_EFFORT}
-        out["messages"] = _with_effort_markers(merged, active)
-        betas = (MID_CONVO_EFFORT_BETA, THINKING_BINDING_BETA)
-        thinking = f"adaptive:{active}"
+    reasoning_ignored = effort if isinstance(effort, str) and effort else ""
 
     cache_emulation = isinstance(data.get("prompt_cache_key"), str) and bool(data["prompt_cache_key"])
     if cache_emulation:
@@ -441,7 +421,7 @@ def responses_to_anthropic(data: dict) -> tuple[dict, ResponsesContext]:
         dropped_fields=dropped_fields,
         cache_emulation=cache_emulation,
         thinking=thinking,
-        betas=betas,
+        reasoning_ignored=reasoning_ignored,
         inline_developer=inline_developer,
         tools_sha=_digest(out.get("tools") or []),
         system_sha=_digest(out.get("system") or []),
@@ -480,18 +460,6 @@ def _digest(value) -> str:
     raw = json.dumps(strip(value), sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
-
-def _with_effort_markers(messages: list, effort: str) -> list:
-    """Pi's effort markers: one before every assistant message and one at the
-    end. Deterministic, so the prefix of turn N+1 repeats turn N's bytes."""
-    marker = {"role": "system", "content": [], "output_config": {"effort": effort}}
-    out: list = []
-    for message in messages:
-        if message.get("role") == "assistant":
-            out.append(json.loads(json.dumps(marker)))
-        out.append(message)
-    out.append(json.loads(json.dumps(marker)))
-    return out
 
 
 # --- reply ------------------------------------------------------------------

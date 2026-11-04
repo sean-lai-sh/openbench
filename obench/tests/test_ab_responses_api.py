@@ -116,32 +116,23 @@ class RequestTranslation(unittest.TestCase):
         self.assertEqual(self.ctx.dropped_tools, ("web_search",))
         self.assertEqual(self.body["tool_choice"], {"type": "auto", "disable_parallel_tool_use": True})
 
-    def test_reasoning_effort_becomes_the_pi_thinking_wire(self):
-        """Same fields as the Pi arm's captured Claude request (pi-ai effort messages)."""
-        self.assertEqual(self.body["thinking"], PI_THINKING)
-        self.assertEqual(self.body["output_config"], {"effort": "low"})  # fixed, cached
-        marker = {"role": "system", "content": [], "output_config": {"effort": "medium"}}
-        self.assertEqual(self.body["messages"][-1], marker)
-        for index, message in enumerate(self.body["messages"]):
-            if message["role"] == "assistant":
-                self.assertEqual(self.body["messages"][index - 1], marker)
-        self.assertEqual(self.ctx.thinking, "adaptive:medium")
-        self.assertEqual(self.ctx.betas, ("mid-conversation-output-config-2026-07-01",
-                                          "thinking-binding-controls-2026-08-01"))
-        for effort, expected in (("minimal", "low"), ("low", "low"), ("high", "high"), ("xhigh", "xhigh")):
+    def test_reasoning_is_ignored_and_no_thinking_is_sent(self):
+        """Researcher ruling: OpenCode is the thinking reference, and it sends no
+        thinking on Sonnet 5.5, so Codex on Claude sends none either."""
+        for effort in ("minimal", "low", "medium", "high", "xhigh", "none"):
             request = codex_request()
             request["reasoning"] = {"effort": effort, "summary": "auto"}
-            body, _ = responses_to_anthropic(request)
-            self.assertEqual(body["messages"][-1]["output_config"], {"effort": expected})
-            self.assertEqual(body["output_config"], {"effort": "low"})
-        request = codex_request()
-        request["reasoning"] = {"effort": "none"}
-        body, ctx = responses_to_anthropic(request)
-        self.assertNotIn("thinking", body)
-        self.assertNotIn("output_config", body)
-        self.assertFalse(any(m["role"] == "system" for m in body["messages"]))
-        self.assertEqual(ctx.thinking, "none")
-        self.assertEqual(ctx.betas, ())
+            body, ctx = responses_to_anthropic(request)
+            self.assertNotIn("thinking", body, effort)
+            self.assertNotIn("output_config", body, effort)
+            self.assertFalse(any(m["role"] == "system" for m in body["messages"]), effort)
+            self.assertEqual(ctx.thinking, "none")
+            self.assertIn("reasoning", ctx.dropped_fields)
+            record = ctx.record()
+            self.assertEqual(record["responses_thinking"], "none")
+            self.assertNotIn("responses_betas", record)
+        self.assertEqual(self.ctx.reasoning_ignored, "medium")
+        self.assertEqual(self.ctx.record()["responses_reasoning_ignored"], "medium")
 
     def test_prompt_cache_key_marks_tools_system_and_last_two_messages(self):
         self.assertTrue(self.ctx.cache_emulation)
@@ -254,8 +245,9 @@ class PrefixStability(unittest.TestCase):
         self.assertEqual(strip_cache(self.t1["tools"]), strip_cache(self.t2["tools"]))
         self.assertEqual(strip_cache(self.t1["system"]), strip_cache(self.t2["system"]))
         self.assertEqual((self.c1.tools_sha, self.c1.system_sha), (self.c2.tools_sha, self.c2.system_sha))
-        self.assertEqual(self.t1["thinking"], self.t2["thinking"])
-        self.assertEqual(self.t1["output_config"], self.t2["output_config"])
+        for key in ("thinking", "output_config"):
+            self.assertNotIn(key, self.t1)
+            self.assertNotIn(key, self.t2)
 
     def test_turn_two_repeats_turn_one_up_to_its_breakpoint(self):
         upto = self.breakpoint_index(self.t1) + 1

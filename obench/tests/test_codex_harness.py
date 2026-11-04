@@ -127,16 +127,16 @@ class CommandTests(unittest.TestCase):
         self.assertIn("model_context_window=200000", joined)
         self.assertIn('model_reasoning_effort="medium"', joined)
         self.assertEqual(ch.CONTEXT_WINDOW, 200_000)
-        self.assertEqual(ch.ADAPTER_FIXES, ("AD1-codex-ctx", "AD2-codex-reasoning"))
+        self.assertEqual(ch.ADAPTER_FIXES, ("AD1-codex-ctx",))
         self.assertNotIn("apply_patch", joined)  # AD1-codex-edit: nothing added
 
-    def test_ad2_forces_codex_to_send_reasoning(self):
-        """Smoke at ddd5096d: Codex's fallback metadata for a Claude id has
-        supports_reasoning_summaries=false, so no `reasoning` was sent and the
-        ledger said thinking_sent=none."""
-        cmd = self.cmd()
-        self.assertIn("model_supports_reasoning_summaries=true", cmd)
-        self.assertIn('model_reasoning_summary="auto"', cmd)
+    def test_no_reasoning_override_codex_sends_no_thinking(self):
+        """AD2-codex-reasoning is off: stock Codex sends no `reasoning` for a
+        Claude id, matching the OpenCode thinking reference."""
+        joined = " ".join(self.cmd())
+        self.assertNotIn("model_supports_reasoning_summaries", joined)
+        self.assertNotIn("model_reasoning_summary", joined)
+        self.assertEqual(ch.THINKING_REFERENCE, "opencode")
 
     def test_sandbox_and_features(self):
         self.assertIn("workspace-write", self.cmd())
@@ -185,7 +185,8 @@ class RunTests(CellEnv):
         self.assertIsNone(row["error"])
         self.assertEqual(row["turns"], 1)  # no rollout: falls back to turn.completed
         self.assertEqual(row["model_context_window"], 200_000)
-        self.assertEqual(row["adapter_fixes"], ["AD1-codex-ctx", "AD2-codex-reasoning"])
+        self.assertEqual(row["adapter_fixes"], ["AD1-codex-ctx"])
+        self.assertNotIn("AD2-codex-reasoning", row["harness_settings"]["adapter_fixes"])
         cmd, kwargs = runner.calls[-1]
         self.assertIn('model_providers.obench_vertex.base_url="http://127.0.0.1:4567/c/cellabc/v1"', " ".join(cmd))
         env = kwargs["env"]
@@ -385,7 +386,7 @@ class LauncherTests(unittest.TestCase):
         ok = cell.check_out_dir(Path(tempfile.gettempdir()) / "codex-harness-smoke")
         self.assertTrue(ok.is_absolute())
 
-    def evidence_rows(self, cache_reads=(0, 9000, 9500, 9800), sent="adaptive", tools=(1000, 1000)):
+    def evidence_rows(self, cache_reads=(0, 9000, 9500, 9800), sent="none", tools=(1000, 1000)):
         rows = []
         for i, read in enumerate(cache_reads, 1):
             rows.append({"usage": {"input_tokens": 1}, "cache_read": read, "thinking_sent": sent,
@@ -399,22 +400,24 @@ class LauncherTests(unittest.TestCase):
         cell = self.load()
         rows = self.evidence_rows()
         evidence = cell.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows,
-                                       {"pi": ["adaptive"]})
+                                       {"pi": ["adaptive"], "opencode": ["none"]})
         self.assertEqual({k: v["pass"] for k, v in evidence.items()},
                          {"1_traced": True, "2_cache_read": True, "3_thinking_sent": True, "4_prompt_bytes": True})
         self.assertEqual(evidence["2_cache_read"]["per_call"], [0, 9000, 9500, 9800])
+        self.assertEqual(evidence["3_thinking_sent"]["reference_arm"], "opencode")
+        self.assertEqual(evidence["3_thinking_sent"]["matches"], {"pi": False, "opencode": True})
         self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["raw_request_file"], "c.responses/0001.request.json")
 
     def test_smoke_evidence_reports_each_failure(self):
         cell = self.load()
         evidence = cell.smoke_evidence(
             {"trace_requests": 1, "untraced_requests": 3},
-            self.evidence_rows(cache_reads=(0, 0, 0, 0), sent="none", tools=(1100, 1000)),
+            self.evidence_rows(cache_reads=(0, 0, 0, 0), sent="adaptive", tools=(1100, 1000)),
             {"pi": ["adaptive"], "opencode": ["none"]})
         self.assertFalse(evidence["1_traced"]["pass"])
         self.assertFalse(evidence["2_cache_read"]["pass"])
-        self.assertEqual(evidence["3_thinking_sent"]["matches"], {"pi": False, "opencode": True})
-        self.assertFalse(evidence["3_thinking_sent"]["pass"])
+        self.assertEqual(evidence["3_thinking_sent"]["matches"], {"pi": True, "opencode": False})
+        self.assertFalse(evidence["3_thinking_sent"]["pass"])  # OpenCode is the reference
         self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["tools_delta"], 0.1)
         self.assertFalse(evidence["4_prompt_bytes"]["pass"])
 

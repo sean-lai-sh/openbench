@@ -111,14 +111,11 @@ class ResponsesNonStream(ResponsesEndpointTests):
         self.assertNotIn("input", forwarded)
         self.assertTrue(forwarded["system"][0]["text"].startswith("You are Codex"))
         self.assertEqual([t["name"] for t in forwarded["tools"]], ["exec_command", "write_stdin", "apply_patch"])
-        self.assertEqual(forwarded["thinking"], {"type": "adaptive", "display": "summarized",
-                                                 "block_binding": {"prefix_mismatch_behavior": "drop_block"}})
-        self.assertEqual(forwarded["output_config"], {"effort": "low"})
-        self.assertEqual(forwarded["messages"][-1],
-                         {"role": "system", "content": [], "output_config": {"effort": "medium"}})
-        betas = (seen["beta"] or "").split(",")
-        self.assertIn("mid-conversation-output-config-2026-07-01", betas)
-        self.assertIn("thinking-binding-controls-2026-08-01", betas)
+        # OpenCode is the thinking reference: no thinking, no output_config, no betas.
+        self.assertNotIn("thinking", forwarded)
+        self.assertNotIn("output_config", forwarded)
+        self.assertFalse(any(m["role"] == "system" for m in forwarded["messages"]))
+        self.assertIsNone(seen["beta"])
 
         row = ledger_rows(self.ledger, "cell-r")[-1]
         self.assertEqual((row["input_uncached"], row["output"], row["cache_read"], row["cache_write"]),
@@ -129,12 +126,13 @@ class ResponsesNonStream(ResponsesEndpointTests):
         self.assertEqual(record["presentation"], "responses")
         self.assertEqual(record["responses_dropped_tools"], ["web_search"])
         self.assertTrue(record["responses_cache_emulation"])
-        self.assertEqual(record["responses_thinking"], "adaptive:medium")
+        self.assertEqual(record["responses_thinking"], "none")
+        self.assertEqual(record["responses_reasoning_ignored"], "medium")
         self.assertEqual(len(record["responses_tools_sha"]), 16)
         self.assertEqual(len(record["responses_system_sha"]), 16)
         self.assertEqual(row["call_role"], "main")
-        # Smoke at ddd5096d recorded thinking_sent=none; it must record what was sent.
-        self.assertEqual(row["thinking_sent"], "adaptive")
+        # Matches the OpenCode arm on Sonnet 5.5 (#196: thinking_sent=none).
+        self.assertEqual(row["thinking_sent"], "none")
         self.assertEqual(row["thinking_mode"], "default")
 
     def test_accounting_matches_the_messages_and_chat_routes(self):
@@ -213,7 +211,7 @@ class ResponsesEvidenceTests(ResponsesEndpointTests):
         self.assertEqual(request_headers["x-probe"], "1")
         upstream = {k.lower(): v for k, v in line["upstream_headers"].items()}
         self.assertEqual(upstream["authorization"], "<redacted>")
-        self.assertIn("thinking-binding-controls-2026-08-01", upstream["anthropic-beta"])
+        self.assertNotIn("anthropic-beta", upstream)  # no thinking wire, no betas
         self.assertEqual(line["responses_raw_request_file"], "cell-h.responses/0001.request.json")
         # MESSAGE has cache_read 4: a hit appends nothing.
         _post(self.url("cell-h", "responses"), codex_request())

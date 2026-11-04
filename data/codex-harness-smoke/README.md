@@ -61,8 +61,10 @@ boolean per criterion. `smoke.log` gets the same booleans on one
    every call from the second one on reads more than 0 tokens.
 3. **`3_thinking_sent`:** the Codex `thinking_sent` values next to each
    reference arm's values for the same model, read from the committed #196
-   ledgers. For Sonnet 5.5, Pi recorded `adaptive` and OpenCode recorded
-   `none`, so `matches` is reported per arm.
+   ledgers. It passes against **OpenCode**, the Researcher's thinking
+   reference. For Sonnet 5.5, OpenCode recorded `none` and Pi recorded
+   `adaptive`; Pi is listed for context only. Codex on Claude sends no
+   thinking.
 4. **`4_prompt_bytes`:** for each call, the system and tool bytes the proxy
    forwarded, the bytes Codex itself sent, and the relative difference. The
    tolerance is 5%.
