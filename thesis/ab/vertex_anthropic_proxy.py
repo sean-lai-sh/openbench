@@ -17,6 +17,14 @@ from pathlib import Path
 from obench.proxy import extract_usage
 from obench.provider_ua import loaded_anthropic_from_ua
 
+from thesis.ab.responses_api import (
+    ResponsesError,
+    ResponsesStream,
+    responses_body_bytes,
+    responses_error_bytes,
+    responses_to_anthropic,
+)
+
 ANTHROPIC_VERSION = "vertex-2023-10-16"
 MODEL_ID = "claude-opus-5-5"
 LOCATION = "global"
@@ -877,6 +885,53 @@ def cell_bytes_path(directory: Path, cell_id: str) -> Path:
 _BYTE_TOTALS: dict[str, int] = {}
 
 
+_REDACTED_HEADERS = frozenset({
+    "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "cookie", "set-cookie",
+})
+
+
+def redact_headers(headers) -> dict:
+    """Header map with credentials replaced by ``<redacted>``."""
+    items = headers.items() if hasattr(headers, "items") else []
+    return {
+        str(name): ("<redacted>" if str(name).lower() in _REDACTED_HEADERS else str(value))
+        for name, value in items
+    }
+
+
+def responses_capture_path(directory: Path, cell_id: str, index: int) -> Path:
+    """Raw ``/v1/responses`` body as Codex sent it, before translation."""
+    return Path(directory) / f"{_cell_file_stem(cell_id)}.responses" / f"{index:04d}.request.json"
+
+
+def write_responses_capture(directory: Path | None, cell_id: str | None, index: int, raw: bytes) -> str:
+    if directory is None or not cell_id:
+        return ""
+    path = responses_capture_path(directory, cell_id, index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return str(path.relative_to(Path(directory)))
+
+
+def cache_miss_headers_path(directory: Path, cell_id: str) -> Path:
+    return Path(directory) / f"{_cell_file_stem(cell_id)}.cache-miss-headers.jsonl"
+
+
+def note_cache_miss(directory: Path | None, cell_id: str | None, usage, record: dict) -> bool:
+    """Append request/upstream headers for a call that read no cache."""
+    if directory is None or not cell_id or not isinstance(usage, dict):
+        return False
+    if _int_token(usage.get("cache_read_input_tokens")) != 0:
+        return False
+    line = {"timestamp": datetime.now(timezone.utc).isoformat(), **record,
+            "usage": {k: usage.get(k) for k in ("input_tokens", "output_tokens",
+                                                 "cache_read_input_tokens", "cache_creation_input_tokens")}}
+    path = cache_miss_headers_path(directory, cell_id)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(line, sort_keys=True) + "\n")
+    return True
+
+
 def note_cell_bytes(directory: Path | None, cell_id: str | None, n: int) -> None:
     """Add ``n`` streamed bytes to the cell's on-disk counter.
 
@@ -1205,6 +1260,12 @@ def _is_main_loop_request(raw: bytes) -> bool:
 def _chat_route(route: str) -> bool:
     path = route.split("?", 1)[0].rstrip("/")
     return path.endswith("/chat/completions")
+
+
+def _responses_route(route: str) -> bool:
+    """OpenAI Responses API (Codex CLI, ``wire_api = "responses"``)."""
+    path = route.split("?", 1)[0].rstrip("/")
+    return path.endswith("/responses")
 
 
 def _route_by_request_default() -> bool:
@@ -1966,6 +2027,7 @@ class Proxy:
         self._faults: dict[str, dict] = {}
         self._fault_lock = threading.Lock()
         self._message_index: dict[str, int] = {}
+        self._responses_index: dict[str, int] = {}
         self._reached: set[str] = set()
         self._bridge = None
 
@@ -1974,6 +2036,13 @@ class Proxy:
         with self._fault_lock:
             index = self._message_index.get(cell_id, 0) + 1
             self._message_index[cell_id] = index
+            return index
+
+    def note_responses(self, cell_id: str) -> int:
+        """1-based index of a ``/responses`` POST for this cell."""
+        with self._fault_lock:
+            index = self._responses_index.get(cell_id, 0) + 1
+            self._responses_index[cell_id] = index
             return index
 
     def note_reached(self, cell_id: str) -> None:
@@ -2090,7 +2159,13 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 holder["proxy"].note_reached(cell)
             route, query_removed = strip_beta_query(route)
             removed = list(query_removed)
-            presentation = "openai" if _chat_route(route) else "anthropic"
+            if _chat_route(route):
+                presentation = "openai"
+            elif _responses_route(route):
+                presentation = "responses"
+            else:
+                presentation = "anthropic"
+            responses_ctx = None
             try:
                 parsed = json.loads(raw.decode("utf-8")) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -2123,6 +2198,29 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._send(400, "application/json", payload)
                     return
                 raw = json.dumps(parsed).encode("utf-8")
+            elif presentation == "responses":
+                if not isinstance(parsed, dict):
+                    self._send(400, "application/json", responses_error_bytes(json.dumps({
+                        "error": {"message": "request body must be an object",
+                                  "type": "invalid_request_error"},
+                    }).encode("utf-8")))
+                    return
+                raw_file = ""
+                if ledger is not None and cell:
+                    raw_file = write_responses_capture(
+                        ledger, cell, holder["proxy"].note_responses(cell), raw)
+                try:
+                    parsed, responses_ctx = responses_to_anthropic(parsed)
+                    responses_ctx.raw_request_file = raw_file
+                except ResponsesError as exc:
+                    self._send(400, "application/json", responses_error_bytes(json.dumps({
+                        "error": {"message": str(exc), "type": "invalid_request_error"},
+                    }).encode("utf-8")))
+                    return
+                # Classify on the translated body: the heuristics read
+                # Anthropic ``system``/``tools``. The header still wins.
+                call_role = classify_call_role(parsed, self.headers.get(CALL_ROLE_HEADER))
+                raw = json.dumps(parsed).encode("utf-8")
             sampling_removed: list[str] = []
             if isinstance(parsed, dict):
                 removed.extend(strip_cc_body(parsed))
@@ -2139,6 +2237,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     parts.append(BLOCK_BINDING_BETA)
                 beta_header = ",".join(parts)
             identity = cc_identity_record(removed)
+            if responses_ctx is not None:
+                # Ledger: row["cc_identity_stripped"]["responses"] records what
+                # the Responses translation dropped or added for this request.
+                identity["responses"] = responses_ctx.record()
             if binding:
                 identity["thinking_block_binding"] = binding
             if sampling_removed:
@@ -2172,6 +2274,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     payload = json.dumps({
                         "error": {"message": str(exc), "type": "invalid_request_error"},
                     }).encode("utf-8")
+                elif presentation == "responses":
+                    payload = responses_error_bytes(json.dumps({
+                        "error": {"message": str(exc), "type": "invalid_request_error"},
+                    }).encode("utf-8"))
                 self._send(400, "application/json", payload)
                 return
             headers = {
@@ -2193,6 +2299,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 presentation=presentation, call_role=call_role,
                 upstream_model_id=upstream_model,
                 requested_model=requested_model,
+                responses_ctx=responses_ctx,
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -2265,7 +2372,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                      identity: dict | None = None, thinking_sent: str = "none",
                      presentation: str = "anthropic", call_role: dict | None = None,
                      upstream_model_id: str | None = None,
-                     requested_model: str | None = None) -> None:
+                     requested_model: str | None = None,
+                     responses_ctx=None) -> None:
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -2274,8 +2382,14 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             recorded = False
             status: int | None = None
             called = upstream_model_id or model
-            translate_out = presentation == "openai" and kind != "count"
-            stream_tx = _OpenAIStream(called) if translate_out and kind == "stream" else None
+            translate_out = presentation in {"openai", "responses"} and kind != "count"
+            stream_tx = None
+            if translate_out and kind == "stream":
+                stream_tx = (
+                    ResponsesStream(called, responses_ctx)
+                    if presentation == "responses"
+                    else _OpenAIStream(called)
+                )
             observer = SseObserver() if kind == "stream" else None
             dump_cap = sse_dump_cap() if ledger is not None and cell else 0
 
@@ -2315,7 +2429,11 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
+                    elif presentation == "responses":
+                        payload = responses_error_bytes(payload)
                     content_type = exc.headers.get("Content-Type") or "application/json"
+                    if presentation == "responses":
+                        content_type = "application/json"
                     self._send(exc.code, content_type, payload)
                     return
                 except urllib.error.URLError as exc:
@@ -2326,6 +2444,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
+                    elif presentation == "responses":
+                        payload = responses_error_bytes(payload)
                     self._send(502, "application/json", payload)
                     return
                 status = response.status
@@ -2368,6 +2488,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     elif not translate_out:
                         self._write_chunk(chunk)
                 usage = finish_usage()
+                if kind != "count" and ledger is not None and cell:
+                    note_cache_miss(ledger, cell, usage, {
+                        "presentation": presentation,
+                        "requested_model": requested_model,
+                        "upstream_model": called,
+                        "request_headers": redact_headers(self.headers),
+                        "upstream_headers": redact_headers(headers),
+                        "responses_raw_request_file": (
+                            responses_ctx.raw_request_file if responses_ctx is not None else None),
+                    })
                 if kind != "count":
                     self._record(
                         cell, usage, status, identity, thinking_sent, call_role, called,
@@ -2376,13 +2506,20 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     )
                     recorded = True
                 if upstream_error is not None:
-                    if kind == "stream" and stream_tx is not None:
+                    if kind == "stream" and isinstance(stream_tx, ResponsesStream):
+                        for piece in stream_tx.fail(f"upstream stream error: {upstream_error['type']}"):
+                            self._write_chunk(piece)
+                    elif kind == "stream" and stream_tx is not None:
                         err = {"error": {"message": f"upstream stream error: {upstream_error['type']}",
                                          "type": "api_error"}}
                         self._write_chunk(f"data: {json.dumps(err)}\n\n".encode("utf-8"))
                         self._write_chunk(b"data: [DONE]\n\n")
                     elif kind == "stream":
                         self._write_chunk(upstream_stream_error_event(upstream_error["type"]))
+                    elif translate_out and presentation == "responses":
+                        self._write_chunk(responses_error_bytes(json.dumps(
+                            {"error": {"type": "api_error", "message": "upstream stream error"}}
+                        ).encode("utf-8")))
                     elif translate_out:
                         self._write_chunk(openai_error_bytes(json.dumps(
                             {"error": {"type": "api_error", "message": "upstream stream error"}}
@@ -2390,6 +2527,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 elif stream_tx is not None:
                     for piece in stream_tx.finish():
                         self._write_chunk(piece)
+                elif translate_out and presentation == "responses":
+                    self._write_chunk(responses_body_bytes(bytes(raw), called, responses_ctx))
                 elif translate_out:
                     self._write_chunk(openai_response_bytes(bytes(raw), called))
                 self.wfile.write(b"0\r\n\r\n")
