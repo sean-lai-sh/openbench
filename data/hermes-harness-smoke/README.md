@@ -14,12 +14,21 @@ translation. The adapter is `obench/adapters/hermes_harness.py`.
 - **Gating:** `OBENCH_HERMES_HARNESS=1` plus `OBENCH_VERTEX_PROXY_URL`. With the
   flag on and no URL, the cell fails before any process starts. With the flag
   off, the cell runs stock Hermes and is never proxied.
-- **Thinking:** unset, so Hermes sends no `thinking` field and the ledger
-  records `thinking_sent=none`, matching OpenCode. Server-side thinking tokens
-  are recorded separately in the evidence.
-- **Context length:** `CONTEXT_LENGTH = 1000000`, set explicitly and recorded
-  per cell. **Pending the Researcher's call:** 1M for Pi and stock Hermes, or
-  200K as in Codex's AD-1.
+- **Thinking:** unset, so Hermes sends no `thinking` field on the main loop
+  and the ledger records `thinking_sent=none`. The ledger also records the raw
+  `thinking_type` whenever a `thinking` object was sent, because
+  `thinking_sent` folds `disabled` and `between_tools` into `none`.
+- **AD1-hermes-beta:** the cell's provider URL ends in
+  `/strip-beta/interleaved-thinking-2025-05-14`. The proxy removes that beta
+  from Hermes's `anthropic-beta` header before forwarding, on the main loop
+  and the title call alike. `fine-grained-tool-streaming-2025-05-14` (tool
+  input streaming) is kept. Each ledger row records `beta_stripped`
+  (`requested`, `removed`).
+- **AD1-hermes-ctx:** `CONTEXT_LENGTH = 200000`, the same window as Codex's
+  AD-1 (Researcher decision). It is set explicitly and recorded per cell, with
+  a decided status. Hermes's own default for `claude-sonnet-5*` is 1M. Hermes
+  keeps its own compaction thresholds: at 200K its 0.50 threshold is floored
+  to 0.75, so compaction starts at about 150K tokens.
 - **Title side call:** on (stock). Counted in the traces. The proxy tags it
   `side` / `title` (`heuristic:title-schema`): it is the only tool-less call
   whose reply schema (`output_config.format`) has `title` as its sole
@@ -87,7 +96,9 @@ holds:
 - `gateway_stop`, showing how the daemon was stopped;
 - `hermes_extras`, the venv's installed extras;
 - `evidence` and `evidence_pass` for the four checks: traced, `cache_read`
-  from call 2, `thinking_sent` vs OpenCode, and prompt bytes within 5%;
+  from main call 2, strict thinking (`thinking_sent=none` and 0 server
+  thinking tokens on every call, side calls included), and prompt bytes
+  within 5%;
 - `2_cache_read` judges main calls only, and lists side calls in `calls`.
   On the Vertex `global` endpoint, a miss on call 2 is often a region split:
   call 2 reads 0 and rewrites the whole prefix, then call 3 reads call 1's

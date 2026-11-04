@@ -13,11 +13,15 @@ cell's proxy ledger rows:
    earlier call wrote. That is how a miss on the Vertex ``global`` endpoint
    looks when consecutive calls land in different regions, and OpenCode shows
    it too (``reference_call2_miss``).
-3. ``3_thinking_sent``: ``thinking_sent`` equals the reference arm's value
-   for the same model. OpenCode is the Researcher's thinking reference;
-   other arms are listed for context. Server-side thinking tokens (usage
-   fields the upstream reports even when no thinking was requested) are
-   recorded separately and do not affect the check.
+3. ``3_thinking_sent`` (strict, Researcher decision on #240): passes only
+   when every call, main and side, has ``thinking_sent == "none"`` AND
+   server-side thinking tokens of exactly 0. A call whose usage reports no
+   thinking-token field fails (it can't be shown to be 0; Vertex reports
+   ``output_tokens_details.thinking_tokens`` on every call). The reference
+   arms' ``thinking_sent`` values and ``matches`` are kept for context, and
+   ``per_call`` also shows the raw ``thinking_type`` the proxy saw
+   (``disabled`` and ``between_tools`` are folded into ``none`` by
+   ``thinking_sent``).
 4. ``4_prompt_bytes``: system and tool bytes the proxy forwarded are within
    5% of what the harness itself sent. Byte counts come from the ledger:
    ``cc_identity_stripped.responses`` (Responses translation, Codex) or
@@ -178,6 +182,11 @@ def smoke_evidence(row: dict, ledger_rows: list, reference: dict | None = None,
                    for i, r in enumerate(rows, 1)]
     sent = sorted({str(r.get("thinking_sent")) for r in rows})
     thinking_tokens = [server_thinking_tokens(r.get("usage")) for r in rows]
+    thinking_calls = [{"call": i, "call_role": r.get("call_role") or "main",
+                       "thinking_sent": r.get("thinking_sent"), "thinking_type": r.get("thinking_type"),
+                       "server_thinking_tokens": tokens,
+                       "pass": r.get("thinking_sent") == "none" and tokens == 0}
+                      for i, (r, tokens) in enumerate(zip(rows, thinking_tokens), 1)]
     reference = reference or {}
     byte_rows = []
     for r in rows:
@@ -210,7 +219,10 @@ def smoke_evidence(row: dict, ledger_rows: list, reference: dict | None = None,
             "harness": sent, "reference_arm": reference_arm, "reference": reference,
             "matches": matches,
             "server_thinking_tokens_per_call": thinking_tokens,
-            "pass": bool(matches.get(reference_arm)),
+            "rule": "every call (main and side): thinking_sent == none and server thinking tokens == 0",
+            "per_call": thinking_calls,
+            "failing_calls": [c["call"] for c in thinking_calls if not c["pass"]],
+            "pass": calls > 0 and all(c["pass"] for c in thinking_calls),
         },
         "4_prompt_bytes": {
             "tolerance": BYTE_TOLERANCE, "per_call": byte_rows, "pass": within,

@@ -450,6 +450,47 @@ def translate_body(path: str, body: bytes) -> tuple[str, bytes]:
     return kind, json.dumps(data).encode("utf-8")
 
 
+STRIP_BETA_SEGMENT = "strip-beta"
+
+
+def split_strip_beta(route: str) -> tuple[str, list[str]]:
+    """Take an optional ``/strip-beta/<beta>[,<beta>...]`` segment off the
+    front of a cell route (after ``/c/<cell_id>``). Returns the remaining
+    route and the betas this request asks the proxy to drop from
+    ``anthropic-beta``. A harness adapter opts in through its provider base
+    URL (Hermes: AD1-hermes-beta), so the strip applies to that path only."""
+    path, sep, query = route.partition("?")
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2 or parts[0] != STRIP_BETA_SEGMENT:
+        return route, []
+    betas = [urllib.parse.unquote(b).strip() for b in parts[1].split(",")]
+    rest = "/" + "/".join(parts[2:])
+    return rest + (sep + query if sep else ""), [b for b in betas if b]
+
+
+def strip_requested_betas(beta_header: str | None, betas: list[str]) -> tuple[str | None, list[str]]:
+    """Drop ``betas`` from the forwarded ``anthropic-beta`` value. Returns the
+    new value (``None`` stays ``None``; an emptied header is ``""``, which is
+    not forwarded) and the betas actually removed, in header order."""
+    if not beta_header or not betas:
+        return beta_header, []
+    drop = set(betas)
+    parts = [p.strip() for p in beta_header.split(",") if p.strip()]
+    removed = [p for p in parts if p in drop]
+    return ",".join(p for p in parts if p not in drop), removed
+
+
+def thinking_type(data) -> str | None:
+    """The raw ``thinking.type`` the request carried, or None when it sent no
+    ``thinking`` object. ``classify_thinking`` folds ``disabled`` and
+    ``between_tools`` into ``none``; this keeps them visible."""
+    thinking = data.get("thinking") if isinstance(data, dict) else None
+    if not isinstance(thinking, dict):
+        return None
+    kind = thinking.get("type")
+    return kind if isinstance(kind, str) and kind else "unknown"
+
+
 def split_cell_path(path: str) -> tuple[str | None, str]:
     query = ""
     route = path
@@ -1043,6 +1084,10 @@ def _append_ledger(
         row["error"] = error[:500]
     if isinstance(identity, dict):
         row["cc_identity_stripped"] = identity
+        if isinstance(identity.get("beta_stripped"), dict):
+            row["beta_stripped"] = identity["beta_stripped"]
+        if isinstance(identity.get("thinking_type"), str):
+            row["thinking_type"] = identity["thinking_type"]
     row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
     if isinstance(upstream_model, str) and upstream_model:
@@ -2235,6 +2280,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             cell, route = split_cell_path(self.path)
             if cell:
                 holder["proxy"].note_reached(cell)
+                route, strip_betas = split_strip_beta(route)
+            else:
+                strip_betas = []
             route, query_removed = strip_beta_query(route)
             removed = list(query_removed)
             if _chat_route(route):
@@ -2325,6 +2373,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     parts.append(BLOCK_BINDING_BETA)
                 beta_header = ",".join(parts)
             identity = cc_identity_record(removed)
+            if strip_betas:
+                # Ledger: row["beta_stripped"] (and cc_identity_stripped.beta_stripped):
+                # the betas the route asked to drop and the ones this request carried.
+                beta_header, beta_removed = strip_requested_betas(beta_header, strip_betas)
+                identity["beta_stripped"] = {"requested": list(strip_betas), "removed": beta_removed}
+            raw_thinking_type = thinking_type(parsed)
+            if raw_thinking_type is not None:
+                # Ledger: row["thinking_type"]: thinking.type as sent, even when
+                # thinking_sent folds it into "none" (disabled, between_tools).
+                identity["thinking_type"] = raw_thinking_type
             if responses_ctx is not None:
                 # Ledger: row["cc_identity_stripped"]["responses"] records what
                 # the Responses translation dropped or added for this request.

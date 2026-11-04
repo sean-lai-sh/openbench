@@ -63,12 +63,13 @@ boolean per criterion. `smoke.log` gets the same booleans on one
    records whether it has the region-split signature, and
    `reference_call2_miss` gives the OpenCode and Pi baseline (see the Hermes
    README).
-3. **`3_thinking_sent`:** the Codex `thinking_sent` values next to each
-   reference arm's values for the same model, read from the committed #196
-   ledgers. It passes against **OpenCode**, the Researcher's thinking
-   reference. For Sonnet 5.5, OpenCode recorded `none` and Pi recorded
-   `adaptive`; Pi is listed for context only. Codex on Claude sends no
-   thinking.
+3. **`3_thinking_sent`** (strict, from #240): passes only when every call,
+   main and side, has `thinking_sent=none` **and** 0 server-side thinking
+   tokens (`output_tokens_details.thinking_tokens`; a call that reports no
+   such field fails). `per_call` and `failing_calls` show each call. The
+   reference arms' values for the same model (from the committed #196
+   ledgers) are kept for context: for Sonnet 5.5, OpenCode recorded `none`
+   and Pi recorded `adaptive`. Codex on Claude sends no thinking.
 4. **`4_prompt_bytes`:** for each call, the system and tool bytes the proxy
    forwarded, the bytes Codex itself sent, and the relative difference. The
    tolerance is 5%.

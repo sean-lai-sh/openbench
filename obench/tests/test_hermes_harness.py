@@ -134,7 +134,8 @@ class Gating(CellEnv):
         harness_run.assert_called_once_with("fix", self.workdir, "claude-sonnet-5-5", 60)
         row, runner, _ = self.run_cell()
         self.assertTrue(row["completed"], row)
-        self.assertEqual(runner.config["providers"]["proxy"]["api"], "http://127.0.0.1:4567/c/cellh")
+        self.assertEqual(runner.config["providers"]["proxy"]["api"],
+                         "http://127.0.0.1:4567/c/cellh/strip-beta/interleaved-thinking-2025-05-14")
 
     def test_flag_off_is_stock_hermes_even_with_a_proxy_url(self):
         with patch.dict(os.environ, {"OBENCH_HERMES_HARNESS": ""}), \
@@ -180,7 +181,7 @@ class Config(unittest.TestCase):
         self.assertFalse(provider["discover_models"])
 
     def test_context_length_is_the_named_constant(self):
-        self.assertEqual(hh.CONTEXT_LENGTH, 1_000_000)
+        self.assertEqual(hh.CONTEXT_LENGTH, 200_000)
         self.assertEqual(self.cfg["providers"]["proxy"]["models"]["claude-sonnet-5-5"]["context_length"],
                          hh.CONTEXT_LENGTH)
 
@@ -259,10 +260,14 @@ class Run(CellEnv):
         settings = json.loads(Path(hh.settings_destination("cellh", self.ledger)).read_text())
         self.assertEqual(settings["pin"], hh.PIN)
         self.assertEqual(settings["license"], "MIT")
-        self.assertEqual(settings["context_length"], 1_000_000)
-        self.assertIn("pending Researcher", settings["context_length_status"])
+        self.assertEqual(settings["context_length"], 200_000)
+        self.assertTrue(settings["context_length_status"].startswith("decided: 200K"))
+        self.assertNotIn("pending", json.dumps(settings))
+        self.assertEqual(settings["adapter_fixes"], ["AD1-hermes-ctx", "AD1-hermes-beta"])
+        self.assertEqual(settings["stripped_betas"], ["interleaved-thinking-2025-05-14"])
+        self.assertEqual(row["adapter_fixes"], ["AD1-hermes-ctx", "AD1-hermes-beta"])
         self.assertEqual(settings["turns"], 4)
-        self.assertEqual({o["sheet_row"] for o in settings["benchmark_overrides"]}, {6, 11, 13, 14, 26, 32})
+        self.assertEqual({o["sheet_row"] for o in settings["benchmark_overrides"]}, {6, 9, 11, 13, 14, 26, 32})
         self.assertEqual(row["harness_pin"], hh.PIN)
         self.assertEqual(row["context_length"], hh.CONTEXT_LENGTH)
 
@@ -290,7 +295,8 @@ class Run(CellEnv):
         with patch.dict(os.environ, {"OBENCH_DOCKER_NETWORK": "bridge"}):
             _, runner, _ = self.run_cell()
         self.assertNotIn("127.0.0.1", runner.config["providers"]["proxy"]["api"])
-        self.assertTrue(runner.config["providers"]["proxy"]["api"].endswith("/c/cellh"))
+        self.assertTrue(runner.config["providers"]["proxy"]["api"].endswith(
+            "/c/cellh/strip-beta/interleaved-thinking-2025-05-14"))
 
 
 class Launch(CellEnv):

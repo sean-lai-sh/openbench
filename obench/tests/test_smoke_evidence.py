@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 from obench.tests.test_vertex_proxy_harness_api import MESSAGE, STREAM, _post, _Vertex
 from thesis.ab import smoke_evidence as se
-from thesis.ab.vertex_anthropic_proxy import prompt_bytes, request_capture_path, start_proxy
+from thesis.ab.vertex_anthropic_proxy import (prompt_bytes, request_capture_path, split_strip_beta, start_proxy,
+                                              strip_requested_betas)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,7 +25,7 @@ def capture_rows(cache_reads=(0, 9000, 9500, 9800), sent="none", system=(5000, 5
                  roles=None, usage_extra=None):
     rows = []
     for i, read in enumerate(cache_reads, 1):
-        usage = {"input_tokens": 1}
+        usage = {"input_tokens": 1, "output_tokens_details": {"thinking_tokens": 0}}
         usage.update(usage_extra or {})
         rows.append({"usage": usage, "cache_read": read, "thinking_sent": sent,
                      "call_role": (roles or {}).get(i, "main"),
@@ -64,11 +65,35 @@ class Evidence(unittest.TestCase):
         self.assertTrue(evidence["4_prompt_bytes"]["pass"])
         self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["call_role"], "side")
 
-    def test_server_thinking_tokens_are_recorded_separately(self):
+    def test_strict_rule_fails_on_any_server_thinking_tokens(self):
         rows = capture_rows(usage_extra={"output_tokens_details": {"thinking_tokens": 1051}})
-        evidence = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE)
-        self.assertEqual(evidence["3_thinking_sent"]["server_thinking_tokens_per_call"], [1051] * 4)
-        self.assertTrue(evidence["3_thinking_sent"]["pass"])  # thinking_sent stays none
+        check = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE)["3_thinking_sent"]
+        self.assertEqual(check["server_thinking_tokens_per_call"], [1051] * 4)
+        self.assertEqual(check["harness"], ["none"])
+        self.assertFalse(check["pass"])  # thinking_sent is none, but the server thought
+        self.assertEqual(check["failing_calls"], [1, 2, 3, 4])
+
+    def test_strict_rule_covers_side_calls_and_unreported_tokens(self):
+        rows = capture_rows(roles={4: "side"})
+        rows[3]["usage"]["output_tokens_details"]["thinking_tokens"] = 12  # the title call
+        check = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE)["3_thinking_sent"]
+        self.assertFalse(check["pass"])
+        self.assertEqual(check["failing_calls"], [4])
+        self.assertEqual(check["per_call"][3]["call_role"], "side")
+        rows = capture_rows()
+        rows[1]["usage"].pop("output_tokens_details")  # no thinking-token field: can't show 0
+        check = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE)["3_thinking_sent"]
+        self.assertEqual(check["failing_calls"], [2])
+
+    def test_strict_rule_passes_only_on_none_and_zero_everywhere(self):
+        rows = capture_rows()
+        rows[2]["thinking_type"] = "between_tools"  # folded into thinking_sent=none, shown per call
+        check = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE)["3_thinking_sent"]
+        self.assertTrue(check["pass"])
+        self.assertEqual(check["per_call"][2]["thinking_type"], "between_tools")
+        rows[0]["thinking_sent"] = "adaptive"
+        self.assertFalse(se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows,
+                                           REFERENCE)["3_thinking_sent"]["pass"])
         self.assertIsNone(se.server_thinking_tokens({"input_tokens": 3}))
         self.assertEqual(se.server_thinking_tokens({"reasoning_tokens": 5, "output_tokens_details":
                                                     {"reasoning_tokens": 2}}), 7)
@@ -167,6 +192,63 @@ class RequestCapture(unittest.TestCase):
             _post(f"{self.proxy.base_url}/c/cell-off/v1/messages", self.body)
         self.assertFalse(request_capture_path(self.ledger, "cell-off", 1).exists())
         self.assertNotIn("capture", self.row("cell-off").get("cc_identity_stripped") or {})
+
+
+HERMES_BETAS = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+
+
+class BetaStrip(RequestCapture):
+    """AD1-hermes-beta: the Hermes cell URL's strip-beta segment keeps
+    interleaved-thinking off the upstream request and records it per call."""
+
+    def hermes_url(self, cell):
+        from obench.adapters.hermes_harness import cell_proxy_base
+        return cell_proxy_base(self.proxy.base_url, cell) + "/v1/messages"
+
+    def test_interleaved_thinking_is_not_sent_upstream(self):
+        status, _ = _post(self.hermes_url("cell-b"), self.body, {"anthropic-beta": HERMES_BETAS})
+        self.assertEqual(status, 200)
+        upstream = self.httpd.seen[-1]
+        self.assertEqual(upstream["beta"], "fine-grained-tool-streaming-2025-05-14")
+        self.assertNotIn("interleaved-thinking", upstream["beta"])
+        self.assertNotIn("strip-beta", upstream["path"])  # the segment never reaches Vertex
+        self.assertTrue(upstream["path"].endswith(":rawPredict") or upstream["path"].endswith(":streamRawPredict"))
+        row = self.row("cell-b")
+        self.assertEqual(row["beta_stripped"], {"requested": ["interleaved-thinking-2025-05-14"],
+                                                "removed": ["interleaved-thinking-2025-05-14"]})
+        self.assertEqual(row["cc_identity_stripped"]["beta_stripped"], row["beta_stripped"])
+        self.assertFalse(row["cc_identity_stripped"]["stripped"])  # not a Claude Code identity strip
+
+    def test_header_with_only_the_stripped_beta_is_not_forwarded(self):
+        _post(self.hermes_url("cell-o"), self.body, {"anthropic-beta": "interleaved-thinking-2025-05-14"})
+        self.assertIsNone(self.httpd.seen[-1]["beta"])
+        self.assertEqual(self.row("cell-o")["beta_stripped"]["removed"], ["interleaved-thinking-2025-05-14"])
+
+    def test_no_header_records_nothing_removed(self):
+        _post(self.hermes_url("cell-n"), self.body)
+        self.assertIsNone(self.httpd.seen[-1]["beta"])
+        self.assertEqual(self.row("cell-n")["beta_stripped"]["removed"], [])
+
+    def test_other_routes_forward_the_beta_unchanged(self):
+        _post(f"{self.proxy.base_url}/c/cell-p/v1/messages", self.body, {"anthropic-beta": HERMES_BETAS})
+        self.assertEqual(self.httpd.seen[-1]["beta"], HERMES_BETAS)
+        self.assertNotIn("beta_stripped", self.row("cell-p"))
+
+    def test_raw_thinking_type_is_recorded_beside_thinking_sent(self):
+        body = dict(self.body, thinking={"type": "between_tools"})
+        _post(self.hermes_url("cell-t"), body)
+        row = self.row("cell-t")
+        self.assertEqual((row["thinking_sent"], row["thinking_type"]), ("none", "between_tools"))
+        _post(self.hermes_url("cell-u"), self.body)
+        self.assertNotIn("thinking_type", self.row("cell-u"))
+
+    def test_segment_parsing(self):
+        self.assertEqual(split_strip_beta("/strip-beta/a,b/v1/messages?beta=true"),
+                         ("/v1/messages?beta=true", ["a", "b"]))
+        self.assertEqual(split_strip_beta("/v1/messages"), ("/v1/messages", []))
+        self.assertEqual(strip_requested_betas(HERMES_BETAS, ["interleaved-thinking-2025-05-14"]),
+                         ("fine-grained-tool-streaming-2025-05-14", ["interleaved-thinking-2025-05-14"]))
+        self.assertEqual(strip_requested_betas(None, ["x"]), (None, []))
 
 
 if __name__ == "__main__":

@@ -18,10 +18,16 @@ Benchmark config (each cell gets a fresh ``HERMES_HOME`` holding only
 * thinking: ``agent.reasoning_effort`` is left unset, so Hermes sends no
   ``thinking`` field (``thinking_sent=none``, matching OpenCode). Hermes's
   own "none" would send ``thinking: {type: between_tools}``.
-* ``context_length`` = ``CONTEXT_LENGTH`` (1,000,000: Hermes's own default for
-  claude-sonnet-5*, and Pi's models.json value). Pending the Researcher's call
-  (1M for Pi/stock vs 200K for Codex AD-1). Set explicitly so Hermes does not
-  probe non-model endpoints on the proxy.
+* AD1-hermes-ctx: ``context_length`` = ``CONTEXT_LENGTH`` = 200,000, the same
+  window as Codex (AD1-codex-ctx); Researcher decision. Hermes's own default
+  for claude-sonnet-5* is 1M. Hermes keeps its own compaction thresholds.
+  Set explicitly, which also stops Hermes probing non-model endpoints on the
+  proxy.
+* AD1-hermes-beta: the cell's provider URL carries a ``strip-beta`` segment,
+  so the proxy removes ``interleaved-thinking-2025-05-14`` from Hermes's
+  ``anthropic-beta`` header before forwarding (main loop and title call).
+  ``fine-grained-tool-streaming-2025-05-14`` (tool-input streaming, not
+  thinking) is kept. The ledger records what was stripped per call.
 * Title generation stays on (stock; AD1-hermes-side). It follows the main
   provider/model, is tagged ``side`` at the proxy, and is counted in traces.
 * Stock ``hermes-cli`` toolset and stock prompt (SOUL.md, context files);
@@ -76,9 +82,13 @@ PROVIDER_NAME = "proxy"
 TRANSPORT = "anthropic_messages"
 WIRE_PATH = "/v1/messages"
 PROXY_API_KEY = "openbench-vertex-proxy"
-# Researcher decision pending: 1M (Hermes default for claude-sonnet-5*, Pi's
-# models.json) vs 200K (Codex AD1-codex-ctx). Recorded per cell.
-CONTEXT_LENGTH = 1_000_000
+# AD1-hermes-ctx (Researcher decision on #240): the Codex AD-1 window. Hermes's
+# default for claude-sonnet-5* is 1M. Recorded per cell.
+CONTEXT_LENGTH = 200_000
+CONTEXT_LENGTH_STATUS = "decided: 200K, same as Codex AD1-codex-ctx (AD1-hermes-ctx)"
+# AD1-hermes-beta: removed from Hermes's anthropic-beta at the proxy.
+STRIPPED_BETAS = ("interleaved-thinking-2025-05-14",)
+ADAPTER_FIXES = ("AD1-hermes-ctx", "AD1-hermes-beta")
 GATEWAY_IDLE_EXIT_S = 5
 THINKING = "unset (no thinking field; OpenCode is the thinking reference)"
 
@@ -99,7 +109,9 @@ BENCHMARK_OVERRIDES = (
     (f"gateway.unmanaged_idle_exit_seconds={GATEWAY_IDLE_EXIT_S}", 32,
      "Headless CLI mode: the per-run gateway daemon exits right after the cell"),
     (f"providers.proxy.models.<model>.context_length={CONTEXT_LENGTH}", 13,
-     "History compaction: explicit window (pending Researcher), no endpoint probes"),
+     "History compaction: AD1-hermes-ctx 200K window (Codex AD-1); Hermes's own thresholds; no endpoint probes"),
+    ("anthropic-beta: -interleaved-thinking-2025-05-14 (proxy strip-beta)", 9,
+     "Temperature / reasoning: AD1-hermes-beta, no interleaved-thinking beta upstream"),
 )
 
 _CELL_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -134,11 +146,13 @@ def comparison_requested() -> bool:
 
 
 def cell_proxy_base(base_url: str, cell_id: str) -> str:
-    """Cell proxy origin (no ``/v1``): the SDK appends ``/v1/messages``."""
+    """Cell proxy origin (no ``/v1``): the SDK appends ``/v1/messages``.
+    The ``strip-beta`` segment asks the proxy to drop ``STRIPPED_BETAS``
+    (AD1-hermes-beta)."""
     base = base_url.strip().rstrip("/")
     if base.endswith("/v1"):
         base = base[:-3]
-    return f"{base}/c/{cell_id}"
+    return f"{base}/c/{cell_id}/strip-beta/{','.join(STRIPPED_BETAS)}"
 
 
 def _sibling(module_name: str, filename: str):
@@ -456,7 +470,9 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, la
         "provider": f"custom:{PROVIDER_NAME}",
         "wire": {"transport": TRANSPORT, "path": WIRE_PATH, "base_url": cell_base},
         "context_length": CONTEXT_LENGTH,
-        "context_length_status": "pending Researcher decision (1M Pi/stock vs 200K Codex AD-1)",
+        "context_length_status": CONTEXT_LENGTH_STATUS,
+        "adapter_fixes": list(ADAPTER_FIXES),
+        "stripped_betas": list(STRIPPED_BETAS),
         "thinking": THINKING,
         "title_generation": "on (stock; tagged side at the proxy; counted in traces)",
         "toolset": "stock hermes-cli",
@@ -585,6 +601,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int, runner=subpr
         "cmd": cmd,
         "context_length": CONTEXT_LENGTH,
         "harness_pin": PIN,
+        "adapter_fixes": list(ADAPTER_FIXES),
         "harness_settings": settings,
         **_empty_usage(),
         "main_calls": usage["main_calls"],
