@@ -1,0 +1,134 @@
+"""Shared four-check smoke evidence (thesis/ab/smoke_evidence.py) and the
+proxy's opt-in raw request capture (OBENCH_VERTEX_CAPTURE_REQUESTS)."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import tempfile
+import threading
+import unittest
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from unittest.mock import patch
+
+from obench.tests.test_vertex_proxy_harness_api import MESSAGE, STREAM, _post, _Vertex
+from thesis.ab import smoke_evidence as se
+from thesis.ab.vertex_anthropic_proxy import prompt_bytes, request_capture_path, start_proxy
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def capture_rows(cache_reads=(0, 9000, 9500, 9800), sent="none", system=(5000, 5000), tools=(2000, 2000),
+                 roles=None, usage_extra=None):
+    rows = []
+    for i, read in enumerate(cache_reads, 1):
+        usage = {"input_tokens": 1}
+        usage.update(usage_extra or {})
+        rows.append({"usage": usage, "cache_read": read, "thinking_sent": sent,
+                     "call_role": (roles or {}).get(i, "main"),
+                     "cc_identity_stripped": {"capture": {
+                         "raw_request_file": f"c.requests/{i:04d}.request.json",
+                         "system_bytes": system[0], "raw_system_bytes": system[1],
+                         "tools_bytes": tools[0], "raw_tools_bytes": tools[1]}}})
+    return rows
+
+
+REFERENCE = {"pi": ["adaptive"], "opencode": ["none"]}
+
+
+class Evidence(unittest.TestCase):
+    def test_all_four_pass_from_capture_records(self):
+        evidence = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, capture_rows(), REFERENCE)
+        self.assertEqual({k: v["pass"] for k, v in evidence.items()},
+                         {"1_traced": True, "2_cache_read": True, "3_thinking_sent": True, "4_prompt_bytes": True})
+        self.assertEqual(evidence["3_thinking_sent"]["reference_arm"], "opencode")
+        self.assertEqual(evidence["3_thinking_sent"]["harness"], ["none"])
+        self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["raw_request_file"], "c.requests/0001.request.json")
+
+    def test_failures_are_reported_per_check(self):
+        evidence = se.smoke_evidence({"trace_requests": 1, "untraced_requests": 3},
+                                     capture_rows(cache_reads=(0, 0, 0, 0), sent="adaptive", tools=(2200, 2000)),
+                                     REFERENCE)
+        self.assertFalse(evidence["1_traced"]["pass"])
+        self.assertFalse(evidence["2_cache_read"]["pass"])
+        self.assertEqual(evidence["3_thinking_sent"]["matches"], {"pi": True, "opencode": False})
+        self.assertFalse(evidence["3_thinking_sent"]["pass"])
+        self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["tools_delta"], 0.1)
+        self.assertFalse(evidence["4_prompt_bytes"]["pass"])
+
+    def test_tool_less_side_call_counts_as_within(self):
+        rows = capture_rows(cache_reads=(0, 7000), system=(300, 300), tools=(0, 0), roles={1: "side"})
+        evidence = se.smoke_evidence({"trace_requests": 2, "untraced_requests": 0}, rows, REFERENCE)
+        self.assertTrue(evidence["4_prompt_bytes"]["pass"])
+        self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["call_role"], "side")
+
+    def test_server_thinking_tokens_are_recorded_separately(self):
+        rows = capture_rows(usage_extra={"output_tokens_details": {"thinking_tokens": 1051}})
+        evidence = se.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows, REFERENCE)
+        self.assertEqual(evidence["3_thinking_sent"]["server_thinking_tokens_per_call"], [1051] * 4)
+        self.assertTrue(evidence["3_thinking_sent"]["pass"])  # thinking_sent stays none
+        self.assertIsNone(se.server_thinking_tokens({"input_tokens": 3}))
+        self.assertEqual(se.server_thinking_tokens({"reasoning_tokens": 5, "output_tokens_details":
+                                                    {"reasoning_tokens": 2}}), 7)
+
+    def test_reference_comes_from_the_196_ledgers(self):
+        self.assertEqual(se.reference_thinking(ROOT, "claude-sonnet-5-5"), REFERENCE)
+
+    def test_responses_records_still_work(self):
+        rows = [{"usage": {"input_tokens": 1}, "cache_read": 0, "thinking_sent": "none",
+                 "cc_identity_stripped": {"responses": {
+                     "responses_raw_request_file": "c.responses/0001.request.json",
+                     "responses_system_bytes": 10, "responses_raw_system_bytes": 10,
+                     "responses_tools_bytes": 10, "responses_raw_tools_bytes": 10}}}]
+        evidence = se.smoke_evidence({"trace_requests": 1, "untraced_requests": 0}, rows, REFERENCE)
+        self.assertTrue(evidence["4_prompt_bytes"]["pass"])
+
+
+class RequestCapture(unittest.TestCase):
+    def setUp(self):
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Vertex)
+        self.httpd.seen, self.httpd.queue = [], []
+        self.httpd.json_body = json.dumps(MESSAGE).encode("utf-8")
+        self.httpd.stream_body = STREAM
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.ledger = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.ledger, True)
+        host, port = self.httpd.server_address
+        self.proxy = start_proxy("proj", token="tok", upstream=f"http://{host}:{port}",
+                                 ledger_dir=self.ledger, route_by_request=True)
+        self.addCleanup(self.proxy.close)
+        self.addCleanup(self.httpd.shutdown)
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(lambda: self.thread.join(timeout=2))
+        self.body = {"model": "claude-sonnet-5-5", "max_tokens": 32000,
+                     "system": [{"type": "text", "text": "You are Hermes. " * 20,
+                                 "cache_control": {"type": "ephemeral"}}],
+                     "tools": [{"name": "terminal", "description": "run", "input_schema": {"type": "object"}}],
+                     "messages": [{"role": "user", "content": "hi"}]}
+
+    def row(self, cell):
+        return [json.loads(l) for l in (self.ledger / f"{cell}.jsonl").read_text().splitlines() if l.strip()][-1]
+
+    def test_messages_bodies_are_captured_raw_with_byte_counts(self):
+        raw = json.dumps(self.body).encode("utf-8")
+        with patch.dict(os.environ, {"OBENCH_VERTEX_CAPTURE_REQUESTS": "1"}):
+            _post(f"{self.proxy.base_url}/c/cell-cap/v1/messages", raw)
+        self.assertEqual(request_capture_path(self.ledger, "cell-cap", 1).read_bytes(), raw)
+        capture = self.row("cell-cap")["cc_identity_stripped"]["capture"]
+        system, tools = prompt_bytes(self.body)
+        self.assertEqual(capture["raw_request_file"], "cell-cap.requests/0001.request.json")
+        self.assertEqual((capture["raw_system_bytes"], capture["raw_tools_bytes"]), (system, tools))
+        self.assertEqual((capture["system_bytes"], capture["tools_bytes"]), (system, tools))
+
+    def test_capture_is_off_by_default(self):
+        with patch.dict(os.environ, {"OBENCH_VERTEX_CAPTURE_REQUESTS": ""}):
+            _post(f"{self.proxy.base_url}/c/cell-off/v1/messages", self.body)
+        self.assertFalse(request_capture_path(self.ledger, "cell-off", 1).exists())
+        self.assertNotIn("capture", self.row("cell-off").get("cc_identity_stripped") or {})
+
+
+if __name__ == "__main__":
+    unittest.main()

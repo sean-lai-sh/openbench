@@ -20,6 +20,7 @@ from obench.provider_ua import loaded_anthropic_from_ua
 from thesis.ab.responses_api import (
     ResponsesError,
     ResponsesStream,
+    _json_bytes,
     responses_body_bytes,
     responses_error_bytes,
     responses_to_anthropic,
@@ -911,6 +912,48 @@ def write_responses_capture(directory: Path | None, cell_id: str | None, index: 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     return str(path.relative_to(Path(directory)))
+
+
+CAPTURE_REQUESTS_ENV = "OBENCH_VERTEX_CAPTURE_REQUESTS"
+
+
+def capture_requests_enabled() -> bool:
+    """Opt-in raw-body capture for every cell request (any route)."""
+    return os.environ.get(CAPTURE_REQUESTS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def request_capture_path(directory: Path, cell_id: str, index: int) -> Path:
+    """Raw request body exactly as the harness sent it, before any proxy edit."""
+    return Path(directory) / f"{_cell_file_stem(cell_id)}.requests" / f"{index:04d}.request.json"
+
+
+def write_request_capture(directory: Path | None, cell_id: str | None, index: int, raw: bytes) -> str:
+    if directory is None or not cell_id:
+        return ""
+    path = request_capture_path(directory, cell_id, index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return str(path.relative_to(Path(directory)))
+
+
+def prompt_bytes(body) -> tuple[int, int]:
+    """(system text bytes, tools JSON bytes) of an Anthropic Messages body.
+
+    System text is every system string/text block joined with a blank line;
+    tools are canonical JSON with ``cache_control`` removed. Same measure as
+    the Responses translation uses (``responses_api``).
+    """
+    if not isinstance(body, dict):
+        return 0, 0
+    system = body.get("system")
+    if isinstance(system, str):
+        parts = [system]
+    elif isinstance(system, list):
+        parts = [b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"]
+    else:
+        parts = []
+    text = "\n\n".join(p for p in parts if p)
+    return len(text.encode("utf-8")), _json_bytes(body.get("tools") or [])
 
 
 def cache_miss_headers_path(directory: Path, cell_id: str) -> Path:
@@ -2028,6 +2071,7 @@ class Proxy:
         self._fault_lock = threading.Lock()
         self._message_index: dict[str, int] = {}
         self._responses_index: dict[str, int] = {}
+        self._capture_index: dict[str, int] = {}
         self._reached: set[str] = set()
         self._bridge = None
 
@@ -2036,6 +2080,13 @@ class Proxy:
         with self._fault_lock:
             index = self._message_index.get(cell_id, 0) + 1
             self._message_index[cell_id] = index
+            return index
+
+    def note_capture(self, cell_id: str) -> int:
+        """1-based index of a captured request for this cell."""
+        with self._fault_lock:
+            index = self._capture_index.get(cell_id, 0) + 1
+            self._capture_index[cell_id] = index
             return index
 
     def note_responses(self, cell_id: str) -> int:
@@ -2170,6 +2221,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 parsed = json.loads(raw.decode("utf-8")) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
+            capture = None
+            if (presentation == "anthropic" and capture_requests_enabled()
+                    and ledger is not None and cell):
+                raw_system, raw_tools = prompt_bytes(parsed)
+                capture = {
+                    "raw_request_file": write_request_capture(
+                        ledger, cell, holder["proxy"].note_capture(cell), raw),
+                    "raw_system_bytes": raw_system,
+                    "raw_tools_bytes": raw_tools,
+                }
             raw_requested = parsed.get("model") if isinstance(parsed, dict) else None
             requested_model = raw_requested.strip() if isinstance(raw_requested, str) else None
             upstream_model = resolve_upstream_model(
@@ -2241,6 +2302,12 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 # Ledger: row["cc_identity_stripped"]["responses"] records what
                 # the Responses translation dropped or added for this request.
                 identity["responses"] = responses_ctx.record()
+            if capture is not None:
+                # Ledger: row["cc_identity_stripped"]["capture"]: the raw body
+                # file and raw vs forwarded system/tool bytes (5% check).
+                forwarded_system, forwarded_tools = prompt_bytes(parsed)
+                identity["capture"] = {**capture, "system_bytes": forwarded_system,
+                                       "tools_bytes": forwarded_tools}
             if binding:
                 identity["thinking_block_binding"] = binding
             if sampling_removed:
