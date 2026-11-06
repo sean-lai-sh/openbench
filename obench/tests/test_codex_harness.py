@@ -389,7 +389,8 @@ class LauncherTests(unittest.TestCase):
     def evidence_rows(self, cache_reads=(0, 9000, 9500, 9800), sent="none", tools=(1000, 1000)):
         rows = []
         for i, read in enumerate(cache_reads, 1):
-            rows.append({"usage": {"input_tokens": 1}, "cache_read": read, "thinking_sent": sent,
+            rows.append({"usage": {"input_tokens": 1, "output_tokens_details": {"thinking_tokens": 0}},
+                         "cache_read": read, "thinking_sent": sent,
                          "cc_identity_stripped": {"responses": {
                              "responses_raw_request_file": f"c.responses/{i:04d}.request.json",
                              "responses_system_bytes": 9000, "responses_raw_system_bytes": 9000,
@@ -407,6 +408,17 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(evidence["3_thinking_sent"]["reference_arm"], "opencode")
         self.assertEqual(evidence["3_thinking_sent"]["matches"], {"pi": False, "opencode": True})
         self.assertEqual(evidence["4_prompt_bytes"]["per_call"][0]["raw_request_file"], "c.responses/0001.request.json")
+
+    def test_strict_thinking_fails_codex_on_server_thinking_tokens(self):
+        """The ddd5096d Codex smoke: thinking_sent=none, 1051 server thinking tokens on call 1."""
+        cell = self.load()
+        rows = self.evidence_rows()
+        rows[0]["usage"]["output_tokens_details"]["thinking_tokens"] = 1051
+        check = cell.smoke_evidence({"trace_requests": 4, "untraced_requests": 0}, rows,
+                                    {"pi": ["adaptive"], "opencode": ["none"]})["3_thinking_sent"]
+        self.assertTrue(check["matches"]["opencode"])  # same shape; still matches the reference value
+        self.assertFalse(check["pass"])
+        self.assertEqual(check["failing_calls"], [1])
 
     def test_smoke_evidence_reports_each_failure(self):
         cell = self.load()

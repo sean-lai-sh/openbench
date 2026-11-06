@@ -2750,6 +2750,13 @@ def run_cell(harness, task, model, trial, timeout_s, tasks_dir, adapters_dir,
         if isinstance(loaded_mismatch, str) and loaded_mismatch.strip():
             row["provider_loaded_mismatch"] = loaded_mismatch.strip()
         carry_load_proof_inputs(row, result)
+        # Comparison-arm adapters (Pi, Codex, Hermes) report pin, launch and trace
+        # settings here. In docker it is the only way back: the adapter runs in
+        # the container, where the host ledger dir is not mounted. In-memory only
+        # (not a ROW_FIELDS column); smoke launchers read it from the row.
+        harness_settings = result.get("harness_settings")
+        if isinstance(harness_settings, dict):
+            row["harness_settings"] = harness_settings
         full_output = result.get("full_output")
         classifier_output = full_output if full_output is not None else row["output_tail"]
         _populate_proxy_row(row, active_proxy_ctx, cell_token, wait_s=2.0)

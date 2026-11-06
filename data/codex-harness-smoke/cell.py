@@ -30,13 +30,7 @@ TASK = "polyglot-rust-c"
 TIMEOUT_S = 2400
 CHECKER_TIMEOUT_S = 120
 FORBIDDEN_OUT_PARTS = ("results", "data")
-# Same-model reference arms (#196, Sonnet 5.5): committed proxy ledgers.
-REFERENCE_LEDGERS = "results/pi-vs-oc-180-1029/cells/*/{arm}/proxy-ledger/*.jsonl"
-REFERENCE_ARMS = ("pi", "opencode")
-# Researcher ruling (PR #236): OpenCode is the thinking reference; Pi is shown
-# for context only.
-THINKING_REFERENCE_ARM = "opencode"
-BYTE_TOLERANCE = 0.05
+# Evidence lives in thesis/ab/smoke_evidence.py (shared with the Hermes arm).
 
 
 def _repo_root() -> Path:
@@ -86,89 +80,20 @@ def requests_cost_usd(model: str, ledger: Path, cell_id: str):
     return cost, totals
 
 
-def reference_thinking(repo: Path, model: str, pattern: str = REFERENCE_LEDGERS) -> dict:
-    """``thinking_sent`` values each reference arm recorded for ``model``."""
-    found: dict = {}
-    for arm in REFERENCE_ARMS:
-        values: set = set()
-        for path in sorted(repo.glob(pattern.format(arm=arm))):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("upstream_model") == model and row.get("thinking_sent"):
-                    values.add(row["thinking_sent"])
-        found[arm] = sorted(values)
-    return found
+def reference_thinking(repo: Path, model: str) -> dict:
+    from thesis.ab.smoke_evidence import reference_thinking as _reference
 
-
-def _delta(captured, real):
-    if not isinstance(captured, int) or not isinstance(real, int) or real <= 0:
-        return None
-    return round((captured - real) / real, 4)
+    return _reference(repo, model)
 
 
 def smoke_evidence(row: dict, ledger_rows: list, reference: dict | None = None) -> dict:
-    """The four re-smoke criteria, computed from the cell row and its ledger.
+    """The four re-smoke checks (thesis/ab/smoke_evidence.py); ``codex``
+    repeats the harness's thinking_sent values under the arm's name."""
+    from thesis.ab.smoke_evidence import smoke_evidence as _evidence
 
-    1. every request traced (``trace_requests`` == ledger requests, 0 untraced);
-    2. ``cache_read`` > 0 on every call from call 2 on;
-    3. ``thinking_sent`` equals what the OpenCode arm sends for the model
-       (the Researcher's thinking reference; other arms are listed for context);
-    4. system and tool bytes the proxy forwards are within 5% of what
-       Codex 0.144.5 itself sent (``responses_raw_*``; raw bodies are under
-       ``proxy-ledger/<cell>.responses/``).
-    """
-    rows = [r for r in ledger_rows if isinstance(r, dict) and isinstance(r.get("usage"), dict)]
-    calls = len(rows)
-    traced = row.get("trace_requests")
-    untraced = row.get("untraced_requests")
-    cache_reads = [r.get("cache_read") for r in rows]
-    sent = sorted({str(r.get("thinking_sent")) for r in rows})
-    reference = reference or {}
-    byte_rows = []
-    for r in rows:
-        rec = ((r.get("cc_identity_stripped") or {}).get("responses") or {})
-        if "responses_raw_system_bytes" not in rec:
-            continue
-        sys_delta = _delta(rec.get("responses_system_bytes"), rec.get("responses_raw_system_bytes"))
-        tools_delta = _delta(rec.get("responses_tools_bytes"), rec.get("responses_raw_tools_bytes"))
-        byte_rows.append({
-            "raw_request_file": rec.get("responses_raw_request_file"),
-            "system_bytes": rec.get("responses_system_bytes"),
-            "raw_system_bytes": rec.get("responses_raw_system_bytes"),
-            "system_delta": sys_delta,
-            "tools_bytes": rec.get("responses_tools_bytes"),
-            "raw_tools_bytes": rec.get("responses_raw_tools_bytes"),
-            "tools_delta": tools_delta,
-        })
-    within = bool(byte_rows) and all(
-        b["system_delta"] is not None and abs(b["system_delta"]) <= BYTE_TOLERANCE
-        and b["tools_delta"] is not None and abs(b["tools_delta"]) <= BYTE_TOLERANCE
-        for b in byte_rows
-    )
-    matches = {arm: sent == values for arm, values in reference.items()}
-    return {
-        "1_traced": {
-            "proxy_requests": calls, "trace_requests": traced, "untraced_requests": untraced,
-            "pass": calls > 0 and traced == calls and untraced == 0,
-        },
-        "2_cache_read": {
-            "per_call": cache_reads,
-            "pass": calls >= 2 and all(isinstance(v, int) and v > 0 for v in cache_reads[1:]),
-        },
-        "3_thinking_sent": {
-            "codex": sent, "reference_arm": THINKING_REFERENCE_ARM, "reference": reference,
-            "matches": matches,
-            "pass": bool(matches.get(THINKING_REFERENCE_ARM)),
-        },
-        "4_prompt_bytes": {
-            "tolerance": BYTE_TOLERANCE, "per_call": byte_rows, "pass": within,
-        },
-    }
+    evidence = _evidence(row, ledger_rows, reference)
+    evidence["3_thinking_sent"]["codex"] = evidence["3_thinking_sent"]["harness"]
+    return evidence
 
 
 def _resolve_binary(explicit: Path | None) -> Path:
