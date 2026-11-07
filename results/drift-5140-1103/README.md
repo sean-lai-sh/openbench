@@ -15,4 +15,4 @@
 | polyglot-rust-c | no (wrong answer) $0.265 | no (wrong answer) $0.147 |
 | regex-chess | did not run | **yes** $1.611 |
 
-Solves: with 1/4, without 3/5. **Stopped by the disk guard, no drift conclusion.** The Researcher's plan is to finish 5140 later on thesis-h1-cpu as a continuation of this PR.
+Solves: with 1/4, without 2/5. **Stopped by the disk guard, no drift conclusion.** The Researcher's plan is to finish 5140 later on thesis-h1-cpu as a continuation of this PR.
