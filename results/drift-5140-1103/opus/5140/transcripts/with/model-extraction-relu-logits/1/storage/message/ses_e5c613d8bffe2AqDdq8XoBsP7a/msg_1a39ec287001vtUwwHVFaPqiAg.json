@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a39ec287001vtUwwHVFaPqiAg",
+  "sessionID": "ses_e5c613d8bffe2AqDdq8XoBsP7a",
+  "role": "user",
+  "time": {
+    "created": 1793746453127
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`, ran it, and it recovers A1. It finds 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. The script itself only calls `forward()`. After it ran, I compared the result against the real `A1` in `forward.py`: every true row matches exactly one stolen row, with cosine similarity of 1.0 to within about 1e-15. The signs also came out right, so each stolen row is the true row times a positive number. The run takes about 40 seconds.\n\n**How it works:**\n1. **Find the kinks.** Along random straight lines through the input space, the network's output is piecewise linear. It bends exactly where one hidden neuron switches on or off. The script finds these bend points by repeatedly splitting the line into smaller pieces and checking whether each piece is straight.\n2. **Read off each row.** At each bend, it estimates the gradient just before and just after (by finite differences). The change in gradient equals `A2[i] * A1[i]` for the neuron that switched, which gives that row of A1 up to scaling. It normalises these, removes duplicates, and stops once 8 new lines in a row turn up no new neurons. Nine lines found all 20.\n3. **Fix the signs.** Plain ReLU networks determine each row's sign, so the script also recovers it. It fits the output using the hidden-unit features it has found plus a linear term. It then works out which rows must have been flipped to explain that linear term, by checking all 2^20 on/off combinations. This step is an extra beyond what you asked for. If it fails, the rows are saved with an arbitrary sign, which is still correct up to scaling.\n\nOne limit: the sign step's full search only runs when there are at most 22 neurons. With more, it's skipped and the signs are arbitrary.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

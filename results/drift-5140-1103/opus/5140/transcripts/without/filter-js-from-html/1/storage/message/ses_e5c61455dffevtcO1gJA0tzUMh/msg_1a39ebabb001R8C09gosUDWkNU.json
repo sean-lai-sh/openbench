@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a39ebabb001R8C09gosUDWkNU",
+  "sessionID": "ses_e5c61455dffevtcO1gJA0tzUMh",
+  "role": "user",
+  "time": {
+    "created": 1793746451131
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I've created `filter.py`. Run it as `python3 filter.py file.html` and it rewrites the file in place. My test page of ordinary HTML came out byte-for-byte unchanged. About 40 known XSS tricks all came out disarmed, as far as I can tell by reading the output. I didn't check any of it in a real browser.\n\n**How it works:** it reads the HTML following the same rules browsers use, and cuts out only the dangerous pieces. Everything else is copied exactly, including whitespace, Windows line endings, entities and bytes that aren't valid text. That's why it uses no parsing library: rebuilding the page from a parse tree would change its formatting.\n\n**What it removes:**\n- `<script>` elements and everything inside them.\n- Event-handler attributes (anything starting with `on`) and `srcdoc`.\n- Links and URL attributes using `javascript:` or `vbscript:`, even when disguised with entities, tabs, leading spaces or mixed case.\n- `data:` URLs, except plain images. SVG images are allowed only in `<img>`/`<source>`, where they can't run script.\n- Inline styles containing `expression()`, `javascript:`, `-moz-binding` or `behavior:`, and `<style>` blocks with the same.\n- `<object>`, `<embed>`, `<applet>` and `<base>` tags. Their inner content is kept.\n- `<meta>` refreshes that redirect to `javascript:` or `data:`.\n- SVG animations that set event handlers or animate a link to `javascript:`.\n- Comments that contain script, including old IE conditional comments.\n- Tags cut off by the end of the file (browsers ignore these anyway).\n\n**Harder cases it handles:**\n- **Text-only elements** (`<title>`, `<textarea>`, `<style>`, `<noscript>`, `<iframe>` and similar) are cleaned as if they held normal HTML. Inside `<svg>` or `<math>` they do, so `<svg><style><img onerror=…>` is caught.\n- **SVG text blocks** (`<![CDATA[`) that browsers could read in two different ways are removed.\n- **Rebuilt tags:** the filter repeats until nothing changes. Otherwise removing one piece could join the text around it into a new tag, as in `<<script>x</script>script>…`.\n\n**Things that may surprise you:**\n- Some harmless text is removed too: a `<!-- -->` comment that mentions script, or an attribute like `x/onerror=` that browsers would treat as part of a URL. This was a deliberate choice to keep the output free of obvious attack strings.\n- `<a href=\"javascript:void(0)\">`-style links lose their `href` but keep the link text.\n- `<iframe>` is kept, with only its dangerous attributes removed. An iframe pointing at an outside page will still load.\n\n**Testing:** besides the checks above, I confirmed that running the filter a second time changes nothing. I also confirmed that the command-line version preserves line endings and invalid bytes when editing in place. Finally, 20,000 random tag-like inputs gave no crashes, and a second run never changed the output.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}
