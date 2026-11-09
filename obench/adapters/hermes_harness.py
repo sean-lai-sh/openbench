@@ -16,8 +16,13 @@ Benchmark config (each cell gets a fresh ``HERMES_HOME`` holding only
 ``config.yaml``; written as JSON, which is valid YAML):
 
 * thinking: ``agent.reasoning_effort`` is left unset, so Hermes sends no
-  ``thinking`` field (``thinking_sent=none``, matching OpenCode). Hermes's
-  own "none" would send ``thinking: {type: between_tools}``.
+  ``thinking`` field (``thinking_sent=none``). At this pin that is not a
+  disable: Sonnet 5.5 thinks by default when the field is absent. Its
+  documented off is ``thinking: {type: between_tools}`` (``reasoning_effort:
+  none``), which still allows short notes between tool calls.
+  ``thinking: {type: disabled}`` 400s on Sonnet 5.5, and Opus 5.5 cannot
+  disable. Neither is sent (``THINKING_OFF_STATUS``). The beta strip below
+  does not add a thinking field.
 * AD1-hermes-ctx: ``context_length`` = ``CONTEXT_LENGTH`` = 200,000, the same
   window as Codex (AD1-codex-ctx); Researcher decision. Hermes's own default
   for claude-sonnet-5* is 1M. Hermes keeps its own compaction thresholds.
@@ -91,6 +96,14 @@ STRIPPED_BETAS = ("interleaved-thinking-2025-05-14",)
 ADAPTER_FIXES = ("AD1-hermes-ctx", "AD1-hermes-beta")
 GATEWAY_IDLE_EXIT_S = 5
 THINKING = "unset (no thinking field; OpenCode is the thinking reference)"
+# Pin 4dcef215, agent/anthropic_adapter.py: omission is not off for adaptive
+# Claude. Sending between_tools or disabled would change the request protocol.
+# Recorded per cell so a smoke can show why check 3 can still fail.
+THINKING_OFF_STATUS = (
+    "research: unset sends no thinking field; Sonnet 5.5 thinks by default at pin "
+    "4dcef215; documented off is between_tools and is not sent; disabled 400s on "
+    "Sonnet 5.5; Opus 5.5 cannot disable; strip-beta does not add a thinking field"
+)
 
 # Benchmark config overrides, each with the harness-comparison sheet row it
 # belongs to (prereg/harness-components-2026-10-24.csv).
@@ -474,6 +487,7 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, la
         "adapter_fixes": list(ADAPTER_FIXES),
         "stripped_betas": list(STRIPPED_BETAS),
         "thinking": THINKING,
+        "thinking_off_status": THINKING_OFF_STATUS,
         "title_generation": "on (stock; tagged side at the proxy; counted in traces)",
         "toolset": "stock hermes-cli",
         "rules": "stock (SOUL.md, context files); --ignore-rules not used",

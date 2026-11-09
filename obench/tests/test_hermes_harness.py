@@ -186,10 +186,15 @@ class Config(unittest.TestCase):
                          hh.CONTEXT_LENGTH)
 
     def test_thinking_is_left_unset(self):
-        """No agent.reasoning_effort: Hermes sends no `thinking` (matching OpenCode).
-        Hermes's own "none" would send thinking: between_tools."""
+        """No agent.reasoning_effort: Hermes sends no `thinking` field.
+
+        At pin 4dcef215 that is not a disable (Sonnet 5.5 thinks by default).
+        The documented off, between_tools, is a protocol change and is not sent.
+        """
         self.assertNotIn("agent", self.cfg)
         self.assertNotIn("reasoning_effort", json.dumps(self.cfg))
+        self.assertIn("between_tools and is not sent", hh.THINKING_OFF_STATUS)
+        self.assertNotIn("disabled", json.dumps(self.cfg))
 
     def test_overrides_and_stock_defaults(self):
         self.assertEqual(self.cfg["memory"], {"memory_enabled": False, "user_profile_enabled": False,
@@ -265,6 +270,7 @@ class Run(CellEnv):
         self.assertNotIn("pending", json.dumps(settings))
         self.assertEqual(settings["adapter_fixes"], ["AD1-hermes-ctx", "AD1-hermes-beta"])
         self.assertEqual(settings["stripped_betas"], ["interleaved-thinking-2025-05-14"])
+        self.assertEqual(settings["thinking_off_status"], hh.THINKING_OFF_STATUS)
         self.assertEqual(row["adapter_fixes"], ["AD1-hermes-ctx", "AD1-hermes-beta"])
         self.assertEqual(settings["turns"], 4)
         self.assertEqual({o["sheet_row"] for o in settings["benchmark_overrides"]}, {6, 9, 11, 13, 14, 26, 32})

@@ -18,12 +18,18 @@ translation. The adapter is `obench/adapters/hermes_harness.py`.
   and the ledger records `thinking_sent=none`. The ledger also records the raw
   `thinking_type` whenever a `thinking` object was sent, because
   `thinking_sent` folds `disabled` and `between_tools` into `none`.
+  Unset is not a disable at pin `4dcef215`: Sonnet 5.5 thinks by default when
+  the field is absent. Its documented off is `thinking: {type: between_tools}`
+  (`reasoning_effort: none`), which still allows short notes between tool
+  calls. `thinking: {type: disabled}` 400s on Sonnet 5.5, and Opus 5.5 cannot
+  disable. Neither is sent. See `NOTES.md`.
 - **AD1-hermes-beta:** the cell's provider URL ends in
   `/strip-beta/interleaved-thinking-2025-05-14`. The proxy removes that beta
   from Hermes's `anthropic-beta` header before forwarding, on the main loop
   and the title call alike. `fine-grained-tool-streaming-2025-05-14` (tool
   input streaming) is kept. Each ledger row records `beta_stripped`
-  (`requested`, `removed`).
+  (`requested`, `removed`). The strip does not add a `thinking` field, so it
+  does not by itself satisfy the strict zero-thinking-token check.
 - **AD1-hermes-ctx:** `CONTEXT_LENGTH = 200000`, the same window as Codex's
   AD-1 (Researcher decision). It is set explicitly and recorded per cell, with
   a decided status. Hermes's own default for `claude-sonnet-5*` is 1M. Hermes

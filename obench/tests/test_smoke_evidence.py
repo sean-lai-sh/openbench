@@ -98,6 +98,31 @@ class Evidence(unittest.TestCase):
         self.assertEqual(se.server_thinking_tokens({"reasoning_tokens": 5, "output_tokens_details":
                                                     {"reasoning_tokens": 2}}), 7)
 
+    def test_fa92664b_smoke_shape_still_fails_cache_and_thinking(self):
+        """The fa92664b cell: cache reads [0, 0, title 0], thinking [2565, 139, 0].
+
+        Two main calls cannot show the later-read region-split signature.
+        The checks stay strict: call 2 must read cache, and every call must
+        have zero server thinking tokens.
+        """
+        rows = [
+            {"usage": {"output_tokens_details": {"thinking_tokens": 2565}},
+             "cache_read": 0, "cache_write": 17159, "thinking_sent": "none", "call_role": "main"},
+            {"usage": {"output_tokens_details": {"thinking_tokens": 139}},
+             "cache_read": 0, "cache_write": 4000, "thinking_sent": "none", "call_role": "main"},
+            {"usage": {"output_tokens_details": {"thinking_tokens": 0}},
+             "cache_read": 0, "cache_write": 0, "thinking_sent": "none", "call_role": "side",
+             "call_role_reason": "heuristic:title-schema"},
+        ]
+        evidence = se.smoke_evidence({"trace_requests": 3, "untraced_requests": 0}, rows, REFERENCE)
+        self.assertEqual(evidence["2_cache_read"]["per_call"], [0, 0])
+        self.assertEqual(evidence["2_cache_read"]["calls"][2]["call_role"], "side")
+        self.assertFalse(evidence["2_cache_read"]["pass"])
+        self.assertFalse(evidence["2_cache_read"]["misses"][0]["region_split_signature"])
+        self.assertEqual(evidence["3_thinking_sent"]["server_thinking_tokens_per_call"], [2565, 139, 0])
+        self.assertEqual(evidence["3_thinking_sent"]["failing_calls"], [1, 2])
+        self.assertFalse(evidence["3_thinking_sent"]["pass"])
+
     def test_hermes_smoke_ledger_check2_is_main_only_with_the_region_split_signature(self):
         # The four calls of the first Hermes VM cell (df4934f90f6f8d26).
         rows = [
@@ -213,6 +238,10 @@ class BetaStrip(RequestCapture):
         self.assertNotIn("interleaved-thinking", upstream["beta"])
         self.assertNotIn("strip-beta", upstream["path"])  # the segment never reaches Vertex
         self.assertTrue(upstream["path"].endswith(":rawPredict") or upstream["path"].endswith(":streamRawPredict"))
+        forwarded = json.loads(upstream["body"])
+        # The strip is a header edit. It must not invent a thinking disable.
+        self.assertNotIn("thinking", forwarded)
+        self.assertEqual(forwarded["system"][0]["cache_control"], {"type": "ephemeral"})
         row = self.row("cell-b")
         self.assertEqual(row["beta_stripped"], {"requested": ["interleaved-thinking-2025-05-14"],
                                                 "removed": ["interleaved-thinking-2025-05-14"]})
