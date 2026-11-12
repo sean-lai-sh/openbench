@@ -873,7 +873,7 @@ class TestSonnetLaunch(unittest.TestCase):
         models = bound_config["provider"]["anthropic"]["models"]
         self.assertEqual(set(models), {"claude-sonnet-5-5"})
         self.assertEqual(models["claude-sonnet-5-5"]["name"], "Claude Sonnet 5.5")
-        self.assertEqual(models["claude-sonnet-5-5"]["limit"], {"context": 1000000, "output": 128000})
+        self.assertEqual(models["claude-sonnet-5-5"]["limit"], {"context": 200000, "output": 128000})
         self.assertEqual(bound_config["model"], "anthropic/claude-sonnet-5-5")
         self.assertEqual(bound_config["small_model"], "anthropic/claude-sonnet-5-5")
         self.assertEqual(bound_proxy["model_ref"], "anthropic/claude-sonnet-5-5")
@@ -887,6 +887,39 @@ class TestSonnetLaunch(unittest.TestCase):
             native["provider"]["google-vertex-anthropic"]["models"],
         )
         self.assertIsNone(native_proxy)
+
+    def test_sonnet_cell_config_context_is_200000(self):
+        """A Sonnet cell copies the Opus entry, then sets context to 200_000.
+
+        The output limit stays 128_000. The Opus entry the copy came from
+        stays at 1_000_000, including the Vertex ``@default`` model.
+        """
+        from thesis.ab.compat import anthropic_proxy_config, vertex_provider_config
+        from thesis.ab.run_ab import bind_opencode_model
+
+        config = anthropic_proxy_config("http://127.0.0.1:9/v1", include_endpoint=True)
+        opus_limit = config["provider"]["anthropic"]["models"]["claude-opus-5-5"]["limit"]
+        self.assertEqual(opus_limit, {"context": 1000000, "output": 128000})
+        bound, _proxy = bind_opencode_model(
+            config, {"model_ref": "anthropic/claude-opus-5-5"}, "claude-sonnet-5-5",
+        )
+        limit = bound["provider"]["anthropic"]["models"]["claude-sonnet-5-5"]["limit"]
+        self.assertEqual(limit["context"], 200000)
+        self.assertEqual(limit["output"], 128000)
+        self.assertEqual(
+            config["provider"]["anthropic"]["models"]["claude-opus-5-5"]["limit"],
+            {"context": 1000000, "output": 128000},
+        )
+
+        native, _native_proxy = bind_opencode_model(
+            vertex_provider_config(), None, "claude-sonnet-5-5",
+        )
+        native_limit = native["provider"]["google-vertex-anthropic"]["models"]["claude-sonnet-5-5@default"]["limit"]
+        self.assertEqual(native_limit["context"], 200000)
+        self.assertEqual(native_limit["output"], 128000)
+        fresh = vertex_provider_config()
+        opus_vertex = fresh["provider"]["google-vertex-anthropic"]["models"]["claude-opus-5-5@default"]["limit"]
+        self.assertEqual(opus_vertex, {"context": 1000000, "output": 128000})
 
     def _launch(self, model, vertex_model=None):
         from unittest.mock import patch
