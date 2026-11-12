@@ -44,8 +44,11 @@ from thesis.ab.harness import harness_name
 from thesis.ab.models_config import thinking_options
 from thesis.ab.prs import AA_SIDES, PrListError, Side, parse_prs, select_prs
 from thesis.ab.sdk_pin import (
+    BUNDLED_PIN_SOURCE,
+    PIN_OVERRIDE_ENV,
     ai_version_for_tree,
     anthropic_pin_for_tree,
+    bundled_anthropic_pin,
     install_alias_for_tree,
     install_gate_for_tree,
 )
@@ -1097,6 +1100,31 @@ def _swap_opus_token(text: str) -> str:
     return text.replace("claude-opus-5-5", "claude-sonnet-5-5")
 
 
+# Sonnet 5.5's context window. Opus stays 1_000_000. The output limit is
+# copied with the rest of the model entry and is not rewritten.
+SONNET_CONTEXT_LIMIT = 200_000
+
+
+def _is_sonnet_55(model_id: str) -> bool:
+    return model_id == "claude-sonnet-5-5" or model_id.startswith("claude-sonnet-5-5@")
+
+
+def _with_sonnet_context(entry: dict) -> dict:
+    """Copy ``entry`` with ``limit.context`` set to the Sonnet window.
+
+    The output limit and every other field stay as they were. An entry with
+    no ``limit`` object is left alone.
+    """
+    limit = entry.get("limit")
+    if not isinstance(limit, dict):
+        return entry
+    updated = dict(entry)
+    new_limit = dict(limit)
+    new_limit["context"] = SONNET_CONTEXT_LIMIT
+    updated["limit"] = new_limit
+    return updated
+
+
 def _rename_opus_model_entries(body: dict) -> None:
     providers = body.get("provider")
     if not isinstance(providers, dict):
@@ -1119,6 +1147,8 @@ def _rename_opus_model_entries(body: dict) -> None:
             ):
                 entry = dict(value)
                 entry["name"] = value["name"].replace("Opus", "Sonnet").replace("opus", "sonnet")
+            if isinstance(new_key, str) and _is_sonnet_55(new_key) and isinstance(entry, dict):
+                entry = _with_sonnet_context(entry)
             renamed[new_key] = entry
         provider["models"] = renamed
 
@@ -1129,8 +1159,9 @@ def bind_opencode_model(config, proxy, model: str):
     Assessment still probes ``anthropic/claude-opus-5-5``. A cell whose
     recorded model is ``claude-sonnet-5-5`` needs that id in the provider
     map and in ``model_ref``, so ``opencode run -m`` and the row agree.
-    Opus cells, including ``--vertex-model claude-sonnet-5-5`` with the
-    default model, are returned unchanged.
+    The copied model entry keeps its output limit and gets Sonnet's
+    200_000 context window. Opus cells, including ``--vertex-model
+    claude-sonnet-5-5`` with the default model, are returned unchanged.
     """
     if model != "claude-sonnet-5-5":
         return config, proxy
@@ -1269,7 +1300,12 @@ def publish_side_toolchain(path: Path, toolchain: dict | None, installed: str | 
         publish_text(path, json.dumps(merged, sort_keys=True))
 
 
-def toolchain_for_checkout(checkout: Path) -> dict:
+def toolchain_for_checkout(
+    checkout: Path,
+    anthropic: str | None = None,
+    *,
+    pin_known: bool = False,
+) -> dict:
     body = {}
     try:
         bun = bun_requirement(checkout).split("+", 1)[0].strip()
@@ -1280,9 +1316,10 @@ def toolchain_for_checkout(checkout: Path) -> dict:
     ai = ai_version_for_tree(checkout)
     if ai:
         body["ai"] = ai
-    pin = anthropic_pin_for_tree(checkout)
-    if pin:
-        body["anthropic"] = pin
+    if not pin_known:
+        anthropic = anthropic_pin_for_tree(checkout)
+    if anthropic:
+        body["anthropic"] = anthropic
     return body
 
 
@@ -2408,6 +2445,18 @@ def cache_version_for_checkout(checkout: Path) -> str:
     return ""
 
 
+def _pin_stop(reason: str, toolchain) -> dict:
+    """Prepared-state stop for a pin error.
+
+    A ``provider_pin_mismatch`` reason is infra. Other prepare errors stay
+    incompatible, which is what a missing toolchain already was.
+    """
+    stopped = {"ok": False, "reason": reason, "toolchain": toolchain}
+    if str(reason).startswith("provider_pin_mismatch"):
+        stopped["status"] = "infra"
+    return stopped
+
+
 def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[dict, str | None]:
     proxy = state.get("proxy")
     if not isinstance(proxy, dict):
@@ -2458,9 +2507,28 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
         tool["provider_bundled"] = f"{provider['package']}@{provider['version']}"
         state["toolchain"] = tool
         return state, None
-    pin = anthropic_pin_for_tree(checkout)
+    # Bundled --single binaries embed the provider from this commit's
+    # packages/opencode/package.json. The checkout may be a different
+    # commit, and bun.lock's @ai-sdk/anthropic entry can belong to another
+    # package. That path does not open bun.lock. A non-bundled tree still
+    # goes through anthropic_pin_for_tree, which is the lockfile pin.
+    override = os.environ.get(PIN_OVERRIDE_ENV, "").strip()
+    if override:
+        pin, pin_error, bundled = override, None, False
+    else:
+        pin, pin_error, bundled = bundled_anthropic_pin(checkout, sha)
+        if not bundled:
+            pin = anthropic_pin_for_tree(checkout)
+            pin_error = None
+    if pin_error:
+        state = dict(state)
+        state["proxy"] = proxy
+        state["toolchain"] = toolchain_for_checkout(checkout, pin_known=True)
+        return state, pin_error
     if pin:
         proxy["anthropic_sdk"] = pin
+    if bundled:
+        proxy["pin_source"] = BUNDLED_PIN_SOURCE
     proxy["sdk_install_alias"] = install_alias_for_tree(checkout)
     proxy["sdk_install_gate"] = install_gate_for_tree(checkout)
     cache_version = cache_version_for_checkout(checkout)
@@ -2468,7 +2536,7 @@ def _decorate_toolchain(state: dict, cache: Path, sha: str, repo: str) -> tuple[
         proxy["cache_version"] = cache_version
     state = dict(state)
     state["proxy"] = proxy
-    state["toolchain"] = toolchain_for_checkout(checkout)
+    state["toolchain"] = toolchain_for_checkout(checkout, anthropic=pin, pin_known=True)
     if not pin and proxy.get("needs_sdk"):
         return state, "no @ai-sdk/anthropic release matches this build's ai package"
     return state, None
@@ -2853,7 +2921,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                     decorated, pin_error = _decorate_toolchain(prepared[key], cache, sha, repo)
                     tool = decorated.get("toolchain")
                     if pin_error:
-                        prepared[key] = {"ok": False, "reason": pin_error, "toolchain": tool}
+                        prepared[key] = _pin_stop(pin_error, tool)
                     else:
                         prepared[key] = decorated
                         if preflight_fn is not None:

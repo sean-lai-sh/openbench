@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
@@ -209,6 +210,9 @@ def anthropic_pin_for_tree(root: Path, registry: dict[str, str] | None = None) -
     """Read `bun.lock` when it exists. Fall back to an exact package.json pin.
 
     ``OBENCH_ANTHROPIC_PIN`` overrides both with an explicit version.
+    A prebuilt ``--single`` binary that logs ``using bundled provider`` does
+    not use this. ``anthropic_pin_resolving`` reads that pin from the
+    binary's source commit instead.
     """
     override = os.environ.get(PIN_OVERRIDE_ENV, "").strip()
     if override:
@@ -222,3 +226,139 @@ def anthropic_pin_for_tree(root: Path, registry: dict[str, str] | None = None) -
             return None
         return select_anthropic_pin(lock, registry=registry)
     return _pin_from_package_json(root)
+
+
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_SDK = "@ai-sdk/anthropic"
+_OPENCODE_PACKAGE = "packages/opencode/package.json"
+_BUILD_TS = "packages/opencode/script/build.ts"
+_PROVIDER_TS = "packages/opencode/src/provider/provider.ts"
+# Recorded on the proxy when the pin is the bundled binary's package.json
+# dependency. ``pin_source_class`` treats a ``bundled`` prefix as bundled.
+BUNDLED_PIN_SOURCE = "bundled_package_json"
+
+
+def uses_bundled_anthropic(build_ts: str | None, provider_ts: str | None) -> bool:
+    """True when ``build.ts --single`` embeds ``@ai-sdk/anthropic``.
+
+    The provider source logs ``using bundled provider`` and names the
+    package. A ``--single`` build that still installs the SDK at runtime
+    does not, and keeps the bun.lock pin.
+    """
+    if not isinstance(build_ts, str) or "--single" not in build_ts:
+        return False
+    if not isinstance(provider_ts, str):
+        return False
+    return "using bundled provider" in provider_ts and _SDK in provider_ts
+
+
+def anthropic_dependency_pin(text: str | None, sha: str) -> tuple[str | None, str | None]:
+    """Exact ``@ai-sdk/anthropic`` dependency, or a ``provider_pin_mismatch`` reason.
+
+    A missing entry, a range, or a tag is a reason. Nothing here falls
+    through to bun.lock.
+    """
+    where = f"{_OPENCODE_PACKAGE} at {sha}"
+    if text is None:
+        return None, f"provider_pin_mismatch: {where} is missing"
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None, f"provider_pin_mismatch: {where} is not valid JSON"
+    if not isinstance(parsed, dict):
+        return None, f"provider_pin_mismatch: {where} is not an object"
+    deps = parsed.get("dependencies")
+    if not isinstance(deps, dict) or _SDK not in deps:
+        return None, f"provider_pin_mismatch: {where} dependencies has no {_SDK}"
+    pin = _exact(deps.get(_SDK))
+    if not pin:
+        return None, (
+            f"provider_pin_mismatch: {where} {_SDK} is not an exact version "
+            f"({deps.get(_SDK)!r})"
+        )
+    return pin, None
+
+
+def _git_show(repo: Path, sha: str, path: str) -> str | None:
+    if not repo.exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{sha}:{path}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _show_at_commit(root: Path, sha: str, path: str) -> str | None:
+    """File bytes at ``sha``, from the checkout's git or the OpenCode mirror.
+
+    The working tree is not read. A worktree checked out at another commit
+    still yields this commit when the object is in that repo or in
+    ``<cache>/mirror``.
+    """
+    root = Path(root)
+    repos = [root]
+    if root.parent.name == "worktrees":
+        cache = root.parent.parent
+        repos.append(cache / "mirror")
+        repos.append(cache / "mirrors" / "opencode")
+    seen: set[str] = set()
+    for repo in repos:
+        key = str(repo)
+        if key in seen:
+            continue
+        seen.add(key)
+        text = _git_show(repo, sha, path)
+        if text is not None:
+            return text
+    return None
+
+
+def bundled_anthropic_pin(root: Path, sha: str) -> tuple[str | None, str | None, bool]:
+    """``(pin, error, bundled)`` for one source commit.
+
+    ``bundled`` is false when this commit is not a prebuilt bundled
+    provider, and the caller keeps the bun.lock path. When it is bundled,
+    the pin is ``packages/opencode/package.json`` at ``sha``. bun.lock is
+    not opened. A missing or non-exact dependency is ``error``.
+    """
+    commit = str(sha or "").strip().lower()
+    if not _COMMIT.fullmatch(commit):
+        return None, None, False
+    if not uses_bundled_anthropic(
+        _show_at_commit(root, commit, _BUILD_TS),
+        _show_at_commit(root, commit, _PROVIDER_TS),
+    ):
+        return None, None, False
+    pin, reason = anthropic_dependency_pin(
+        _show_at_commit(root, commit, _OPENCODE_PACKAGE),
+        commit,
+    )
+    return pin, reason, True
+
+
+def anthropic_pin_resolving(
+    root: Path,
+    sha: str = "",
+    registry: dict[str, str] | None = None,
+) -> tuple[str | None, str | None, bool]:
+    """``(pin, error, bundled)`` for a checkout and the binary's source commit.
+
+    ``OBENCH_ANTHROPIC_PIN`` still wins. A bundled commit never consults
+    bun.lock. Anything else is ``anthropic_pin_for_tree``.
+    """
+    override = os.environ.get(PIN_OVERRIDE_ENV, "").strip()
+    if override:
+        return override, None, False
+    root = Path(root)
+    pin, reason, bundled = bundled_anthropic_pin(root, sha)
+    if bundled:
+        return pin, reason, True
+    return anthropic_pin_for_tree(root, registry=registry), None, False

@@ -215,7 +215,9 @@ def apply_provider_pin(proxy: dict, cache, sha: str, side: str = "", pr: str = "
         pin = str(proxy.get("anthropic_sdk") or "").strip()
         if pin and pin != "latest":
             packages = {"@ai-sdk/anthropic": pin}
-            source = "lockfile"
+            # A bundled build already named its source. A bare lockfile pin
+            # has none yet.
+            source = str(proxy.get("pin_source") or "").strip() or "lockfile"
     if not packages:
         return proxy
     anthropic = str(packages.get("@ai-sdk/anthropic") or "").strip()
