@@ -16,6 +16,8 @@ python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
 
 The model is `claude-opus-5-5`. The default route is one local proxy that speaks Anthropic `POST /v1/messages` and forwards it to Vertex on the global endpoint. OpenCode, Pi, and Oh My Pi share that proxy. `--model-route vertex` keeps OpenCode on the native `google-vertex-anthropic` provider. Set `GOOGLE_CLOUD_PROJECT` and application-default credentials before a real run.
 
+`--model claude-sonnet-5-5` is a supported OpenCode model on that same proxy route. The cell records `claude-sonnet-5-5`, and `opencode run -m` is `anthropic/claude-sonnet-5-5`. When `--vertex-model` is omitted, that launch calls Vertex Sonnet. `--model claude-sonnet-5-5 --vertex-model claude-sonnet-5-5` keeps the harness label and the Vertex model on Sonnet. `--vertex-model claude-sonnet-5-5` with the default `--model` is unchanged: Vertex serves Sonnet and the recorded harness model stays Opus.
+
 PR 23771 in the fixture is a commit on the development branch, not GitHub's merge commit. The runner uses the SHAs in the CSV.
 
 ## Tasks
