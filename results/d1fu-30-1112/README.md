@@ -27,9 +27,9 @@ This is the full 30-per-side run that the Researcher cleared after the #253 re-s
 | upstream errors / SSE errors / faults served | 0 / 0 / 0 | 0 / 0 / 0 |
 
 - `raw/gate-check.py` (the smoke's 1-row-per-arm extractor, reused unchanged) exits 1 on this run, with "traced 0 != requests". That is a script limit, not a gate failure. It pairs ledgers to rows by `run_id`, which only works when each arm has a single ledger, so all 60 ledgers end up under `unpaired_ledgers`. The table above checks each cell's row against its ledger. Cells were matched to ledgers by exact proxy token totals, and every cell matched exactly one ledger.
-- Two without cells (trials 4 and 11, both solved) have `untraced_requests=1`. The OpenCode trace recorded one request fewer than the proxy did. The proxy ledger and the body capture both have every call.
+- Two without cells (trials 4 and 11, both solved) have `untraced_requests=1`. The OpenCode trace recorded one request fewer than the proxy did. **This is a logging footnote only. The proxy ledger is the trace of record** for requests, tokens, cost and cache, and the body capture agrees with it on every call.
 - `run.log` repeats the smoke's `cell missing required fields ['loaded_anthropic', 'cell_image']` note.
-- Thinking still comes back from the server even though none is requested: 4020 thinking tokens across the run. That is the same pattern as #243 and #253.
+- Thinking still comes back from the server even though none is requested: 4020 thinking tokens across the run. That is the same pattern as #243 and #253. Per-call counts are in the Thinking section below.
 
 ## Results
 | arm | solved | wrong_answer | other | calls (mean per cell) | spend | mean $/cell | mean wall s |
@@ -38,7 +38,8 @@ This is the full 30-per-side run that the Researcher cleared after the #253 re-s
 | with (`d7af1f17`) | **24/30** | 6 | 0 | 108 (3.60) | $3.4403 | $0.1147 | 12.9 |
 
 - **Total spend: $6.4986**, well under the $25 cap, with no unexpected spend.
-- Every wrong_answer cell has `permission_rejections` > 0, and no solved cell has any. `tmpdir_leaked_dirs` is empty on every cell.
+- **Every wrong answer hit a permission rejection, and no solved cell did.** Without: 8/8 wrong answers have `permission_rejections` > 0, and 0/22 solved cells do. With: 6/6 and 0/24. `tmpdir_leaked_dirs` is empty on every cell.
+- **Scoring label: thinking unset (server default).** No thinking parameter was sent on any call, and the server returned thinking anyway (see Thinking). Per the Researcher's ruling, this run is scored as its own within-OpenCode Sonnet prompt comparison (c436fc69 vs d7af1f17). It is not pooled with the matched-config Pi/OpenCode arms or with any other D1 rows.
 - Per-cell rows are in `raw/725226/{without,with}.jsonl`. `analysis/cells-timeline.csv` has one line per cell with arm, trial, start and end times, the outcome, and cache fields.
 
 ## Cache
@@ -56,6 +57,16 @@ Prices: Claude Sonnet 5.5, Standard global list, `thesis/ab/vertex_list_prices.j
 - **No call-1 reads on either arm, so there is no call-1 read size to compare to the system+tools prefix.**
   - Every cell's tools+system prefix is unique, on both arms. The system prompt's `Working directory:` and the bash tool description both contain the cell's own `/tmp/obench-cell-<random>/` path. That gives 30 distinct tools+system hashes per arm, and none are shared across arms.
   - A cross-cell hit at the system breakpoint is therefore impossible by construction, on both arms equally. For each call 1, `analysis/cells-timeline.csv` lists the cell that started just before it and the cells running at the same time (jobs 2, which in practice means alternating arms). It also lists any earlier same-prefix call within 5 minutes, and the list is empty for every cell.
+
+## Thinking (server default; none requested)
+Source: `usage.output_tokens_details.thinking_tokens` in each request's proxy-ledger record (`raw/proxy-ledger/<cell>.jsonl`). The proxy copies that value from the upstream response usage. It is not the row's `tokens_reasoning` (0 on every cell) or `tokens_proxy_reasoning` (null). `thinking_sent` is `none` on all 202 calls. The per-call table, one row per call with arm, trial, cell, call index, thinking tokens, output tokens and stop reason, is `analysis/thinking-per-call.csv`. It is joined to cells through `analysis/offsets-per-call.jsonl`, and the cache_read/output values were checked to match on every call.
+
+| arm | calls | thinking tokens | calls with thinking > 0 | cells with any thinking | max on one call | mean per call | which calls had thinking > 0 |
+|---|---|---|---|---|---|---|---|
+| without (`c436fc69`) | 94 | **1,770** | **25** | 24/30 | 158 | 18.8 | call 2: 15, call 3: 8, call 4: 2 |
+| with (`d7af1f17`) | 108 | **2,250** | **29** | 28/30 | 202 | 20.8 | call 2: 13, call 3: 15, call 5: 1 |
+
+Both arms together: 4,020 thinking tokens. They are billed as output tokens and are already included in the spend above. No call 1 had thinking on either arm.
 
 ## Prefix offsets (computed on the raw captured bodies)
 Method: `capture/analyze_bodies.py` runs over the raw `forwarded` bytes on the VM. The outputs are `analysis/offsets-per-call.jsonl` (one line per call), `analysis/offsets-summary.json` and `analysis/cells-timeline.csv`.
@@ -86,7 +97,7 @@ Method: `capture/analyze_bodies.py` runs over the raw `forwarded` bytes on the V
 - **`request-bodies-scrubbed/`:** scrubbed copies of all 404 captured bodies, as `.json`, plus `meta.jsonl` per cell.
 - **`request-bodies-raw-sha256.txt`:** sha256 and size of every raw captured file.
 - **`request-bodies-raw-archive.sha256`:** sha256 of the raw archive.
-- **`analysis/`:** offsets and the timeline.
+- **`analysis/`:** offsets, the timeline, and `thinking-per-call.csv`.
 
 **Raw bodies (off-repo, thesis-h1-cpu-3):**
 - `~/h2/d1fu-30-1112/request-bodies/`.
