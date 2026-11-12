@@ -31,12 +31,15 @@ reasoning tokens the proxy saw). An empty ledger is an empty list.
 
 ## Matched pair (opt-in)
 
-`--matched-config` sets the context limit to 200000. Sonnet's
-`options.thinking` is `{type: between_tools}`. Opus's is `{type: adaptive}`
-plus `output_config.effort` (`--matched-effort`, default `low`). The Vertex
-proxy writes that same object onto the Anthropic request. Without the flag
-the config stays the historical 1_000_000 document and the request body is
-not rewritten. The same flag is `run_ab --matched-config`.
+`--matched-config` sets the context limit to 200000 and does not put a
+thinking option in the OpenCode config (the bundled SDK rejects
+`between_tools` and `adaptive`). The Vertex proxy writes Sonnet
+`thinking: {type: between_tools}` and Opus `thinking: {type: adaptive}`
+plus `output_config.effort` (`--matched-effort`, default `low`) onto the
+Anthropic request. `--model` (same as `--vertex-model`) selects the
+OpenCode `-m` ref, so Opus is `anthropic/claude-opus-5-5`. Without the
+flag the config stays the historical 1_000_000 document and the request
+body is not rewritten. The same flag is `run_ab --matched-config`.
 
 ```bash
 python3 data/opencode-harness-smoke/cell.py \

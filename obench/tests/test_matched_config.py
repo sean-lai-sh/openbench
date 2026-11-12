@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from obench.adapters import opencode, pi_harness
-from thesis.ab.cell_fixtures import apply_matched_pair_config
+from thesis.ab.cell_fixtures import apply_matched_pair_config, bundled_sdk_accepts_config
 from thesis.ab.compat import anthropic_proxy_config
 from thesis.ab.models_config import model_document
 from thesis.ab.proxy_bridge import read_proxy_observed
@@ -25,6 +25,7 @@ from thesis.ab.run_ab import attach_thinking, drive
 from thesis.ab.vertex_anthropic_proxy import (
     apply_disabled_thinking,
     canonical_object_json,
+    cache_prefix_canonical,
     classify_thinking,
     matched_opus_effort,
     matched_request_thinking,
@@ -210,8 +211,7 @@ class MatchedConfigTests(unittest.TestCase):
             self.assertEqual(opencode.comparison_variant("claude-opus-4-8"), "medium")
         model = pinned["provider"]["anthropic"]["models"]["claude-sonnet-5-5"]
         self.assertEqual(model["limit"], {"context": 200000, "output": 128000})
-        self.assertEqual(model["options"]["thinking"], {"type": "between_tools"})
-        self.assertNotIn("output_config", model["options"])
+        self.assertNotIn("options", model)
         self.assertEqual(pinned["model"], "anthropic/claude-sonnet-5-5")
         self.assertEqual(pinned["small_model"], "anthropic/claude-sonnet-5-5")
         # Provider options (the proxy key) stay put.
@@ -228,8 +228,7 @@ class MatchedConfigTests(unittest.TestCase):
         shaped = apply_matched_pair_config(plain)
         opus = shaped["provider"]["anthropic"]["models"]["claude-opus-5-5"]
         self.assertEqual(opus["limit"]["context"], 200000)
-        self.assertEqual(opus["options"]["thinking"], {"type": "adaptive"})
-        self.assertEqual(opus["options"]["output_config"], {"effort": "low"})
+        self.assertNotIn("options", opus)
 
     def test_explicit_context_window_beats_the_flag(self):
         early = _tree()
@@ -280,7 +279,11 @@ class MatchedConfigTests(unittest.TestCase):
         ]
         self.assertEqual(rows[0]["thinking_sent"], "between_tools")
         self.assertEqual(rows[0]["thinking_json"], '{"type":"between_tools"}')
+        self.assertEqual(rows[0]["upstream_thinking_json"], '{"type":"between_tools"}')
         self.assertIsNone(rows[0]["output_config_json"])
+        self.assertIsNone(rows[0]["upstream_output_config_json"])
+        self.assertIsNone(rows[0]["received_thinking_json"])
+        self.assertIsNone(rows[0]["received_output_config_json"])
         self.assertEqual(rows[0]["thinking_tokens"], 0)
         # The reasoning counter on the same usage object is a different field.
         self.assertEqual(rows[0]["usage"]["reasoning_tokens"], 40)
@@ -290,6 +293,10 @@ class MatchedConfigTests(unittest.TestCase):
             "thinking_sent": "between_tools",
             "thinking_json": '{"type":"between_tools"}',
             "output_config_json": None,
+            "upstream_thinking_json": '{"type":"between_tools"}',
+            "upstream_output_config_json": None,
+            "received_thinking_json": None,
+            "received_output_config_json": None,
             "thinking_tokens": 0,
             "reasoning_tokens": 40,
         }])
@@ -331,7 +338,11 @@ class MatchedConfigTests(unittest.TestCase):
         row = json.loads((ledger / "cell2.jsonl").read_text(encoding="utf-8"))
         self.assertEqual(row["thinking_sent"], "adaptive+effort")
         self.assertEqual(row["thinking_json"], '{"type":"adaptive"}')
+        self.assertEqual(row["upstream_thinking_json"], '{"type":"adaptive"}')
         self.assertEqual(row["output_config_json"], '{"effort":"low"}')
+        self.assertEqual(row["upstream_output_config_json"], '{"effort":"low"}')
+        self.assertEqual(row["received_thinking_json"], '{"type":"adaptive"}')
+        self.assertIsNone(row["received_output_config_json"])
         self.assertEqual(row["thinking_tokens"], 7)
         self.assertEqual(row["usage"]["reasoning_tokens"], 1)
 
@@ -366,6 +377,9 @@ class MatchedConfigTests(unittest.TestCase):
         self.assertIsNone(row["thinking_tokens"])
         self.assertIsNone(row["thinking_json"])
         self.assertIsNone(row["output_config_json"])
+        self.assertIsNone(row["upstream_thinking_json"])
+        self.assertIsNone(row["received_thinking_json"])
+        self.assertIsNone(row["received_output_config_json"])
 
     def test_dry_run_plan_names_the_matched_profile_only_when_asked(self):
         prs = select_prs(parse_prs(FIXTURE), ["623"])
@@ -539,6 +553,138 @@ class ThinkingFallbackTests(unittest.TestCase):
             )
             self.assertIsNone(os.environ.get("OBENCH_MATCHED_EFFORT"))
         self.assertIn("opus=adaptive effort=high", plan)
+
+    def test_opencode_config_omits_thinking_types_the_sdk_rejects(self):
+        smoke = _load_smoke("data/opencode-harness-smoke/cell.py", "oc_sdk_shape")
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": None}):
+            for model in ("claude-sonnet-5-5", "claude-opus-5-5"):
+                config = smoke.comparison_config("http://127.0.0.1:9/v1", model)
+                self.assertTrue(bundled_sdk_accepts_config(config), model)
+                entry = config["provider"]["anthropic"]["models"][model]
+                self.assertEqual(entry["limit"]["context"], 200000)
+                self.assertNotIn("thinking", json.dumps(entry.get("options", {})))
+                self.assertNotIn("output_config", entry.get("options", {}))
+                self.assertNotIn("between_tools", json.dumps(config))
+                self.assertNotIn("adaptive", json.dumps(config))
+
+    def test_model_ref_follows_model(self):
+        smoke = _load_smoke("data/opencode-harness-smoke/cell.py", "oc_model_ref")
+        self.assertEqual(smoke.model_ref_for("claude-opus-5-5"), "anthropic/claude-opus-5-5")
+        self.assertEqual(smoke.model_ref_for("claude-sonnet-5-5"), "anthropic/claude-sonnet-5-5")
+        self.assertEqual(
+            smoke.model_ref_for("anthropic/claude-opus-5-5@default"),
+            "anthropic/claude-opus-5-5",
+        )
+        opus_args = smoke.argument_parser().parse_args([
+            "--out", "out", "--sha", "a" * 40, "--model", "claude-opus-5-5",
+        ])
+        self.assertEqual(opus_args.vertex_model, "claude-opus-5-5")
+        sonnet_args = smoke.argument_parser().parse_args([
+            "--out", "out", "--sha", "a" * 40, "--vertex-model", "claude-sonnet-5-5",
+        ])
+        self.assertEqual(sonnet_args.vertex_model, "claude-sonnet-5-5")
+        with _Env(**{ENV: "1"}):
+            opus = smoke.comparison_config("http://127.0.0.1:9/v1", "claude-opus-5-5")
+            sonnet = smoke.comparison_config("http://127.0.0.1:9/v1", opus_args.vertex_model and "claude-sonnet-5-5")
+        self.assertEqual(opus["model"], "anthropic/claude-opus-5-5")
+        self.assertEqual(opus["small_model"], "anthropic/claude-opus-5-5")
+        self.assertIn("claude-opus-5-5", opus["provider"]["anthropic"]["models"])
+        self.assertEqual(sonnet["model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(smoke.small_model_setup("claude-opus-5-5")["small_model"], "anthropic/claude-opus-5-5")
+
+    def test_proxy_upstream_bytes_match_across_arms(self):
+        usage = {"input_tokens": 1, "output_tokens": 2, "output_tokens_details": {"thinking_tokens": 0}}
+        httpd, thread, upstream = _listen([usage, usage, usage, usage])
+        ledger = Path(self._tmpdir())
+        proxy = start_proxy(
+            "proj", token="tok", upstream=upstream, ledger_dir=ledger,
+            model="claude-opus-5-5", route_by_request=True,
+        )
+        self.addCleanup(proxy.close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        # Pi already names a thinking object. OpenCode sends none (the SDK
+        # config does not). The proxy overwrites both to the same bytes.
+        bodies = [
+            {"model": "claude-sonnet-5-5", "max_tokens": 8,
+             "messages": [{"role": "user", "content": "pi"}],
+             "thinking": {"type": "enabled", "budget_tokens": 100}},
+            {"model": "claude-sonnet-5-5", "max_tokens": 8,
+             "messages": [{"role": "user", "content": "oc"}]},
+            {"model": "claude-opus-5-5", "max_tokens": 8,
+             "messages": [{"role": "user", "content": "pi"}],
+             "thinking": {"type": "adaptive"}},
+            {"model": "claude-opus-5-5", "max_tokens": 8,
+             "messages": [{"role": "user", "content": "oc"}]},
+        ]
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": None}):
+            for body in bodies:
+                status, _ = _post(
+                    proxy.base_url + "/c/arms/v1/messages",
+                    json.dumps(body).encode("utf-8"),
+                )
+                self.assertEqual(status, 200)
+        rows = [
+            json.loads(line)
+            for line in (ledger / "arms.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(rows[0]["upstream_thinking_json"], rows[1]["upstream_thinking_json"])
+        self.assertEqual(rows[0]["upstream_output_config_json"], rows[1]["upstream_output_config_json"])
+        self.assertEqual(rows[0]["upstream_thinking_json"], '{"type":"between_tools"}')
+        self.assertIsNone(rows[0]["upstream_output_config_json"])
+        self.assertEqual(rows[0]["received_thinking_json"], '{"budget_tokens":100,"type":"enabled"}')
+        self.assertIsNone(rows[1]["received_thinking_json"])
+        self.assertIsNone(rows[1]["received_output_config_json"])
+        self.assertEqual(rows[2]["upstream_thinking_json"], rows[3]["upstream_thinking_json"])
+        self.assertEqual(rows[2]["upstream_output_config_json"], rows[3]["upstream_output_config_json"])
+        self.assertEqual(rows[2]["upstream_thinking_json"], '{"type":"adaptive"}')
+        self.assertEqual(rows[2]["upstream_output_config_json"], '{"effort":"low"}')
+        self.assertEqual(rows[2]["received_thinking_json"], '{"type":"adaptive"}')
+        self.assertIsNone(rows[3]["received_thinking_json"])
+        self.assertTrue(wire_bytes_identical(rows[:2]))
+        self.assertTrue(wire_bytes_identical(rows[2:]))
+        self.assertTrue(wire_bytes_identical(rows))
+
+    def test_injection_keeps_the_cache_prefix_identical(self):
+        def turn(tail: str, *, thinking_first: bool) -> dict:
+            body = {
+                "model": "claude-sonnet-5-5",
+                "max_tokens": 128000,
+                "system": [
+                    {"type": "text", "text": "rules", "cache_control": {"type": "ephemeral"}},
+                ],
+                "tools": [{
+                    "name": "bash",
+                    "input_schema": {"type": "object"},
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                "messages": [
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "task", "cache_control": {"type": "ephemeral"}},
+                        {"type": "text", "text": tail},
+                    ]},
+                    {"role": "user", "content": f"later-{tail}"},
+                ],
+            }
+            if thinking_first:
+                return {
+                    "thinking": {"type": "enabled", "budget_tokens": 50},
+                    **body,
+                }
+            return body
+
+        first = turn("a", thinking_first=True)
+        second = turn("b", thinking_first=False)
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": None}):
+            apply_disabled_thinking(first, "claude-sonnet-5-5")
+            apply_disabled_thinking(second, "claude-sonnet-5-5")
+        self.assertEqual(cache_prefix_canonical(first), cache_prefix_canonical(second))
+        block = first["messages"][0]["content"][0]
+        self.assertEqual(list(block), ["type", "text", "cache_control"])
+        self.assertEqual(list(first)[-1], "thinking")
+        self.assertNotIn("output_config", first)
+        self.assertEqual(list(second)[-1], "thinking")
 
     def _tmpdir(self):
         import tempfile

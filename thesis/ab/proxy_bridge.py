@@ -400,13 +400,29 @@ def proxy_observed_settings(records: list | None) -> list[dict]:
             continue
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
         thinking_json = record.get("thinking_json")
+        if not isinstance(thinking_json, str):
+            thinking_json = record.get("upstream_thinking_json")
         output_config_json = record.get("output_config_json")
+        if not isinstance(output_config_json, str):
+            output_config_json = record.get("upstream_output_config_json")
+        received_thinking = record.get("received_thinking_json")
+        received_output = record.get("received_output_config_json")
         observed.append({
             "thinking_mode": record.get("thinking_mode"),
             "thinking_sent": record.get("thinking_sent"),
             "thinking_json": thinking_json if isinstance(thinking_json, str) else None,
             "output_config_json": (
                 output_config_json if isinstance(output_config_json, str) else None
+            ),
+            "upstream_thinking_json": thinking_json if isinstance(thinking_json, str) else None,
+            "upstream_output_config_json": (
+                output_config_json if isinstance(output_config_json, str) else None
+            ),
+            "received_thinking_json": (
+                received_thinking if isinstance(received_thinking, str) else None
+            ),
+            "received_output_config_json": (
+                received_output if isinstance(received_output, str) else None
             ),
             "thinking_tokens": _recorded_thinking_tokens(record, usage),
             "reasoning_tokens": reasoning_tokens(usage),

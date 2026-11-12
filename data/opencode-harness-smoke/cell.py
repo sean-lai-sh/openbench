@@ -29,10 +29,11 @@ import secrets
 from pathlib import Path
 
 
-# Adapter key that selects the proxy route. The launched ``-m`` value is MODEL_REF.
+# Adapter key that selects the proxy route. The launched ``-m`` value is
+# ``model_ref_for`` of the cell's ``--model`` (``--vertex-model`` is the same flag).
 ADAPTER_MODEL = "claude-opus-5-5"
-MODEL_REF = "anthropic/claude-sonnet-5-5"
 MODEL_ID = "claude-sonnet-5-5"
+MODEL_REF = "anthropic/claude-sonnet-5-5"
 # OpenCode's anthropic title/side model. The comparison smoke replaces it.
 DEFAULT_SMALL_MODEL = "anthropic/claude-haiku-4-5-20251001"
 SMALL_MODEL_NOTE = (
@@ -94,14 +95,37 @@ def requests_cost_usd(model: str, ledger: Path, cell_id: str):
     )
 
 
-def small_model_setup() -> dict:
+def model_ref_for(model_id: str | None = None) -> str:
+    """OpenCode ``-m`` ref for a Vertex model id.
+
+    ``claude-opus-5-5`` becomes ``anthropic/claude-opus-5-5``. A ref that
+    already has a provider prefix keeps its model id. The default is the
+    Sonnet smoke model.
+    """
+    text = (model_id or MODEL_ID).strip()
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    text = text.split("@", 1)[0].strip() or MODEL_ID
+    return f"anthropic/{text}"
+
+
+def _model_label(model_id: str) -> str:
+    if "opus" in model_id:
+        return "Claude Opus 5.5"
+    if "sonnet" in model_id:
+        return "Claude Sonnet 5.5"
+    return model_id
+
+
+def small_model_setup(model_id: str | None = None) -> dict:
     """Per-cell columns for the pinned title model.
 
     ``small_model`` is the ref written into OpenCode's config.
     ``small_model_deviation`` marks that this is not OpenCode's Haiku default.
     """
+    ref = model_ref_for(model_id)
     return {
-        "small_model": MODEL_REF,
+        "small_model": ref,
         "small_model_default": DEFAULT_SMALL_MODEL,
         "small_model_deviation": True,
         "small_model_note": SMALL_MODEL_NOTE,
@@ -114,25 +138,29 @@ def _matched_config() -> bool:
     }
 
 
-def comparison_config(base_url: str) -> dict:
+def comparison_config(base_url: str, model_id: str | None = None) -> dict:
     """OpenCode config for the Pi vs OpenCode smoke.
 
-    ``model`` and ``small_model`` are both ``anthropic/claude-sonnet-5-5``.
+    ``model`` and ``small_model`` follow ``model_id`` (default Sonnet).
     The pre-loop title call stays enabled; this only changes the model id
     that call sends. OpenCode's default small model is Haiku, which the
-    proxy then serves as Sonnet and ``--require-model-match`` rejects.
+    proxy then serves as the cell model and ``--require-model-match`` rejects.
 
-    ``OBENCH_MATCHED_CONFIG`` sets the context limit to 200000 and
-    ``options.thinking`` to ``{type: disabled}`` with no budget. Without
-    that flag the document is the historical 1_000_000 config.
+    ``OBENCH_MATCHED_CONFIG`` sets the context limit to 200000. Thinking is
+    not written here: the bundled SDK rejects ``between_tools`` and
+    ``adaptive``. The Vertex proxy injects those objects on the wire.
+    Without the flag the document is the historical 1_000_000 config.
     """
     from thesis.ab.compat import anthropic_proxy_config
 
+    chosen = (model_id or MODEL_ID).strip()
+    bare = chosen.rsplit("/", 1)[-1].split("@", 1)[0]
+    ref = model_ref_for(bare)
     config = anthropic_proxy_config(
-        base_url, include_endpoint=True, model_id=MODEL_ID, model_name="Claude Sonnet 5.5",
+        base_url, include_endpoint=True, model_id=bare, model_name=_model_label(bare),
     )
-    config["model"] = MODEL_REF
-    config["small_model"] = MODEL_REF
+    config["model"] = ref
+    config["small_model"] = ref
     if _matched_config():
         from thesis.ab.cell_fixtures import apply_matched_pair_config
 
@@ -166,8 +194,13 @@ def argument_parser() -> argparse.ArgumentParser:
                         help="opencode executable; skips --sha")
     parser.add_argument("--tasks-dir", type=Path, default=None)
     parser.add_argument("--task", default=TASK)
-    parser.add_argument("--vertex-model", default="claude-sonnet-5-5",
-                        help="model the proxy calls upstream")
+    parser.add_argument(
+        "--model", "--vertex-model", dest="vertex_model", default=MODEL_ID,
+        help=(
+            "Vertex model and the OpenCode -m id (anthropic/<model>). "
+            "Opus is anthropic/claude-opus-5-5."
+        ),
+    )
     parser.add_argument("--node", type=Path, default=None,
                         help="Node prefix to mount (or OPENCODE_NODE_PREFIX)")
     parser.add_argument("--exec", choices=("local", "docker"), default="local",
@@ -258,11 +291,11 @@ def main(argv: list[str] | None = None) -> int:
     # Permission flags are read from `opencode run --help` inside the cell,
     # where the mounted Node and /h1 tree exist. Do not probe the binary on
     # the host: the cached wrapper's interpreter path is the container path.
-    config = comparison_config(sdk)
+    config = comparison_config(sdk, args.vertex_model)
     os.environ["OBENCH_OPENCODE_CONFIG_JSON"] = json.dumps(config)
     os.environ.pop("OBENCH_OPENCODE_PERMISSION_CONFIG", None)
     os.environ["OBENCH_OPENCODE_PROXY"] = json.dumps({
-        "model_ref": MODEL_REF,
+        "model_ref": model_ref_for(args.vertex_model),
         "base_url": sdk,
         "api_key": PROXY_API_KEY,
     })
@@ -291,11 +324,11 @@ def main(argv: list[str] | None = None) -> int:
             require_model_match=args.require_model_match,
         )
         trace = proxy_trace_public(row)
-        setup = small_model_setup()
+        setup = small_model_setup(args.vertex_model)
         cost = requests_cost_usd(args.vertex_model, ledger, cell_id)
         record = {
             "cell_id": cell_id,
-            "harness_model": MODEL_REF,
+            "harness_model": model_ref_for(args.vertex_model),
             "adapter_model": ADAPTER_MODEL,
             "vertex_model": args.vertex_model,
             **setup,

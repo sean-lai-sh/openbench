@@ -410,18 +410,77 @@ def apply_disabled_thinking(data, model: str | None = None) -> bool:
     thinking, output_config = matched_request_thinking(
         chosen if isinstance(chosen, str) else None
     )
-    changed = False
-    if data.get("thinking") != thinking:
-        data["thinking"] = thinking
-        changed = True
-    if output_config is None:
-        if "output_config" in data:
-            data.pop("output_config")
-            changed = True
-    elif data.get("output_config") != output_config:
+    before = json.dumps(data, separators=(",", ":"))
+    # Drop then append so both objects sit at the end, in the same place on
+    # every call. Message, system, and tool dicts are not rebuilt, so a
+    # cache_control prefix keeps its key order.
+    data.pop("thinking", None)
+    data.pop("output_config", None)
+    data["thinking"] = thinking
+    if output_config is not None:
         data["output_config"] = dict(output_config)
-        changed = True
-    return changed
+    after = json.dumps(data, separators=(",", ":"))
+    return before != after
+
+
+def _collect_breakpoint_paths(node, path, found) -> None:
+    if isinstance(node, dict):
+        if isinstance(node.get("cache_control"), dict):
+            found.append(tuple(path))
+        for key, value in node.items():
+            _collect_breakpoint_paths(value, path + (("key", key),), found)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            _collect_breakpoint_paths(value, path + (("index", index),), found)
+
+
+def _truncate_to_breakpoint(node, path):
+    """Copy ``node``, dropping list items after the breakpoint path."""
+    if not path:
+        return node
+    kind, ident = path[0]
+    rest = path[1:]
+    if kind == "index" and isinstance(node, list):
+        kept = []
+        for index, item in enumerate(node):
+            if index < ident:
+                kept.append(item)
+            elif index == ident:
+                kept.append(_truncate_to_breakpoint(item, rest))
+            else:
+                break
+        return kept
+    if kind == "key" and isinstance(node, dict):
+        return {
+            key: _truncate_to_breakpoint(value, rest) if key == ident else value
+            for key, value in node.items()
+        }
+    return node
+
+
+def cache_prefix_canonical(data) -> str | None:
+    """Canonical JSON of the request up to its last ``cache_control`` block.
+
+    ``thinking`` and ``output_config`` are left out: the matched-config
+    injection writes those and must not change this prefix. With no
+    breakpoint, the body minus those two keys is the prefix. Keys are
+    sorted so the comparison is the prefix content, not top-level order.
+    """
+    if not isinstance(data, dict):
+        return None
+    found: list[tuple] = []
+    _collect_breakpoint_paths(data, (), found)
+    if found:
+        prefix = _truncate_to_breakpoint(data, found[-1])
+    else:
+        prefix = data
+    if isinstance(prefix, dict):
+        prefix = {
+            key: value
+            for key, value in prefix.items()
+            if key not in {"thinking", "output_config"}
+        }
+    return json.dumps(prefix, sort_keys=True, separators=(",", ":"))
 
 
 def classify_thinking(data) -> str:
@@ -1136,6 +1195,8 @@ def _append_ledger(
     thinking_sent: str = "none",
     thinking_json: str | None = None,
     output_config_json: str | None = None,
+    received_thinking_json: str | None = None,
+    received_output_config_json: str | None = None,
     upstream_model: str | None = None,
     requested_model: str | None = None,
     endpoint_location: str | None = None,
@@ -1162,11 +1223,21 @@ def _append_ledger(
         row["cc_identity_stripped"] = identity
     row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
-    # Exact objects sent upstream, canonical JSON (sorted keys, no spaces).
-    # None when that object was not on the request. Not a category label.
+    # Upstream objects, canonical JSON. ``thinking_json`` and
+    # ``output_config_json`` are what was forwarded (gate 3 reads these).
+    # The received pair is the client body before this proxy overwrote them.
+    # None means that object was absent.
     row["thinking_json"] = thinking_json if isinstance(thinking_json, str) else None
     row["output_config_json"] = (
         output_config_json if isinstance(output_config_json, str) else None
+    )
+    row["upstream_thinking_json"] = row["thinking_json"]
+    row["upstream_output_config_json"] = row["output_config_json"]
+    row["received_thinking_json"] = (
+        received_thinking_json if isinstance(received_thinking_json, str) else None
+    )
+    row["received_output_config_json"] = (
+        received_output_config_json if isinstance(received_output_config_json, str) else None
     )
     # Server-returned thinking tokens for this call. None when the usage
     # object did not carry output_tokens_details.thinking_tokens. Not the
@@ -2415,6 +2486,11 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 identity["thinking_block_binding"] = binding
             if sampling_removed:
                 identity["sampling_params_removed"] = sampling_removed
+            received_thinking_json = None
+            received_output_config_json = None
+            if isinstance(parsed, dict):
+                received_thinking_json = canonical_object_json(parsed.get("thinking"))
+                received_output_config_json = canonical_object_json(parsed.get("output_config"))
             if isinstance(parsed, dict) and apply_disabled_thinking(parsed, upstream_model):
                 raw = json.dumps(parsed).encode("utf-8")
             sent = classify_thinking(parsed)
@@ -2472,6 +2548,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 upstream_model_id=upstream_model,
                 requested_model=requested_model,
                 responses_ctx=responses_ctx,
+                received_thinking_json=received_thinking_json,
+                received_output_config_json=received_output_config_json,
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -2509,7 +2587,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     requested_model: str | None = None,
                     stream: dict | None = None,
                     thinking_json: str | None = None,
-                    output_config_json: str | None = None) -> None:
+                    output_config_json: str | None = None,
+                    received_thinking_json: str | None = None,
+                    received_output_config_json: str | None = None) -> None:
             # One row per messages or chat-completions POST on /c/<cell-id>/.
             # A subagent or child session that reused that base URL is included
             # in the cell total. The role tag does not change that total.
@@ -2521,6 +2601,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
                 thinking_json=thinking_json,
                 output_config_json=output_config_json,
+                received_thinking_json=received_thinking_json,
+                received_output_config_json=received_output_config_json,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
                 endpoint_location=location,
@@ -2533,7 +2615,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                           call_role: dict | None = None, upstream_model_id: str | None = None,
                           requested_model: str | None = None,
                           thinking_json: str | None = None,
-                          output_config_json: str | None = None) -> None:
+                          output_config_json: str | None = None,
+                          received_thinking_json: str | None = None,
+                          received_output_config_json: str | None = None) -> None:
             if ledger is None or not cell:
                 return
             _append_ledger(
@@ -2541,6 +2625,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
                 thinking_json=thinking_json,
                 output_config_json=output_config_json,
+                received_thinking_json=received_thinking_json,
+                received_output_config_json=received_output_config_json,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
                 endpoint_location=location,
@@ -2553,7 +2639,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                      presentation: str = "anthropic", call_role: dict | None = None,
                      upstream_model_id: str | None = None,
                      requested_model: str | None = None,
-                     responses_ctx=None) -> None:
+                     responses_ctx=None,
+                     received_thinking_json: str | None = None,
+                     received_output_config_json: str | None = None) -> None:
             thinking_json, output_config_json = wire_json_fields(body)
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
@@ -2608,6 +2696,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                         cell, int(exc.code), payload, identity, thinking_sent,
                         call_role, called, requested_model=requested_model,
                         thinking_json=thinking_json, output_config_json=output_config_json,
+                        received_thinking_json=received_thinking_json,
+                        received_output_config_json=received_output_config_json,
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
@@ -2623,6 +2713,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._record_error(
                         cell, 502, payload, identity, thinking_sent, call_role, called,
                         thinking_json=thinking_json, output_config_json=output_config_json,
+                        received_thinking_json=received_thinking_json,
+                        received_output_config_json=received_output_config_json,
                         requested_model=requested_model,
                     )
                     if presentation == "openai":
@@ -2687,6 +2779,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                         requested_model=requested_model,
                         stream=stream_record(usage=usage),
                         thinking_json=thinking_json, output_config_json=output_config_json,
+                        received_thinking_json=received_thinking_json,
+                        received_output_config_json=received_output_config_json,
                     )
                     recorded = True
                 if upstream_error is not None:
@@ -2724,6 +2818,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                         cell, finish_usage(), status, identity, thinking_sent, call_role, called,
                         requested_model=requested_model, stream=stream_record(disconnected=True),
                         thinking_json=thinking_json, output_config_json=output_config_json,
+                        received_thinking_json=received_thinking_json,
+                        received_output_config_json=received_output_config_json,
                     )
             finally:
                 if response is not None:
