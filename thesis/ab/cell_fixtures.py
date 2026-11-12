@@ -229,16 +229,19 @@ def compaction_overflow(context: int, output_limit: int, counted: int, output_ca
 
 
 MATCHED_CONTEXT = 200_000
-DISABLED_THINKING = {"type": "disabled"}
 
 
 def apply_matched_pair_config(config: dict) -> dict:
     """OpenCode config for the matched Pi vs OpenCode pair.
 
-    Every model context limit becomes 200000. Each model carries
-    ``options.thinking = {type: disabled}`` and no budget. Other fields,
-    including provider ``options`` (apiKey, baseURL), stay as they were.
+    Every model context limit becomes 200000. Each model's
+    ``options.thinking`` and ``options.output_config`` match the object the
+    Vertex proxy sends for that model id (Sonnet ``between_tools``, Opus
+    ``adaptive`` plus effort, anything else ``disabled``). Provider
+    ``options`` (apiKey, baseURL) stay as they were.
     """
+    from thesis.ab.vertex_anthropic_proxy import matched_request_thinking
+
     body = apply_context_limit(config, MATCHED_CONTEXT)
     providers = body.get("provider")
     if not isinstance(providers, dict):
@@ -249,14 +252,19 @@ def apply_matched_pair_config(config: dict) -> dict:
         models = provider.get("models")
         if not isinstance(models, dict):
             continue
-        for model in models.values():
+        for name, model in models.items():
             if not isinstance(model, dict):
                 continue
             options = model.get("options")
             if not isinstance(options, dict):
                 options = {}
                 model["options"] = options
-            options["thinking"] = dict(DISABLED_THINKING)
+            thinking, output_config = matched_request_thinking(str(name))
+            options["thinking"] = thinking
+            if output_config is None:
+                options.pop("output_config", None)
+            else:
+                options["output_config"] = output_config
     return body
 
 

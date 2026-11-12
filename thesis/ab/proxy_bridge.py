@@ -383,12 +383,14 @@ def _recorded_thinking_tokens(record: dict, usage: dict) -> int | None:
 def proxy_observed_settings(records: list | None) -> list[dict]:
     """Thinking and reasoning the proxy recorded for each request.
 
-    ``thinking_mode`` is the proxy's pin. ``thinking_sent`` is the ``thinking``
-    field it classified on the request (``disabled`` when the matched pair
-    sent ``thinking.type=disabled``). ``thinking_tokens`` is the server
-    usage count (``output_tokens_details.thinking_tokens``), not the harness
-    ``tokens_reasoning`` column. ``reasoning_tokens`` is the provider
-    reasoning field when one was present.
+    ``thinking_mode`` is the proxy's pin. ``thinking_sent`` is the category
+    classified on the request (``between_tools``, ``adaptive+effort``,
+    ``disabled``, and the older labels). ``thinking_json`` and
+    ``output_config_json`` are the canonical JSON bytes of those objects as
+    sent upstream, or None when the object was absent. ``thinking_tokens``
+    is the server usage count (``output_tokens_details.thinking_tokens``),
+    not the harness ``tokens_reasoning`` column. ``reasoning_tokens`` is the
+    provider reasoning field when one was present.
     """
     observed = []
     for record in records or []:
@@ -397,9 +399,15 @@ def proxy_observed_settings(records: list | None) -> list[dict]:
         if record.get("record_type") not in {None, "request"}:
             continue
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
+        thinking_json = record.get("thinking_json")
+        output_config_json = record.get("output_config_json")
         observed.append({
             "thinking_mode": record.get("thinking_mode"),
             "thinking_sent": record.get("thinking_sent"),
+            "thinking_json": thinking_json if isinstance(thinking_json, str) else None,
+            "output_config_json": (
+                output_config_json if isinstance(output_config_json, str) else None
+            ),
             "thinking_tokens": _recorded_thinking_tokens(record, usage),
             "reasoning_tokens": reasoning_tokens(usage),
         })

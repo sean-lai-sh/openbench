@@ -60,10 +60,12 @@ empty list.
 
 ## Matched pair (opt-in)
 
-`--matched-config` sets Pi's context window to 200000, Pi's thinking level to
-`off`, and asks the Vertex proxy to send `thinking: {type: disabled}` with no
-budget. Without the flag the cell is the historical 1_000_000 config and Pi
-does not pass `--thinking`. The same flag is `run_ab --matched-config`.
+`--matched-config` sets Pi's context window to 200000 and Pi's thinking level
+to `off`. The Vertex proxy then sends Sonnet `thinking: {type: between_tools}`
+and Opus `thinking: {type: adaptive}` with `output_config.effort`
+(`--matched-effort`, default `low`). Without the flag the cell is the
+historical 1_000_000 config and Pi does not pass `--thinking`. The same flag
+is `run_ab --matched-config`.
 
 ```bash
 python3 data/pi-harness-smoke/cell.py --out /tmp/pi-matched --matched-config

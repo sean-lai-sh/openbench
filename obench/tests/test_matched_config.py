@@ -24,9 +24,13 @@ from thesis.ab.prs import parse_prs, select_prs
 from thesis.ab.run_ab import attach_thinking, drive
 from thesis.ab.vertex_anthropic_proxy import (
     apply_disabled_thinking,
+    canonical_object_json,
     classify_thinking,
+    matched_opus_effort,
+    matched_request_thinking,
     server_thinking_tokens,
     start_proxy,
+    wire_bytes_identical,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -206,8 +210,8 @@ class MatchedConfigTests(unittest.TestCase):
             self.assertEqual(opencode.comparison_variant("claude-opus-4-8"), "medium")
         model = pinned["provider"]["anthropic"]["models"]["claude-sonnet-5-5"]
         self.assertEqual(model["limit"], {"context": 200000, "output": 128000})
-        self.assertEqual(model["options"]["thinking"], {"type": "disabled"})
-        self.assertNotIn("budget_tokens", model["options"]["thinking"])
+        self.assertEqual(model["options"]["thinking"], {"type": "between_tools"})
+        self.assertNotIn("output_config", model["options"])
         self.assertEqual(pinned["model"], "anthropic/claude-sonnet-5-5")
         self.assertEqual(pinned["small_model"], "anthropic/claude-sonnet-5-5")
         # Provider options (the proxy key) stay put.
@@ -224,7 +228,8 @@ class MatchedConfigTests(unittest.TestCase):
         shaped = apply_matched_pair_config(plain)
         opus = shaped["provider"]["anthropic"]["models"]["claude-opus-5-5"]
         self.assertEqual(opus["limit"]["context"], 200000)
-        self.assertEqual(opus["options"]["thinking"], {"type": "disabled"})
+        self.assertEqual(opus["options"]["thinking"], {"type": "adaptive"})
+        self.assertEqual(opus["options"]["output_config"], {"effort": "low"})
 
     def test_explicit_context_window_beats_the_flag(self):
         early = _tree()
@@ -252,39 +257,44 @@ class MatchedConfigTests(unittest.TestCase):
         httpd, thread, upstream = _listen([usage])
         ledger = Path(self._tmpdir())
         proxy = start_proxy(
-            "proj", token="tok", upstream=upstream, ledger_dir=ledger, thinking_mode="default",
+            "proj", token="tok", upstream=upstream, ledger_dir=ledger,
+            thinking_mode="default", model="claude-sonnet-5-5",
         )
         self.addCleanup(proxy.close)
         self.addCleanup(httpd.shutdown)
         self.addCleanup(httpd.server_close)
         self.addCleanup(lambda: thread.join(timeout=2))
-        with _Env(**{ENV: "1"}):
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": None}):
             status, _payload = _post(
                 proxy.base_url + "/c/cell1/v1/messages",
                 json.dumps(request).encode("utf-8"),
             )
         self.assertEqual(status, 200)
         forwarded = json.loads(httpd.seen[-1])
-        self.assertEqual(forwarded["thinking"], {"type": "disabled"})
-        self.assertNotIn("budget_tokens", forwarded["thinking"])
+        self.assertEqual(forwarded["thinking"], {"type": "between_tools"})
+        self.assertNotIn("output_config", forwarded)
         self.assertNotIn("model", forwarded)
         rows = [
             json.loads(line)
             for line in (ledger / "cell1.jsonl").read_text(encoding="utf-8").splitlines()
         ]
-        self.assertEqual(rows[0]["thinking_sent"], "disabled")
+        self.assertEqual(rows[0]["thinking_sent"], "between_tools")
+        self.assertEqual(rows[0]["thinking_json"], '{"type":"between_tools"}')
+        self.assertIsNone(rows[0]["output_config_json"])
         self.assertEqual(rows[0]["thinking_tokens"], 0)
         # The reasoning counter on the same usage object is a different field.
         self.assertEqual(rows[0]["usage"]["reasoning_tokens"], 40)
         observed = read_proxy_observed(ledger, "cell1")
         self.assertEqual(observed, [{
             "thinking_mode": "default",
-            "thinking_sent": "disabled",
+            "thinking_sent": "between_tools",
+            "thinking_json": '{"type":"between_tools"}',
+            "output_config_json": None,
             "thinking_tokens": 0,
             "reasoning_tokens": 40,
         }])
         result = attach_thinking({"task": "demo"}, "off", rows)
-        self.assertEqual(result["thinking_sent"], ["disabled"])
+        self.assertEqual(result["thinking_sent"], ["between_tools"])
         self.assertEqual(result["thinking_tokens"], [0])
 
     def test_proxy_records_a_nonzero_server_count_separately_from_reasoning(self):
@@ -309,16 +319,19 @@ class MatchedConfigTests(unittest.TestCase):
             "messages": [{"role": "user", "content": "think"}],
             "thinking": {"type": "adaptive"},
         }
-        with _Env(**{ENV: "1"}):
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": None}):
             status, _payload = _post(
                 proxy.base_url + "/c/cell2/v1/messages",
                 json.dumps(body).encode("utf-8"),
             )
         self.assertEqual(status, 200)
         forwarded = json.loads(httpd.seen[-1])
-        self.assertEqual(forwarded["thinking"], {"type": "disabled"})
+        self.assertEqual(forwarded["thinking"], {"type": "adaptive"})
+        self.assertEqual(forwarded["output_config"], {"effort": "low"})
         row = json.loads((ledger / "cell2.jsonl").read_text(encoding="utf-8"))
-        self.assertEqual(row["thinking_sent"], "disabled")
+        self.assertEqual(row["thinking_sent"], "adaptive+effort")
+        self.assertEqual(row["thinking_json"], '{"type":"adaptive"}')
+        self.assertEqual(row["output_config_json"], '{"effort":"low"}')
         self.assertEqual(row["thinking_tokens"], 7)
         self.assertEqual(row["usage"]["reasoning_tokens"], 1)
 
@@ -351,6 +364,8 @@ class MatchedConfigTests(unittest.TestCase):
         row = json.loads((ledger / "plain.jsonl").read_text(encoding="utf-8"))
         self.assertEqual(row["thinking_sent"], "none")
         self.assertIsNone(row["thinking_tokens"])
+        self.assertIsNone(row["thinking_json"])
+        self.assertIsNone(row["output_config_json"])
 
     def test_dry_run_plan_names_the_matched_profile_only_when_asked(self):
         prs = select_prs(parse_prs(FIXTURE), ["623"])
@@ -370,9 +385,160 @@ class MatchedConfigTests(unittest.TestCase):
         self.assertIsNone(stopped)
         self.assertIsNone(stopped_on)
         self.assertNotIn("matched-config", plain)
-        self.assertIn("matched-config: context=200000 thinking=disabled", matched)
+        self.assertIn(
+            "matched-config: context=200000 sonnet=between_tools opus=adaptive effort=low",
+            matched,
+        )
         self.assertIn("623", plain)
         self.assertIn("cells: 2", plain)
+
+    def _tmpdir(self):
+        import tempfile
+        path = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(path, ignore_errors=True))
+        return path
+
+
+class ThinkingFallbackTests(unittest.TestCase):
+    def test_per_model_selection(self):
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": None}):
+            sonnet_thinking, sonnet_config = matched_request_thinking("claude-sonnet-5-5")
+            opus_thinking, opus_config = matched_request_thinking("anthropic/claude-opus-5-5@default")
+            other_thinking, other_config = matched_request_thinking("claude-haiku-4-5")
+            self.assertEqual(matched_opus_effort(), "low")
+        self.assertEqual(sonnet_thinking, {"type": "between_tools"})
+        self.assertIsNone(sonnet_config)
+        self.assertEqual(opus_thinking, {"type": "adaptive"})
+        self.assertEqual(opus_config, {"effort": "low"})
+        self.assertEqual(other_thinking, {"type": "disabled"})
+        self.assertIsNone(other_config)
+
+        sonnet = {"model": "claude-sonnet-5-5", "max_tokens": 8, "messages": []}
+        opus = {
+            "model": "claude-opus-5-5", "max_tokens": 8, "messages": [],
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "max", "extra": True},
+        }
+        other = {"model": "claude-haiku-4-5", "max_tokens": 8, "output_config": {"effort": "high"}}
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": None}):
+            self.assertTrue(apply_disabled_thinking(sonnet, "claude-sonnet-5-5"))
+            self.assertTrue(apply_disabled_thinking(opus, "claude-opus-5-5"))
+            self.assertTrue(apply_disabled_thinking(other, "claude-haiku-4-5"))
+        self.assertEqual(sonnet["thinking"], {"type": "between_tools"})
+        self.assertNotIn("output_config", sonnet)
+        self.assertEqual(opus["thinking"], {"type": "adaptive"})
+        self.assertEqual(opus["output_config"], {"effort": "low"})
+        self.assertEqual(other["thinking"], {"type": "disabled"})
+        self.assertNotIn("output_config", other)
+        self.assertEqual(classify_thinking(sonnet), "between_tools")
+        self.assertEqual(classify_thinking(opus), "adaptive+effort")
+        self.assertEqual(classify_thinking(other), "disabled")
+
+    def test_effort_override_changes_only_the_opus_level(self):
+        body = {"model": "claude-opus-5-5", "max_tokens": 8, "messages": []}
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": "xhigh"}):
+            self.assertEqual(matched_opus_effort(), "xhigh")
+            apply_disabled_thinking(body, "claude-opus-5-5")
+            self.assertEqual(body["output_config"], {"effort": "xhigh"})
+            self.assertEqual(
+                canonical_object_json(body["output_config"]),
+                '{"effort":"xhigh"}',
+            )
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": "not a level"}):
+            self.assertEqual(matched_opus_effort(), "low")
+        with _Env(**{ENV: None, "OBENCH_MATCHED_EFFORT": "high"}):
+            untouched = {"model": "claude-opus-5-5", "max_tokens": 8}
+            before = json.dumps(untouched)
+            self.assertFalse(apply_disabled_thinking(untouched, "claude-opus-5-5"))
+            self.assertEqual(json.dumps(untouched), before)
+
+    def test_ledger_stores_canonical_bytes_and_keeps_thinking_tokens(self):
+        usage = {
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "output_tokens_details": {"thinking_tokens": 0},
+            "reasoning_tokens": 9,
+        }
+        httpd, thread, upstream = _listen([usage, usage])
+        ledger = Path(self._tmpdir())
+        proxy = start_proxy(
+            "proj", token="tok", upstream=upstream, ledger_dir=ledger,
+            model="claude-opus-5-5", route_by_request=True,
+        )
+        self.addCleanup(proxy.close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        bodies = [
+            {"model": "claude-sonnet-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "s"}]},
+            {"model": "claude-opus-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "o"}],
+             "output_config": {"z": 1, "effort": "max"}},
+        ]
+        with _Env(**{ENV: "1", "OBENCH_MATCHED_EFFORT": "medium"}):
+            for body in bodies:
+                status, _payload = _post(
+                    proxy.base_url + "/c/wire/v1/messages",
+                    json.dumps(body).encode("utf-8"),
+                )
+                self.assertEqual(status, 200)
+        rows = [
+            json.loads(line)
+            for line in (ledger / "wire.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(rows[0]["thinking_json"], '{"type":"between_tools"}')
+        self.assertIsNone(rows[0]["output_config_json"])
+        self.assertEqual(rows[0]["thinking_tokens"], 0)
+        self.assertEqual(rows[0]["usage"]["reasoning_tokens"], 9)
+        self.assertEqual(rows[1]["thinking_json"], '{"type":"adaptive"}')
+        self.assertEqual(rows[1]["output_config_json"], '{"effort":"medium"}')
+        self.assertEqual(rows[1]["thinking_sent"], "adaptive+effort")
+        forwarded = [json.loads(raw) for raw in httpd.seen]
+        self.assertEqual(forwarded[0]["thinking"], {"type": "between_tools"})
+        self.assertNotIn("output_config", forwarded[0])
+        self.assertEqual(forwarded[1]["output_config"], {"effort": "medium"})
+        self.assertNotIn("z", forwarded[1]["output_config"])
+        # Unsorted keys still canonicalize.
+        self.assertEqual(
+            canonical_object_json({"effort": "medium", "a": 1}),
+            '{"a":1,"effort":"medium"}',
+        )
+
+    def test_identical_bytes_gate_passes_within_a_model_and_fails_on_drift(self):
+        sonnet = {
+            "record_type": "request",
+            "upstream_model": "claude-sonnet-5-5",
+            "thinking_json": '{"type":"between_tools"}',
+            "output_config_json": None,
+        }
+        opus = {
+            "record_type": "request",
+            "upstream_model": "claude-opus-5-5",
+            "thinking_json": '{"type":"adaptive"}',
+            "output_config_json": '{"effort":"low"}',
+        }
+        self.assertTrue(wire_bytes_identical([
+            sonnet, dict(sonnet), opus, dict(opus),
+        ]))
+        self.assertTrue(wire_bytes_identical([]))
+        drifted = dict(opus)
+        drifted["output_config_json"] = '{"effort":"high"}'
+        self.assertFalse(wire_bytes_identical([opus, drifted]))
+        other_thinking = dict(sonnet)
+        other_thinking["thinking_json"] = '{"type":"disabled"}'
+        self.assertFalse(wire_bytes_identical([sonnet, other_thinking]))
+
+    def test_dry_run_plan_shows_the_effort_override(self):
+        prs = select_prs(parse_prs(FIXTURE), ["623"])
+        out = Path(self._tmpdir())
+        with _Env(**{ENV: None, "OBENCH_MATCHED_EFFORT": None}):
+            plan, _launched, _stopped = drive(
+                prs, ("make-it-run",), 1, out,
+                jobs=1, model="claude-opus-5-5", timeout_s=5, cache=out,
+                max_cost_usd=None, dry_run=True, tasks_dir=out,
+                matched_config=True, matched_effort="high",
+            )
+            self.assertIsNone(os.environ.get("OBENCH_MATCHED_EFFORT"))
+        self.assertIn("opus=adaptive effort=high", plan)
 
     def _tmpdir(self):
         import tempfile

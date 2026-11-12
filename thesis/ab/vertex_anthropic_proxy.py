@@ -334,12 +334,21 @@ def strip_cc_headers(headers) -> tuple[str | None, list[str]]:
 
 _NORMALIZED_LABELS = frozenset({"metadata.user_id", "authorization"})
 _THINKING_MODES = frozenset({"default", "adaptive", "off"})
-_THINKING_SENT = frozenset({"none", "enabled+budget_tokens", "adaptive", "disabled"})
+_THINKING_SENT = frozenset({
+    "none", "enabled+budget_tokens", "adaptive", "adaptive+effort",
+    "between_tools", "disabled",
+})
 # Opt-in for the Pi vs OpenCode matched pair. Unset leaves every request
 # body as the harness wrote it.
 MATCHED_CONFIG_ENV = "OBENCH_MATCHED_CONFIG"
+MATCHED_EFFORT_ENV = "OBENCH_MATCHED_EFFORT"
+# Lowest effort Claude Opus 5.5 documents (low, then medium, high, xhigh, max).
+OPUS_EFFORT_DEFAULT = "low"
 _MATCHED_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_EFFORT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 DISABLED_THINKING = {"type": "disabled"}
+SONNET_THINKING = {"type": "between_tools"}
+OPUS_THINKING = {"type": "adaptive"}
 
 
 def matched_config_requested() -> bool:
@@ -347,22 +356,72 @@ def matched_config_requested() -> bool:
     return os.environ.get(MATCHED_CONFIG_ENV, "").strip().lower() in _MATCHED_TRUTHY
 
 
-def apply_disabled_thinking(data) -> bool:
-    """Force ``thinking`` to ``{"type": "disabled"}`` with no budget.
+def matched_opus_effort() -> str:
+    """Opus 5.5 ``output_config.effort`` for the matched pair.
+
+    ``OBENCH_MATCHED_EFFORT`` selects the level (a smoke can step from
+    ``low`` upward without a code change). Unset or not an identifier
+    falls back to ``low``, the lowest documented level.
+    """
+    raw = os.environ.get(MATCHED_EFFORT_ENV, "").strip().lower()
+    if _EFFORT_NAME.fullmatch(raw):
+        return raw
+    return OPUS_EFFORT_DEFAULT
+
+
+def canonical_object_json(value) -> str | None:
+    """Canonical JSON bytes of one object, or None when it was not sent.
+
+    Keys are sorted and separators have no spaces, so two equal objects
+    share one string.
+    """
+    if not isinstance(value, dict):
+        return None
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def matched_request_thinking(model: str | None) -> tuple[dict, dict | None]:
+    """Thinking object and optional ``output_config`` for one Vertex model.
+
+    Sonnet 5.5 rejects ``thinking.type=disabled`` and wants
+    ``{"type": "between_tools"}``. Opus 5.5 rejects ``disabled`` and wants
+    ``thinking.type=adaptive`` plus ``output_config.effort``. Any other
+    model keeps ``{"type": "disabled"}`` and no ``output_config``.
+    """
+    known = normalize_vertex_model(model) if isinstance(model, str) else None
+    if known == "claude-sonnet-5-5":
+        return dict(SONNET_THINKING), None
+    if known == "claude-opus-5-5":
+        return dict(OPUS_THINKING), {"effort": matched_opus_effort()}
+    return dict(DISABLED_THINKING), None
+
+
+def apply_disabled_thinking(data, model: str | None = None) -> bool:
+    """Apply the matched-pair thinking setting for ``model``.
 
     Only when ``OBENCH_MATCHED_CONFIG`` is set. Otherwise the body is not
     read or written, so a historical request stays byte-for-byte the same.
-    An absent ``thinking`` field does not turn thinking off on Opus 5.5 or
-    Sonnet 5.5, so the matched pair has to send the disabled type.
-    Returns True when the body changed.
+    ``model`` is the Vertex id this request will call. When it is omitted
+    the body's ``model`` field is used. Returns True when the body changed.
     """
     if not matched_config_requested() or not isinstance(data, dict):
         return False
-    current = data.get("thinking")
-    if current == DISABLED_THINKING:
-        return False
-    data["thinking"] = dict(DISABLED_THINKING)
-    return True
+    chosen = model if isinstance(model, str) and model.strip() else data.get("model")
+    thinking, output_config = matched_request_thinking(
+        chosen if isinstance(chosen, str) else None
+    )
+    changed = False
+    if data.get("thinking") != thinking:
+        data["thinking"] = thinking
+        changed = True
+    if output_config is None:
+        if "output_config" in data:
+            data.pop("output_config")
+            changed = True
+    elif data.get("output_config") != output_config:
+        data["output_config"] = dict(output_config)
+        changed = True
+    return changed
 
 
 def classify_thinking(data) -> str:
@@ -370,8 +429,10 @@ def classify_thinking(data) -> str:
 
     ``none`` when the field is absent. ``enabled+budget_tokens`` when
     ``type`` is ``enabled`` and ``budget_tokens`` is set. ``adaptive`` when
-    ``type`` is ``adaptive``. ``disabled`` when ``type`` is ``disabled``
-    (no budget). Any other shape is ``none``.
+    ``type`` is ``adaptive`` and no effort was sent. ``adaptive+effort``
+    when ``type`` is ``adaptive`` and ``output_config.effort`` is set.
+    ``between_tools`` when ``type`` is ``between_tools``. ``disabled`` when
+    ``type`` is ``disabled``. Any other shape is ``none``.
     """
     if not isinstance(data, dict):
         return "none"
@@ -379,13 +440,59 @@ def classify_thinking(data) -> str:
     if not isinstance(thinking, dict):
         return "none"
     kind = thinking.get("type")
+    if kind == "between_tools":
+        return "between_tools"
     if kind == "disabled":
         return "disabled"
     if kind == "adaptive":
+        output_config = data.get("output_config")
+        effort = output_config.get("effort") if isinstance(output_config, dict) else None
+        if isinstance(effort, str) and effort.strip():
+            return "adaptive+effort"
         return "adaptive"
     if kind == "enabled" and "budget_tokens" in thinking:
         return "enabled+budget_tokens"
     return "none"
+
+
+def wire_json_fields(payload: bytes) -> tuple[str | None, str | None]:
+    """Canonical ``thinking`` and ``output_config`` JSON from an upstream body."""
+    try:
+        obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(obj, dict):
+        return None, None
+    return (
+        canonical_object_json(obj.get("thinking")),
+        canonical_object_json(obj.get("output_config")),
+    )
+
+
+def wire_bytes_identical(records: list | None) -> bool:
+    """True when each model sent one thinking and output_config byte string.
+
+    Rows are grouped by ``upstream_model`` (then ``requested_model``).
+    Within a group, ``thinking_json`` and ``output_config_json`` must be
+    the same on every request. Two models may differ. An empty list passes.
+    """
+    groups: dict[str, set[tuple[str | None, str | None]]] = {}
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("record_type") not in {None, "request"}:
+            continue
+        model = record.get("upstream_model") or record.get("requested_model") or ""
+        if not isinstance(model, str):
+            model = ""
+        thinking = record.get("thinking_json")
+        output_config = record.get("output_config_json")
+        pair = (
+            thinking if isinstance(thinking, str) else None,
+            output_config if isinstance(output_config, str) else None,
+        )
+        groups.setdefault(model.strip(), set()).add(pair)
+    return all(len(pairs) <= 1 for pairs in groups.values())
 
 
 def server_thinking_tokens(usage: dict | None) -> int | None:
@@ -1027,6 +1134,8 @@ def _append_ledger(
     identity: dict | None = None,
     thinking_mode: str = "default",
     thinking_sent: str = "none",
+    thinking_json: str | None = None,
+    output_config_json: str | None = None,
     upstream_model: str | None = None,
     requested_model: str | None = None,
     endpoint_location: str | None = None,
@@ -1053,6 +1162,12 @@ def _append_ledger(
         row["cc_identity_stripped"] = identity
     row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
+    # Exact objects sent upstream, canonical JSON (sorted keys, no spaces).
+    # None when that object was not on the request. Not a category label.
+    row["thinking_json"] = thinking_json if isinstance(thinking_json, str) else None
+    row["output_config_json"] = (
+        output_config_json if isinstance(output_config_json, str) else None
+    )
     # Server-returned thinking tokens for this call. None when the usage
     # object did not carry output_tokens_details.thinking_tokens. Not the
     # harness tokens_reasoning column.
@@ -2300,7 +2415,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 identity["thinking_block_binding"] = binding
             if sampling_removed:
                 identity["sampling_params_removed"] = sampling_removed
-            if isinstance(parsed, dict) and apply_disabled_thinking(parsed):
+            if isinstance(parsed, dict) and apply_disabled_thinking(parsed, upstream_model):
                 raw = json.dumps(parsed).encode("utf-8")
             sent = classify_thinking(parsed)
             if ledger is not None and cell and length:
@@ -2392,7 +2507,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     identity: dict | None = None, thinking_sent: str = "none",
                     call_role: dict | None = None, upstream_model_id: str | None = None,
                     requested_model: str | None = None,
-                    stream: dict | None = None) -> None:
+                    stream: dict | None = None,
+                    thinking_json: str | None = None,
+                    output_config_json: str | None = None) -> None:
             # One row per messages or chat-completions POST on /c/<cell-id>/.
             # A subagent or child session that reused that base URL is included
             # in the cell total. The role tag does not change that total.
@@ -2402,6 +2519,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 ledger, cell, usage or None, status=status, identity=identity, stream=stream,
                 no_usage=not usage,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
+                thinking_json=thinking_json,
+                output_config_json=output_config_json,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
                 endpoint_location=location,
@@ -2412,12 +2531,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
         def _record_error(self, cell: str | None, status: int, payload: bytes | str,
                           identity: dict | None = None, thinking_sent: str = "none",
                           call_role: dict | None = None, upstream_model_id: str | None = None,
-                          requested_model: str | None = None) -> None:
+                          requested_model: str | None = None,
+                          thinking_json: str | None = None,
+                          output_config_json: str | None = None) -> None:
             if ledger is None or not cell:
                 return
             _append_ledger(
                 ledger, cell, None, status=status, error=_error_body(payload), identity=identity,
                 thinking_mode=thinking_mode, thinking_sent=thinking_sent,
+                thinking_json=thinking_json,
+                output_config_json=output_config_json,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
                 endpoint_location=location,
@@ -2431,6 +2554,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                      upstream_model_id: str | None = None,
                      requested_model: str | None = None,
                      responses_ctx=None) -> None:
+            thinking_json, output_config_json = wire_json_fields(body)
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
             raw = bytearray()
@@ -2483,6 +2607,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._record_error(
                         cell, int(exc.code), payload, identity, thinking_sent,
                         call_role, called, requested_model=requested_model,
+                        thinking_json=thinking_json, output_config_json=output_config_json,
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
@@ -2497,6 +2622,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     payload = json.dumps({"error": str(exc)}).encode("utf-8")
                     self._record_error(
                         cell, 502, payload, identity, thinking_sent, call_role, called,
+                        thinking_json=thinking_json, output_config_json=output_config_json,
                         requested_model=requested_model,
                     )
                     if presentation == "openai":
@@ -2560,6 +2686,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                         cell, usage, status, identity, thinking_sent, call_role, called,
                         requested_model=requested_model,
                         stream=stream_record(usage=usage),
+                        thinking_json=thinking_json, output_config_json=output_config_json,
                     )
                     recorded = True
                 if upstream_error is not None:
@@ -2596,6 +2723,7 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     self._record(
                         cell, finish_usage(), status, identity, thinking_sent, call_role, called,
                         requested_model=requested_model, stream=stream_record(disconnected=True),
+                        thinking_json=thinking_json, output_config_json=output_config_json,
                     )
             finally:
                 if response is not None:

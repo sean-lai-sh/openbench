@@ -65,9 +65,18 @@ def argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Opt in to the Pi vs OpenCode matched pair: Pi context window "
-            "200000, Pi thinking level off, and an explicit "
-            "thinking.type=disabled (no budget) on the Anthropic request. "
+            "200000 and thinking level off. The proxy sends Sonnet "
+            "thinking.type=between_tools and Opus thinking.type=adaptive "
+            "plus output_config.effort (--matched-effort, default low). "
             "Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--matched-effort",
+        default=None,
+        help=(
+            "Opus 5.5 output_config.effort for --matched-config. "
+            "Default low. Sets OBENCH_MATCHED_EFFORT."
         ),
     )
     parser.add_argument(
@@ -90,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     args = argument_parser().parse_args(argv)
     if args.matched_config:
         os.environ["OBENCH_MATCHED_CONFIG"] = "1"
+    if isinstance(args.matched_effort, str) and args.matched_effort.strip():
+        os.environ["OBENCH_MATCHED_EFFORT"] = args.matched_effort.strip().lower()
     if args.exec == "docker" and not args.image:
         raise SystemExit("bridge smoke needs --image or OBENCH_CELL_IMAGE")
 

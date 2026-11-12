@@ -546,7 +546,11 @@ def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None,
     elif aa:
         lines.append("arm: parent-vs-parent")
     if matched_config:
-        lines.append("matched-config: context=200000 thinking=disabled")
+        from thesis.ab.vertex_anthropic_proxy import matched_opus_effort
+        lines.append(
+            "matched-config: context=200000 sonnet=between_tools "
+            f"opus=adaptive effort={matched_opus_effort()}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -1056,14 +1060,18 @@ def ledger_records(proxy: dict | None) -> list:
     return read_proxy_ledger(str(ledger), str(cell))
 
 
-_THINKING_SENT_VALUES = {"none", "enabled+budget_tokens", "adaptive", "disabled"}
+_THINKING_SENT_VALUES = {
+    "none", "enabled+budget_tokens", "adaptive", "adaptive+effort",
+    "between_tools", "disabled",
+}
 
 
 def attach_thinking(row: dict, mode: str, records: list | None = None) -> dict:
     """Record the configured thinking mode and what each request sent.
 
     A ledger row stores one ``thinking_sent`` string (``none``,
-    ``enabled+budget_tokens``, ``adaptive``, or ``disabled``) and the
+    ``enabled+budget_tokens``, ``adaptive``, ``adaptive+effort``,
+    ``between_tools``, or ``disabled``) and the
     server-returned ``thinking_tokens`` count (``usage.output_tokens_details
     .thinking_tokens``, or null when the server omitted it). A result row
     stores the configured mode and those per-request values in ledger order.
@@ -2811,17 +2819,24 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           require_model_match: bool = False,
           rerun_from: Path | None = None,
           cells: set[str] | None = None,
-          matched_config: bool = False):
+          matched_config: bool = False,
+          matched_effort: str | None = None):
     """Set the matched-pair env for the call, then run ``_drive_impl``.
 
     The env is restored afterwards. Workers spawned inside the call inherit
     it. ``matched_config`` or an already-set ``OBENCH_MATCHED_CONFIG`` turns
     the profile on; neither leaves historical plans and configs alone.
+    ``matched_effort`` sets ``OBENCH_MATCHED_EFFORT`` for the Opus 5.5
+    ``output_config.effort`` value and is restored afterwards.
     """
     requested = bool(matched_config) or _matched_config_on()
     previous = os.environ.get("OBENCH_MATCHED_CONFIG")
+    effort_text = matched_effort.strip().lower() if isinstance(matched_effort, str) else ""
+    effort_previous = os.environ.get("OBENCH_MATCHED_EFFORT")
     if requested:
         os.environ["OBENCH_MATCHED_CONFIG"] = "1"
+    if effort_text:
+        os.environ["OBENCH_MATCHED_EFFORT"] = effort_text
     try:
         return _drive_impl(
             prs, tasks, trials, out_dir, jobs=jobs, model=model, timeout_s=timeout_s,
@@ -2840,6 +2855,11 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
                 os.environ.pop("OBENCH_MATCHED_CONFIG", None)
             else:
                 os.environ["OBENCH_MATCHED_CONFIG"] = previous
+        if effort_text:
+            if effort_previous is None:
+                os.environ.pop("OBENCH_MATCHED_EFFORT", None)
+            else:
+                os.environ["OBENCH_MATCHED_EFFORT"] = effort_previous
 
 
 def _drive_impl(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
@@ -3237,10 +3257,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Pi vs OpenCode matched pair. Pi context window 200000 and "
-            "thinking level off; OpenCode context limit 200000; every "
-            "Anthropic request is sent with thinking.type=disabled and no "
-            "budget. Off by default, so historical configs stay unchanged. "
-            "Sets OBENCH_MATCHED_CONFIG=1 for the process and its cells."
+            "thinking level off; OpenCode context limit 200000. Sonnet 5.5 "
+            "requests send thinking.type=between_tools. Opus 5.5 requests "
+            "send thinking.type=adaptive plus output_config.effort "
+            "(--matched-effort, default low). Other models send "
+            "thinking.type=disabled. Off by default, so historical configs "
+            "stay unchanged. Sets OBENCH_MATCHED_CONFIG=1 for the process "
+            "and its cells."
+        ),
+    )
+    parser.add_argument(
+        "--matched-effort",
+        default=None,
+        help=(
+            "Opus 5.5 output_config.effort while --matched-config is on. "
+            "Default is low, the lowest documented level. Any identifier "
+            "is forwarded so a smoke can step upward without a code change. "
+            "Sets OBENCH_MATCHED_EFFORT for the process."
         ),
     )
     parser.add_argument(
@@ -3465,6 +3498,7 @@ def main(argv: list[str] | None = None) -> int:
             rerun_from=args.rerun_from,
             cells=parse_cells(args.cells, prs) if args.cells else None,
             matched_config=args.matched_config,
+            matched_effort=args.matched_effort,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
