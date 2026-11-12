@@ -32,9 +32,31 @@ Thinking tokens are `usage.output_tokens_details.thinking_tokens` from the proxy
 
 - **Total spend:** $0.1604. Under the $3 smoke cap.
 - **Toolchain** on both sides (also `raw/725226/*.toolchain.json`): `ai 6.0.168`, `anthropic 3.0.71`, `bun 1.3.13`.
-- **Cache:** the with arm never reads from cache (0 on all three calls; it only writes). The without arm also has no cache read, but it made only one call, so a call-2 read was not possible.
+- **Cache:** the with arm (`d7af1f17`) never read from cache (reads `[0, 0, 0]`, writes `[15206, 15586, 15749]`). The without arm wrote `15224` on its single call (read `0`); a call-2 read was not possible there. Dollar costs are in the cache cost gap section below.
 - **Thinking still arrives from the server** on the with arm (68 thinking tokens on call 2) even though no thinking parameter was sent. Same pattern as the #243 smoke and earlier D1 Sonnet rows. Do not use `tokens_reasoning` for this count.
 - **Written config evidence** (`config-check.txt`, `raw/config-check.json`): assessment of each prebuilt binary still produces an Opus entry with `limit.context` 1,000,000. `bind_opencode_model(..., "claude-sonnet-5-5")` renames it and sets `limit.context` 200000 (output stays 128000) on both arms. `pin_source` and the 3.0.71 pin are attached by `_decorate_toolchain` from `packages/opencode/package.json` at the binary's commit.
+
+
+## Cache cost gap
+
+Spend uses the same Standard global list as `proxy_cost_usd` / `requests_cost_usd`: Claude Sonnet 5.5 rates in `thesis/ab/vertex_list_prices.json` (read 2026-10-29). USD per million tokens: uncached input $2.00, output $10.00, 5-minute cache write $2.50, cache read $0.10. Cache writes in this run are all `ephemeral_5m`. The components below sum to the recorded spend ($0.039218 without, $0.1211485 with).
+
+| arm | cache read tokens | cache read $ | cache write tokens | cache write $ | total spend |
+|---|---|---|---|---|---|
+| without (`c436fc69`) | 0 | $0.000000 | 15224 | $0.038060 | $0.039218 |
+| with (`d7af1f17`) | 0 (`[0, 0, 0]`) | $0.000000 | 46541 (`[15206, 15586, 15749]`) | $0.1163525 | $0.1211485 |
+
+Per-call total cost, with the same rates:
+
+| arm / call | uncached input | output | cache write $ | cache read $ | total $ |
+|---|---|---|---|---|---|
+| without call 1 | 4 / $0.000008 | 115 / $0.001150 | $0.038060 | $0.000000 | $0.039218 |
+| with call 1 | 4 / $0.000008 | 89 / $0.000890 | $0.038015 | $0.000000 | $0.038913 |
+| with call 2 | 2 / $0.000004 | 215 / $0.002150 | $0.038965 | $0.000000 | $0.041119 |
+| with call 3 | 2 / $0.000004 | 174 / $0.001740 | $0.0393725 | $0.000000 | $0.0411165 |
+| with sum | 8 / $0.000016 | 478 / $0.004780 | $0.1163525 | $0.000000 | $0.1211485 |
+
+The with arm writes cache every call and never reads, so it pays the 5-minute write rate three times and gets no cache-hit credit. That raises its cost (cache writes are $0.1163525 of $0.1211485, versus $0.038060 of $0.039218 on the without arm's single write of 15224) and may also raise latency versus without.
 
 ## Files
 - **Under `raw/`:** launcher, cell script, dry-run, run log, driver log, config-check and gate-check scripts and outputs, `prs.csv`, `task-map.csv`, per-arm jsonl / toolchain / cell json, proxy ledgers (jsonl, totals, bytes, cache-miss headers), transcripts, evidence dirs, and workspace tarballs.
