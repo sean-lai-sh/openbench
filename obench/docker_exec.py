@@ -505,7 +505,19 @@ _CODEX_COMPARISON_ENV = (
     "OBENCH_CODEX_SETTINGS_PATH",
 )
 
-_PROXY_HARNESSES = frozenset({"pi", "opencode", "omp", "codex"})
+_HERMES_COMPARISON_ENV = (
+    "OBENCH_HERMES_HARNESS",
+    "OBENCH_VERTEX_PROXY_URL",
+    "OBENCH_VERTEX_CELL_ID",
+    "OBENCH_VERTEX_LEDGER_DIR",
+    "OBENCH_VERTEX_ROUTE_BY_REQUEST",
+    "OBENCH_HERMES_BIN",
+    "OBENCH_HERMES_ROOT",
+    "OBENCH_HERMES_PIN_FILE",
+    "OBENCH_HERMES_SETTINGS_PATH",
+)
+
+_PROXY_HARNESSES = frozenset({"pi", "opencode", "omp", "codex", "hermes"})
 
 
 def _append_env(args, names):
@@ -664,6 +676,21 @@ def _codex_comparison_mounts(args):
     _container_path_env(args, ("OBENCH_CODEX_BIN",), host_dir, CODEX_BIN_CONTAINER)
 
 
+def _hermes_comparison_mounts(args):
+    """Mount the pinned Hermes install root read-only at its own path.
+
+    The committed Python environment the cell runs (hermes_harness.resolve_launch)
+    hard-codes absolute paths under the install root
+    (data/hermes-harness-smoke/prep.sh), so the root keeps the same path in
+    the cell. Each cell gets a fresh HERMES_HOME
+    inside the container.
+    """
+    root = os.environ.get("OBENCH_HERMES_ROOT", "").strip()
+    if root:
+        host = os.path.abspath(root)
+        args.extend(_ro_bind(host, host))
+
+
 def _proxy_bridge_docker_args(harness, extra_docker_args):
     """Forward the shared Vertex proxy into a Pi or OpenCode cell.
 
@@ -691,6 +718,13 @@ def _proxy_bridge_docker_args(harness, extra_docker_args):
         if vertex:
             _append_env(args, _PI_VERTEX_ENV)
         _pi_comparison_mounts(args)
+    elif harness == "hermes":
+        # Only an explicit comparison cell (the launcher sets the flag).
+        flag = os.environ.get("OBENCH_HERMES_HARNESS", "").strip().lower()
+        if flag not in {"1", "true", "yes", "on"}:
+            return []
+        _append_env(args, _HERMES_COMPARISON_ENV)
+        _hermes_comparison_mounts(args)
     elif harness == "codex":
         # Only an explicit comparison cell (the launcher sets the flag). A
         # shared OBENCH_VERTEX_PROXY_URL from a Pi run must not pull a stock
@@ -716,6 +750,9 @@ def _proxy_bridge_docker_args(harness, extra_docker_args):
         "--add-host=host.docker.internal:host-gateway",
         "--add-host=api.anthropic.com:0.0.0.0",
     ]
+    if harness == "hermes":
+        # Hermes's own providers: a misrouted request must not leave the cell.
+        args += ["--add-host=inference-api.nousresearch.com:0.0.0.0", "--add-host=openrouter.ai:0.0.0.0"]
     if harness == "codex":
         # Codex's built-in providers: a misrouted request must not leave the cell.
         args += ["--add-host=api.openai.com:0.0.0.0", "--add-host=chatgpt.com:0.0.0.0"]
