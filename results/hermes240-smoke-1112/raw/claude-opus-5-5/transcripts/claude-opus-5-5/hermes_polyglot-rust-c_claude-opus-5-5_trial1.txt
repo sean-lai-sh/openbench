@@ -1,0 +1,19 @@
+# transcript hermes:polyglot-rust-c:claude-opus-5-5:trial1
+# harness=hermes model=claude-opus-5-5 task=polyglot-rust-c trial=1 ts=2026-11-12T20:15:30
+# LOCAL-ONLY -- unscrubbed. Review with obench/scrub.py --check before sharing.
+
+I wrote the polyglot to /app/polyglot/main.rs. Both builds compile and print the same results:
+
+    n:    0  1  2  3  10  50           90                   150
+    out:  1  1  2  3  89  20365011074  4660046610375530309  <REDACTED_HEX>
+
+I tested with the compilers on this machine, which are older than yours: rustc 1.63.0 and g++ 12.2.0. I didn't run it on rustc 1.75 or g++ 13.2. The file only uses basic features that haven't changed, so it should work the same there.
+
+How it works: Rust comments can nest, but C++ comments can't.
+- The file starts with `/* /*`, a newline, then `*/`. C++ treats that as a finished comment. Rust is still inside a comment one level deep.
+- In C++, the Rust code is then skipped by `#if 0 ... #endif`. Rust sees the `#if 0` line inside its comment, and the next `*/` ends that comment, so Rust compiles the code that follows.
+- After the Rust code, a `/* /* */` line is a complete comment for C++. For Rust, it leaves a comment open that hides all the C++ code until the final `// */`.
+
+Both versions use 128-bit integers, so results are exact up to about n = 184. Past that the numbers get too big: the Rust build will panic and the C++ build will give wrong numbers. If you need larger n, I can switch both to big-number arithmetic.
+
+`rustc /app/polyglot/main.rs` puts the `main` binary in whatever directory you run it from. Run it from /app/polyglot, or add `-o /app/polyglot/main`, for `/app/polyglot/main N` to find it.
