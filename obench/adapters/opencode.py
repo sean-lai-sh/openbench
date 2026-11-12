@@ -165,9 +165,17 @@ MODELS = {
     # gets the same medium-equivalent request via `--variant medium`.
     "claude-opus-4-8": "anthropic/claude-opus-4-8",
     # Vertex ADC route. Not the Anthropic OAuth provider.
+    # claude-sonnet-5-5 uses this id only when no proxy spec is set. With
+    # OBENCH_OPENCODE_PROXY it takes the same proxy route as Opus, and the
+    # -m value is the Sonnet ref (see _labeled_model_ref).
     "claude-opus-5-5": "google-vertex-anthropic/claude-opus-5-5@default",
+    "claude-sonnet-5-5": "google-vertex-anthropic/claude-sonnet-5-5@default",
     "grok-4.5": "xai/grok-4.5",
 }
+
+# Proxy/Vertex Claude ids. Opus keeps proxy["model_ref"] verbatim, which is
+# how --vertex-model claude-sonnet-5-5 served Sonnet while cmd recorded Opus.
+_PROXY_CLAUDE = frozenset({"claude-opus-5-5", "claude-sonnet-5-5"})
 
 # canonical model name -> `--variant` reasoning effort
 _VARIANT = {
@@ -177,6 +185,7 @@ _VARIANT = {
     "gpt-5.6-luna": "medium",
     "claude-opus-4-8": "medium",
     "claude-opus-5-5": "medium",
+    "claude-sonnet-5-5": "medium",
     "grok-4.5": None,  # xai serves grok-4.5 without an effort selector
 }
 
@@ -1239,6 +1248,24 @@ def _proxy_override():
     return parsed
 
 
+def _labeled_model_ref(model, ref):
+    """``-m`` value for a proxy cell.
+
+    Opus returns ``ref`` unchanged, including a Sonnet ref the comparison
+    smoke installs while the adapter model stays ``claude-opus-5-5``.
+    Sonnet rewrites an Opus id inside that ref so cmd records
+    ``claude-sonnet-5-5``. A ref that already names Sonnet is kept.
+    """
+    text = str(ref or "").strip()
+    if model != "claude-sonnet-5-5":
+        return text
+    if "claude-sonnet-5-5" in text:
+        return text
+    if "claude-opus-5-5" in text:
+        return text.replace("claude-opus-5-5", "claude-sonnet-5-5")
+    return "anthropic/claude-sonnet-5-5"
+
+
 def _exe():
     """Binary for this call. ``OBENCH_OPENCODE_BIN`` wins, otherwise ``_EXE``.
 
@@ -1973,7 +2000,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         if stopped is not None:
             return stopped
         raise
-    probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model == "claude-opus-5-5"
+    probe = bool(os.environ.get("OBENCH_OPENCODE_BIN", "").strip()) or model in _PROXY_CLAUDE
     watch_prompt = False
     if model in MODELS:
         if model == "claude-opus-4-8" and not _has_anthropic_oauth():
@@ -1984,13 +2011,13 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                     **_empty_token_usage()}
         variant = _VARIANT.get(model)
         try:
-            proxy = _proxy_override() if model == "claude-opus-5-5" else None
+            proxy = _proxy_override() if model in _PROXY_CLAUDE else None
         except ValueError as exc:
             shutil.rmtree(iso_home, ignore_errors=True)
             return {"completed": False, "error": str(exc),
                     "output_tail": "", "tokens": None, "turns": None, "cmd": None,
                     **_empty_token_usage()}
-        model_flag = proxy["model_ref"] if proxy else MODELS[model]
+        model_flag = _labeled_model_ref(model, proxy["model_ref"]) if proxy else MODELS[model]
         if probe:
             cmd, watch_prompt = _build_cmd(
                 exe, model_flag, variant, workdir, instruction,
@@ -2028,11 +2055,12 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             env.pop("VERTEX_LOCATION", None)
             # Builds from late 2025 drop any models.dev entry with an
             # ``experimental`` key from ``run`` (provider.ts filter). Today's
-            # registry tags claude-opus-5-5 that way (fast mode), so those
-            # builds exit 1 with ProviderModelNotFoundError and print usage.
+            # registry tags claude-opus-5-5 and claude-sonnet-5-5 that way
+            # (fast mode), so those builds exit 1 with ProviderModelNotFoundError
+            # and print usage.
             env["OPENCODE_ENABLE_EXPERIMENTAL_MODELS"] = "1"
             installed_anthropic = _ensure_provider_sdk(env, proxy) or ""
-        elif model == "claude-opus-5-5" and not env.get("VERTEX_LOCATION"):
+        elif model in _PROXY_CLAUDE and not env.get("VERTEX_LOCATION"):
             env["VERTEX_LOCATION"] = "global"
         try:
             _install_config(env, _config_body(watch_prompt))

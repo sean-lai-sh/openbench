@@ -77,6 +77,7 @@ FAKE = textwrap.dedent("""\
             "project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
             "location": os.environ.get("VERTEX_LOCATION"),
             "base_url": os.environ.get("ANTHROPIC_BASE_URL"),
+            "experimental": os.environ.get("OPENCODE_ENABLE_EXPERIMENTAL_MODELS"),
         }
         cfg = os.environ.get("OPENCODE_CONFIG")
         if cfg and os.path.isfile(cfg):
@@ -126,7 +127,7 @@ class TestVertexFlags(unittest.TestCase):
         self.work = Path(self.tmp.name) / "work"
         self.work.mkdir()
 
-    def _run(self, help_text, extra=None, instruction="ping"):
+    def _run(self, help_text, extra=None, instruction="ping", model="claude-opus-5-5"):
         with EnvPatch() as env:
             env["OBENCH_OPENCODE_BIN"] = str(self.binary)
             env["FAKE_HELP"] = help_text
@@ -147,7 +148,7 @@ class TestVertexFlags(unittest.TestCase):
             env.pop("OBENCH_OPENCODE_DISABLE_TOOLS", None)
             if extra:
                 env.update(extra)
-            return self.openc.run(instruction, str(self.work), "claude-opus-5-5", 30)
+            return self.openc.run(instruction, str(self.work), model, 30)
 
     def _dump(self):
         return json.loads(self.dump.read_text(encoding="utf-8"))
@@ -424,6 +425,63 @@ class TestVertexFlags(unittest.TestCase):
         self.assertFalse(res["completed"])
         self.assertEqual(res["error"], "waiting on a permission prompt")
         self.assertLess(elapsed, 20)
+
+    def _proxy_env(self, model_ref):
+        return {
+            "OBENCH_OPENCODE_PROXY": json.dumps({
+                "model_ref": model_ref,
+                "api_key": "proxy",
+                "base_url": "http://127.0.0.1:9/v1",
+                "base_url_env": True,
+            }),
+        }
+
+    def test_sonnet_model_is_accepted_and_the_proxy_labels_it_sonnet(self):
+        res = self._run(
+            HELP_MODERN,
+            self._proxy_env("anthropic/claude-opus-5-5"),
+            model="claude-sonnet-5-5",
+        )
+        self.assertTrue(res["completed"], res.get("error"))
+        cmd = res["cmd"]
+        self.assertEqual(cmd[cmd.index("-m") + 1], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(cmd[cmd.index("--variant") + 1], "medium")
+        dumped = self._dump()
+        self.assertEqual(dumped["anthropic"], "proxy")
+        self.assertEqual(dumped["base_url"], "http://127.0.0.1:9/v1")
+        self.assertIsNone(dumped["location"])
+        self.assertEqual(dumped["experimental"], "1")
+
+    def test_sonnet_keeps_a_sonnet_model_ref(self):
+        res = self._run(
+            HELP_MODERN,
+            self._proxy_env("anthropic/claude-sonnet-5-5"),
+            model="claude-sonnet-5-5",
+        )
+        self.assertTrue(res["completed"], res.get("error"))
+        cmd = res["cmd"]
+        self.assertEqual(cmd[cmd.index("-m") + 1], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(self._dump()["experimental"], "1")
+
+    def test_opus_keeps_the_proxy_model_ref(self):
+        # Comparison smoke: the adapter model stays Opus while model_ref is Sonnet.
+        res = self._run(HELP_MODERN, self._proxy_env("anthropic/claude-sonnet-5-5"))
+        self.assertTrue(res["completed"], res.get("error"))
+        cmd = res["cmd"]
+        self.assertEqual(cmd[cmd.index("-m") + 1], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(self._dump()["anthropic"], "proxy")
+        self.assertIsNone(self._dump()["location"])
+
+    def test_sonnet_without_a_proxy_uses_the_vertex_provider(self):
+        res = self._run(HELP_MODERN, model="claude-sonnet-5-5")
+        self.assertTrue(res["completed"], res.get("error"))
+        cmd = res["cmd"]
+        self.assertEqual(
+            cmd[cmd.index("-m") + 1],
+            "google-vertex-anthropic/claude-sonnet-5-5@default",
+        )
+        self.assertEqual(self._dump()["location"], "global")
+        self.assertIsNone(self._dump()["experimental"])
 
 
 class TestAssessment(unittest.TestCase):
@@ -750,6 +808,191 @@ class TestProviderSdkPin(unittest.TestCase):
         self.assertEqual(result.status, "infra")
         self.assertIn("Errno", result.reason)
         self.assertNotIn("not listed", result.reason)
+
+
+class TestSonnetLaunch(unittest.TestCase):
+    """`--model claude-sonnet-5-5` records Sonnet. Vertex-only stays Opus."""
+
+    def _prs(self, directory: Path):
+        import csv
+        from thesis.ab.prs import parse_prs
+
+        path = directory / "prs.csv"
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=[
+                "PR", "Title", "Category", "Harness change",
+                "Merge commit SHA", "Parent/base SHA",
+            ])
+            writer.writeheader()
+            writer.writerow({
+                "PR": "1",
+                "Title": "Title one",
+                "Category": "tool",
+                "Harness change": "Changes the bash timeout hint.",
+                "Merge commit SHA": "b" * 40,
+                "Parent/base SHA": "a" * 40,
+            })
+        return parse_prs(path)
+
+    def test_bind_and_vertex_resolution(self):
+        from thesis.ab.compat import (
+            PROXY_MODEL_REF,
+            anthropic_proxy_config,
+            vertex_provider_config,
+        )
+        from thesis.ab.run_ab import bind_opencode_model, resolve_vertex_model
+
+        self.assertEqual(resolve_vertex_model("claude-opus-5-5", None), "claude-opus-5-5")
+        self.assertEqual(
+            resolve_vertex_model("claude-opus-5-5", "claude-sonnet-5-5"),
+            "claude-sonnet-5-5",
+        )
+        self.assertEqual(resolve_vertex_model("claude-sonnet-5-5", None), "claude-sonnet-5-5")
+        self.assertEqual(
+            resolve_vertex_model("claude-sonnet-5-5", "claude-sonnet-5-5"),
+            "claude-sonnet-5-5",
+        )
+        self.assertEqual(
+            resolve_vertex_model("claude-sonnet-5-5", "claude-opus-5-5"),
+            "claude-opus-5-5",
+        )
+
+        config = anthropic_proxy_config("http://127.0.0.1:9/v1", include_endpoint=True)
+        config["model"] = "anthropic/claude-opus-5-5"
+        config["small_model"] = "anthropic/claude-opus-5-5"
+        proxy = {
+            "model_ref": PROXY_MODEL_REF,
+            "api_key": "proxy",
+            "base_url": "http://127.0.0.1:9/v1",
+        }
+        same_config, same_proxy = bind_opencode_model(config, proxy, "claude-opus-5-5")
+        self.assertIs(same_config, config)
+        self.assertIs(same_proxy, proxy)
+
+        bound_config, bound_proxy = bind_opencode_model(config, proxy, "claude-sonnet-5-5")
+        models = bound_config["provider"]["anthropic"]["models"]
+        self.assertEqual(set(models), {"claude-sonnet-5-5"})
+        self.assertEqual(models["claude-sonnet-5-5"]["name"], "Claude Sonnet 5.5")
+        self.assertEqual(models["claude-sonnet-5-5"]["limit"], {"context": 1000000, "output": 128000})
+        self.assertEqual(bound_config["model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(bound_config["small_model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(bound_proxy["model_ref"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(bound_proxy["base_url"], "http://127.0.0.1:9/v1")
+        self.assertIn("claude-opus-5-5", config["provider"]["anthropic"]["models"])
+        self.assertEqual(proxy["model_ref"], PROXY_MODEL_REF)
+
+        native, native_proxy = bind_opencode_model(vertex_provider_config(), None, "claude-sonnet-5-5")
+        self.assertIn(
+            "claude-sonnet-5-5@default",
+            native["provider"]["google-vertex-anthropic"]["models"],
+        )
+        self.assertIsNone(native_proxy)
+
+    def _launch(self, model, vertex_model=None):
+        from unittest.mock import patch
+
+        from thesis.ab.compat import PROXY_API_KEY, PROXY_MODEL_REF, Assessment, anthropic_proxy_config
+        from thesis.ab.durable import publish_text
+        from thesis.ab.run_ab import drive
+
+        out = Path(tempfile.mkdtemp())
+        config = anthropic_proxy_config("http://127.0.0.1:9/v1", include_endpoint=True)
+        proxy = {
+            "model_ref": PROXY_MODEL_REF,
+            "api_key": PROXY_API_KEY,
+            "base_url": "http://127.0.0.1:9/v1",
+            "base_url_env": True,
+        }
+        seen = []
+
+        def worker(spec):
+            models = spec["config"]["provider"]["anthropic"]["models"]
+            seen.append({
+                "model": spec["model"],
+                "protocol_model": spec["protocol_model"],
+                "model_ref": spec["proxy"]["model_ref"],
+                "model_ids": sorted(models),
+            })
+            publish_text(Path(spec["cell_path"]), json.dumps({
+                "task": spec["task"], "trial": spec["trial"], "score": 0,
+                "model": spec["model"],
+                "tokens_input_uncached": 1, "tokens_output": 1,
+                "tokens_cache_read": 0, "tokens_cache_write": 0,
+            }))
+
+        def build_fn(sha, cache, repo=""):
+            return Path("/tmp") / sha
+
+        def assess_fn(_binary):
+            return Assessment("configured", "listed", config, False, proxy=proxy)
+
+        with patch.dict(os.environ, {"OBENCH_ANTHROPIC_PIN": "2.0.0"}):
+            _plan, launched, stopped = drive(
+                self._prs(out), ("make-it-run",), 1, out,
+                jobs=1, model=model, timeout_s=5, cache=out,
+                max_cost_usd=None, dry_run=False, tasks_dir=Path("/tmp"),
+                build_fn=build_fn, assess_fn=assess_fn, worker=worker,
+                vertex_model=vertex_model,
+            )
+        self.assertIsNone(stopped, stopped)
+        self.assertEqual(launched, 2)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0], seen[1])
+        self.assertIn("claude-opus-5-5", config["provider"]["anthropic"]["models"])
+        self.assertEqual(proxy["model_ref"], PROXY_MODEL_REF)
+        return seen[0]
+
+    def test_vertex_only_legacy_launch_stays_opus(self):
+        row = self._launch("claude-opus-5-5", "claude-sonnet-5-5")
+        self.assertEqual(row["model"], "claude-opus-5-5")
+        self.assertEqual(row["protocol_model"], "claude-sonnet-5-5")
+        self.assertEqual(row["model_ref"], "anthropic/claude-opus-5-5")
+        self.assertEqual(row["model_ids"], ["claude-opus-5-5"])
+
+    def test_sonnet_model_launch_records_sonnet_on_the_proxy(self):
+        row = self._launch("claude-sonnet-5-5", None)
+        self.assertEqual(row["model"], "claude-sonnet-5-5")
+        self.assertEqual(row["protocol_model"], "claude-sonnet-5-5")
+        self.assertEqual(row["model_ref"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(row["model_ids"], ["claude-sonnet-5-5"])
+
+    def test_sonnet_model_and_vertex_model_together(self):
+        row = self._launch("claude-sonnet-5-5", "claude-sonnet-5-5")
+        self.assertEqual(row["model"], "claude-sonnet-5-5")
+        self.assertEqual(row["protocol_model"], "claude-sonnet-5-5")
+        self.assertEqual(row["model_ref"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(row["model_ids"], ["claude-sonnet-5-5"])
+
+    def test_cli_passes_model_and_vertex_model_through(self):
+        from unittest.mock import patch
+        from thesis.ab.run_ab import main
+
+        out = Path(tempfile.mkdtemp())
+        seen = []
+
+        def fake_drive(*_args, **kwargs):
+            seen.append((kwargs.get("model"), kwargs.get("vertex_model")))
+            return "plan\n", 0, None
+
+        base = [
+            "thesis/ab/fixtures/opencode-harness-prs.csv", "--pr", "623",
+            "--tasks", "make-it-run", "--trials", "1", "--dry-run",
+            "--out", str(out), "--cache", str(out),
+        ]
+        with patch("thesis.ab.run_ab.drive", fake_drive):
+            self.assertEqual(main(base + ["--vertex-model", "claude-sonnet-5-5"]), 0)
+            self.assertEqual(main(base + ["--model", "claude-sonnet-5-5"]), 0)
+            self.assertEqual(main(base + [
+                "--model", "claude-sonnet-5-5",
+                "--vertex-model", "claude-sonnet-5-5",
+            ]), 0)
+            self.assertEqual(main(base + ["--model", "claude-opus-5-5"]), 0)
+        self.assertEqual(seen, [
+            ("claude-opus-5-5", "claude-sonnet-5-5"),
+            ("claude-sonnet-5-5", None),
+            ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+            ("claude-opus-5-5", None),
+        ])
 
 
 if __name__ == "__main__":

@@ -1090,6 +1090,67 @@ def attach_bridge_record(row: dict, spec: dict) -> dict:
     return row
 
 
+def _swap_opus_token(text: str) -> str:
+    """Replace an Opus 5.5 id with Sonnet 5.5, keeping a provider prefix and ``@default``."""
+    if "claude-sonnet-5-5" in text:
+        return text
+    return text.replace("claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def _rename_opus_model_entries(body: dict) -> None:
+    providers = body.get("provider")
+    if not isinstance(providers, dict):
+        return
+    for provider in providers.values():
+        if not isinstance(provider, dict):
+            continue
+        models = provider.get("models")
+        if not isinstance(models, dict):
+            continue
+        renamed = {}
+        for key, value in models.items():
+            new_key = _swap_opus_token(key) if isinstance(key, str) else key
+            entry = value
+            if (
+                isinstance(key, str)
+                and new_key != key
+                and isinstance(value, dict)
+                and isinstance(value.get("name"), str)
+            ):
+                entry = dict(value)
+                entry["name"] = value["name"].replace("Opus", "Sonnet").replace("opus", "sonnet")
+            renamed[new_key] = entry
+        provider["models"] = renamed
+
+
+def bind_opencode_model(config, proxy, model: str):
+    """Point an assessed Opus OpenCode config at Sonnet when ``--model`` is Sonnet.
+
+    Assessment still probes ``anthropic/claude-opus-5-5``. A cell whose
+    recorded model is ``claude-sonnet-5-5`` needs that id in the provider
+    map and in ``model_ref``, so ``opencode run -m`` and the row agree.
+    Opus cells, including ``--vertex-model claude-sonnet-5-5`` with the
+    default model, are returned unchanged.
+    """
+    if model != "claude-sonnet-5-5":
+        return config, proxy
+    body = json.loads(json.dumps(config)) if isinstance(config, dict) else {}
+    _rename_opus_model_entries(body)
+    for key in ("model", "small_model"):
+        value = body.get(key)
+        if isinstance(value, str):
+            body[key] = _swap_opus_token(value)
+    if not isinstance(proxy, dict):
+        return body, proxy
+    bound = dict(proxy)
+    ref = bound.get("model_ref")
+    if isinstance(ref, str) and ref.strip():
+        bound["model_ref"] = _swap_opus_token(ref)
+    else:
+        bound["model_ref"] = "anthropic/claude-sonnet-5-5"
+    return body, bound
+
+
 def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: str,
           model: str, timeout_s: int, transcripts_root: Path | None = None,
           no_progress_s: float = 0, thinking_mode: str = "default",
@@ -1126,6 +1187,10 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
         ),
         "results_dir": _absolute(out_dir),
     })
+    if model == "claude-sonnet-5-5" and filled.get("harness") == "opencode":
+        config, proxy = bind_opencode_model(filled.get("config"), filled.get("proxy"), model)
+        filled["config"] = config
+        filled["proxy"] = proxy
     if rerun_from is not None:
         filled["rerun_from"] = str(Path(rerun_from).resolve())
     if (
@@ -2614,13 +2679,34 @@ def _preinstall_shared_lsp(pending: list[dict], ensure_fn=None) -> str | None:
     return None
 
 
+_VERTEX_CLAUDE = frozenset({"claude-opus-5-5", "claude-sonnet-5-5"})
+
+
+def resolve_vertex_model(model: str, vertex_model: str | None) -> str:
+    """Vertex id the shared proxy calls.
+
+    An explicit ``--vertex-model`` is kept. ``--vertex-model claude-sonnet-5-5``
+    with the default ``--model claude-opus-5-5`` still serves Sonnet and the
+    harness row stays Opus.
+
+    When the flag is omitted, a Claude ``--model`` is served as itself, so
+    ``--model claude-sonnet-5-5`` calls Vertex Sonnet. Any other model keeps
+    the Opus default.
+    """
+    if isinstance(vertex_model, str) and vertex_model.strip():
+        return vertex_model.strip()
+    if model in _VERTEX_CLAUDE:
+        return model
+    return "claude-opus-5-5"
+
+
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
           transcripts_dir=None, aa: bool = False, fixtures=None,
           order: str = "sides", seed: int | None = None, with_aa: bool = False,
           no_progress_s: float = 300, omp_thinking: str = "default",
-          vertex_model: str = "claude-opus-5-5",
+          vertex_model: str | None = None,
           require_model_match: bool = False,
           rerun_from: Path | None = None,
           cells: set[str] | None = None):
@@ -2634,6 +2720,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
     meant for ``jobs`` 1: it runs two blocks per side and marks the first
     cell of each block ``warm_up``.
     """
+    vertex_model = resolve_vertex_model(model, vertex_model)
     out_dir = Path(out_dir)
     cache = Path(cache).resolve()
     if not isinstance(tasks, dict):
@@ -2968,15 +3055,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=1)
-    parser.add_argument("--model", default="claude-opus-5-5")
     parser.add_argument(
-        "--vertex-model",
+        "--model",
         default="claude-opus-5-5",
         help=(
-            "Vertex model the shared proxy calls (e.g. claude-sonnet-5-5). Harness configs keep "
-            "--model as their alias; each ledger row records upstream_model. A cell whose "
-            "upstream model differs, or whose Vertex location is not global, is off_protocol "
-            "and the batch stops."
+            "Harness model recorded on the cell and passed to the adapter. "
+            "claude-sonnet-5-5 uses the OpenCode proxy route and is labeled "
+            "claude-sonnet-5-5. The default claude-opus-5-5 stays the recorded "
+            "label when --vertex-model serves a different Vertex model."
+        ),
+    )
+    parser.add_argument(
+        "--vertex-model",
+        default=None,
+        help=(
+            "Vertex model the shared proxy calls. When omitted, a Claude "
+            "--model is served as itself (claude-opus-5-5 or claude-sonnet-5-5). "
+            "An explicit value wins, so --vertex-model claude-sonnet-5-5 with "
+            "the default --model still serves Sonnet and records the harness "
+            "as Opus. A cell whose upstream model differs, or whose Vertex "
+            "location is not global, is off_protocol and the batch stops."
         ),
     )
     parser.add_argument(
