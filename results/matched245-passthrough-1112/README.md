@@ -31,3 +31,10 @@ All three use `cache_control {type: ephemeral}`. Offsets are into `json.dumps(bo
 
 ## Re-smoke comparison
 The re-smoke proxy at this head does not save Anthropic request bodies; only the Responses API path does. So `matched245-resmoke-1112` has no bodies, and the per-call divergence offsets can't be computed from its logs.
+
+## Follow-up: divergence offsets now exist (#255)
+The cache-gate diagnosis in `results/matched245-cachediv-1112` (#255, same VM, head and task) fills the gap left here. Its launcher saves every body twice, before and after the proxy edit, for A (matched config, with the edit that turns Pi's `disabled` into `between_tools`/`adaptive`, so call 1 no longer 400s) and B (passthrough with Pi's normal thinking, no `--thinking off`).
+- **First raw divergence:** on every call it is the moved last-block `cache_control` marker. It sits at the same offset in Pi's bytes and in the forwarded bytes. With markers stripped, every call is append-only. So it is **not a proxy artifact**.
+- **B** did not read cache from call 2 on either model, and no blocks changed.
+
+This smoke stays as-is: blocked on call 1, $0 spend, not scored.
