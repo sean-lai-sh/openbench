@@ -3,6 +3,8 @@
 Runner head under test: `151e349cbe6edd40855273115502f5ac2d7f54a9` (branch `cursor/opencode-sonnet-model-eddf`).
 Base / merge-base: `39875fac6670b24c1cef2635aaf077e5c6e04741` (main). Data only; no code change.
 
+> **All 4 smoke cells failed as infra on `provider_pin_mismatch`: loaded `@ai-sdk/anthropic` 3.0.71 (bundled in the prebuilt binaries) vs pin 3.0.64 (read from `bun.lock`).** These cells are smoke data only, not scored rows. Do not pool or score them.
+
 ## 1. Unit suite on thesis-h1-cpu-2 (`unit-h1cpu2/`)
 
 `python -m unittest discover -s obench/tests -v` in a fresh venv with `pip install -e .`, API/GCP env vars unset (same as PR PROOF.md).
