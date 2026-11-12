@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a5e78ed6001jI3u2zhHiOHARY",
+  "sessionID": "ses_e5a187181ffeTatGSKRpqvMhve",
+  "role": "user",
+  "time": {
+    "created": 1793784778454
+  },
+  "summary": {
+    "title": "Implementing tensor parallelism for linear layers",
+    "body": "I created `parallel_linear.py` with both classes. I tested them with world sizes 1, 2 and 4 by comparing against a plain `torch.nn.Linear` with the same weights. The outputs, the gradients for the input, weight and bias, and the weight sharding all matched in every case. The test script is at `/tmp/t_pl.py`.\n\n**ColumnParallelLinear**\n- `master_weight` uses the `nn.Linear` layout, `(out_features, in_features)`. Each rank keeps its own slice of rows: `weight[rank*O/ws : (rank+1)*O/ws, :]`, which is the output-feature slice.\n- The bias has length `out_features/ws` and starts at zero.\n- In the forward pass, each rank computes its part of the output, then the parts are gathered and joined along the last dimension (all_gather). In the backward pass, each rank takes back only its own slice of the gradient.\n- The gradient for the input is summed across ranks in the backward pass, so it matches the non-parallel result.\n\n**RowParallelLinear**\n- Each rank keeps its own slice of input-feature columns: `weight[:, rank*I/ws : (rank+1)*I/ws]`.\n- The bias stays full size (`out_features`) on every rank and starts at zero. It is added after the partial outputs are summed, so it is only counted once.\n- The forward pass sums the partial outputs across ranks (all_reduce); the backward pass passes the gradient through unchanged.\n- The layer accepts either input size. If the last dimension is the full `in_features`, each rank takes its own slice. If it is already `in_features/ws`, the layer assumes the input is pre-split and uses it as is.\n\n`in_features` (for the row layer) and `out_features` (for the column layer) must divide evenly by the world size; the code checks this with an assert. If `torch.distributed` hasn't been initialised, both classes run as a single process (world size 1, rank 0).",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

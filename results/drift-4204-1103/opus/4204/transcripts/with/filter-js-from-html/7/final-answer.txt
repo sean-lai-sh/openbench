@@ -1,0 +1,24 @@
+I've created `filter.py`. Run it as `python3 filter.py file.html` and it edits the file in place. In headless Chromium, none of the 61 XSS test cases I tried ran script after filtering, and clean test pages came out byte-for-byte identical.
+
+**How it works:** it doesn't re-parse and re-write the page with an HTML library, since that would change formatting. It scans the raw text with a small scanner that follows the HTML5 spec and cuts out only the dangerous parts. Everything else is copied unchanged: whitespace, line endings, entities, non-ASCII bytes, comments and quoting style.
+
+**What gets removed:**
+- **Whole elements:** `<script>` and `<iframe>`, including their content.
+- **Tags only:** `<object>`, `<embed>`, `<applet>`, `<frame>` and `<portal>`. Anything between an opening and closing `<object>` tag stays and is still filtered.
+- **Event attributes:** every `on*` attribute (`onerror`, `onload`, `onbegin`, …), plus `srcdoc`.
+- **Script links:** attributes containing `javascript:`, `vbscript:` or `livescript:`. Tricks to disguise them (character codes like `&#106;`, `&colon;`, hidden tabs or control characters) are decoded first. This also covers SVG animation attributes like `values=`/`to=`, and `<meta http-equiv=refresh>`.
+- **Embedded data:** `data:` links, except image, font, audio and video ones, so inline `data:image/png` images are kept.
+- **Old CSS script tricks:** in `style` attributes and `<style>` blocks (`expression()`, `behavior:`, `-moz-binding`, including when hidden with CSS escape codes).
+
+**Trickier cases it handles:**
+- **Content that can be read two ways:** what's inside `<style>`, `<title>`, `<textarea>` and `<noscript>`, and `<![CDATA[…]]>` sections, is plain text in normal HTML but live markup inside SVG/MathML. The filter makes it safe either way. This blocks the known `<noscript><p title="</noscript><img onerror…>">` and `<svg><style>…` tricks.
+- **Pieces joining up after removal:** the filter runs repeatedly until nothing changes, so input like `<<script></script>img onerror=…>` can't turn into a working tag once the script is cut out.
+
+**Trade-offs:**
+- **Iframes and embedded objects are always removed**, even harmless ones, because a frame pointing to another site can't be checked offline.
+- **All `<script>` elements go**, including non-JavaScript ones like JSON-LD.
+- **Rarely, harmless content is altered:**
+  - A text attribute such as `title` is dropped if it starts with `javascript:`.
+  - A `<` inside a `<textarea>` can be rewritten as `&lt;`. The page looks the same.
+  - A stray `<` inside a `<style>` block becomes `&lt;`, which can break that CSS rule.
+- **A `<script>` with no closing tag:** only the opening tag is removed, so the script's source code then shows on the page as plain text. Nothing runs.

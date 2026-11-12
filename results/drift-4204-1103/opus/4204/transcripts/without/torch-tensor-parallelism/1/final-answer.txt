@@ -1,0 +1,23 @@
+I created `parallel_linear.py` with both classes. I ran a test with 1, 2 and 4 processes on CPU, comparing each class against a plain `torch.nn.Linear` with the same weight, and all three passed. Outputs, weight and bias gradients, and input gradients all matched the reference.
+
+**Shared setup**
+- `master_weight` uses the standard `nn.Linear` layout, `(out_features, in_features)`. A wrong shape fails an assertion.
+- Each rank copies its own slice of `master_weight`.
+- The split dimension must divide evenly by world_size, or construction fails with an error.
+- Bias, when used, starts at zero.
+- If `torch.distributed` hasn't been initialised, both classes run as a single process (world_size 1).
+
+**`ColumnParallelLinear`**
+- **Weight:** each rank holds `master_weight[r*chunk:(r+1)*chunk, :]`, a block of output rows.
+- **Bias:** split the same way as the output dimension, so each rank holds `out_features / world_size` values.
+- **Forward:** each rank computes its local output, then the pieces are gathered across ranks and joined along the last dimension.
+- **Backward:** each rank takes its own slice of the output gradient. The input gradient is summed across ranks, so the full input gets the correct gradient.
+
+**`RowParallelLinear`**
+- **Weight:** each rank holds `master_weight[:, r*chunk:(r+1)*chunk]`, a block of input columns.
+- **Bias:** the full bias is kept on every rank.
+- **Input:** the layer accepts either the full input, which it splits into the rank's slice, or an input that is already split. It decides by checking the size of the last dimension.
+- **Forward:** each rank computes a partial output, the partials are summed across ranks, and then the full bias is added.
+- **Backward:** the output gradient passes through unchanged. If the layer split the input itself, the input gradient is gathered back to full size.
+
+The test script was a temporary file (`/tmp/tp_test.py`) and is not part of the deliverable.

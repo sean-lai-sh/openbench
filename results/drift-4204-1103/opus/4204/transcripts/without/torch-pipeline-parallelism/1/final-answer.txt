@@ -1,0 +1,16 @@
+I've written `pipeline_parallel.py` with `train_step_pipeline_afab`, and it works: with 1 and 2 processes, the gradients and loss exactly match a normal, non-pipelined copy of the model (max difference 0.0).
+
+**How I tested it:** `transformers` isn't installed here, so I installed version 5.22.1 into a temporary local environment. I built a small 5-layer LLaMA and split each batch into 3 microbatches. I ran the training step on 1 and 2 CPU processes, with both of the attention implementations it supports (`sdpa` and `eager`). Then I compared every parameter gradient with the copy's. I deleted the test script and environment afterwards; only `pipeline_parallel.py` remains. Your own hook-based test hasn't been run.
+
+**How it works:**
+- **Splitting the model:** the decoder layers are split evenly across ranks, with any extra layers going to the lower ranks. Rank 0 also runs the token embedding, and the last rank also runs the final norm, the output head and the loss.
+- **Forward phase:** every microbatch goes forward first. Rank 0 embeds the input IDs; other ranks receive hidden states of shape `[mb, seq, hidden]` from the previous rank. Each rank runs its own layers and sends the result on. The last rank computes `cross_entropy / num_microbatches`.
+- **Backward phase:** then every microbatch goes backward. The last rank backpropagates its loss; other ranks receive the gradient from the next rank and backpropagate their saved outputs. Every rank except 0 sends the gradient of its input back to the previous rank.
+- **Communication:** all sends and receives use `torch.distributed.P2POp` and `batch_isend_irecv`. Received tensors and gradients are created on the given device and dtype.
+- **No hooks** are used anywhere.
+
+**Things to know:**
+- Input and target IDs are moved to the device but kept as integer tensors, because the embedding layer can't take float IDs. Only hidden states and gradients are cast to `dtype`.
+- The causal mask is handled differently per attention type. For `eager` attention I build the mask explicitly, because that implementation wouldn't apply one by itself. For `sdpa` and flash attention I pass no mask, so they apply causal masking themselves.
+- The function doesn't call an optimizer step or zero the gradients.
+- It returns the summed, scaled loss on the last rank and `None` on the other ranks.

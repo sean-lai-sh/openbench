@@ -1,0 +1,25 @@
+{
+  "id": "prt_1a5ddf312001KjYRKOwU3E0v2k",
+  "sessionID": "ses_e5a28690fffeSKtBXBR37qDp9a",
+  "messageID": "msg_1a5dde63a001XMROXsx4gRkYzn",
+  "type": "tool",
+  "callID": "toolu_vrtx_01A7JK3CZWxJTZJvKGHZoUB9",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-bxx6m3yu/bench_opencode_sam-cell-seg_mun8txyw/convert_masks.py",
+      "offset": 155,
+      "limit": 70
+    },
+    "output": "<file>\n00156| # Main pipeline\n00157| # ----------------------------------------------------------------------------\n00158| def run_sam(predictor, image, records):\n00159|     \"\"\"Return, per record, (mask bool HxW, logits float HxW) in image coords.\"\"\"\n00160|     H, W = image.shape[:2]\n00161|     groups = {}\n00162|     for i, r in enumerate(records):\n00163|         groups.setdefault(choose_tile(r[\"box\"], W, H), []).append(i)\n00164| \n00165|     results = [None] * len(records)\n00166|     pbar = tqdm(total=len(records), desc=\"MobileSAM\")\n00167|     for (tx, ty, tw, th), idxs in groups.items():\n00168|         predictor.set_image(np.ascontiguousarray(image[ty : ty + th, tx : tx + tw]))\n00169|         for i in idxs:\n00170|             r = records[i]\n00171|             x0, y0, x1, y1 = r[\"box\"]\n00172|             box = np.array([x0 - tx, y0 - ty, x1 - tx, y1 - ty], dtype=np.float32)\n00173|             with torch.no_grad():\n00174|                 logits, scores, _ = predictor.predict(\n00175|                     box=box, multimask_output=True, return_logits=True\n00176|                 )\n00177| \n00178|             # region in which a mask is allowed (box expanded by a margin)\n00179|             bw, bh = x1 - x0, y1 - y0\n00180|             mx = max(3, int(round(BOX_MARGIN * bw)))\n00181|             my = max(3, int(round(BOX_MARGIN * bh)))\n00182|             allow = np.zeros((th, tw), bool)\n00183|             allow[\n00184|                 max(0, int(y0 - ty) - my) : min(th, int(y1 - ty) + my + 1),\n00185|                 max(0, int(x0 - tx) - mx) : min(tw, int(x1 - tx) + mx + 1),\n00186|             ] = True\n00187| \n00188|             ref = r[\"ref\"][ty : ty + th, tx : tx + tw]\n00189|             box_area = max(1.0, (bw + 1) * (bh + 1))\n00190|             best, best_score = None, -np.inf\n00191|             for k in range(logits.shape[0]):\n00192|                 m = (logits[k] > predictor.model.mask_threshold) & allow\n00193|                 m = largest_component(m)\n00194|                 area = m.sum()\n00195|                 if area < 4:\n00196|                     continue\n00197|                 s = float(scores[k]) + iou(m, ref)\n00198|                 # penalise masks that simply fill the whole box\n00199|                 fill = area / box_area\n00200|                 if fill > 0.95:\n00201|                     s -= 0.5\n00202|                 if fill < 0.15:\n00203|                     s -= 0.5\n00204|                 if s > best_score:\n00205|                     best_score, best = s, k\n00206| \n00207|             full_mask = np.zeros((H, W), bool)\n00208|             full_logit = np.full((H, W), -np.inf, np.float32)\n00209|             if best is not None:\n00210|                 lg = np.where(allow, logits[best], -np.inf).astype(np.float32)\n00211|                 full_logit[ty : ty + th, tx : tx + tw] = lg\n00212|                 full_mask[ty : ty + th, tx : tx + tw] = largest_component(\n00213|                     lg > predictor.model.mask_threshold\n00214|                 )\n00215|             results[i] = (full_mask, full_logit)\n00216|             pbar.update(1)\n00217|     pbar.close()\n00218|     return results\n00219| \n00220| \n00221| def resolve(records, sam_results, shape):\n00222|     H, W = shape\n00223|     n = len(records)\n00224| \n00225|     # 1) assign contested pixels to the mask with the highest SAM logit\n\n(File has more lines. Use 'offset' parameter to read beyond line 225)\n</file>",
+    "title": "tmp/obench-cell-bxx6m3yu/bench_opencode_sam-cell-seg_mun8txyw/convert_masks.py",
+    "metadata": {
+      "preview": "# Main pipeline\n# ----------------------------------------------------------------------------\ndef run_sam(predictor, image, records):\n    \"\"\"Return, per record, (mask bool HxW, logits float HxW) in image coords.\"\"\"\n    H, W = image.shape[:2]\n    groups = {}\n    for i, r in enumerate(records):\n        groups.setdefault(choose_tile(r[\"box\"], W, H), []).append(i)\n\n    results = [None] * len(records)\n    pbar = tqdm(total=len(records), desc=\"MobileSAM\")\n    for (tx, ty, tw, th), idxs in groups.items():\n        predictor.set_image(np.ascontiguousarray(image[ty : ty + th, tx : tx + tw]))\n        for i in idxs:\n            r = records[i]\n            x0, y0, x1, y1 = r[\"box\"]\n            box = np.array([x0 - tx, y0 - ty, x1 - tx, y1 - ty], dtype=np.float32)\n            with torch.no_grad():\n                logits, scores, _ = predictor.predict(\n                    box=box, multimask_output=True, return_logits=True"
+    },
+    "time": {
+      "start": 1793784149554,
+      "end": 1793784149573
+    }
+  }
+}

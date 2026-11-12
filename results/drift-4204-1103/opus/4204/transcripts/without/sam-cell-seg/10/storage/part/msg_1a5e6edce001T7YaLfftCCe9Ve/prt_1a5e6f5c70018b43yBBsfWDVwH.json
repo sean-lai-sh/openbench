@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a5e6f5c70018b43yBBsfWDVwH",
+  "sessionID": "ses_e5a1f1c81ffeCz7JCyuYh3HMp9",
+  "messageID": "msg_1a5e6edce001T7YaLfftCCe9Ve",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Erz1GSvaypj84W1jhwHukn",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-sstw1wym/bench_opencode_sam-cell-seg_jspxjsih; W=/opt/uvcache/git-v0/checkouts/e7d9320a8522f22d/f706ad9/weights/mobile_sam.pt; s=$(date +%s); python convert_masks.py $W /tmp/out_t demo_rgb.png demo_metadata.csv > /tmp/log.txt 2>&1; echo $(( $(date +%s)-s ))s; tail -1 /tmp/log.txt; cat > /tmp/validate.py <<'EOF'\nimport sys,numpy as np,pandas as pd,cv2\ninp=pd.read_csv(sys.argv[1]); out=pd.read_csv(sys.argv[2]); img=cv2.imread(sys.argv[3])\nh,w=img.shape[:2]\nassert list(inp.columns)==list(out.columns) and len(inp)==len(out)\nsame=[c for c in inp.columns if c not in('xmin','xmax','ymin','ymax','coords_x','coords_y')]\nassert inp[same].equals(out[same]), \"other columns changed\"\ncnt=np.zeros((h,w),int); ious=[]\nfor (_,a),(_,b) in zip(inp.iterrows(),out.iterrows()):\n    xs=list(map(int,b.coords_x.split(','))); ys=list(map(int,b.coords_y.split(',')))\n    assert len(xs)==len(ys)\n    pts={(x,y) for x,y in zip(xs,ys)}\n    assert not (len(pts)<=4 and len({p[0] for p in pts})<=2 and len({p[1] for p in pts})<=2), \"rectangle\"\n    assert (b.xmin,b.xmax,b.ymin,b.ymax)==(min(xs),max(xs),min(ys),max(ys))\n    m=np.zeros((h,w),np.uint8); cv2.fillPoly(m,[np.array([xs,ys]).T.astype(np.int32)],1)\n    n,_=cv2.connectedComponents(m,connectivity=4); assert n==2,\"not contiguous\"\n    cnt+=m\n    o=np.zeros((h,w),np.uint8); cv2.fillPoly(o,[np.array([list(map(int,a.coords_x.split(','))),list(map(int,a.coords_y.split(',')))]).T.astype(np.int32)],1)\n    ious.append(((m&o).sum()/(m|o).sum(), a.type))\nassert cnt.max()<=1, \"overlap\"\nd=pd.DataFrame(ious,columns=['iou','type']); print(\"OK; IoU vs original:\\n\",d.groupby('type').iou.describe())\nEOF\npython /tmp/validate.py demo_metadata.csv /tmp/out_t/demo_metadata.csv demo_rgb.png",
+      "description": "Run batched script and validate",
+      "timeout": 600000
+    },
+    "output": "28s\nSaved 48 refined masks to /tmp/out_t/demo_metadata.csv\nOK; IoU vs original:\n            count      mean       std  ...       50%       75%       max\ntype                                  ...                              \npolyline    29.0  0.776814  0.065520  ...  0.782443  0.836735  0.869281\nrectangle   19.0  0.609819  0.126743  ...  0.607370  0.700059  0.821782\n\n[2 rows x 8 columns]\n",
+    "title": "cd /tmp/obench-cell-sstw1wym/bench_opencode_sam-cell-seg_jspxjsih; W=/opt/uvcache/git-v0/checkouts/e7d9320a8522f22d/f706ad9/weights/mobile_sam.pt; s=$(date +%s); python convert_masks.py $W /tmp/out_t demo_rgb.png demo_metadata.csv > /tmp/log.txt 2>&1; echo $(( $(date +%s)-s ))s; tail -1 /tmp/log.txt; cat > /tmp/validate.py <<'EOF'\nimport sys,numpy as np,pandas as pd,cv2\ninp=pd.read_csv(sys.argv[1]); out=pd.read_csv(sys.argv[2]); img=cv2.imread(sys.argv[3])\nh,w=img.shape[:2]\nassert list(inp.columns)==list(out.columns) and len(inp)==len(out)\nsame=[c for c in inp.columns if c not in('xmin','xmax','ymin','ymax','coords_x','coords_y')]\nassert inp[same].equals(out[same]), \"other columns changed\"\ncnt=np.zeros((h,w),int); ious=[]\nfor (_,a),(_,b) in zip(inp.iterrows(),out.iterrows()):\n    xs=list(map(int,b.coords_x.split(','))); ys=list(map(int,b.coords_y.split(',')))\n    assert len(xs)==len(ys)\n    pts={(x,y) for x,y in zip(xs,ys)}\n    assert not (len(pts)<=4 and len({p[0] for p in pts})<=2 and len({p[1] for p in pts})<=2), \"rectangle\"\n    assert (b.xmin,b.xmax,b.ymin,b.ymax)==(min(xs),max(xs),min(ys),max(ys))\n    m=np.zeros((h,w),np.uint8); cv2.fillPoly(m,[np.array([xs,ys]).T.astype(np.int32)],1)\n    n,_=cv2.connectedComponents(m,connectivity=4); assert n==2,\"not contiguous\"\n    cnt+=m\n    o=np.zeros((h,w),np.uint8); cv2.fillPoly(o,[np.array([list(map(int,a.coords_x.split(','))),list(map(int,a.coords_y.split(',')))]).T.astype(np.int32)],1)\n    ious.append(((m&o).sum()/(m|o).sum(), a.type))\nassert cnt.max()<=1, \"overlap\"\nd=pd.DataFrame(ious,columns=['iou','type']); print(\"OK; IoU vs original:\\n\",d.groupby('type').iou.describe())\nEOF\npython /tmp/validate.py demo_metadata.csv /tmp/out_t/demo_metadata.csv demo_rgb.png",
+    "metadata": {
+      "output": "28s\nSaved 48 refined masks to /tmp/out_t/demo_metadata.csv\nOK; IoU vs original:\n            count      mean       std  ...       50%       75%       max\ntype                                  ...                              \npolyline    29.0  0.776814  0.065520  ...  0.782443  0.836735  0.869281\nrectangle   19.0  0.609819  0.126743  ...  0.607370  0.700059  0.821782\n\n[2 rows x 8 columns]\n",
+      "exit": 0,
+      "description": "Run batched script and validate"
+    },
+    "time": {
+      "start": 1793784747058,
+      "end": 1793784776582
+    }
+  }
+}

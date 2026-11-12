@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a5c61f4b001a6YreTjMZ98AVh",
+  "sessionID": "ses_e5a3a130bffeD8agF0zlCujJ5y",
+  "messageID": "msg_1a5c5fe1a001II4bWpnJ7zjvx1",
+  "type": "tool",
+  "callID": "toolu_vrtx_01NULefDq13ByVRJgkvUyZLT",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-ssf0gzcc/bench_opencode_model-extraction-relu-logits_uba6gj94/steal.py",
+      "content": "\"\"\"Extract A1 (up to row permutation and scaling) from a 1-hidden-layer ReLU\nnetwork using only black-box queries to forward(x).\n\nMethod: along random lines, locate the kinks (critical points where a hidden\nneuron switches on/off). At each kink, the jump in the input gradient equals\na2_i * A1[i, :], which reveals row i of A1 up to scale. Rows found from many\nlines are clustered/deduplicated.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, flo, fhi, out, depth=0):\n    \"\"\"Recursively find t values where g(t)=f(x0+t d) is non-linear.\"\"\"\n    mid = 0.5 * (lo + hi)\n    fmid = f(x0 + mid * d)\n    lin = 0.5 * (flo + fhi)\n    scale = max(1.0, abs(flo), abs(fhi))\n    if abs(fmid - lin) < 1e-12 * scale and depth > 4:\n        return  # linear on this interval (with high probability)\n    if hi - lo < 1e-6:\n        out.append(mid)\n        return\n    find_kinks(x0, d, lo, mid, flo, fmid, out, depth + 1)\n    find_kinks(x0, d, mid, hi, fmid, fhi, out, depth + 1)\n\n\ndef refine_kink(x0, d, t, w=1e-5):\n    \"\"\"Locate kink precisely by intersecting the two linear pieces.\"\"\"\n    a, b = t - 4 * w, t - 2 * w\n    c, e = t + 2 * w, t + 4 * w\n    fa, fb, fc, fe = (f(x0 + s * d) for s in (a, b, c, e))\n    m1 = (fb - fa) / (b - a)\n    m2 = (fe - fc) / (e - c)\n    if abs(m1 - m2) < 1e-14:\n        return None\n    # fa + m1 (s - a) = fc + m2 (s - c)\n    s = (fc - fa + m1 * a - m2 * c) / (m1 - m2)\n    return s\n\n\ndef gradient(x, h=1e-6):\n    g = np.zeros(DIM)\n    f0 = f(x)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\ndef main():\n    candidates = []\n    n_lines = 40\n    T = 20.0\n    for _ in range(n_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        kinks = []\n        find_kinks(x0, d, -T, T, f(x0 - T * d), f(x0 + T * d), kinks)\n        # merge near-duplicate kinks\n        kinks = sorted(kinks)\n        merged = []\n        for t in kinks:\n            if not merged or t - merged[-1] > 1e-4:\n                merged.append(t)\n        for t in merged:\n            s = refine_kink(x0, d, t)\n            if s is None or abs(s - t) > 1e-3:\n                continue\n            xk = x0 + s * d\n            eps = 1e-4\n            g1 = gradient(xk + eps * d)\n            g2 = gradient(xk - eps * d)\n            # check the pieces are clean (gradients stable a bit further out)\n            g1b = gradient(xk + 2 * eps * d)\n            g2b = gradient(xk - 2 * eps * d)\n            diff = g1 - g2\n            nd = np.linalg.norm(diff)\n            if nd < 1e-9:\n                continue\n            if (np.linalg.norm(g1 - g1b) > 1e-3 * nd or\n                    np.linalg.norm(g2 - g2b) > 1e-3 * nd):\n                continue\n            candidates.append(normalize(diff))\n\n    # cluster candidate rows\n    clusters = []  # list of [sum_vector, count]\n    for v in candidates:\n        for c in clusters:\n            rep = c[0] / c[1]\n            if np.linalg.norm(normalize(rep) - v) < 1e-3:\n                c[0] += v\n                c[1] += 1\n                break\n        else:\n            clusters.append([v.copy(), 1])\n\n    rows = [normalize(c[0] / c[1]) for c in clusters if c[1] >= 2]\n    A = np.array(rows)\n    print(f\"Recovered {A.shape[0]} neurons from {len(candidates)} kinks\")\n    np.set_printoptions(precision=6, suppress=True, linewidth=150)\n    print(A)\n    np.save(OUT, A)\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-ssf0gzcc/bench_opencode_model-extraction-relu-logits_uba6gj94/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-ssf0gzcc/bench_opencode_model-extraction-relu-logits_uba6gj94/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793782600883,
+      "end": 1793782607702
+    }
+  }
+}

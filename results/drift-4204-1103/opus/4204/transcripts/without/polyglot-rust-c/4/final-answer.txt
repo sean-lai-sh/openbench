@@ -1,0 +1,27 @@
+I wrote `polyglot/main.rs`. It compiles with both `rustc` and `g++ -x c++`, and both programs print the same results with f(0)=1 and f(1)=1:
+
+| N | Output |
+|---|---|
+| 0, 1, 2, 3 | 1, 1, 2, 3 |
+| 10 | 89 |
+| 90 | 4660046610375530309 |
+| 200 | 453973694165307953197296969697410619233826 |
+
+I tested with the compilers installed here and didn't check which versions they are, so it hasn't been confirmed on your rustc 1.75.0 and g++ 13.2.0. The file only uses basic features of each language, so I don't expect version problems. I deleted the test binaries afterwards, so the folder contains just `main.rs`.
+
+**How it works:** Rust lets block comments nest, but C++ doesn't, and the file uses that difference:
+
+```
+/* /* */          C++: one complete comment.  Rust: still inside a comment (2 opened, 1 closed)
+...C++ code...    Rust ignores this
+#if 0             C++ starts skipping from here
+// */             C++: a line comment.  Rust: closes its comment
+...Rust code...   C++ skips this
+/* /* */          C++: a comment inside the skipped part.  Rust: opens a new comment
+#endif            C++ stops skipping.  Rust: inside its comment
+// */             C++: a line comment.  Rust: closes its comment
+```
+
+One rule if you edit it: the C++ part can't contain `/*` or `*/`, or Rust's comment will close early.
+
+Both versions do the maths in arbitrary precision (numbers stored in base 10⁹), so large N works and doesn't overflow. If N is missing, both programs treat it as 0.

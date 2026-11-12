@@ -1,0 +1,11 @@
+{
+  "id": "prt_1a4071792001sSYD0zxzyh7Qpg",
+  "sessionID": "ses_e5bf9d715ffeiN7aby2HoQ0OGk",
+  "messageID": "msg_1a406fe2700135GCkwNN03tu15",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I tested them in separate processes with world sizes 1, 2 and 4, comparing against a regular `nn.Linear` given the same weight and a zero bias. The outputs, weight gradients, bias gradients and input gradients all matched.\n\n**How it works:**\n- `master_weight` is expected to have shape `(out_features, in_features)`, the same layout as `nn.Linear`.\n- **`ColumnParallelLinear`**: each rank keeps a slice of `master_weight` along the output dimension, `[out/ws, in]`, and a zero-initialised bias of size `out/ws`. Each rank computes its share of the output, and the shares are joined along the last dimension with `all_gather`.\n- **`RowParallelLinear`**: each rank keeps a slice along the input dimension, `[out, in/ws]`, and the full zero-initialised bias. Each rank computes a partial result, the partial results are summed with `all_reduce`, and the bias is added once afterwards.\n- **Gradients**: these use the standard tensor-parallel setup with small custom autograd functions. When `all_gather` runs backwards, each rank keeps its own slice of the gradient. `all_reduce` passes the gradient straight through. Gradients for the input are summed or gathered across ranks so they come out as the full input gradient.\n\nTwo things you might not expect:\n- `RowParallelLinear` decides from the input width what it's been given. If the last dimension equals `in_features`, it treats the input as full and takes its own slice. If not, it treats the input as already split for that rank.\n- `out_features` (for column) or `in_features` (for row) must divide evenly by the world size. Otherwise the constructor fails an assertion.",
+  "time": {
+    "start": 1793753290922,
+    "end": 1793753290922
+  }
+}

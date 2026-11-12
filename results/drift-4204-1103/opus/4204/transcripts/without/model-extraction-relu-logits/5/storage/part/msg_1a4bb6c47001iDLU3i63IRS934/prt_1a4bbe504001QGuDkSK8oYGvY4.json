@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a4bbe504001QGuDkSK8oYGvY4",
+  "sessionID": "ses_e5b44a620ffe2lRm2s5kHKghTi",
+  "messageID": "msg_1a4bb6c47001iDLU3i63IRS934",
+  "type": "tool",
+  "callID": "toolu_vrtx_01BUHKVooc79cyRetEaNr6uS",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-qr0oirxj/bench_opencode_model-extraction-relu-logits_feomyk19/steal.py",
+      "content": "\"\"\"Extract A1 (up to neuron permutation and positive scaling) from a one-hidden-layer\nReLU network using only black-box queries to forward(x).\"\"\"\nimport itertools\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\nnq = 0\n\n\ndef f(x):\n    global nq\n    nq += 1\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef grad(x, h=1e-6):\n    g = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef find_kinks(x0, d, lo, hi):\n    \"\"\"Return list of t values where f(x0 + t d) has a kink in [lo, hi].\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n\n    def rec(a, fa, b, fb, depth):\n        m = 0.5 * (a + b)\n        fm = g(m)\n        if abs(fm - 0.5 * (fa + fb)) < 1e-12 * max(1.0, abs(fm)) and depth > 3:\n            return\n        if b - a < 1e-3:\n            h = 1e-7\n            sl = (g(a + h) - fa) / h\n            sr = (fb - g(b - h)) / h\n            if abs(sl - sr) < 1e-9:\n                return\n            t = (fb - fa + sl * a - sr * b) / (sl - sr)\n            if a - 1e-6 <= t <= b + 1e-6:\n                kinks.append(t)\n            return\n        rec(a, fa, m, fm, depth + 1)\n        rec(m, fm, b, fb, depth + 1)\n\n    rec(lo, g(lo), hi, g(hi), 0)\n    return kinks\n\n\n# ---------------------------------------------------------------- 1. find hyperplanes\nneurons = []  # list of dicts: w (unit, arbitrary sign), b list\nstale = 0\nfor it in range(400):\n    x0 = rng.normal(size=DIM)\n    d = rng.normal(size=DIM)\n    d /= np.linalg.norm(d)\n    new = 0\n    for t in find_kinks(x0, d, -15.0, 15.0):\n        xs = x0 + t * d\n        delta = 1e-4\n        diff = grad(xs + delta * d) - grad(xs - delta * d)\n        n = np.linalg.norm(diff)\n        if n < 1e-7:\n            continue\n        w = diff / n\n        b = -w @ xs\n        for nr in neurons:\n            c = w @ nr[\"w\"]\n            if abs(c) > 0.9999:\n                s = np.sign(c)\n                if abs(s * b - nr[\"b\"]) < 1e-3:\n                    nr[\"ws\"].append(s * w)\n                    nr[\"bs\"].append(s * b)\n                    break\n        else:\n            neurons.append({\"w\": w, \"b\": b, \"ws\": [w], \"bs\": [b]})\n            new += 1\n    stale = 0 if new else stale + 1\n    if stale >= 40:\n        break\n\n# average repeated hits\nW = []\nB = []\nfor nr in neurons:\n    if len(nr[\"ws\"]) < 2:  # discard spurious one-off detections\n        continue\n    w = np.mean(nr[\"ws\"], axis=0)\n    nrm = np.linalg.norm(w)\n    W.append(w / nrm)\n    B.append(np.mean(nr[\"bs\"]) / nrm)\nW = np.array(W)\nB = np.array(B)\nk = len(W)\nprint(f\"found {k} neurons using {nq} queries\")\n\n# ---------------------------------------------------------------- 2. recover signs\n# f(x) = sum_i a_i relu(s_i z_i(x)) + b2 with z_i = W_i x + B_i, s_i in {+1,-1}.\n# relu(-z) = relu(z) - z, so f = sum alpha_i relu(z_i) + L.x + c, where\n# [L, c] = -sum_{i: s_i=-1} alpha_i [W_i, B_i].\nX = rng.normal(size=(3000, DIM)) * 3\ny = np.array([f(x) for x in X])\nZ = X @ W.T + B\nM = np.hstack([np.maximum(Z, 0), X, np.ones((len(X), 1))])\ncoef, *_ = np.linalg.lstsq(M, y, rcond=None)\nalpha = coef[:k]\nLc = coef[k:]\nV = -(alpha[:, None] * np.hstack([W, B[:, None]]))  # contribution if flipped\n\n# meet-in-the-middle brute force over flip subsets\nh1 = k // 2\nidx1, idx2 = list(range(h1)), list(range(h1, k))\n\n\ndef subset_sums(idx):\n    masks = np.array(list(itertools.product([0, 1], repeat=len(idx))), dtype=float)\n    return masks, masks @ V[idx] if len(idx) else np.zeros((1, DIM + 1))\n\n\nm1, s1 = subset_sums(idx1)\nm2, s2 = subset_sums(idx2)\nbest = (np.inf, None)\nfor i in range(len(s1)):\n    err = np.linalg.norm(s1[i] + s2 - Lc, axis=1)\n    j = np.argmin(err)\n    if err[j] < best[0]:\n        best = (err[j], np.concatenate([m1[i], m2[j]]))\nprint(f\"sign fit residual: {best[0]:.3e}\")\nsigns = 1 - 2 * best[1]\n\nA1_stolen = W * signs[:, None]\nnp.save(\"/tmp/obench-cell-qr0oirxj/bench_opencode_model-extraction-relu-logits_feomyk19/stolen_A1.npy\", A1_stolen)\nprint(A1_stolen)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-qr0oirxj/bench_opencode_model-extraction-relu-logits_feomyk19/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-qr0oirxj/bench_opencode_model-extraction-relu-logits_feomyk19/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793765155086,
+      "end": 1793765162590
+    }
+  }
+}

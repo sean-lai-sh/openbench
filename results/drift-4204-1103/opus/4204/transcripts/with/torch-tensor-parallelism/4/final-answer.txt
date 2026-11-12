@@ -1,0 +1,23 @@
+I created `parallel_linear.py` with both classes. I tested them against a plain `nn.Linear` using CPU processes, at world sizes 1, 2 and 4. Outputs, input gradients, and per-rank weight and bias gradients all matched.
+
+**Weight layout:** I assumed `master_weight` has the same shape as `nn.Linear`'s weight, `(out_features, in_features)`, so the layer computes `y = x @ W^T + b`. The constructor stops with an error if the shape doesn't match.
+
+**`ColumnParallelLinear`**
+- Each rank keeps its slice of output rows: `master_weight[r*out/ws:(r+1)*out/ws, :]`.
+- The bias is sharded the same way (`out/ws` values per rank) and starts at zero.
+- In the forward pass, each rank computes its part of the output. The parts are then gathered from all ranks and joined along the last dimension.
+- In the backward pass, each rank takes back its own slice of the output gradient. The input gradient is summed across ranks.
+
+**`RowParallelLinear`**
+- Each rank keeps its slice of input columns: `master_weight[:, r*in/ws:(r+1)*in/ws]`.
+- Every rank holds the full bias, starting at zero.
+- In the forward pass, each rank computes a partial output from its slice of the input. The partials are summed across ranks, then the full bias is added once.
+- In the backward pass, the input gradient is gathered back to full size.
+
+**Input to `RowParallelLinear`:** it accepts either the full input, which it splits itself, or an input that's already split to `in/ws` width.
+
+**Uneven splits:** `out_features` (column) or `in_features` (row) must divide evenly by the world size, or the constructor stops with an error.
+
+The collectives are custom autograd functions, so gradients flow through them correctly. They do nothing when world size is 1 or `torch.distributed` hasn't been initialised.
+
+The test script is at `/tmp/t_pl.py` if you want to rerun it.

@@ -1,0 +1,24 @@
+I wrote `convert_masks.py` and ran it on the demo files. All 48 cells (19 rectangles, 29 polylines) came out as polylines that hug the nuclei, with no overlaps and one connected region per cell. I also overlaid the new outlines on the image and checked them by eye.
+
+**What the script does:**
+1. It loads MobileSAM (`vit_t`) on CPU from `weights_path` and encodes the image once.
+2. It prompts MobileSAM with every cell's bounding box, rectangles and polylines alike. Of the three masks it returns per box, it keeps the one that scores best on a mix of MobileSAM's confidence and agreement with the original annotation. For rectangles, that annotation is taken to be an ellipse that fits inside the box.
+3. It keeps each mask within its box plus a 15% margin, so a cell can't spill into the rest of the tissue.
+4. To remove overlaps, each pixel goes to the cell with the strongest MobileSAM prediction there. Each mask is then lightly smoothed, holes are filled, and only its largest connected piece is kept. A 1-pixel gap is left between neighbouring cells so their outlines can't touch.
+5. If a cell ends up empty, it falls back to the original shape (minus space already taken by other cells). If that's empty too, it gets a tiny blob near the cell's centre. Every cell therefore gets exactly one mask.
+6. It writes the outer outline of each mask as a closed polyline, in the same `"x1,x2,..."` format as your input, and recalculates `xmin`/`xmax`/`ymin`/`ymax` from it. All other columns, including the unnamed index column, are copied unchanged.
+
+**Checks on the demo output:**
+- The columns and other values match the input exactly.
+- When the outlines are drawn back as filled shapes, no pixel is covered by more than one cell.
+- Each cell's shape is one connected piece, and none is an axis-aligned rectangle.
+- Outlines have 28 to 45 points on average.
+
+**Things to know:**
+- **Output path:** If `output_path` ends in `.csv`, the file is written there. Otherwise it's treated as a folder, created if needed, and the file is saved there under the input CSV's name.
+- **Argument style:** It accepts the arguments either in order or as flags; both give the same file:
+  ```
+  python convert_masks.py WEIGHTS OUT_DIR RGB CSV
+  python convert_masks.py --weights_path W --output_path O --rgb_path R --csv_path C
+  ```
+- **`type` column:** It still says `rectangle` for cells that started as rectangles, because you asked for only the coordinate and bounding-box columns to change. If you'd rather every row say `polyline`, that's a one-line change.

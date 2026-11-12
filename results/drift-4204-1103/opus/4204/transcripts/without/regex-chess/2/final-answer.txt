@@ -1,0 +1,25 @@
+I've written `re.json`: 2,460 regex/replacement pairs, about 309 KB, well under both limits. It's built by `gen.py` in the same directory, so you can rebuild it with `python3 gen.py`.
+
+**Test results**
+- **Your example:** it produces exactly the three expected positions.
+- **`check.py` (Morphy's Opera Game):** all 18 positions pass. `check.py` loads `/app/re.json`, so I ran a copy (`check_local.py`) pointed at the local file instead.
+- **Random games:** 4,762 positions from random games, biased toward captures, castling and promotions, all matched python-chess move-for-move.
+- **Hand-picked edge cases** (16 positions), all passing:
+  - castling through check, out of check and into check
+  - queenside castling where only b1 is attacked (still legal)
+  - a rook captured on a8/h8, which removes Black's castling right
+  - en passant that would expose the king along the rank or diagonal
+  - promotion with capture
+
+**How it works**
+1. **Unpack the board:** the board is turned into a 64-character string, with `1` for empty squares, followed by the castling and en-passant fields.
+2. **Generate moves:** there's one rule per (piece, from-square, to-square). If the pieces and empty squares allow the move, it adds a new line with the move made. That covers pawn single and double pushes, captures, queen promotion and en passant, plus knight, king, rook/bishop (each also used for the queen) and both castling moves.
+3. **Castling through check:** a castling move temporarily puts a king on every square it passes through, so the next step checks each of them for attack.
+4. **Remove illegal moves:** for each of the 64 possible white-king squares, one rule deletes any line where that king is attacked by a knight, pawn, king or sliding piece with a clear path.
+5. **Finish up:** the castling placeholders become the real king and rook. Castling rights are dropped wherever the king or a rook is no longer on its starting square. The board is then repacked into FEN with `b` to move.
+
+A double pawn push always sets the en-passant square. The checker accepts this even when python-chess shows `-` instead.
+
+**Limitations**
+- **Checkmate or stalemate:** these return a single empty string rather than an empty list. That can't be avoided, because `"".split("\n")` always gives `[""]`.
+- **Speed:** a call takes roughly 0.7–1.5 s here. Almost all of that is recompiling the patterns, because Python's regex cache holds only 512 patterns and there are far more.

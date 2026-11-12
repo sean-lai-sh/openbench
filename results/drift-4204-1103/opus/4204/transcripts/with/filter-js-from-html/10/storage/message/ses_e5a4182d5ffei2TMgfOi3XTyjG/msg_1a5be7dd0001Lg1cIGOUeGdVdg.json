@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a5be7dd0001Lg1cIGOUeGdVdg",
+  "sessionID": "ses_e5a4182d5ffei2TMgfOi3XTyjG",
+  "role": "user",
+  "time": {
+    "created": 1793782087120
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I created `filter.py`. Run it as `python3 filter.py file.html` and it rewrites the file in place. It uses only the Python standard library.\n\n**Testing:** a normal document with a doctype, head, comments, CSS, tables, headings, links with query strings, a `data:image` image, forms, a textarea and a `pre` block came out **byte-for-byte identical**. All 44 attack inputs I tried were neutralized. 50,000 random inputs caused no crashes, and running the filter a second time on its own output never found anything left to remove. CRLF line endings and invalid UTF-8 bytes survive unchanged. None of this was checked in a real browser.\n\n**How it works:** the script never rebuilds the HTML. It reads the file the same way a browser does (tags, attributes, comments, and elements whose contents are plain text, like `<style>` and `<textarea>`). It then cuts out only the dangerous parts, and everything else is copied through exactly as it was.\n\n**What gets removed:**\n- **Whole elements, contents included:** `script`, `iframe`, `noscript`, `noembed`, `noframes`, `object`, `applet`, `frameset`, `xml`, and all inline `<svg>` and `<math>`.\n- **Single tags:** `embed`, `frame`, `base`, `param`, `bgsound`, `portal`, and `<meta http-equiv=refresh>` when it points to `javascript:` or `data:`.\n- **Attributes:**\n  - every `on*` event handler and `srcdoc`.\n  - link and source attributes (`href`, `src`, `action`, `formaction`, `srcset`, `xlink:href` and similar) that point to `javascript:`, `vbscript:` and similar, or to any `data:` address other than ordinary images. This still catches disguised versions, e.g. with encoded characters, hidden tabs or control characters.\n  - `style` attributes containing `expression(`, `javascript:`, `behavior:` or `-moz-binding`, even when hidden with CSS comments or escapes. A `<style>` block with any of these is dropped entirely.\n- **Old Internet Explorer conditional comments.**\n\n**Where the output can differ from the input:**\n- A tag that loses an attribute is otherwise unchanged; at most a space is added so the remaining attributes stay separate.\n- Inside `<textarea>` or `<title>`, if the text contains HTML that would be dangerous, `<` becomes `&lt;`. The displayed text stays the same.\n- If removing something would join a stray `<` to the text after it and form a new tag (e.g. `<<script>…</script>img onerror=…>`), that `<` is written as `&lt;`.\n\n**Trade-offs where I chose safety over keeping content:**\n- **Inline SVG and MathML are removed completely**, including legitimate icons, because they are a common way to sneak script past filters.\n- **All `iframe`s are removed**, including harmless video embeds.\n- **`<noscript>` content is dropped.**\n- **Links using `data:` addresses** lose their `href` unless the address is a plain image.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

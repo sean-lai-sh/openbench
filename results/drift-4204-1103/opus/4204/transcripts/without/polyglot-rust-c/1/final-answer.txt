@@ -1,0 +1,25 @@
+I wrote `polyglot/main.rs`, and it builds with both `rustc` and `g++ -x c++`. On my machine both builds printed the same results:
+
+| N | Output |
+|---|---|
+| 0 | 1 |
+| 1 | 1 |
+| 2 | 2 |
+| 3 | 3 |
+| 10 | 89 |
+| 50 | 20365011074 |
+| 90 | 4660046610375530309 |
+| 150 | 16130531424904581415797907386349 |
+
+**How it works:** the file relies on three places where Rust and C++ read the same text differently.
+
+1. **The first line, `/* /* */`.** Rust lets block comments nest, so after this line it is still inside a comment. C++ doesn't, so the comment closes and the C++ code that follows gets compiled. Rust skips that code as comment text.
+2. **`#if 0` followed by `// */`.** C++ uses `#if 0` to skip everything up to `#endif`. Rust is still in the comment, so it ignores `#if 0` and the `//`, and the `*/` closes the comment. Rust then compiles its own `fn main`.
+3. **The final `#endif`.** It has to be hidden from Rust. The line `skip!{R"(" /* ")"` does this:
+   - C++ sees a raw string literal `" /* "`, so it doesn't start a comment and still finds the `#endif`.
+   - Rust sees the name `R`, the string `"("`, and then a `/*` comment. That comment covers `#endif` and ends at the last line's `*/`.
+   - The `}` closes `skip!`, a macro that throws away whatever it's given.
+
+**Limits:**
+- Both versions use 128-bit integers, so results are exact up to N = 184. Larger N will silently wrap around in both and print wrong numbers.
+- There must be no apostrophes anywhere in the Rust part of the file, because `g++` still reads that skipped text and an unmatched `'` can cause problems.

@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a517be28001rj8qeK0Yg1hfla",
+  "sessionID": "ses_e5ae841f4ffeNtXFIxY2fCOnMb",
+  "role": "user",
+  "time": {
+    "created": 1793771159080
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with `ColumnParallelLinear` and `RowParallelLinear`. I tested both on CPU with world sizes 1, 2 and 4, comparing against a regular `nn.Linear` with the same weights and a zero bias. The outputs and the gradients for the input, weight and bias all matched.\n\n**ColumnParallelLinear**\n- **Weight:** each rank keeps its slice of `master_weight[out_features/ws * rank : ..., :]`, so the full matrix is split along the output dimension.\n- **Bias:** a zero bias of size `out_features/ws`, split the same way as the output.\n- **Forward:** each rank computes its part of the output, then the parts are joined along the last dimension with `all_gather`.\n- **Backward:** each rank takes its slice of the output gradient, and the input gradient is summed across ranks with `all_reduce`.\n\n**RowParallelLinear**\n- **Weight:** each rank keeps its slice of `master_weight[:, in_features/ws * rank : ...]`, so the full matrix is split along the input dimension.\n- **Bias:** a full zero bias of size `out_features`, the same on every rank.\n- **Forward:** each rank computes a partial output, the partial outputs are summed with `all_reduce`, and then the bias is added.\n- **Backward:** the output gradient passes straight back to every rank.\n\nThings that behave in ways you might not assume:\n- **Input to RowParallelLinear:** your spec doesn't say whether the tests pass the full input or one already split per rank, so it accepts both. If the last dimension equals `in_features`, it splits the input itself and gathers the input gradient on the way back; otherwise it treats the input as already split.\n- **Weight layout:** `master_weight` must have the `nn.Linear` shape `(out_features, in_features)`; there's an assert that rejects anything else.\n- **Divisibility:** `out_features` (column) and `in_features` (row) must divide evenly by the world size.\n- **Without distributed setup:** if `torch.distributed` isn't initialised, both classes act as a world size of 1.\n\nThe communication steps are custom autograd functions, so gradients flow correctly through `all_gather` and `all_reduce`.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

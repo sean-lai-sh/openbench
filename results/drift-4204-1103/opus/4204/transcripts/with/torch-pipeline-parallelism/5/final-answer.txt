@@ -1,0 +1,14 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. In a small test (5-layer LLaMA, 3 microbatches, CPU) it matched a normally trained copy of the model exactly, for both world_size 1 and 2. Both the loss and every gradient were identical. Because a zero difference looked suspicious, I also confirmed that each rank really produced gradients: 28 parameters on rank 0 and 20 on rank 1. I haven't run it with your actual test harness, the hook-based activation comparison, or on GPU.
+
+**How it works:**
+- **Splitting the layers:** each rank gets a contiguous block of decoder layers of near-equal size, with any leftover layers going to the earlier ranks. Rank 0 also runs the token embedding, and the last rank also runs the final norm and output layer.
+- **Running a stage:** each rank computes the position embeddings and causal mask itself, the same way `LlamaModel.forward` does, then runs only its own layers. There are no hooks.
+- **Forward pass:** all microbatches go through first. Hidden states of shape `[mb, seq, hidden]` are passed between ranks with `P2POp` via `batch_isend_irecv`. Received tensors are set to track gradients, and inputs, outputs and gradients are kept per microbatch for the backward pass.
+- **Loss:** on the last rank, cross-entropy against the targets is divided by the number of microbatches.
+- **Backward pass:** then every microbatch goes backward. The last rank calls `loss.backward()`, other ranks receive the gradient from the next rank, and every rank except rank 0 sends its input gradient to the previous rank. With world_size 1 there is no communication.
+
+**Behaviour to be aware of:**
+- **Input IDs keep their integer type:** they and the targets are moved to the device but not cast to `dtype`, because the embedding layer needs integer IDs. Hidden states and gradients are converted to the given device and dtype.
+- **Return value:** the function returns the total loss on the last rank and `None` on every other rank.
+
+My test script is at `/tmp/t_pp.py`. Run it with `python /tmp/t_pp.py 1` or `python /tmp/t_pp.py 2`.

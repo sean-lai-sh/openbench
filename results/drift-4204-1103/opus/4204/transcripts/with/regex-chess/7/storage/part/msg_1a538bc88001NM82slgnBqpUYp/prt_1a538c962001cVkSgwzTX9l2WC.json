@@ -1,0 +1,36 @@
+{
+  "id": "prt_1a538c962001cVkSgwzTX9l2WC",
+  "sessionID": "ses_e5ad8010affeeY7TDEvmjvWi8X",
+  "messageID": "msg_1a538bc88001NM82slgnBqpUYp",
+  "type": "tool",
+  "callID": "toolu_vrtx_01M3cqsWidekfJ6Y5dbwf93L",
+  "tool": "edit",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/mytest.py",
+      "oldString": "            check(b.fen())\n            n += 1",
+      "newString": "            t0 = time.time()\n            check(b.fen())\n            if time.time() - t0 > 1:\n                print(\"slow\", time.time() - t0, b.fen(), flush=True)\n            n += 1\n            if n % 200 == 0:\n                print(n, time.time() - t, flush=True)"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/mytest.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/gen.py": [],
+        "/tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/mytest.py": []
+      },
+      "diff": "Index: /tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/mytest.py\n===================================================================\n--- /tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/mytest.py\n+++ /tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/mytest.py\n@@ -52,10 +52,15 @@\n for g in range(int(sys.argv[2]) if len(sys.argv) > 2 else 300):\n     b = chess.Board()\n     while not b.is_game_over():\n         if b.turn == chess.WHITE:\n+            t0 = time.time()\n             check(b.fen())\n+            if time.time() - t0 > 1:\n+                print(\"slow\", time.time() - t0, b.fen(), flush=True)\n             n += 1\n+            if n % 200 == 0:\n+                print(n, time.time() - t, flush=True)\n         moves = list(b.legal_moves)\n         # bias towards captures/castles/ep/promotions for coverage\n         spec = [\n             m for m in moves if b.is_castling(m) or b.is_en_passant(m) or m.promotion\n",
+      "filediff": {
+        "file": "/tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/mytest.py",
+        "before": "import json, re, random, sys, time, chess\n\nRULES = [\n    (re.compile(p), r)\n    for p, r in json.load(\n        open(\"/tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/re.json\")\n    )\n]\n\n\ndef run(fen):\n    for p, r in RULES:\n        fen = p.sub(r, fen)\n    return fen.split(\"\\n\")\n\n\ndef expected(fen):\n    b = chess.Board(fen)\n    s = set()\n    for m in b.legal_moves:\n        if m.promotion and m.promotion != chess.QUEEN:\n            continue\n        c = b.copy()\n        c.push(m)\n        s.add(\" \".join(c.fen().split(\" \")[:-2]))\n    return s\n\n\ndef check(fen):\n    ours = [\" \".join(x.split(\" \")[:-2]) for x in run(fen)]\n    exp = expected(fen)\n    ok = len(ours) == len(exp) and all(\n        x in exp or x.rpartition(\" \")[0] + \" -\" in exp for x in ours\n    )\n    if not ok:\n        print(\"FAIL\", fen)\n        print(sorted(ours))\n        print(sorted(exp))\n        sys.exit(1)\n\n\nex = \"rnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/P1P5/q4Kb1 w kq - 0 1\"\nout = \"\\n\".join(run(ex))\nprint(\n    out\n    == \"rnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/P1P1K3/q5b1 b kq - 0 0\\nrnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/P1P3K1/q5b1 b kq - 0 0\\nrnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P4/P1P5/q2Q1Kb1 b kq - 0 0\"\n)\nprint(out)\nrandom.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)\nn = 0\nt = time.time()\nfor g in range(int(sys.argv[2]) if len(sys.argv) > 2 else 300):\n    b = chess.Board()\n    while not b.is_game_over():\n        if b.turn == chess.WHITE:\n            check(b.fen())\n            n += 1\n        moves = list(b.legal_moves)\n        # bias towards captures/castles/ep/promotions for coverage\n        spec = [\n            m for m in moves if b.is_castling(m) or b.is_en_passant(m) or m.promotion\n        ]\n        b.push(\n            random.choice(spec)\n            if spec and random.random() < 0.7\n            else random.choice(moves)\n        )\nprint(\"ok\", n, \"positions\", time.time() - t, \"s\")\n",
+        "after": "import json, re, random, sys, time, chess\n\nRULES = [\n    (re.compile(p), r)\n    for p, r in json.load(\n        open(\"/tmp/obench-cell-3ri1t8_8/bench_opencode_regex-chess_8vz1gbg5/re.json\")\n    )\n]\n\n\ndef run(fen):\n    for p, r in RULES:\n        fen = p.sub(r, fen)\n    return fen.split(\"\\n\")\n\n\ndef expected(fen):\n    b = chess.Board(fen)\n    s = set()\n    for m in b.legal_moves:\n        if m.promotion and m.promotion != chess.QUEEN:\n            continue\n        c = b.copy()\n        c.push(m)\n        s.add(\" \".join(c.fen().split(\" \")[:-2]))\n    return s\n\n\ndef check(fen):\n    ours = [\" \".join(x.split(\" \")[:-2]) for x in run(fen)]\n    exp = expected(fen)\n    ok = len(ours) == len(exp) and all(\n        x in exp or x.rpartition(\" \")[0] + \" -\" in exp for x in ours\n    )\n    if not ok:\n        print(\"FAIL\", fen)\n        print(sorted(ours))\n        print(sorted(exp))\n        sys.exit(1)\n\n\nex = \"rnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/P1P5/q4Kb1 w kq - 0 1\"\nout = \"\\n\".join(run(ex))\nprint(\n    out\n    == \"rnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/P1P1K3/q5b1 b kq - 0 0\\nrnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/P1P3K1/q5b1 b kq - 0 0\\nrnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P4/P1P5/q2Q1Kb1 b kq - 0 0\"\n)\nprint(out)\nrandom.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)\nn = 0\nt = time.time()\nfor g in range(int(sys.argv[2]) if len(sys.argv) > 2 else 300):\n    b = chess.Board()\n    while not b.is_game_over():\n        if b.turn == chess.WHITE:\n            t0 = time.time()\n            check(b.fen())\n            if time.time() - t0 > 1:\n                print(\"slow\", time.time() - t0, b.fen(), flush=True)\n            n += 1\n            if n % 200 == 0:\n                print(n, time.time() - t, flush=True)\n        moves = list(b.legal_moves)\n        # bias towards captures/castles/ep/promotions for coverage\n        spec = [\n            m for m in moves if b.is_castling(m) or b.is_en_passant(m) or m.promotion\n        ]\n        b.push(\n            random.choice(spec)\n            if spec and random.random() < 0.7\n            else random.choice(moves)\n        )\nprint(\"ok\", n, \"positions\", time.time() - t, \"s\")\n",
+        "additions": 5,
+        "deletions": 0
+      }
+    },
+    "time": {
+      "start": 1793773326287,
+      "end": 1793773328094
+    }
+  }
+}

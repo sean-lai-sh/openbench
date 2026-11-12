@@ -1,0 +1,21 @@
+I wrote `/tmp/obench-cell-txu45cmw/bench_opencode_polyglot-rust-c_0r357rsd/polyglot/main.rs`. I ran both of your commands and the two programs print the same output:
+
+| N | rustc | g++ |
+|---|---|---|
+| 0 | 1 | 1 |
+| 1 | 1 | 1 |
+| 2 | 2 | 2 |
+| 3 | 3 | 3 |
+| 10 | 89 | 89 |
+| 100 | 573147844013817084101 | 573147844013817084101 |
+
+**How it works:** Rust lets a comment sit inside another comment, but C++ doesn't. The file uses that difference so each compiler skips the other language's code:
+- **Line 1, `/* /* */`:** C++ treats the comment as finished at the first `*/`, so it compiles the C++ code that follows. Rust sees a comment inside a comment and still has one level open, so it skips the C++ code.
+- **`#if 0` then `*/`:** C++ starts skipping from `#if 0`. The `*/` closes Rust's last open comment, so Rust compiles the Rust code that follows.
+- **The ending, `r#"` … `#endif` … `/*"#;` … `// */`:** Rust reads these lines as an unused raw string followed by a line comment. C++ ends its skipped section at `#endif`, then reads `/*` … `*/` as a normal comment.
+
+**Large N:** both versions use simple arbitrary-precision addition on decimal digits, so large N doesn't overflow.
+
+**Warnings:** your plain commands compile with no warnings. If you add `-Wall`, g++ prints two harmless warnings: `"/*" within comment` and `missing terminating "` for the quote in the skipped Rust section.
+
+The test run also left the compiled binaries `main` and `cmain` in that folder.

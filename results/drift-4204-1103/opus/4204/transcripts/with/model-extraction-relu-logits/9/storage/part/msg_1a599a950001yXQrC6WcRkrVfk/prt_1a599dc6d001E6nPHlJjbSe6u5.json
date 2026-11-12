@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a599dc6d001E6nPHlJjbSe6u5",
+  "sessionID": "ses_e5a6666d4ffeQl8WMBPRd6PaHk",
+  "messageID": "msg_1a599a950001yXQrC6WcRkrVfk",
+  "type": "tool",
+  "callID": "toolu_vrtx_01VCgXTkfXjrZj9oATu4tB3Q",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-qon2fdtr/bench_opencode_model-extraction-relu-logits_2t96i268/steal.py",
+      "content": "import os\nimport numpy as np\nfrom forward import forward\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, tol=1e-9):\n    \"\"\"Find all t in [lo,hi] where f(x0 + t d) is non-differentiable.\"\"\"\n    g = lambda t: f(x0 + t * d)\n    h = 1e-6\n\n    def slope(t):\n        return (g(t + h) - g(t)) / h\n\n    kinks = []\n\n    def rec(a, b, ga, gb, sa, sb, depth):\n        if depth > 60:\n            return\n        m = 0.5 * (a + b)\n        gm = g(m)\n        lin = ga + (gb - ga) * 0.5\n        if abs(sa - sb) < 1e-8 * max(1, abs(sa)) and abs(gm - lin) < 1e-11:\n            return  # linear on [a,b]\n        # Try single-kink hypothesis: intersect the two lines\n        if abs(sa - sb) > 1e-12:\n            tk = (gb - ga + sa * a - sb * b) / (sa - sb)\n            if a < tk < b:\n                pred = ga + sa * (tk - a)\n                if abs(g(tk) - pred) < 1e-10 and abs(gm - (ga + sa * (m - a) if m < tk else gb + sb * (m - b))) < 1e-10:\n                    # verify each side is linear with expected slope\n                    q1 = 0.5 * (a + tk)\n                    q2 = 0.5 * (tk + b)\n                    if abs(g(q1) - (ga + sa * (q1 - a))) < 1e-10 and abs(g(q2) - (gb + sb * (q2 - b))) < 1e-10:\n                        kinks.append(tk)\n                        return\n        if b - a < tol:\n            kinks.append(m)\n            return\n        sm = slope(m)\n        rec(a, m, ga, gm, sa, slope(m - h) if False else (g(m) - g(m - h)) / h, depth + 1)\n        rec(m, b, gm, gb, sm, sb, depth + 1)\n\n    rec(lo, hi, g(lo), g(hi), slope(lo), (g(hi) - g(hi - h)) / h, 0)\n    return sorted(kinks)\n\n\ndef grad(x, h=1e-7):\n    f0 = f(x)\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - f0) / h\n    return gr\n\n\ndef normal_at(x, d):\n    \"\"\"Gradient jump across the kink at x along direction d.\"\"\"\n    results = []\n    for eps in (1e-4, 3e-5):\n        gp = grad(x + eps * d, h=eps * 1e-3)\n        gm = grad(x - eps * d, h=-eps * 1e-3)\n        results.append(gp - gm)\n    v1, v2 = results\n    n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)\n    if n1 < 1e-9 or n2 < 1e-9:\n        return None\n    if abs(np.dot(v1, v2)) / (n1 * n2) < 1 - 1e-6:\n        return None\n    return v1 / n1\n\n\ndef canon(v):\n    i = np.argmax(np.abs(v))\n    return v * np.sign(v[i])\n\n\nrows = []\nno_new = 0\nfor it in range(400):\n    x0 = rng.normal(size=DIM)\n    d = rng.normal(size=DIM)\n    d /= np.linalg.norm(d)\n    ks = find_kinks(x0, d, -50.0, 50.0)\n    new = 0\n    for t in ks:\n        v = normal_at(x0 + t * d, d)\n        if v is None:\n            continue\n        v = canon(v)\n        if not any(abs(np.dot(v, r)) > 1 - 1e-5 for r in rows):\n            rows.append(v)\n            new += 1\n    no_new = no_new + 1 if new == 0 else 0\n    if no_new >= 15 and it >= 20:\n        break\n\nA = np.array(rows)\nprint(\"Recovered %d neurons\" % len(A))\nprint(A)\nnp.save(os.path.join(HERE, \"stolen_A1.npy\"), A)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-qon2fdtr/bench_opencode_model-extraction-relu-logits_2t96i268/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-qon2fdtr/bench_opencode_model-extraction-relu-logits_2t96i268/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793779698524,
+      "end": 1793779706331
+    }
+  }
+}

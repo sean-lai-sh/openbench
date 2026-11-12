@@ -1,0 +1,15 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it against a single-process reference model with world sizes 1 and 2, using the gloo backend on CPU. The loss matched the reference exactly, and every parameter gradient on each rank had a maximum difference of 0.
+
+The test used a small model (5 layers, 4 microbatches) in float32. I compared final loss and gradients, not the per-layer activations your test checks with hooks, so that part is still untested. I deleted the temporary test script afterwards.
+
+**How it works:**
+- **Splitting the layers:** the decoder layers are divided into equal, consecutive chunks; when they don't divide evenly, the first ranks get one extra. Rank 0 also runs the token embedding. The last rank also runs the final norm, the output layer (`lm_head`) and the loss.
+- **Forward pass:** all microbatches go forward first. Each rank calls its layer modules directly (not the whole model), so hooks placed on the layers still fire. Ranks other than 0 receive hidden states of shape `[microbatch, seq_len, hidden_size]` from the previous rank and mark them as needing gradients. The causal mask and positional embeddings are rebuilt on every rank. The last rank computes cross-entropy loss divided by the number of microbatches.
+- **Backward pass:** then all microbatches go backward. The last rank calls `loss.backward()`. Other ranks receive the incoming gradient from the next rank and backpropagate through their saved outputs. Every rank except 0 then sends the gradient of its input back to the previous rank.
+- **Communication** uses `torch.distributed.P2POp` with `batch_isend_irecv`. Inputs, hidden states and gradients are always moved to the given `device` and `dtype`, and the code adds no hooks.
+
+**Things to know:**
+- The function returns the summed loss on the last rank and `None` on the others. Your spec didn't say what to return.
+- Targets go into the loss exactly as given, without shifting by one token, so the test must pass targets that are already aligned.
+- No attention mask from the inputs is used, only the causal mask, so padding tokens aren't masked out.
+- The layer split counts decoder layers only. The extra work on the first and last ranks (embedding, output layer, loss) isn't taken into account.

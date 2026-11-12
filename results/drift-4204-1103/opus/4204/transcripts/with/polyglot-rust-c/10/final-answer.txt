@@ -1,0 +1,24 @@
+I wrote `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`, and both programs print the same results for N = 0, 1, 2, 3, 10, 50, 100 and 200. For example, 0 → 1, 2 → 2, 10 → 89, 100 → 573147844013817084101.
+
+**How it works:** the trick relies on two differences between the languages:
+1. **Nested comments:** in Rust, `/* ... */` comments can be nested; in C++ they can't.
+2. **Line continuation:** in C++, a `//` comment ending in a backslash continues onto the next line; in Rust it doesn't.
+
+The file is laid out like this:
+
+```
+/* /* */          C++: comment ends here.   Rust: still inside a comment (one level deep)
+...C++ code...
+#if 0             C++: skip everything until #endif
+// */             Rust: the comment ends here
+...Rust code...
+// \
+/*                C++: still part of the // comment above.   Rust: starts a new comment
+#endif
+// */             Rust: comment ends.   C++: just a line comment
+```
+
+**Details:**
+- Both versions do their own big-number arithmetic, so results are exact for large N rather than limited to 64 bits.
+- If N is missing or isn't a number, the Rust version treats it as 0. The C++ version also uses 0 when N is missing; if N isn't a number it usually reads it as 0, but input like `12abc` is read as 12.
+- With extra warnings turned on (`-Wall`), `g++` may warn about a comment inside a comment, but it compiles without errors either way.

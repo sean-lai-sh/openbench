@@ -1,0 +1,19 @@
+I created `parallel_linear.py` with both classes. I tested it with world sizes 1, 2 and 4 over the gloo backend, comparing against a normal `nn.Linear` with the same weight and a zero bias. The outputs, input gradients, and each rank's weight and bias gradient slices all matched.
+
+**Weight layout.** I assumed `master_weight` is shaped like `nn.Linear`'s weight: `(out_features, in_features)`. The constructor checks this and stops with an error if the shape is different.
+
+**`ColumnParallelLinear`**
+- Each rank keeps rows `[rank*k, (rank+1)*k)` of the master weight, where `k = out_features / world_size`. In this layout those rows are the output columns.
+- Each rank's bias covers the same output slice and starts at zero.
+- In the forward pass, each rank computes its share of the output, and the shares are gathered and joined along the last dimension.
+- In the backward pass, each rank takes its own slice of the output gradient. The input gradient is summed across all ranks.
+
+**`RowParallelLinear`**
+- Each rank keeps columns `[rank*k, (rank+1)*k)` of the master weight, where `k = in_features / world_size`. These are the input rows.
+- The bias is the full length on every rank and starts at zero.
+- In the forward pass, each rank multiplies its slice of the input by its weight slice. The partial results are summed across ranks, then the bias is added.
+- The input can be either the full input or one already cut to this rank's slice; the layer works out which from its size. When given the full input, the backward pass gathers the input gradient back to full size.
+
+Gradients flow through all the communication steps. With a world size of 1, or if `torch.distributed` hasn't been initialised, no communication happens. The feature sizes must divide evenly by the world size; otherwise the constructor stops with an error.
+
+The test script is at `/tmp/t_pl.py`, outside the project folder.

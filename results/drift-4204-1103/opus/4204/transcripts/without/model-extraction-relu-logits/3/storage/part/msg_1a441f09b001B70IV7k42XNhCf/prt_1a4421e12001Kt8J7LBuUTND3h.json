@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a4421e12001Kt8J7LBuUTND3h",
+  "sessionID": "ses_e5bbe2402ffeEoFRSMlA43IgTP",
+  "messageID": "msg_1a441f09b001B70IV7k42XNhCf",
+  "type": "tool",
+  "callID": "toolu_vrtx_017wbWda7v2yhjSk7xTiQ3jk",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-g0y796kc/bench_opencode_model-extraction-relu-logits_o4nina30/steal.py",
+      "content": "\"\"\"Black-box extraction of A1 (up to row permutation and scaling) from a\none-hidden-layer ReLU network, using only queries to forward(x).\n\nMethod:\n  1. Walk along random lines x(t) = x0 + t*d and locate \"critical points\"\n     (kinks) where some hidden neuron changes between active / inactive.\n  2. At each kink, measure the gradient of f on both sides. The difference\n     equals a2_i * A1[i,:] for the neuron i whose hyperplane was crossed.\n  3. Normalize and deduplicate the recovered directions.\n\"\"\"\nimport os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef line_fn(x0, d):\n    return lambda t: f(x0 + t * d)\n\n\ndef find_kinks(g, a, b, ga, gb, sa, sb, out, depth=0, tol=1e-9):\n    \"\"\"Recursively find kinks of the 1-D piecewise linear function g on [a, b].\n    sa / sb are the slopes just inside a (right side) and just inside b (left side).\"\"\"\n    if abs(sa - sb) < 1e-10 * max(1.0, abs(sa), abs(sb)):\n        # Possibly linear: verify with midpoint.\n        m = 0.5 * (a + b)\n        if abs(g(m) - (ga + sa * (m - a))) < 1e-10:\n            return\n    if depth > 60 or b - a < 1e-12:\n        return\n    # Try single-kink hypothesis: intersect left line and right line.\n    if abs(sa - sb) > 1e-14:\n        t = (gb - ga + sa * a - sb * b) / (sa - sb)\n        if a < t < b:\n            gt = g(t)\n            pred = ga + sa * (t - a)\n            if abs(gt - pred) < tol * max(1.0, abs(gt)):\n                # Confirm it is truly a single kink by checking points on each side.\n                l = 0.5 * (a + t)\n                r = 0.5 * (t + b)\n                if (abs(g(l) - (ga + sa * (l - a))) < tol and\n                        abs(g(r) - (gb + sb * (r - b))) < tol):\n                    out.append(t)\n                    return\n    # Otherwise split.\n    m = 0.5 * (a + b)\n    gm = g(m)\n    h = min(1e-6, (b - a) * 1e-3)\n    sml = (gm - g(m - h)) / h\n    smr = (g(m + h) - gm) / h\n    find_kinks(g, a, m, ga, gm, sa, sml, out, depth + 1, tol)\n    find_kinks(g, m, b, gm, gb, smr, sb, out, depth + 1, tol)\n\n\ndef gradient(x, h):\n    gr = np.zeros(DIM)\n    fx = f(x)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - fx) / h\n    return gr\n\n\ndef row_at_kink(x0, d, t):\n    \"\"\"Return gradient difference across the kink at x0 + t*d.\"\"\"\n    for delta in [1e-4, 1e-5, 1e-6]:\n        h = delta * 1e-2\n        xp = x0 + (t + delta) * d\n        xm = x0 + (t - delta) * d\n        # Use central-ish robust estimate: compute forward and backward\n        gp = gradient(xp, h)\n        gp2 = gradient(xp, -h)\n        gm = gradient(xm, h)\n        gm2 = gradient(xm, -h)\n        if np.allclose(gp, gp2, rtol=1e-4, atol=1e-9) and np.allclose(gm, gm2, rtol=1e-4, atol=1e-9):\n            return gp - gm\n    return gp - gm\n\n\ndef main():\n    rows = []\n    no_new = 0\n    lines = 0\n    T = 20.0\n    while no_new < 30 and lines < 500:\n        lines += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        g = line_fn(x0, d)\n        h = 1e-6\n        a, b = -T, T\n        ga, gb = g(a), g(b)\n        sa = (g(a + h) - ga) / h\n        sb = (gb - g(b - h)) / h\n        kinks = []\n        find_kinks(g, a, b, ga, gb, sa, sb, kinks)\n        new_found = False\n        for t in kinks:\n            r = row_at_kink(x0, d, t)\n            n = np.linalg.norm(r)\n            if n < 1e-9:\n                continue\n            r = r / n\n            dup = False\n            for q in rows:\n                if abs(abs(np.dot(q, r)) - 1) < 1e-5:\n                    dup = True\n                    break\n            if not dup:\n                rows.append(r)\n                new_found = True\n        no_new = 0 if new_found else no_new + 1\n\n    A = np.array(rows)\n    # Canonical sign: make the largest-magnitude entry of each row positive.\n    for i in range(len(A)):\n        if A[i, np.argmax(np.abs(A[i]))] < 0:\n            A[i] = -A[i]\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A)\n    print(f\"Recovered {A.shape[0]} neurons (shape {A.shape})\")\n    print(A)\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-g0y796kc/bench_opencode_model-extraction-relu-logits_o4nina30/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-g0y796kc/bench_opencode_model-extraction-relu-logits_o4nina30/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793757174567,
+      "end": 1793757181037
+    }
+  }
+}

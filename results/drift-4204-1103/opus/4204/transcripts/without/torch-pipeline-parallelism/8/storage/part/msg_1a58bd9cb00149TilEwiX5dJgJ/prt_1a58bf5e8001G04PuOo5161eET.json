@@ -1,0 +1,11 @@
+{
+  "id": "prt_1a58bf5e8001G04PuOo5161eET",
+  "sessionID": "ses_e5a772839ffe8YaTsTUt3aMJaI",
+  "messageID": "msg_1a58bd9cb00149TilEwiX5dJgJ",
+  "type": "text",
+  "text": "I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it against an unsplit reference model on CPU with world_size 1 and 2. In both cases the loss matched the reference (4.6004) and every parameter's gradient matched exactly.\n\n**How it works:**\n- **Layer split:** the decoder layers are divided into contiguous, nearly equal chunks, and any leftover layers go to the lowest ranks. For example, 5 layers on 2 ranks gives rank 0 layers 0–2 and rank 1 layers 3–4. Rank 0 also does the token embedding; the last rank also does the final norm and `lm_head`.\n- **Forward pass, all microbatches first:**\n  - Rank 0 embeds the input IDs. Every other rank receives hidden states of shape `[mb, seq, hidden]` from the previous rank, using `P2POp` with `batch_isend_irecv`.\n  - Each rank builds the rotary position embeddings and the causal mask the same way the HF model does, then runs its own layers.\n  - Intermediate ranks send their output to the next rank. The last rank computes `cross_entropy(logits, targets) / num_microbatches`.\n- **Backward pass, all microbatches after:** the last rank calls `loss.backward()`. Other ranks receive the output gradient from the next rank and call `out.backward(grad)`. Every rank except 0 then sends the gradient of its received input back to the previous rank.\n- Inputs, hidden states and gradients are all moved to the given `device` and `dtype`. No hooks are used.\n- The function returns the summed loss on the last rank and `None` on the others.\n\nMy test used float32 only, with gloo on CPU; other dtypes and GPU weren't tried.\n\nThere's one assumption to check against the real test. I assumed the targets are already shifted to line up with the inputs, so the loss doesn't shift them again. If the test expects HF-style label shifting, the loss won't match.",
+  "time": {
+    "start": 1793778776053,
+    "end": 1793778776053
+  }
+}

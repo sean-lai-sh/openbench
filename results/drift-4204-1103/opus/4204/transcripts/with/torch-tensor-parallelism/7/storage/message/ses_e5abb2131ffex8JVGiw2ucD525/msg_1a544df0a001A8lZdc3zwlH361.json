@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a544df0a001A8lZdc3zwlH361",
+  "sessionID": "ses_e5abb2131ffex8JVGiw2ucD525",
+  "role": "user",
+  "time": {
+    "created": 1793774116618
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with both classes. I tested them against `nn.Linear` using the gloo backend with world sizes 1, 2 and 4. Outputs, weight gradients, bias gradients and input gradients all matched the reference.\n\n**Assumption to check:** I took `master_weight` to be in `nn.Linear` layout, `(out_features, in_features)`. \"Splitting by columns\" therefore means splitting the output dimension, which is dim 0 of the PyTorch weight (the same convention Megatron-LM uses). If your tests expect the transposed layout, the slicing needs to change.\n\n**ColumnParallelLinear**\n- Each rank keeps its `out_features / world_size` rows of `master_weight`.\n- The bias is sharded the same way and starts at zero.\n- In the forward pass the input is used as-is. In the backward pass its gradient is summed across ranks (all-reduce).\n- The output pieces are all-gathered and joined along the last dimension. In the backward pass each rank keeps its own slice of the gradient.\n\n**RowParallelLinear**\n- Each rank keeps its `in_features / world_size` columns of `master_weight`.\n- The bias is full size on every rank and starts at zero.\n- If the input arrives full width, each rank takes its own slice along the last dimension. The backward pass gathers the input gradient from all ranks.\n- If the input is already the per-rank width, it is used directly. This is decided only by comparing the input's last dimension with `in_features`.\n- The partial outputs are summed across ranks (all-reduce), and the bias is added once, after the sum.\n\nBoth classes require the split dimension to divide evenly by the world size, and stop with an error if it doesn't. With a world size of 1, no communication happens.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "prt_1a4eb230c001jyFNwMveNmAD5Y",
+  "sessionID": "ses_e5b160aabffeBTx5fy4mo7OWLs",
+  "messageID": "msg_1a4eb035f001wW4hsPFdcq9TOA",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I tested it with world sizes 1, 2 and 4 against a plain `nn.Linear` with the same weights, and both classes matched it. The outputs, the input gradients, and each rank's slice of the weight and bias gradients all agreed within 1e-5. The test ran on CPU only, using the `gloo` backend; I haven't run it on GPUs with `nccl`.\n\n**`ColumnParallelLinear`**\n- `master_weight` has shape `(out_features, in_features)`, the same layout as `nn.Linear`. Each rank keeps its block of rows, `master_weight[r*k:(r+1)*k, :]` with `k = out_features / world_size`.\n- If bias is on, it's a zero tensor of size `k`, split the same way as the output.\n- In the forward pass, each rank computes its slice of the output, then the slices are gathered from all ranks and joined along the last dimension.\n- In the backward pass, each rank takes its own slice of the output gradient, and the input gradient is summed across ranks.\n\n**`RowParallelLinear`**\n- Each rank keeps its block of columns, `master_weight[:, r*k:(r+1)*k]` with `k = in_features / world_size`.\n- If bias is on, it's a full-size zero tensor on every rank, added after the sum.\n- In the forward pass, the full input is split along its last dimension, each rank computes a partial output from its piece, and the partial outputs are summed across ranks.\n- In the backward pass, the output gradient passes straight through, and the input gradient pieces are gathered back into the full input gradient.\n\nThings to be aware of:\n- **Feature sizes must divide evenly by `world_size`.** The code stops with an assertion error if they don't, so uneven splits aren't supported.\n- **`RowParallelLinear` accepts two kinds of input.** It normally expects the full input. If the input's last dimension is already `in_features / world_size`, it assumes the input is pre-split and uses it as is.\n- **With `world_size` 1 there's no communication**, and both classes behave like a normal linear layer.\n- **The test script is outside the project**, at `/tmp/t_pl.py`.",
+  "time": {
+    "start": 1793768236382,
+    "end": 1793768236382
+  }
+}
