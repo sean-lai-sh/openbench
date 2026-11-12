@@ -228,6 +228,38 @@ def compaction_overflow(context: int, output_limit: int, counted: int, output_ca
     return int(counted) > compaction_usable(context, output_limit, output_cap)
 
 
+MATCHED_CONTEXT = 200_000
+DISABLED_THINKING = {"type": "disabled"}
+
+
+def apply_matched_pair_config(config: dict) -> dict:
+    """OpenCode config for the matched Pi vs OpenCode pair.
+
+    Every model context limit becomes 200000. Each model carries
+    ``options.thinking = {type: disabled}`` and no budget. Other fields,
+    including provider ``options`` (apiKey, baseURL), stay as they were.
+    """
+    body = apply_context_limit(config, MATCHED_CONTEXT)
+    providers = body.get("provider")
+    if not isinstance(providers, dict):
+        return body
+    for provider in providers.values():
+        if not isinstance(provider, dict):
+            continue
+        models = provider.get("models")
+        if not isinstance(models, dict):
+            continue
+        for model in models.values():
+            if not isinstance(model, dict):
+                continue
+            options = model.get("options")
+            if not isinstance(options, dict):
+                options = {}
+                model["options"] = options
+            options["thinking"] = dict(DISABLED_THINKING)
+    return body
+
+
 def apply_context_limit(config: dict, limit: int) -> dict:
     """Return a copy of an OpenCode config with every model context limit set.
 

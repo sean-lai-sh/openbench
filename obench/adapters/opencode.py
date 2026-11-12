@@ -177,6 +177,25 @@ MODELS = {
 # how --vertex-model claude-sonnet-5-5 served Sonnet while cmd recorded Opus.
 _PROXY_CLAUDE = frozenset({"claude-opus-5-5", "claude-sonnet-5-5"})
 
+
+def _matched_config() -> bool:
+    return os.environ.get("OBENCH_MATCHED_CONFIG", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def comparison_variant(model: str):
+    """``--variant`` for a stock model.
+
+    The matched pair drops the medium variant on Opus 5.5 and Sonnet 5.5 so
+    the request is not a medium-thinking call. Every other model, and those
+    two outside that flag, keep ``_VARIANT``.
+    """
+    variant = _VARIANT.get(model)
+    if model in _PROXY_CLAUDE and _matched_config():
+        return None
+    return variant
+
 # canonical model name -> `--variant` reasoning effort
 _VARIANT = {
     "gpt-5.5-medium": "medium",
@@ -2009,7 +2028,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
                     "error": f"SETUP-NEEDED: run `opencode auth login -p anthropic` (missing {_ANTHROPIC_AUTH})",
                     "output_tail": "", "tokens": None, "turns": None, "cmd": None,
                     **_empty_token_usage()}
-        variant = _VARIANT.get(model)
+        variant = comparison_variant(model)
         try:
             proxy = _proxy_override() if model in _PROXY_CLAUDE else None
         except ValueError as exc:

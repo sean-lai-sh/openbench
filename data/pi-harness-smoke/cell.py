@@ -61,6 +61,16 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", default=",".join(PIN_MODELS),
                         help="comma-separated subset of the pinned smoke models")
     parser.add_argument(
+        "--matched-config",
+        action="store_true",
+        help=(
+            "Opt in to the Pi vs OpenCode matched pair: Pi context window "
+            "200000, Pi thinking level off, and an explicit "
+            "thinking.type=disabled (no budget) on the Anthropic request. "
+            "Off by default."
+        ),
+    )
+    parser.add_argument(
         "--require-model-match",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -78,6 +88,8 @@ def argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = argument_parser().parse_args(argv)
+    if args.matched_config:
+        os.environ["OBENCH_MATCHED_CONFIG"] = "1"
     if args.exec == "docker" and not args.image:
         raise SystemExit("bridge smoke needs --image or OBENCH_CELL_IMAGE")
 

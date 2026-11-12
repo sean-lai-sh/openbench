@@ -53,5 +53,18 @@ Stdout and `<out>/smoke.log` each get two lines:
 - `proxy-reached cell=<id> reached=yes calls=<n>` after the cell, when a request arrived at the proxy.
 
 Each cell record includes `network_mode` (`bridge` for this command) and
-`proxy_observed`, the thinking mode, thinking field, and reasoning tokens the
-proxy recorded for each request. An empty ledger is an empty list.
+`proxy_observed`, the thinking mode, thinking field, server `thinking_tokens`
+(`usage.output_tokens_details.thinking_tokens`, not `tokens_reasoning`), and
+reasoning tokens the proxy recorded for each request. An empty ledger is an
+empty list.
+
+## Matched pair (opt-in)
+
+`--matched-config` sets Pi's context window to 200000, Pi's thinking level to
+`off`, and asks the Vertex proxy to send `thinking: {type: disabled}` with no
+budget. Without the flag the cell is the historical 1_000_000 config and Pi
+does not pass `--thinking`. The same flag is `run_ab --matched-config`.
+
+```bash
+python3 data/pi-harness-smoke/cell.py --out /tmp/pi-matched --matched-config
+```

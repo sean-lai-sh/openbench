@@ -302,7 +302,17 @@ python -m thesis.ab.build_omp <40-character-sha> --cache results/harness-src
 
 From Oh My Pi 14.x on, the build uses the prebuilt `@oh-my-pi/pi-natives@<version>` package when it contains this platform's `.node` file, and otherwise `@oh-my-pi/pi-natives-<platform>` (`linux-x64-modern.node` and `linux-x64-baseline.node` on x64). That path does not run cargo. When `crates/` does not match that version's tag and `packages/natives/CHANGELOG.md` has a non-empty `## [Unreleased]` section, the build installs the next published `@oh-my-pi/pi-natives` version instead. It prints `pi-natives <version>` and writes that version to `natives-version` beside the binary. A checkout with no published binary is built from source. If the host rustc is not the checkout's toolchain, the build stops and names the channel it needs (rustc 1.85.1 against `nightly-2026-03-27`, for example).
 
-`--omp-thinking` is `default`, `adaptive`, or `off`. It applies only to Oh My Pi's vertex-anthropic `models.yml`. `adaptive` pins `thinking.type` to `adaptive`. `off` sets `reasoning: false`. `default` leaves reasoning on and does not pin a type. Every proxy ledger row records that configured mode and the thinking field that request sent (`none`, `enabled+budget_tokens`, or `adaptive`). Every result row records the same configured mode and the per-request values in ledger order.
+`--omp-thinking` is `default`, `adaptive`, or `off`. It applies only to Oh My Pi's vertex-anthropic `models.yml`. `adaptive` pins `thinking.type` to `adaptive`. `off` sets `reasoning: false`. `default` leaves reasoning on and does not pin a type. Every proxy ledger row records that configured mode and the thinking field that request sent (`none`, `enabled+budget_tokens`, `adaptive`, or `disabled`). It also records `thinking_tokens`, the server's `usage.output_tokens_details.thinking_tokens` (null when the server omitted it). That count is not the harness `tokens_reasoning` column. Every result row records the same configured mode and the per-request values in ledger order.
+
+`--matched-config` is the Pi vs OpenCode pair profile. It is off unless you pass it. Pi's context window becomes 200000 and its thinking level is `off`. OpenCode's context limit becomes 200000 and each model sets `thinking` to `{type: disabled}` with no budget. The Vertex proxy then writes that same disabled thinking object onto every Anthropic request, so a harness that omits the field cannot leave thinking on. The ledger's `thinking_sent` is `disabled` and `thinking_tokens` is the count to gate on (the live smoke wants 0 on every call).
+
+```bash
+python -m thesis.ab.run_ab thesis/ab/fixtures/opencode-harness-prs.csv \
+  --pr 623 \
+  --trials 1 \
+  --matched-config \
+  --dry-run
+```
 
 ## Oldest OpenCode commit in the fixture
 

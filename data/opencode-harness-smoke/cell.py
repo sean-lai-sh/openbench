@@ -108,6 +108,12 @@ def small_model_setup() -> dict:
     }
 
 
+def _matched_config() -> bool:
+    return os.environ.get("OBENCH_MATCHED_CONFIG", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def comparison_config(base_url: str) -> dict:
     """OpenCode config for the Pi vs OpenCode smoke.
 
@@ -115,6 +121,10 @@ def comparison_config(base_url: str) -> dict:
     The pre-loop title call stays enabled; this only changes the model id
     that call sends. OpenCode's default small model is Haiku, which the
     proxy then serves as Sonnet and ``--require-model-match`` rejects.
+
+    ``OBENCH_MATCHED_CONFIG`` sets the context limit to 200000 and
+    ``options.thinking`` to ``{type: disabled}`` with no budget. Without
+    that flag the document is the historical 1_000_000 config.
     """
     from thesis.ab.compat import anthropic_proxy_config
 
@@ -123,6 +133,10 @@ def comparison_config(base_url: str) -> dict:
     )
     config["model"] = MODEL_REF
     config["small_model"] = MODEL_REF
+    if _matched_config():
+        from thesis.ab.cell_fixtures import apply_matched_pair_config
+
+        config = apply_matched_pair_config(config)
     return config
 
 
@@ -161,6 +175,15 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image", default=os.environ.get("OBENCH_CELL_IMAGE", ""),
                         help="cell image for --exec docker (or OBENCH_CELL_IMAGE)")
     parser.add_argument(
+        "--matched-config",
+        action="store_true",
+        help=(
+            "Opt in to the Pi vs OpenCode matched pair: context limit 200000 "
+            "and an explicit thinking.type=disabled (no budget) on the "
+            "Anthropic request. Off by default."
+        ),
+    )
+    parser.add_argument(
         "--require-model-match",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -175,6 +198,8 @@ def argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = argument_parser().parse_args(argv)
+    if args.matched_config:
+        os.environ["OBENCH_MATCHED_CONFIG"] = "1"
     if args.exec == "docker" and not args.image:
         raise SystemExit("bridge smoke needs --image or OBENCH_CELL_IMAGE")
 

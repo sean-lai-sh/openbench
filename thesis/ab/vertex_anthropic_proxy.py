@@ -334,7 +334,35 @@ def strip_cc_headers(headers) -> tuple[str | None, list[str]]:
 
 _NORMALIZED_LABELS = frozenset({"metadata.user_id", "authorization"})
 _THINKING_MODES = frozenset({"default", "adaptive", "off"})
-_THINKING_SENT = frozenset({"none", "enabled+budget_tokens", "adaptive"})
+_THINKING_SENT = frozenset({"none", "enabled+budget_tokens", "adaptive", "disabled"})
+# Opt-in for the Pi vs OpenCode matched pair. Unset leaves every request
+# body as the harness wrote it.
+MATCHED_CONFIG_ENV = "OBENCH_MATCHED_CONFIG"
+_MATCHED_TRUTHY = frozenset({"1", "true", "yes", "on"})
+DISABLED_THINKING = {"type": "disabled"}
+
+
+def matched_config_requested() -> bool:
+    """True when this process asked for the matched-pair profile."""
+    return os.environ.get(MATCHED_CONFIG_ENV, "").strip().lower() in _MATCHED_TRUTHY
+
+
+def apply_disabled_thinking(data) -> bool:
+    """Force ``thinking`` to ``{"type": "disabled"}`` with no budget.
+
+    Only when ``OBENCH_MATCHED_CONFIG`` is set. Otherwise the body is not
+    read or written, so a historical request stays byte-for-byte the same.
+    An absent ``thinking`` field does not turn thinking off on Opus 5.5 or
+    Sonnet 5.5, so the matched pair has to send the disabled type.
+    Returns True when the body changed.
+    """
+    if not matched_config_requested() or not isinstance(data, dict):
+        return False
+    current = data.get("thinking")
+    if current == DISABLED_THINKING:
+        return False
+    data["thinking"] = dict(DISABLED_THINKING)
+    return True
 
 
 def classify_thinking(data) -> str:
@@ -342,7 +370,8 @@ def classify_thinking(data) -> str:
 
     ``none`` when the field is absent. ``enabled+budget_tokens`` when
     ``type`` is ``enabled`` and ``budget_tokens`` is set. ``adaptive`` when
-    ``type`` is ``adaptive``.
+    ``type`` is ``adaptive``. ``disabled`` when ``type`` is ``disabled``
+    (no budget). Any other shape is ``none``.
     """
     if not isinstance(data, dict):
         return "none"
@@ -350,11 +379,33 @@ def classify_thinking(data) -> str:
     if not isinstance(thinking, dict):
         return "none"
     kind = thinking.get("type")
+    if kind == "disabled":
+        return "disabled"
     if kind == "adaptive":
         return "adaptive"
     if kind == "enabled" and "budget_tokens" in thinking:
         return "enabled+budget_tokens"
     return "none"
+
+
+def server_thinking_tokens(usage: dict | None) -> int | None:
+    """Thinking tokens the server reported on this call.
+
+    Anthropic puts that count on
+    ``usage.output_tokens_details.thinking_tokens`` (the final
+    ``message_delta`` when the reply is streamed). This is not
+    ``reasoning_tokens``, ``reasoning_output_tokens``, or the harness
+    ``tokens_reasoning`` column. Missing or non-numeric is None.
+    """
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("output_tokens_details")
+    if not isinstance(details, dict):
+        return None
+    value = details.get("thinking_tokens")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
 
 
 BLOCK_BINDING_ENV = "OBENCH_THINKING_BLOCK_BINDING"
@@ -1002,6 +1053,10 @@ def _append_ledger(
         row["cc_identity_stripped"] = identity
     row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
+    # Server-returned thinking tokens for this call. None when the usage
+    # object did not carry output_tokens_details.thinking_tokens. Not the
+    # harness tokens_reasoning column.
+    row["thinking_tokens"] = server_thinking_tokens(usage if isinstance(usage, dict) else None)
     if isinstance(upstream_model, str) and upstream_model:
         row["upstream_model"] = upstream_model
     # The model id on the incoming body, before this proxy chooses the Vertex
@@ -2245,6 +2300,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 identity["thinking_block_binding"] = binding
             if sampling_removed:
                 identity["sampling_params_removed"] = sampling_removed
+            if isinstance(parsed, dict) and apply_disabled_thinking(parsed):
+                raw = json.dumps(parsed).encode("utf-8")
             sent = classify_thinking(parsed)
             if ledger is not None and cell and length:
                 note_cell_bytes(ledger, cell, length)
