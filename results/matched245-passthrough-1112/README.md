@@ -1,6 +1,11 @@
-# #245 (29236b59) Pi passthrough cache smoke (2026-11-12): BLOCKED, Pi itself sends thinking.type=disabled
+# #245 (29236b59) Pi passthrough cache smoke (2026-11-12): SMOKE ONLY, blocked on call 1
 
-This was a smoke, not a result, and it is not scored. Spend was $0.00.
+**This is a smoke, not a result.** Nothing here is scored, poolable or usable as thesis data. Spend was $0.00.
+
+- **Why it stopped:** Pi's own `--thinking off` sends `"thinking": {"type": "disabled"}` on the request. Both Opus 5.5 and Sonnet 5.5 rejected that with HTTP 400 on call 1, so no call 2 exists. These bodies are the ones Pi sent; the proxy changed nothing.
+  - **Sonnet 5.5** (`req_vrtx_011Cgyo3jVqFdtcKD739Ji7v`): `To turn thinking off on this model, send "thinking": {"type": "between_tools"} instead of {"type": "disabled"}. The model does not think before responding. The short updates it writes between tool calls come back as thinking blocks.`
+  - **Opus 5.5** (`req_vrtx_011Cgyo4TeNaQoPwm5xzSsbT`): `"thinking.type.disabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.`
+- **No request bodies at that head:** the Vertex proxy at `29236b59` does not save Anthropic request bodies (only the Responses API path does). The two call-1 bodies in `raw/cells/*/pi/requests/` were captured by this smoke's launcher wrapper (`raw/m245p-batch.py`), not by the proxy. For the same reason, the earlier re-smoke (`results/matched245-resmoke-1112`) has no bodies, and its per-call prefix divergence can't be computed.
 
 ## Setup
 - **Pins and VM:** same as `results/matched245-resmoke-1112`: thesis-h1-cpu-2, head `29236b59`, regex-chess.
