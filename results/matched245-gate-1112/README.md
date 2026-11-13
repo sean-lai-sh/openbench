@@ -174,4 +174,4 @@ Cells 1–6: $0.516, $0.382, $0.421, $0.550, $0.496, $0.411, for **$2.777** tota
   - `analysis.json`, from `raw/m245g-an.py` on the raw files.
   - `opencode-proof.json`, from `raw/m245g-proof.py`.
   - `m245g-readme-final.py`, the table generator for this README. It is the same as `raw/m245g-readme.py` apart from two table-label tweaks.
-  - `SCRIPTS-*.sha256` hash the scripts as run on the VM and as committed. The launchers, `m245g-pack.sh` and `m245g-proof.py` differ only by `<HOME>`.
+  - `SCRIPTS-*.sha256` hash the scripts as run on the VM and as committed. The committed scripts are byte-identical to the ones run. The commit shas in them that `scrub.py` had redacted were restored.

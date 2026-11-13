@@ -8,7 +8,7 @@ from pathlib import Path
 REPO = os.path.expanduser("~/ob-m245g"); sys.path.insert(0, REPO); sys.path.insert(0, f"{REPO}/data/opencode-harness-smoke")
 from thesis.ab import sdk_pin
 from obench import load_proof
-B = os.path.expanduser("~/h2/matched245-gate-1112"); SHA = os.environ.get("OPENCODE_SHA", "<REDACTED_HEX>")
+B = os.path.expanduser("~/h2/matched245-gate-1112"); SHA = os.environ.get("OPENCODE_SHA", "ba54cee55e18b47fb70badc84ae2cbac7c83d258")
 out = {"opencode_sha": SHA}
 print("bundled_anthropic_pin sig", inspect.signature(sdk_pin.bundled_anthropic_pin))
 for root in [os.path.expanduser("~/h1/opencode-src"), os.path.expanduser("~/h1/opencode-src/repo"), os.path.expanduser("~/h1/opencode-src/mirror")]:

@@ -28,7 +28,7 @@ PY
 python3 ~/ob-m245g/obench/scrub.py $S/pre --out $S/out/results/$N/raw --hostname "$(hostname)" --hostname "$(hostname -f)" > $S/scrub.log 2>&1
 mkdir -p $S/out/results/$N/analysis
 mv $S/out/results/$N/raw/analysis.json $S/out/results/$N/raw/opencode-proof.json $S/out/results/$N/analysis/
-echo <REDACTED_HEX> > $S/out/results/$N/raw/head.txt
+echo 776441123884afd1d2efdc3445c295afc5d372bb > $S/out/results/$N/raw/head.txt
 cp $S/raw-sha256.txt $S/out/results/$N/request-bodies-raw-sha256.txt
 cp $O.raw-archive.sha256 $S/out/results/$N/request-bodies-raw-archive.sha256
 ( cd $O && sha256sum m245g-*.py m245g-*.sh ) > $S/out/results/$N/analysis/SCRIPTS-as-run.sha256
