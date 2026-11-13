@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2a86919001LoEOzOxmVIViEW",
+  "sessionID": "ses_e2d5ccc33ffepSKXmTH8GwFzuu",
+  "messageID": "msg_1d2a862a9001y1FAa5OiiQTJiW",
+  "type": "tool",
+  "callID": "toolu_vrtx_01VbztiE8UxSKxTkXZEjmHJK",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-ehwt5py5/bench_opencode_sam-cell-seg_9o1bsmwj; python - <<'EOF'\nimport pandas as pd,numpy as np,cv2\na=pd.read_csv('demo_metadata.csv');b=pd.read_csv('out/demo_metadata.csv')\nprint(list(a.columns)==list(b.columns), len(a)==len(b))\nkeep=[c for c in a.columns if c not in 'xmin xmax ymin ymax coords_x coords_y'.split()]\nprint('other cols equal', a[keep].equals(b[keep]))\nimg=cv2.imread('demo_rgb.png');H,W=img.shape[:2]\ncnt=np.zeros((H,W),int);vis=img.copy();ncomp=[];rects=0;bboxok=True\nfor _,r in b.iterrows():\n    xs=np.array(r.coords_x.split(','),int);ys=np.array(r.coords_y.split(','),int)\n    m=np.zeros((H,W),np.uint8);cv2.fillPoly(m,[np.stack([xs,ys],1)],1)\n    cnt+=m; ncomp.append(cv2.connectedComponents(m,connectivity=4)[0]-1)\n    if len(set(zip(xs,ys)))<=4: rects+=1\n    bboxok&= (xs.min(),xs.max(),ys.min(),ys.max())==(r.xmin,r.xmax,r.ymin,r.ymax)\n    cv2.polylines(vis,[np.stack([xs,ys],1)],True,(0,255,0),1)\nfor _,r in a.iterrows():\n    xs=np.array(r.coords_x.split(','),int);ys=np.array(r.coords_y.split(','),int)\n    cv2.polylines(vis,[np.stack([xs,ys],1)],True,(255,0,0),1)\nprint('overlap px',(cnt>1).sum(),'comps',set(ncomp),'rects',rects,'bbox ok',bboxok)\nprint('areas', sorted(int(v) for v in [0]))\ncv2.imwrite('vis.png',cv2.resize(vis,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST))\nEOF",
+      "description": "Validate output masks"
+    },
+    "output": "True True\nother cols equal True\noverlap px 0 comps {1} rects 0 bbox ok True\nareas [0]\n",
+    "title": "Validate output masks",
+    "metadata": {
+      "output": "True True\nother cols equal True\noverlap px 0 comps {1} rects 0 bbox ok True\nareas [0]\n",
+      "exit": 0,
+      "description": "Validate output masks"
+    },
+    "time": {
+      "start": 1794535620687,
+      "end": 1794535621437
+    }
+  }
+}

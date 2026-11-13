@@ -1,0 +1,16 @@
+I've written `parallel_linear.py` with both classes. I tested them on CPU with world sizes 1, 2 and 4. In every case the outputs, the weight and bias gradients, and the input gradients matched a regular `nn.Linear`.
+
+**Splitting the weights.** `master_weight` is expected in the usual `nn.Linear` shape, `(out_features, in_features)`.
+- **`ColumnParallelLinear`:** each rank keeps its own block of output rows, `master_weight[r*k:(r+1)*k, :]` with `k = out_features / world_size`. Its bias is that rank's slice of the output dimension, set to zero.
+- **`RowParallelLinear`:** each rank keeps its own block of input columns, `master_weight[:, r*k:(r+1)*k]` with `k = in_features / world_size`. Its bias covers the full output size on every rank, set to zero.
+
+**What each layer does when it runs.** The communication steps are written as autograd functions so that gradients flow through them correctly.
+- **`ColumnParallelLinear`:** each rank computes its part of the output, then the parts are gathered and joined along the last dimension. On the way back, each rank takes its own slice of the output gradient. The gradient for the input is summed across ranks, so it matches what a full, unsplit layer would give.
+- **`RowParallelLinear`:** each rank multiplies its slice of the input by its slice of the weight. The partial results are summed across ranks and the full bias is added once. The layer accepts either the full input, which it slices itself, or an input that has already been split. On the way back, the input gradient is gathered back to full size.
+
+**Limits:**
+- Both layers need the split dimension to divide evenly by `world_size`; otherwise they stop with an assertion error.
+- The input gradient for `ColumnParallelLinear` is only correct if every rank passes in the same input.
+- If `torch.distributed` hasn't been initialised, both layers fall back to acting like a plain linear layer on one process.
+
+The type checker complains about how the `backward` methods are declared. That's a known false alarm with custom autograd functions, and the code runs correctly.

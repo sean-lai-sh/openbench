@@ -1,0 +1,177 @@
+{
+  "id": "prt_1d2210003001nj1WO9i7u7TqcD",
+  "sessionID": "ses_e2ddf1edfffe54KHRSpr4wrz8i",
+  "messageID": "msg_1d220e1a0001fhNr35T1avk26b",
+  "type": "tool",
+  "callID": "toolu_vrtx_01LNfLseDUxnqfepEXRpEWpq",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-yztaeybb/bench_opencode_torch-tensor-parallelism_qzd4zhxi/parallel_linear.py",
+      "content": "import torch\nimport torch.distributed as dist\nimport torch.nn as nn\nimport torch.nn.functional as F\n\n\ndef _world_size():\n    if dist.is_available() and dist.is_initialized():\n        return dist.get_world_size()\n    return 1\n\n\ndef _rank():\n    if dist.is_available() and dist.is_initialized():\n        return dist.get_rank()\n    return 0\n\n\n# ---------------------------------------------------------------------------\n# Autograd-aware communication primitives\n# ---------------------------------------------------------------------------\nclass _CopyToParallelRegion(torch.autograd.Function):\n    \"\"\"Identity in forward, all-reduce of the gradient in backward.\"\"\"\n\n    @staticmethod\n    def forward(ctx, x):\n        return x\n\n    @staticmethod\n    def backward(ctx, grad):\n        if _world_size() == 1:\n            return grad\n        grad = grad.contiguous().clone()\n        dist.all_reduce(grad, op=dist.ReduceOp.SUM)\n        return grad\n\n\nclass _ReduceFromParallelRegion(torch.autograd.Function):\n    \"\"\"All-reduce (sum) in forward, identity in backward.\"\"\"\n\n    @staticmethod\n    def forward(ctx, x):\n        if _world_size() == 1:\n            return x\n        x = x.contiguous().clone()\n        dist.all_reduce(x, op=dist.ReduceOp.SUM)\n        return x\n\n    @staticmethod\n    def backward(ctx, grad):\n        return grad\n\n\nclass _ScatterToParallelRegion(torch.autograd.Function):\n    \"\"\"Take the local chunk of the last dim in forward, all-gather in backward.\"\"\"\n\n    @staticmethod\n    def forward(ctx, x):\n        ws = _world_size()\n        if ws == 1:\n            return x\n        chunk = x.shape[-1] // ws\n        r = _rank()\n        return x[..., r * chunk:(r + 1) * chunk].contiguous()\n\n    @staticmethod\n    def backward(ctx, grad):\n        return _gather_last_dim(grad)\n\n\nclass _GatherFromParallelRegion(torch.autograd.Function):\n    \"\"\"All-gather along the last dim in forward, take local chunk in backward.\"\"\"\n\n    @staticmethod\n    def forward(ctx, x):\n        return _gather_last_dim(x)\n\n    @staticmethod\n    def backward(ctx, grad):\n        ws = _world_size()\n        if ws == 1:\n            return grad\n        chunk = grad.shape[-1] // ws\n        r = _rank()\n        return grad[..., r * chunk:(r + 1) * chunk].contiguous()\n\n\ndef _gather_last_dim(x):\n    ws = _world_size()\n    if ws == 1:\n        return x\n    x = x.contiguous()\n    parts = [torch.empty_like(x) for _ in range(ws)]\n    dist.all_gather(parts, x)\n    return torch.cat(parts, dim=-1).contiguous()\n\n\n# ---------------------------------------------------------------------------\n# Parallel linear layers\n# ---------------------------------------------------------------------------\nclass ColumnParallelLinear(nn.Module):\n    \"\"\"Y = X A^T + b with A (out_features x in_features) split along the output\n    dimension (i.e. the columns of A^T). Outputs are all-gathered along the\n    last dimension.\"\"\"\n\n    def __init__(self, in_features, out_features, bias, master_weight):\n        super().__init__()\n        self.world_size = _world_size()\n        self.rank = _rank()\n        assert out_features % self.world_size == 0, \\\n            \"out_features must be divisible by world_size\"\n        self.in_features = in_features\n        self.out_features = out_features\n        self.out_features_per_partition = out_features // self.world_size\n\n        master_weight = torch.as_tensor(master_weight).detach()\n        assert tuple(master_weight.shape) == (out_features, in_features), \\\n            f\"master_weight must have shape {(out_features, in_features)}\"\n        start = self.rank * self.out_features_per_partition\n        end = start + self.out_features_per_partition\n        self.weight = nn.Parameter(master_weight[start:end, :].clone().contiguous())\n\n        if bias:\n            self.bias = nn.Parameter(\n                torch.zeros(self.out_features_per_partition,\n                            dtype=self.weight.dtype, device=self.weight.device))\n        else:\n            self.register_parameter(\"bias\", None)\n\n    def forward(self, x):\n        x = _CopyToParallelRegion.apply(x)\n        y_local = F.linear(x, self.weight, self.bias)\n        return _GatherFromParallelRegion.apply(y_local)\n\n\nclass RowParallelLinear(nn.Module):\n    \"\"\"Y = X A^T + b with A (out_features x in_features) split along the input\n    dimension (i.e. the rows of A^T). Partial outputs are all-reduced (summed)\n    and the full bias is added on each rank.\"\"\"\n\n    def __init__(self, in_features, out_features, bias, master_weight):\n        super().__init__()\n        self.world_size = _world_size()\n        self.rank = _rank()\n        assert in_features % self.world_size == 0, \\\n            \"in_features must be divisible by world_size\"\n        self.in_features = in_features\n        self.out_features = out_features\n        self.in_features_per_partition = in_features // self.world_size\n\n        master_weight = torch.as_tensor(master_weight).detach()\n        assert tuple(master_weight.shape) == (out_features, in_features), \\\n            f\"master_weight must have shape {(out_features, in_features)}\"\n        start = self.rank * self.in_features_per_partition\n        end = start + self.in_features_per_partition\n        self.weight = nn.Parameter(master_weight[:, start:end].clone().contiguous())\n\n        if bias:\n            self.bias = nn.Parameter(\n                torch.zeros(out_features,\n                            dtype=self.weight.dtype, device=self.weight.device))\n        else:\n            self.register_parameter(\"bias\", None)\n\n    def forward(self, x):\n        # Accept either the full input or an already-partitioned input.\n        if self.world_size > 1 and x.shape[-1] == self.in_features:\n            x = _ScatterToParallelRegion.apply(x)\n        y_partial = F.linear(x, self.weight)\n        y = _ReduceFromParallelRegion.apply(y_partial)\n        if self.bias is not None:\n            y = y + self.bias\n        return y\n"
+    },
+    "output": "\nThis file has errors, please fix\n<file_diagnostics>\nERROR [30:9] Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override\nERROR [50:9] Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override\nERROR [67:9] Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override\nERROR [79:9] Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override\n</file_diagnostics>\n",
+    "title": "tmp/obench-cell-yztaeybb/bench_opencode_torch-tensor-parallelism_qzd4zhxi/parallel_linear.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-yztaeybb/bench_opencode_torch-tensor-parallelism_qzd4zhxi/parallel_linear.py": [
+          {
+            "range": {
+              "start": {
+                "line": 29,
+                "character": 8
+              },
+              "end": {
+                "line": 29,
+                "character": 16
+              }
+            },
+            "message": "Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override",
+            "severity": 1,
+            "code": "reportIncompatibleMethodOverride",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportIncompatibleMethodOverride"
+            },
+            "relatedInformation": [
+              {
+                "location": {
+                  "uri": "file:///usr/local/lib/python3.13/site-packages/torch/autograd/function.py",
+                  "range": {
+                    "start": {
+                      "line": 473,
+                      "character": 8
+                    },
+                    "end": {
+                      "line": 473,
+                      "character": 16
+                    }
+                  }
+                },
+                "message": "Overridden method"
+              }
+            ]
+          },
+          {
+            "range": {
+              "start": {
+                "line": 49,
+                "character": 8
+              },
+              "end": {
+                "line": 49,
+                "character": 16
+              }
+            },
+            "message": "Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override",
+            "severity": 1,
+            "code": "reportIncompatibleMethodOverride",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportIncompatibleMethodOverride"
+            },
+            "relatedInformation": [
+              {
+                "location": {
+                  "uri": "file:///usr/local/lib/python3.13/site-packages/torch/autograd/function.py",
+                  "range": {
+                    "start": {
+                      "line": 473,
+                      "character": 8
+                    },
+                    "end": {
+                      "line": 473,
+                      "character": 16
+                    }
+                  }
+                },
+                "message": "Overridden method"
+              }
+            ]
+          },
+          {
+            "range": {
+              "start": {
+                "line": 66,
+                "character": 8
+              },
+              "end": {
+                "line": 66,
+                "character": 16
+              }
+            },
+            "message": "Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override",
+            "severity": 1,
+            "code": "reportIncompatibleMethodOverride",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportIncompatibleMethodOverride"
+            },
+            "relatedInformation": [
+              {
+                "location": {
+                  "uri": "file:///usr/local/lib/python3.13/site-packages/torch/autograd/function.py",
+                  "range": {
+                    "start": {
+                      "line": 473,
+                      "character": 8
+                    },
+                    "end": {
+                      "line": 473,
+                      "character": 16
+                    }
+                  }
+                },
+                "message": "Overridden method"
+              }
+            ]
+          },
+          {
+            "range": {
+              "start": {
+                "line": 78,
+                "character": 8
+              },
+              "end": {
+                "line": 78,
+                "character": 16
+              }
+            },
+            "message": "Method \"backward\" overrides class \"_SingleLevelFunction\" in an incompatible manner\n  Positional parameter count mismatch; base method has 2, but override has 2\n  Parameter \"grad_outputs\" is missing in override",
+            "severity": 1,
+            "code": "reportIncompatibleMethodOverride",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportIncompatibleMethodOverride"
+            },
+            "relatedInformation": [
+              {
+                "location": {
+                  "uri": "file:///usr/local/lib/python3.13/site-packages/torch/autograd/function.py",
+                  "range": {
+                    "start": {
+                      "line": 473,
+                      "character": 8
+                    },
+                    "end": {
+                      "line": 473,
+                      "character": 16
+                    }
+                  }
+                },
+                "message": "Overridden method"
+              }
+            ]
+          }
+        ]
+      },
+      "filepath": "/tmp/obench-cell-yztaeybb/bench_opencode_torch-tensor-parallelism_qzd4zhxi/parallel_linear.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794526755296,
+      "end": 1794526759691
+    }
+  }
+}

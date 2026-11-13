@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d24a4af2001pnjLxQRhNPy87z",
+  "sessionID": "ses_e2db659efffeHwp0QSFUQXvheH",
+  "messageID": "msg_1d24a45950011hcZ31Pfnx0Vff",
+  "type": "tool",
+  "callID": "toolu_vrtx_01JosZ9FLYb2RFwvp5YRfX17",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/pp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.nn.functional as F\nsys.path.insert(0, \"/tmp/obench-cell-onxjlil3/bench_opencode_torch-pipeline-parallelism_c8onj2bn\")\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\ndist.init_process_group(\"gloo\")\nr, ws = dist.get_rank(), dist.get_world_size()\ntorch.manual_seed(0)\ncfg = LlamaConfig(vocab_size=100, hidden_size=32, intermediate_size=64, num_hidden_layers=5, num_attention_heads=4, num_key_value_heads=2)\nmodel = LlamaForCausalLM(cfg).float()\nref = LlamaForCausalLM(cfg).float(); ref.load_state_dict(model.state_dict())\ninp = [torch.randint(0,100,(2,8)) for _ in range(3)]; tgt = [torch.randint(0,100,(2,8)) for _ in range(3)]\nloss = train_step_pipeline_afab(model, inp, tgt, torch.device(\"cpu\"), torch.float32)\ntot = 0\nfor x,y in zip(inp,tgt):\n    l = F.cross_entropy(ref(x).logits.reshape(-1,100), y.reshape(-1))/3; l.backward(); tot += l.item()\nmd = 0\nfor (n,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n    if p.grad is not None: md = max(md, (p.grad-q.grad).abs().max().item())\nprint(r, \"loss\", loss, tot, \"max grad diff\", md, \"params w/ grad\", sum(p.grad is not None for p in model.parameters()))\ndist.destroy_process_group()\nEOF\nfor n in 1 2; do torchrun --nproc_per_node=$n /tmp/pp_test.py 2>&1 | grep -v Warn | tail -3; done",
+      "description": "Test pipeline vs reference",
+      "timeout": 300000
+    },
+    "output": "0 loss tensor(4.6004) 4.600353240966797 max grad diff 0 params w/ grad 48\nW1112 19:24:20.401000 111342 site-packages/torch/distributed/run.py:982] *****************************************\n1 loss 0 loss None 4.600353240966797 max grad diff 0 params w/ grad 28\ntensor(4.6004) 4.600353240966797 max grad diff 0 params w/ grad 20\n",
+    "title": "Test pipeline vs reference",
+    "metadata": {
+      "output": "0 loss tensor(4.6004) 4.600353240966797 max grad diff 0 params w/ grad 48\nW1112 19:24:20.401000 111342 site-packages/torch/distributed/run.py:982] *****************************************\n1 loss 0 loss None 4.600353240966797 max grad diff 0 params w/ grad 28\ntensor(4.6004) 4.600353240966797 max grad diff 0 params w/ grad 20\n",
+      "exit": 0,
+      "description": "Test pipeline vs reference"
+    },
+    "time": {
+      "start": 1794529452226,
+      "end": 1794529465579
+    }
+  }
+}

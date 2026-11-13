@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d2abc19b001oJBfLLLlFt32Rm",
+  "sessionID": "ses_e2d55042fffeNPX6hwwVr6TlSR",
+  "messageID": "msg_1d2aba59e001HfNIGszQxJjdw2",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I ran a test with 1, 2 and 4 processes on the CPU (gloo) backend, comparing against a plain `nn.Linear` with the same weights. Outputs, input gradients, and the gradients of each rank's weight and bias slices all matched.\n\n**`ColumnParallelLinear`**\n- Each rank keeps its own `out_features / world_size` rows of `master_weight`, which is shaped `(out_features, in_features)` like `nn.Linear`.\n- The bias is the same size as that slice and starts at zero.\n- The forward pass computes this rank's part of the output, then joins all ranks' parts along the last dimension (all_gather).\n- In the backward pass, each rank takes back its own slice of the output gradient, and the input gradients from all ranks are summed.\n\n**`RowParallelLinear`**\n- Each rank keeps its own `in_features / world_size` columns of `master_weight`.\n- The bias is full size, starts at zero, and is on every rank.\n- The forward pass computes a partial `x_local @ W_shardᵀ` and sums it across ranks (all_reduce). The bias is added once, after the sum, so it isn't counted `world_size` times.\n\n**Choices you may want to check against the tests:**\n- **Input to `RowParallelLinear`:** the task didn't say whether the input arrives full or already split. The layer accepts either, based on the size of the last dimension: a full input is split here, and an already-split input is used as is.\n- **Gradients:** each layer's gradients come out correct when every rank computes the same loss from the full output, which is what my test did.\n- **Running without distributed:** if `torch.distributed` hasn't been initialized, both layers act as `world_size=1`, `rank=0`.\n- **Even splits only:** `out_features` (for column) or `in_features` (for row) must divide evenly by `world_size`, or the layer raises an assertion error.",
+  "time": {
+    "start": 1794535834062,
+    "end": 1794535834062
+  }
+}

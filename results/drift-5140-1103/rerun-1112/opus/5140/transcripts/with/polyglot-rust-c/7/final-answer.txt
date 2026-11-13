@@ -1,0 +1,18 @@
+I wrote `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`, and both programs printed the same results for N = 0, 1, 2, 5, 10, 50 and 90 (for example 1, 1, 2, 8, 89 for the first five). The compilers on this machine aren't necessarily the exact versions you listed.
+
+**How it works:** Rust lets block comments nest; C++ doesn't. The file uses that difference to show each compiler only its own code:
+
+```
+/* /* */            <- C++: a complete comment.  Rust: still inside a comment (2 opens, 1 close)
+...C++ program...    <- Rust ignores this, since it's inside its comment
+#if 0                <- C++ starts skipping from here
+// */                <- Rust: this closes its comment (Rust doesn't treat // as a comment inside a block comment)
+...Rust program...   <- C++ skips this because of #if 0
+/* /* */ #endif      <- C++: a comment, then #endif.  Rust: back inside a comment
+// */                <- Rust: closes that comment.  C++: just a line comment
+```
+
+**Limits:**
+- Both versions use 64-bit unsigned integers, so results are only correct up to N = 92.
+- Above 92 the result wraps around silently, and the two versions might not even wrap the same way.
+- If N is missing or isn't a number, the Rust version prints 1. The C++ version prints 1 when N is missing, but with text like `5abc` it reads the leading digits and gives the answer for 5.

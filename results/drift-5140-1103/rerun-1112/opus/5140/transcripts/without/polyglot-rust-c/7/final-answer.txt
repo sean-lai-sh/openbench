@@ -1,0 +1,16 @@
+I wrote the polyglot at `/tmp/obench-cell-cvufkmpi/bench_opencode_polyglot-rust-c_l73zbk64/polyglot/main.rs`. It compiled with both `rustc` and `g++ -x c++` without warnings or errors. For N = 0, 1, 2, 3, 10, 50, 100 and 180 the two programs printed the same results, starting 1, 1, 2, 3.
+
+**Why it works:** Rust lets block comments nest, but C++ doesn't. The file uses that difference to give each compiler its own section:
+
+```
+/* /* */      Rust: still inside a comment (2 opened, 1 closed). C++: comment is over.
+#if 0         C++: start skipping. Rust: still in the comment.
+// */         C++: just a line comment. Rust: comment closed, so Rust code starts here.
+...Rust code...
+/* /* */      Rust: back inside a comment. C++: comment over, but still skipping.
+#endif        C++: stop skipping, so C++ code starts here.
+...C++ code...
+// */         C++: line comment. Rust: comment closed, file ends.
+```
+
+**Limit:** both versions use 128-bit unsigned integers (`u128` in Rust, `unsigned __int128` in C++). Results are exact up to about N = 184. Beyond that the numbers overflow: the Rust debug build will panic, and the C++ version will silently wrap. If you need larger N, the fix is to switch both sides to string-based big-number addition.

@@ -1,0 +1,13 @@
+I wrote `polyglot/main.rs`. Both of your commands compile it without errors, and the two programs print the same results. I tested N = 0, 1, 2, 3, 10, 90 and 150, and got 1, 1, 2, 3, 89, 4660046610375530309 and <REDACTED_HEX>.
+
+**How it works:** Rust and C++ handle comments differently, so each compiler skips the other language's code.
+- **Rust lets `/* */` comments nest; C++ doesn't.** The first line, `/* /* */`, is a complete comment in C++, so g++ goes on to compile the C++ `main`. To Rust, one `/*` is still open, so the C++ code is part of a comment. A later `*/` closes it.
+- **Rust has no preprocessor, so it never sees `#if` lines.** `#if 0` sits inside Rust's comment, just before that `*/`, so rustc ignores it. For g++ it skips the whole Rust section.
+- **The ending.** The file ends with `/* /* */`, then `#endif`, then `// */`. In C++ that's a finished comment, the `#endif`, and a line comment. In Rust the `#endif` sits inside a nested comment, which `// */` closes.
+
+**Limits:**
+- Both versions use 128-bit integers (`u128` in Rust, `unsigned __int128` in C++), so results are correct up to about N = 184.
+- Above that, the C++ version silently wraps around and prints wrong numbers. The Rust build panics on overflow, since `rustc` without optimisation checks for it.
+- With no argument, or one that isn't a number, both print f(0) = 1.
+
+Running the commands also left the compiled binaries `main` and `cmain` in `polyglot/`.

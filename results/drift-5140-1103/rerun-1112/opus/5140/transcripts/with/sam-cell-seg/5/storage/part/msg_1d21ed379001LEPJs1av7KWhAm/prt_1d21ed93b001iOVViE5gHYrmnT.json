@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d21ed93b001iOVViE5gHYrmnT",
+  "sessionID": "ses_e2de401cbffeBoC6OM9M7TxvPN",
+  "messageID": "msg_1d21ed379001LEPJs1av7KWhAm",
+  "type": "tool",
+  "callID": "toolu_vrtx_01ARg7wDC7iFADu64ApM1dkx",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "python - <<'EOF'\nimport pandas as pd, numpy as np, cv2\na=pd.read_csv('demo_metadata.csv',index_col=0); b=pd.read_csv('/tmp/out_test/demo_metadata.csv',index_col=0)\nimg=cv2.imread('demo_rgb.png'); H,W=img.shape[:2]\nprint(list(a.columns)==list(b.columns), len(a)==len(b))\nprint((a.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])==b.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])).all().all())\ncnt=np.zeros((H,W),int); vis=img.copy(); bad=0\nfor i,r in b.iterrows():\n    xs=np.array(list(map(int,r.coords_x.split(','))));ys=np.array(list(map(int,r.coords_y.split(','))))\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[np.stack([xs,ys],1)],1); cnt+=m\n    n,_=cv2.connectedComponents(m,connectivity=4)\n    rect=len(set(zip(xs,ys)))<=4\n    if n!=2 or rect: bad+=1; print('bad',i,n,rect)\n    assert xs.min()==r.xmin and ys.max()==r.ymax\n    cv2.polylines(vis,[np.stack([xs,ys],1)],True,(0,255,0),1)\nfor i,r in a.iterrows():\n    xs=np.array(list(map(int,r.coords_x.split(','))));ys=np.array(list(map(int,r.coords_y.split(','))))\n    cv2.polylines(vis,[np.stack([xs,ys],1)],True,(0,0,255) if r.type=='rectangle' else (255,0,0),1)\nprint('overlap px',(cnt>1).sum(),'bad',bad)\ncv2.imwrite('/tmp/vis.png',cv2.resize(vis,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST))\nEOF",
+      "description": "Validate output and render overlay"
+    },
+    "output": "True True\nTrue\noverlap px 0 bad 0\n",
+    "title": "Validate output and render overlay",
+    "metadata": {
+      "output": "True True\nTrue\noverlap px 0 bad 0\n",
+      "exit": 0,
+      "description": "Validate output and render overlay"
+    },
+    "time": {
+      "start": 1794526605312,
+      "end": 1794526605870
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d1bb0a90001Wk0yG5BCUdaubc",
+  "sessionID": "ses_e2e46b21dffezW2TQGhY9k67Fk",
+  "messageID": "msg_1d1bb042b001LGpQY6bz5YeQg0",
+  "type": "tool",
+  "callID": "toolu_vrtx_019wWedAeYZXbS64c7qahQee",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "mkdir -p /tmp/chk && python - <<'EOF'\nimport pandas as pd,numpy as np,cv2\nim=cv2.imread('demo_rgb.png');H,W=im.shape[:2]\na=pd.read_csv('demo_metadata.csv',index_col=0);b=pd.read_csv('out/demo_metadata.csv',index_col=0)\nassert list(a.columns)==list(b.columns) and len(a)==len(b)\ncnt=np.zeros((H,W),int);v1=im.copy();v2=im.copy();bad=0;ious=[]\nfor (i,r),(_,o) in zip(a.iterrows(),b.iterrows()):\n    xs=np.array(list(map(int,o.coords_x.split(','))));ys=np.array(list(map(int,o.coords_y.split(','))))\n    m=np.zeros((H,W),np.uint8);cv2.fillPoly(m,[np.stack([xs,ys],1)],1)\n    n,_=cv2.connectedComponents(m,connectivity=4)\n    if n!=2: bad+=1;print('noncontig',i)\n    if len(set(xs))<=2 and len(set(ys))<=2: print('rect',i)\n    assert o.xmin==xs.min() and o.ymax==ys.max()\n    cnt+=m\n    pa=np.stack([list(map(int,r.coords_x.split(','))),list(map(int,r.coords_y.split(',')))],1)\n    cv2.polylines(v1,[pa],True,(0,255,0) if r.type=='polyline' else (255,0,0),1)\n    cv2.polylines(v2,[np.stack([xs,ys],1)],True,(0,255,255),1)\n    if r.type=='polyline':\n        p=np.zeros((H,W),np.uint8);cv2.fillPoly(p,[pa],1);ious.append((p&m).sum()/(p|m).sum())\nprint('max overlap count',cnt.max(),'noncontig',bad,'mean IoU vs polyline GT',np.mean(ious))\nbig=lambda x:cv2.resize(x,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST)\ncv2.imwrite('/tmp/chk/viz.png',np.hstack([big(v1),big(v2)]))\nEOF",
+      "description": "Validate output and visualize"
+    },
+    "output": "noncontig 0\nmax overlap count 1 noncontig 1 mean IoU vs polyline GT 0.7822342531354775\n",
+    "title": "Validate output and visualize",
+    "metadata": {
+      "output": "noncontig 0\nmax overlap count 1 noncontig 1 mean IoU vs polyline GT 0.7822342531354775\n",
+      "exit": 0,
+      "description": "Validate output and visualize"
+    },
+    "time": {
+      "start": 1794520064878,
+      "end": 1794520065410
+    }
+  }
+}

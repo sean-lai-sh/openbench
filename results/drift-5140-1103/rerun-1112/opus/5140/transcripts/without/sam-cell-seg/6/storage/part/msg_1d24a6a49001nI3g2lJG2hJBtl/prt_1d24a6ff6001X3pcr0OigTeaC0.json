@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d24a6ff6001X3pcr0OigTeaC0",
+  "sessionID": "ses_e2db77dc0ffeMNEhqLlJ9IVeA0",
+  "messageID": "msg_1d24a6a49001nI3g2lJG2hJBtl",
+  "type": "tool",
+  "callID": "toolu_vrtx_01A9m2LUGhGPgD9LFRRJvHdH",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-070vh02h/bench_opencode_sam-cell-seg_wbner7uj; python -c \"\nimport pandas as pd,numpy as np,cv2\nd=pd.read_csv('/tmp/out1/demo_metadata.csv');o=pd.read_csv('demo_metadata.csv')\nimg=cv2.imread('demo_rgb.png');H,W=img.shape[:2];cnt=np.zeros((H,W),int);vis=img.copy()\nassert list(d.columns)==list(o.columns) and len(d)==len(o)\nassert (d.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])==o.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])).all().all()\nious=[]\nfor i,r in d.iterrows():\n  xs=list(map(int,r.coords_x.split(',')));ys=list(map(int,r.coords_y.split(',')))\n  p=np.array([xs,ys]).T.reshape(-1,1,2).astype(np.int32);m=np.zeros((H,W),np.uint8);cv2.fillPoly(m,[p],1)\n  n,_=cv2.connectedComponents(m);assert n==2,i\n  assert len(set(zip(xs,ys)))>4,i\n  assert r.xmin==min(xs) and r.ymax==max(ys)\n  cnt+=m;cv2.polylines(vis,[p],True,(0,255,0),1)\n  q=o.iloc[i];xo=list(map(int,q.coords_x.split(',')));yo=list(map(int,q.coords_y.split(',')))\n  mo=np.zeros((H,W),np.uint8);cv2.fillPoly(mo,[np.array([xo,yo]).T.reshape(-1,1,2).astype(np.int32)],1)\n  cv2.polylines(vis,[np.array([xo,yo]).T.reshape(-1,1,2).astype(np.int32)],True,(255,0,0),1)\n  if q.type=='polyline': ious.append((m&mo).sum()/(m|mo).sum())\nprint('max overlap',cnt.max(),'mean IoU vs orig polylines',np.mean(ious),'min',np.min(ious))\ncv2.imwrite('/tmp/vis.png',cv2.resize(vis,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST))\n\"",
+      "description": "Validate output constraints"
+    },
+    "output": "max overlap 1 mean IoU vs orig polylines 0.7770024537237468 min 0.6295180722891566\n",
+    "title": "Validate output constraints",
+    "metadata": {
+      "output": "max overlap 1 mean IoU vs orig polylines 0.7770024537237468 min 0.6295180722891566\n",
+      "exit": 0,
+      "description": "Validate output constraints"
+    },
+    "time": {
+      "start": 1794529462638,
+      "end": 1794529463151
+    }
+  }
+}

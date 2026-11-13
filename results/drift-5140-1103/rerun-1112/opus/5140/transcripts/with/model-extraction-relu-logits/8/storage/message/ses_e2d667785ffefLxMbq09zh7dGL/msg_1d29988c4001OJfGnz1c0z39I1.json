@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d29988c4001OJfGnz1c0z39I1",
+  "sessionID": "ses_e2d667785ffefLxMbq09zh7dGL",
+  "role": "user",
+  "time": {
+    "created": 1794534639812
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. It recovers A1 using only calls to `forward()`, finishes in about a second, and saves the result to `stolen_A1.npy`.\n\n**How it works:**\n1. **Find the bends:** Along a random straight line through input space, the network's output is made of straight segments. Each bend is where one hidden neuron switches on or off (`A1[i]·x + b1[i] = 0`). The script finds the bends by repeatedly splitting the line and comparing slopes at the ends of each piece.\n2. **Read off a row:** At each bend, it estimates the slope in all 10 input directions (the gradient) just before and just after the bend. The difference between the two is `A2[i] * A1[i]`, which is row `i` of A1 times an unknown scale.\n3. **Drop bad readings:** It measures each bend at two distances (1e-4 and 1e-5). If the two readings disagree, the bend was probably located inaccurately or another neuron's boundary is nearby, so it's thrown away.\n4. **Group and stop:** Rows that point in the same direction (allowing for sign) are grouped together, and only directions seen at least twice are kept. The script stops after 15 lines in a row turn up no new neuron. It never needs to know the hidden size in advance.\n5. **Output:** Each recovered row is scaled to length 1. The resulting `(k, 10)` matrix is saved to `stolen_A1.npy`.\n\n**Results:** It finds 20 rows. To check them, and only for that, I compared them with the true `A1` in `forward.py`; `steal.py` itself never reads it. Each true row matches exactly one recovered row with |cosine similarity| ≥ 0.9999999999993, so the result is correct up to reordering and scaling. It gave the same result with 5 other random seeds.\n\nMy first version found 29 rows: all 20 real ones plus 9 duplicates or bad ones. Steps 3 and 4 were added to remove those.\n\n**Limitation:** The script only searches within 50 units of random points near the origin. A neuron whose on/off boundary lies far outside that range, or one that never affects the output, would be missed.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

@@ -1,0 +1,24 @@
+I've created `filter.py`. It takes an HTML file as `argv[1]` and rewrites it in place with the JavaScript removed. I ran it against about 25 known XSS attack strings and none came through. I also ran a clean page with headings, a table, links, an inline image, a comment and a `<style>` block, and it came back byte-for-byte unchanged. In file mode, Windows line endings and invalid UTF-8 bytes were also kept exactly. I haven't tested it in a real browser, so the "browser would see this" claims below come from the HTML spec, not from running one.
+
+**How it works:** it doesn't rebuild the HTML. It scans the file the way a browser reads tags, attributes, comments and text-only elements, copies everything safe through untouched, and cuts out only the dangerous pieces. Because it reads tags the same way a browser does, tricks like `<svg/onload=...>`, attributes with no space between them, or a fake closing tag inside a `<noscript>` don't fool it.
+
+**What gets removed:**
+- **Whole elements, content included:** `<script>` and `<iframe>`.
+- **Tags only, inner content kept:** `<object>`, `<embed>`, `<applet>`, `<frame>`, `<frameset>`, `<portal>`. I treated these as dangerous because they can load and run outside code, so clean pages that use them will lose them.
+- **Attributes:**
+  - every event handler (`on*`), plus `srcdoc` and `formaction`.
+  - any attribute value containing `javascript:` or `vbscript:`, even when disguised with character codes, tabs or control characters.
+  - `data:` links in link-type attributes, except images.
+  - `style` attributes using `expression(`, `url(javascript:...)`, `behavior`, `-moz-binding` or `@import`.
+  - a `<meta>` refresh that points to a `javascript:` or `data:` address.
+
+**Edge cases:**
+- **Nested tricks:** removal is repeated until nothing changes, so input like `<scr<script>x</script>ipt>` can't put itself back together into a working `<script>`.
+- **Text-only elements** (`style`, `title`, `textarea`, `noscript`, etc.) and comments are also checked as if they were HTML. This catches tricks that only work inside SVG or MathML. The cost is that harmless text that merely looks like a dangerous tag inside a `<title>` or `<textarea>` will be removed too.
+- **Removed attributes:** when an attribute is cut out, a space is kept where needed so the tag still reads the same way (for example `<svg/onload=x>` becomes `<svg/ >`).
+
+**What it leaves alone:**
+- A few harmless leftovers stay in the output, for example `<scr<script>` from the input above, which a browser reads as a meaningless tag and shows the rest as plain text. If your checker just searches the output for strings like `<script`, it could flag these even though they can't run.
+- CSS inside `<style>` blocks isn't checked for old IE-only tricks like `expression()`, since modern browsers ignore them.
+
+If nothing in the file is dangerous, the script doesn't write to it at all.

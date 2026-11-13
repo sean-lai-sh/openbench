@@ -1,0 +1,13 @@
+I created `parallel_linear.py` with both classes. I tested them against `nn.Linear` using the gloo backend with world sizes 1, 2 and 4. Outputs and the input, weight and bias gradients all matched.
+
+- **`ColumnParallelLinear`**: Each rank keeps its own slice of the weight's output rows, `master_weight[r*n:(r+1)*n, :]`, where `n = out_features / world_size`. The bias is split the same way and starts at zero. In the forward pass, each rank computes its part of the output and the parts are gathered and concatenated along the last dimension. In the backward pass, each rank takes its own slice of the output gradient, and the input gradient is summed across ranks.
+- **`RowParallelLinear`**: Each rank keeps its own slice of the weight's input columns, `master_weight[:, r*k:(r+1)*k]`, where `k = in_features / world_size`. The bias stays full on every rank and starts at zero. In the forward pass, each rank takes its slice of the input, computes a partial result, and the partial results are summed across ranks. The bias is added after that sum, so it's only counted once. In the backward pass, the input gradient is gathered back to full size.
+
+Things to know:
+- **Weight layout**: I assumed `master_weight` uses `nn.Linear`'s shape, `(out_features, in_features)`; a different shape raises an error. If your tests pass the transposed shape, both classes need to change.
+- **Row-parallel input**: `RowParallelLinear` accepts either the full input or an input already cut to this rank's slice, judged by the size of the last dimension.
+- **Divisibility**: the split dimension must divide evenly by the world size, otherwise construction fails.
+- **Without distributed setup**: if `torch.distributed` isn't initialized, both classes run as world size 1.
+- **Missing `master_weight`**: if it's `None`, a weight is created with Xavier-normal initialization. That's my own fallback, not part of your spec.
+
+My test script is `/tmp/tp_test.py`, outside the project folder, if you want to rerun it.

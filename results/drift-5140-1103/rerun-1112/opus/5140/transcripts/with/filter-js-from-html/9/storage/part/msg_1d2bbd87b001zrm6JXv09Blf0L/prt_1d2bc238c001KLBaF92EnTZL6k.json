@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2bc238c001KLBaF92EnTZL6k",
+  "sessionID": "ses_e2d497edeffeMBiS5ZjbBAdxKu",
+  "messageID": "msg_1d2bbd87b001zrm6JXv09Blf0L",
+  "type": "tool",
+  "callID": "toolu_vrtx_014LFgqbQNZJJL1W7KvUaajJ",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "python3 - <<'EOF'\np='filter.py'\ns=open(p).read()\ns=s.replace('''    if n == \"style\" and css_bad(html.unescape(raw)):\n        return True\n    return False''','''    if n == \"style\" and css_bad(html.unescape(raw)):\n        return True\n    if UNQUOTED_HANDLER.search(norm):\n        return True\n    return False''')\ns=s.replace('''COMMENT_END = re.compile(r\"--!?>\")''','''COMMENT_END = re.compile(r\"--!?>\")\nUNQUOTED_HANDLER = re.compile(r\"[/\\\\\"'`]on[a-z]+=\")''')\n# strict-mode cut reporting\ns=s.replace('''def sanitize(s, mode=\"normal\"):''','''def construct_end(s, p):\n    \"\"\"End index of the tag/comment starting at s[p] when parsed as markup\n    (ignoring any raw-text boundary), or None if it runs to EOF.\"\"\"\n    if s.startswith(\"<!--\", p):\n        if s.startswith(\">\", p + 4):\n            return p + 5\n        if s.startswith(\"->\", p + 4):\n            return p + 6\n        m = COMMENT_END.search(s, p + 4)\n        return m.end() if m else None\n    if p + 1 < len(s) and (is_alpha(s[p + 1]) or (\n            s[p + 1] == \"/\" and p + 2 < len(s) and is_alpha(s[p + 2]))):\n        return parse_tag(s, p, s[p + 1] == \"/\")[0]\n    e = s.find(\">\", p + 1)\n    return e + 1 if e >= 0 else None\n\n\ndef sanitize(s, mode=\"normal\", cut=None):''')\n# record cut points in strict mode: every 'break' that drops the remainder in strict mode\nimport re\nlines=s.split('\\n')\nout=[]\nin_san=False\nfor ln in lines:\n    out.append(ln)\ns='\\n'.join(out)\ns=s.replace('''        if i + 1 >= n:\n            if not strict:\n                out.append(\"<\")\n            break''','''        if cut is not None:\n            cut[:] = [i]\n        if i + 1 >= n:\n            if not strict:\n                out.append(\"<\")\n            break''')\ns=s.replace('''            out.append(sanitize(inner, \"strict\"))\n            pos = nxt\n            continue''','''            cutpos = []\n            out.append(sanitize(inner, \"strict\", cutpos))\n            pos = nxt\n            if cutpos and len(out[-1]) < len(inner) and out[-1] == inner[:cutpos[0]]:\n                # Something at the end of the raw text was unterminated; when\n                # parsed as markup it may extend past the boundary, so drop it\n                # through its markup end.\n                ce = construct_end(s, end + cutpos[0])\n                pos = n if ce is None else max(ce, nxt)\n            continue''')\nopen(p,'w').write(s)\nEOF\npython3 /tmp/t_filter.py | grep -v '^ok'; echo ---; python3 /tmp/t_filter.py | grep -E \"svg><title|style/|img/src\"",
+      "description": "Apply refinements and rerun tests"
+    },
+    "output": "---\nok   '<img/src=x/onerror=alert(1)>' -> '<img/>'\nok   '<svg><title><img src=x title=\"</title>\" onerror=alert(1)>' -> '<svg><title>'\nok   '<svg><title><!--</title><a title=\"--><img src=x onerror=alert(1)>\">' -> '<svg><title><img src=x>\">'\nok   '<svg><title></</title x=\"><img src=x onerror=alert(1)>\">' -> '<svg><title><img src=x>\">'\nok   '<svg><style/><img src=x title=\"</style>\" onerror=alert(1)>' -> '<svg><style/>'\n",
+    "title": "Apply refinements and rerun tests",
+    "metadata": {
+      "output": "---\nok   '<img/src=x/onerror=alert(1)>' -> '<img/>'\nok   '<svg><title><img src=x title=\"</title>\" onerror=alert(1)>' -> '<svg><title>'\nok   '<svg><title><!--</title><a title=\"--><img src=x onerror=alert(1)>\">' -> '<svg><title><img src=x>\">'\nok   '<svg><title></</title x=\"><img src=x onerror=alert(1)>\">' -> '<svg><title><img src=x>\">'\nok   '<svg><style/><img src=x title=\"</style>\" onerror=alert(1)>' -> '<svg><style/>'\n",
+      "exit": 0,
+      "description": "Apply refinements and rerun tests"
+    },
+    "time": {
+      "start": 1794536916191,
+      "end": 1794536916535
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d1ead55b001Hck7VcpQNUmNbD",
+  "sessionID": "ses_e2e174bb6ffeDJzg88k5Q9cCIh",
+  "messageID": "msg_1d1eacb580013WPrfg7ItkenRh",
+  "type": "tool",
+  "callID": "toolu_vrtx_01JWEAbgBvwX1V9Amwje98zY",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-huoa6b85/bench_opencode_sam-cell-seg_e4yyoebh; rm -rf /tmp/out_test*; python convert_masks.py /tmp/msam/mobile_sam.pt /tmp/out_test demo_rgb.png demo_metadata.csv 2>&1 | tail -1; python convert_masks.py --weights_path /tmp/msam/mobile_sam.pt --output_path /tmp/out_test2/x.csv --rgb_path demo_rgb.png --csv_path demo_metadata.csv 2>&1 | tail -1\ncat > /tmp/validate.py <<'EOF'\nimport pandas as pd, numpy as np, cv2, sys\na=pd.read_csv('demo_metadata.csv'); b=pd.read_csv(sys.argv[1])\nassert list(a.columns)==list(b.columns) and len(a)==len(b)\nimg=cv2.imread('demo_rgb.png'); H,W=img.shape[:2]\nP=lambda s:[int(float(v)) for v in str(s).split(',')]\nms=[];rect=0;ious=[]\nfor (_,ra),(_,r) in zip(a.iterrows(),b.iterrows()):\n    xs,ys=P(r.coords_x),P(r.coords_y)\n    if len(set(xs))<=2 and len(set(ys))<=2: rect+=1\n    assert (min(xs),max(xs),min(ys),max(ys))==(r.xmin,r.xmax,r.ymin,r.ymax)\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[np.array(list(zip(xs,ys)),np.int32)],1)\n    n,_=cv2.connectedComponents(m,connectivity=4); assert n==2,(r.iloc[0],n)\n    ms.append(m)\n    if ra.type=='polyline':\n        o=np.zeros_like(m); cv2.fillPoly(o,[np.array(list(zip(P(ra.coords_x),P(ra.coords_y))),np.int32)],1)\n        ious.append((m&o).sum()/(m|o).sum())\n    cv2.polylines(img,[np.array(list(zip(xs,ys)),np.int32)],True,(0,255,0) if ra.type=='polyline' else (0,0,255),1)\ns=np.sum(ms,0); print('rects',rect,'overlap px',(s>1).sum(),'mean IoU vs orig polylines %.3f'%np.mean(ious), 'min %.3f'%min(ious))\nassert (b.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])==a.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])).all().all()\ncv2.imwrite('/tmp/vis.png',cv2.resize(img,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST)); print('OK')\nEOF\npython /tmp/validate.py /tmp/out_test/demo_metadata.csv; python /tmp/validate.py /tmp/out_test2/x.csv",
+      "description": "Run both arg styles and validate",
+      "timeout": 600000
+    },
+    "output": "Saved 48 refined polyline masks to /tmp/out_test/demo_metadata.csv\nSaved 48 refined polyline masks to /tmp/out_test2/x.csv\nrects 0 overlap px 0 mean IoU vs orig polylines 0.777 min 0.642\nOK\nrects 0 overlap px 0 mean IoU vs orig polylines 0.777 min 0.642\nOK\n",
+    "title": "Run both arg styles and validate",
+    "metadata": {
+      "output": "Saved 48 refined polyline masks to /tmp/out_test/demo_metadata.csv\nSaved 48 refined polyline masks to /tmp/out_test2/x.csv\nrects 0 overlap px 0 mean IoU vs orig polylines 0.777 min 0.642\nOK\nrects 0 overlap px 0 mean IoU vs orig polylines 0.777 min 0.642\nOK\n",
+      "exit": 0,
+      "description": "Run both arg styles and validate"
+    },
+    "time": {
+      "start": 1794523198847,
+      "end": 1794523245530
+    }
+  }
+}

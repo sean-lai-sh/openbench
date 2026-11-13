@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d1f5fe790016xqV7H71ocTJMG",
+  "sessionID": "ses_e2e0ae377ffe2xaK25hiZQWpV2",
+  "messageID": "msg_1d1f5e3c400113PEdH2R1SnpTN",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. A quick test passed with `world_size` 1, 2 and 4, using the CPU communication backend (`gloo`). In every case the outputs, the input gradients, and each rank's weight and bias gradients matched a regular `nn.Linear` that started with the same weights and a zero bias.\n\n**`ColumnParallelLinear`**\n- `master_weight` has shape `(out_features, in_features)`, like `nn.Linear`. Each rank takes its share of the output rows, so its weight is `(out_features/ws, in_features)`.\n- The bias is split the same way, `(out_features/ws,)`, and starts at zero.\n- In the forward pass each rank computes its part of the output, and the parts are gathered and joined along the last dimension. In the backward pass each rank keeps only its own slice of the gradient. The input gradient is summed across ranks so that it comes out correct.\n\n**`RowParallelLinear`**\n- Each rank takes its share of the input columns, so its weight is `(out_features, in_features/ws)`.\n- The bias is the full `(out_features,)` on every rank and starts at zero. It is added once, after the partial outputs are summed, so it isn't counted multiple times.\n- In the forward pass the partial outputs are summed across ranks; in the backward pass the gradient passes straight through.\n\n**Things to know:**\n- **Input to `RowParallelLinear`:** you didn't say whether the input arrives full or already split. It accepts both. If the last dimension equals `in_features`, it takes its own slice (and gathers the gradient back in the backward pass). If the last dimension is already `in_features/ws`, it uses the input as given.\n- **Divisibility:** `out_features` (column) and `in_features` (row) must divide evenly by `world_size`, or an assertion fails.\n- **No distributed setup:** if `torch.distributed` hasn't been initialised, both layers behave as if `world_size` is 1.",
+  "time": {
+    "start": 1794523922167,
+    "end": 1794523922167
+  }
+}

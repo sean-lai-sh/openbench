@@ -1,0 +1,15 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. In a quick check on CPU with 1 and 2 processes, its loss and gradients exactly matched an ordinary, non-pipelined model.
+
+**How it works:**
+- **Splitting the layers:** each rank gets a contiguous block of decoder layers. Leftover layers go to the lowest ranks first, so 5 layers on 2 ranks split 3/2. Rank 0 also runs the token embedding; the last rank also runs the final norm and `lm_head`.
+- **Inside each rank:** the rank runs its own block of layers by hand. It builds the position IDs, the causal mask and the rotary embeddings the same way `LlamaModel.forward` does.
+- **Forward phase:** every microbatch goes forward first. Ranks after rank 0 receive hidden states of shape `[mb, seq, hidden]` from the previous rank and mark them as needing gradients; every rank except the last sends its output on. The last rank computes `cross_entropy(logits, targets) / num_microbatches` for each microbatch.
+- **Backward phase:** then every microbatch goes backward. The last rank calls `loss.backward()`. Middle ranks receive the gradient from the next rank and backpropagate it through their saved output. Every rank except rank 0 then sends the gradient of its input back to the previous rank.
+- **Communication:** all sends and receives use `dist.P2POp` with `batch_isend_irecv`. Inputs, hidden states and gradients are always moved to the given `device`/`dtype`. No hooks are used.
+- **Return value:** the function returns the summed, already-scaled loss on the last rank and `None` on the others.
+
+**Test results:** I used a small 5-layer LLaMA with 2 microbatches and launched it with `torchrun`:
+- **1 process:** the loss was 4.5744, the same as the reference, and all 48 parameter gradients matched with zero difference.
+- **2 processes:** the gradients also matched with zero difference. Rank 0 produced 28 parameter gradients (3 layers plus the embedding). Rank 1 produced 20 (2 layers plus the norm and head), and its loss matched the reference.
+
+The mask is built with `transformers.masking_utils.create_causal_mask`, called the way the installed transformers version (5.22.2) expects. I added fallbacks for older versions, but I haven't run them. The test script was temporary and I deleted it afterwards.

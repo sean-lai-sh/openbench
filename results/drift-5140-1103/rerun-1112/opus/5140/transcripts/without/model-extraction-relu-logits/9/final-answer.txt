@@ -1,0 +1,10 @@
+I wrote `steal.py`. When run, it recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy` in about 10 seconds.
+
+**Check:** I compared the result to the real `A1` in `forward.py`. The script itself never reads that file; it only calls `forward()`. After scaling each row to length 1, every recovered row lines up with exactly one true neuron row, and every true row is matched. The weakest match has a cosine similarity of 0.9999999999999992, so the match is exact up to reordering, scaling and sign.
+
+**How it works:**
+1. **Find the kinks.** Along random lines through input space, the output is piecewise linear. It bends wherever one neuron switches on or off. The script splits each line into smaller pieces until each piece is either straight or has a single bend, then finds the bend exactly by intersecting the two straight pieces on either side.
+2. **Read off the neuron's weights.** At each bend it measures the gradient just before and just after, using small finite differences. The change in gradient equals that neuron's output weight times its row of `A1`, so normalising it gives the row up to scale.
+3. **Group and filter.** It treats a row and its negative as the same, and merges rows that are the same direction. It stops after 40 lines in a row turn up no new neurons. Rows found only once are dropped as likely noise.
+
+The neuron count isn't assumed; it comes out of the search. The trade-off is that a neuron that never switches on or off within the range searched (inputs out to about ±20 along each line) would be missed. That didn't happen with this network.

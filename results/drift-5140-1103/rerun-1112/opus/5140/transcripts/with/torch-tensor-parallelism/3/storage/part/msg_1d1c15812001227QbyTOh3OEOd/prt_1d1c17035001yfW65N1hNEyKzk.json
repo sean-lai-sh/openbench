@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d1c17035001yfW65N1hNEyKzk",
+  "sessionID": "ses_e2e3f6e83ffejKkBQt1ETah6ub",
+  "messageID": "msg_1d1c15812001227QbyTOh3OEOd",
+  "type": "text",
+  "text": "I've created `parallel_linear.py` with both classes. I tested them against a regular `torch.nn.Linear` with world sizes 1, 2 and 4: outputs, weight and bias gradients, and input gradients all matched.\n\n**`ColumnParallelLinear`**\n- Each rank keeps its own slice of output rows from `master_weight` (shape `out_features × in_features`).\n- Each rank's bias is that rank's slice of the output dimension, set to zero.\n- The forward pass gathers the partial outputs from all ranks and joins them along the last dimension. In the backward pass, each rank takes back only its own slice of the gradient.\n- The input gradient is summed across ranks in the backward pass, so it matches the full layer.\n\n**`RowParallelLinear`**\n- Each rank keeps its own slice of input columns from `master_weight`.\n- The bias is full size on every rank, set to zero, and added after the partial outputs are summed.\n- The partial outputs are summed across ranks. In the backward pass, every rank gets the full output gradient unchanged.\n\n**Things to know:**\n- **Input to `RowParallelLinear`:** the forward pass takes either the full input (`in_features` wide) or one rank's already-split input. Given the full input, each rank cuts out its own part, and the input gradient is gathered back together in the backward pass. The task didn't say which kind of input the tests pass, so it handles both.\n- **Divisibility:** `out_features` (column layer) and `in_features` (row layer) must divide evenly by the world size. Otherwise the constructor stops with an assertion error.\n- **Without distributed setup:** if `torch.distributed` isn't initialized, both layers act as plain single-process linear layers (world size 1, rank 0).\n\nThe test script is at `/tmp/tp_test.py`, outside the project folder; you can delete it.",
+  "time": {
+    "start": 1794520477917,
+    "end": 1794520477917
+  }
+}

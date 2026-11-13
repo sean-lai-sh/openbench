@@ -1,0 +1,17 @@
+I've created `parallel_linear.py` with both classes. I tested them with 1, 2 and 4 processes against a normal `torch.nn.Linear`, and the outputs, input gradients, and weight and bias gradients all matched.
+
+**`ColumnParallelLinear`**
+- Each rank keeps its slice of the output rows of `master_weight` (shape `(out_features/world_size, in_features)`) and a zero-initialised bias of the same slice size.
+- In the forward pass, each rank computes its part of the output, then the parts are gathered and joined along the last dimension (all_gather).
+- In the backward pass, each rank takes back only its slice of the output gradient. The input's gradient is summed across ranks, so it equals the full gradient.
+
+**`RowParallelLinear`**
+- Each rank keeps its slice of the input columns of `master_weight` (shape `(out_features, in_features/world_size)`) and the full zero-initialised bias.
+- In the forward pass, each rank computes a partial output, the partials are summed across ranks (all_reduce), and then the bias is added once.
+
+Things that might matter for your tests:
+- **Input to `RowParallelLinear`:** it accepts either the full input or an input already split for that rank. It decides by comparing the input's last dimension to `in_features`. If it gets the full input, it takes this rank's slice, and the input gradient is gathered back to full size.
+- **Size limits:** `out_features` (column) and `in_features` (row) must divide evenly by `world_size`, or the constructor stops with an assertion error.
+- **No distributed setup:** if `torch.distributed` hasn't been initialised, both classes act as a single rank.
+
+The test script is at `/tmp/tp_test.py`, outside your project folder; it uses the CPU `gloo` backend.

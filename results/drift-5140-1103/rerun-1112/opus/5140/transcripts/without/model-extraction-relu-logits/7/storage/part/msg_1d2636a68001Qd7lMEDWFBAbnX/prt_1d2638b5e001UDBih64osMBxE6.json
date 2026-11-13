@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d2638b5e001UDBih64osMBxE6",
+  "sessionID": "ses_e2d9e64dcffeODigu4PtudJusY",
+  "messageID": "msg_1d2636a68001Qd7lMEDWFBAbnX",
+  "type": "text",
+  "text": "I wrote `steal.py`. When run, it recovers all 20 hidden neurons of A1 and saves a 20×10 matrix to `stolen_A1.npy`. It takes about 7 seconds.\n\n**Check:** After the script was done, I compared its output to the real `A1` in `forward.py`; the script itself only calls `forward()`. Every real row matches exactly one stolen row, with a minimum |cosine| of 0.9999999999999994 in both directions. For each pair, the element-wise ratio between real and stolen values is constant to about 3e-7, so each row is the same up to scaling.\n\n**How it works:**\n1. **Find the kinks.** Along a random line `x0 + t·d`, the output is piecewise linear in `t`. It bends exactly where some neuron's input `A1_i·x + b1_i` crosses zero. The script repeatedly halves each interval that isn't linear until it narrows down each bend (`find_kinks`).\n2. **Read off the row.** On either side of a bend, it computes the gradient by finite differences. The difference between the two gradients is `A2_i · A1_i`, which is row `i` of A1 times an unknown scale. It normalises that vector and fixes its sign.\n3. **Filter out bad readings.** A reading is thrown away if the gradient changes between two distances on the same side of a bend, which means a second bend was crossed nearby. A direction is only kept if it shows up on at least 3 lines. Sampling stops once 60 lines in a row add no new neuron.\n\n**Issues fixed along the way:**\n- The first version found no neurons at all. Its test for \"is this interval linear?\" was too loose, so very small intervals that still held a bend counted as linear and the bend was dropped.\n- After fixing that, it found 163 directions, most of them spurious. They came from gradient readings spoiled by a second bend close by. The two filters in step 3 brought it down to exactly the 20 real neurons.\n\nOne limit: the search covers inputs up to about 20 units from random starting points. A neuron that's always on or always off in that region wouldn't be found, though a dead neuron like that has no effect on the output anyway.",
+  "time": {
+    "start": 1794531101786,
+    "end": 1794531101786
+  }
+}

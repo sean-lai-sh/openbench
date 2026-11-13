@@ -1,0 +1,20 @@
+I wrote `polyglot/main.rs`. It compiles with both `rustc` and `g++ -x c++` without warnings, and both programs print the same results. I ran them with these values of N:
+
+| N | Output |
+|---|---|
+| 0, 1, 2, 3 | 1, 1, 2, 3 |
+| 10 | 89 |
+| 50 | 20365011074 |
+| 100 | 573147844013817084101 |
+| 200 | <REDACTED_HEX> |
+
+I tested with the compilers installed here and didn't check that they're exactly rustc 1.75.0 and g++ 13.2.0. The file only uses basic language features, so it should work on those versions too.
+
+**How one file works for both compilers:**
+- **The trick:** Rust allows block comments inside other block comments, and C++ doesn't.
+- **Line 1, `/* /* */`:** C++ sees a complete comment. Rust sees a comment that's still open, so it skips the C++ code that follows.
+- **After the C++ code:** `#if 0` tells C++ to skip everything up to `#endif`. Then `// */` closes Rust's open comment, so Rust starts reading code there.
+- **The Rust code** comes next.
+- **The end of the file** repeats the pattern: `/* /* */`, then `#endif`, then `// */`. C++ treats the comment markers as comments and sees the `#endif`, which ends its skipped section. Rust sees all three lines as one comment.
+
+Both versions use their own simple big-number arithmetic, so large N gives exact answers rather than overflowing. If N is missing or invalid, both print f(0) = 1.

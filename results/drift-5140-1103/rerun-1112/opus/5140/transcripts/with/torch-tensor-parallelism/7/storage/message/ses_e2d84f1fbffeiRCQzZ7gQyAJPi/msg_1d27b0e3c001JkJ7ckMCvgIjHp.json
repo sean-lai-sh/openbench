@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d27b0e3c001JkJ7ckMCvgIjHp",
+  "sessionID": "ses_e2d84f1fbffeiRCQzZ7gQyAJPi",
+  "role": "user",
+  "time": {
+    "created": 1794532642364
+  },
+  "summary": {
+    "title": "Implementing PyTorch tensor parallel linear layers",
+    "body": "I created `parallel_linear.py` with both classes. I tested them on CPU with 1, 2 and 4 processes, comparing against a plain `torch.nn.Linear` with zero bias. Outputs, weight gradients, bias gradients and input gradients all matched on every rank. The test script is `/tmp/tp_test.py`, outside the project folder.\n\nI assumed `master_weight` uses the same layout as `nn.Linear`, shape `(out_features, in_features)`. Each split must divide evenly by the world size, or the constructor fails an assertion.\n\n**`ColumnParallelLinear`**\n- Each rank keeps its own block of rows from `master_weight`: `out_features / world_size` of them. In `y = x @ Wᵀ` terms, that is a block of columns.\n- The bias is split the same way and starts at zero.\n- Each rank computes its part of the output, and the parts are gathered and joined along the last dimension. During backprop, each rank takes back only its own part of the gradient.\n- Each rank's input gradient is summed across all ranks, so it equals the full input gradient.\n\n**`RowParallelLinear`**\n- Each rank keeps its own block of columns: `in_features / world_size` of them.\n- The bias is the full size on every rank and starts at zero.\n- The partial outputs are summed across ranks and then the bias is added once. So the bias gradient is the full gradient on every rank.\n- It accepts either the full input or the input already cut down to this rank's share. With the full input, each rank takes its own slice, and the input gradients are gathered back to full size during backprop.\n\nThe communication steps are custom autograd functions in `parallel_linear.py`, so gradients flow through them correctly. When `world_size == 1` they skip communication entirely.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

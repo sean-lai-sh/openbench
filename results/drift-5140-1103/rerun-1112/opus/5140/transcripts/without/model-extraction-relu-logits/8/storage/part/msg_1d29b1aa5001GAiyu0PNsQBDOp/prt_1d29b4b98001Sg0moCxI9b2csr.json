@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d29b4b98001Sg0moCxI9b2csr",
+  "sessionID": "ses_e2d64f3c0ffeL1kkOt0nBKoMdq",
+  "messageID": "msg_1d29b1aa5001GAiyu0PNsQBDOp",
+  "type": "tool",
+  "callID": "toolu_vrtx_019RkU9MgeWvpoK2DjguPU2Z",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-fpkyk0ji/bench_opencode_model-extraction-relu-logits_mxsp8dmo/steal.py",
+      "content": "\"\"\"Extract A1 (up to neuron permutation and scaling) from a 1-hidden-layer ReLU\nnetwork using only black-<USER> queries to forward(x).\n\nMethod:\n  1. Walk along random lines through input space and locate the \"critical\n     points\" where the (piecewise-linear) output changes slope - each of these\n     is a point where some hidden neuron's pre-activation A1_i.x + b1_i = 0.\n  2. At each critical point, estimate the gradient just before and just after\n     the kink. The difference equals +/- A2_i * A1_i, i.e. row i of A1 up to\n     scale.\n  3. Normalize those vectors and de-duplicate them to obtain one row per neuron.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi):\n    \"\"\"Return list of t values where f(x0 + t d) has a slope change.\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n    stack = [(lo, hi, g(lo), g(hi))]\n    while stack:\n        a, b, fa, fb = stack.pop()\n        m = 0.5 * (a + b)\n        fm = g(m)\n        scale = max(1.0, abs(fa), abs(fb))\n        # also check quarter points to reduce chance of cancellation\n        q1, q3 = a + 0.25 * (b - a), a + 0.75 * (b - a)\n        fq1, fq3 = g(q1), g(q3)\n        lin = lambda t: fa + (fb - fa) * (t - a) / (b - a)\n        err = max(abs(fm - lin(m)), abs(fq1 - lin(q1)), abs(fq3 - lin(q3)))\n        if err < 1e-11 * scale:\n            continue\n        w = b - a\n        if w < 1e-3:\n            # try to locate single kink by intersecting the two side lines\n            h = 1e-6 * max(1.0, w)\n            sL = (g(a + h) - fa) / h\n            sR = (fb - g(b - h)) / h\n            if abs(sL - sR) > 1e-12:\n                t = (fb - fa + sL * a - sR * b) / (sL - sR)\n                if a < t < b:\n                    ft = g(t)\n                    pred = fa + sL * (t - a)\n                    if abs(ft - pred) < 1e-9 * scale:\n                        kinks.append(t)\n                        continue\n            if w < 1e-9:\n                kinks.append(m)\n                continue\n        stack.append((a, m, fa, fm))\n        stack.append((m, b, fm, fb))\n    return kinks\n\n\ndef grad(x, h=1e-7):\n    gvec = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gvec[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return gvec\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\nrows = []\nstale = 0\nn_lines = 0\nwhile stale < 30 and n_lines < 500:\n    n_lines += 1\n    x0 = rng.normal(size=DIM)\n    d = rng.normal(size=DIM)\n    d /= np.linalg.norm(d)\n    new = 0\n    for t in find_kinks(x0, d, -20.0, 20.0):\n        eps = 1e-5\n        gl = grad(x0 + (t - eps) * d)\n        gr = grad(x0 + (t + eps) * d)\n        diff = gr - gl\n        if np.linalg.norm(diff) < 1e-8:\n            continue\n        v = normalize(diff)\n        match = None\n        for j, (r, c) in enumerate(rows):\n            if np.linalg.norm(r / c - v) < 1e-3:\n                match = j\n                break\n        if match is None:\n            rows.append([v.copy(), 1])\n            new += 1\n        else:\n            # running sum for averaging\n            rows[match][0] = rows[match][0] + v\n            rows[match][1] += 1\n    stale = 0 if new else stale + 1\n\nstolen = np.array([normalize(r / c) for r, c in rows])\n# drop spurious directions seen only once if they look like noise\nprint(f\"Recovered {stolen.shape[0]} neurons from {n_lines} lines\")\nnp.save(OUT, stolen)\nprint(stolen)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-fpkyk0ji/bench_opencode_model-extraction-relu-logits_mxsp8dmo/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-fpkyk0ji/bench_opencode_model-extraction-relu-logits_mxsp8dmo/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794534768446,
+      "end": 1794534775031
+    }
+  }
+}
