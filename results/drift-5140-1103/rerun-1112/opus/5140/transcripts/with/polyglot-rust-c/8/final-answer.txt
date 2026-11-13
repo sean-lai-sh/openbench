@@ -1,0 +1,19 @@
+I wrote the polyglot at `polyglot/main.rs` and tested it with both commands. Both builds give the same output, which matches your indexing (f(0) = 1, f(1) = 1, f(2) = 2):
+
+| N | rustc | g++ |
+|---|---|---|
+| 0 | 1 | 1 |
+| 1 | 1 | 1 |
+| 2 | 2 | 2 |
+| 10 | 89 | 89 |
+| 50 | 20365011074 | 20365011074 |
+| 100 | 573147844013817084101 | 573147844013817084101 |
+
+Both builds use their own digit-by-digit addition rather than fixed-size integers, so large N works without overflowing. If N is missing, both print f(0).
+
+**One harmless warning:** g++ prints `missing terminating " character` for line 68. That line is in a section the C++ compiler skips, so the build still succeeds and runs correctly.
+
+**How the file works for each compiler:**
+- **First line, `/* /* */`:** Rust allows comments inside comments and C++ doesn't. Rust sees two comments opened and one closed, so it is still inside a comment. C++ sees one complete comment, so it reads the C++ code that follows.
+- **End of the C++ code:** a `#if 0` line tells C++ to skip everything after it. The next line, `// */`, is just a comment to C++. Rust doesn't treat `//` as special inside a comment, so the `*/` closes its comment and Rust starts reading the Rust code.
+- **End of the file:** the closing `#endif` is placed inside a Rust string, `const _CPP_END: &str = "\n#endif\n//";`. Rust sees an ordinary string. C++ sees `#endif`, which ends the skipped section, and then `//";`, which is a comment.

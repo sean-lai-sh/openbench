@@ -1,0 +1,18 @@
+I created `parallel_linear.py` with both classes. I ran a quick check on CPU using PyTorch's `gloo` backend with world sizes 1, 2 and 4. On every rank, the outputs and the input, weight and bias gradients matched an ordinary `nn.Linear` that had the same full weight and a zero bias.
+
+**How the weights are split:** I assumed `master_weight` has the standard PyTorch shape `(out_features, in_features)`; the code stops with an error if it doesn't. I also assumed the dimension being split divides evenly by world size; otherwise it stops with an error too.
+
+- **`ColumnParallelLinear`:** each rank takes `master_weight[rank*out/ws : (rank+1)*out/ws, :]`. "By columns" here means splitting the output dimension. In PyTorch's layout that is dim 0 (rows of the stored tensor), as in Megatron-LM.
+  - The bias is zero, sized `out_features/ws`, so it's split the same way as the output.
+  - Each rank computes its slice of the output, and the slices are joined along the last dimension, like `all_gather`.
+- **`RowParallelLinear`:** each rank takes `master_weight[:, rank*in/ws : (rank+1)*in/ws]`, which splits the input dimension.
+  - Each rank computes a partial output; the partials are summed across ranks (`all_reduce`), then the full zero bias of size `out_features` is added.
+  - The input can be the full tensor, and the layer takes this rank's slice itself, or an already-split slice of size `in_features/ws`.
+
+**Gradients:** the communication steps are written as custom autograd functions, so the backward pass is handled correctly:
+- In `ColumnParallelLinear`, the input's gradient is summed across ranks and the output's gradient is split back to each rank.
+- In `RowParallelLinear`, the gradient for a split input is gathered back together and the sum step passes gradients through unchanged.
+
+As a result, each rank's weight gradient is exactly its slice of the full weight gradient. With world size 1, or if `torch.distributed` isn't initialized, no communication happens.
+
+The test script is `/tmp/t_pl.py`, outside the project folder.

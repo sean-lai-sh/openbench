@@ -1,0 +1,10 @@
+I wrote `steal.py` and ran it. It recovered all 20 hidden neurons and saved them to `stolen_A1.npy`, a 20×10 matrix.
+
+**How it works:**
+- Along any random line `x0 + t·d` through input space, the network's output changes linearly except at a "kink" where one hidden neuron switches on or off.
+- The script samples 4,000 points along each line to find the kinks. It checks that each kink comes from a single neuron, and skips it if two neurons switch in the same spot.
+- On each side of a kink it estimates the gradient by nudging each input slightly. The two gradients differ by `±A2[i]·A1[i,:]`, which is row `i` of A1 times a scale factor.
+- Each row is scaled to length 1 with a fixed sign convention. Rows pointing the same way are grouped, and a row is only kept if it turned up at least twice, to filter out flukes.
+- It keeps trying new lines until 15 in a row find no new neuron. This run used 16 lines and took about 3 seconds.
+
+**Check:** the script itself only calls `forward()`. Separately, I compared the output against the real `forward.A1`. After the same scaling, every stolen row matches exactly one true row with |cosine| ≈ 1.0 (up to floating-point error), and every true row is covered. So the result equals A1 up to the order of the neurons and a per-row scale and sign.

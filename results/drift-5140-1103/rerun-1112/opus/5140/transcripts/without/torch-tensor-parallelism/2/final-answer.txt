@@ -1,0 +1,20 @@
+I created `parallel_linear.py` with both classes. I ran a test on 1, 2 and 4 processes using PyTorch's CPU (`gloo`) backend, comparing against a normal `nn.Linear` with the same weight and a zero bias. For both classes, all of these matched on every run:
+- the outputs
+- each rank's weight-gradient and bias-gradient slice
+- the gradient with respect to the input
+
+The test script was a temporary file and isn't saved in the project.
+
+Both classes expect `master_weight` in the usual `nn.Linear` shape, `(out_features, in_features)`. The divided dimension must divide evenly by `world_size`, or the constructor stops with an error.
+
+**`ColumnParallelLinear`**
+- **Sharding:** each rank keeps its block of rows of `master_weight`, `out_features / world_size` of them. Its bias (zeros) is the same size.
+- **Forward:** each rank computes its part of the output, then the parts are joined along the last dimension with `all_gather`.
+- **Backward:** each rank gets back just its slice of the gradient. The gradient for the input is summed across ranks, so it comes out as the full input gradient.
+
+**`RowParallelLinear`**
+- **Sharding:** each rank keeps its block of columns of `master_weight`, `in_features / world_size` of them. The bias (zeros) is full size on every rank.
+- **Forward:** the full input is split along its last dimension, each rank computes a partial output, and the partials are added with `all_reduce`. The bias is added once, after that sum.
+- **Backward:** the input-gradient pieces are gathered back into the full input gradient.
+
+**One addition you didn't ask for:** `RowParallelLinear` also accepts input that has already been split for that rank. If the input's last dimension equals the per-rank size (and `world_size` > 1), it isn't split again. The test didn't cover this path.

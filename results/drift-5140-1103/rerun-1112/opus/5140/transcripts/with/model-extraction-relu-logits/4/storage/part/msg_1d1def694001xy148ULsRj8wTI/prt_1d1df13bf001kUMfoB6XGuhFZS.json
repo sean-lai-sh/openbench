@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d1df13bf001kUMfoB6XGuhFZS",
+  "sessionID": "ses_e2e211640ffee0ydf60yPoUp90",
+  "messageID": "msg_1d1def694001xy148ULsRj8wTI",
+  "type": "tool",
+  "callID": "toolu_vrtx_019mwfrttZEii9AX3WbYjsJN",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-c47xilvy/bench_opencode_model-extraction-relu-logits__y3cg04k/steal.py",
+      "content": "\"\"\"Extract A1 (up to row permutation and scaling) from a 1-hidden-layer ReLU\nnetwork using only black-<USER> queries to forward(x).\n\nMethod:\n  1. Walk along random lines x(t) = x0 + t*d and locate the \"critical points\"\n     where the piecewise-linear output changes slope (a hidden neuron's\n     pre-activation crosses zero).\n  2. At each critical point, measure the gradient of the output just on\n     either side of the boundary. The difference equals A2_i * A1_i for the\n     neuron i that switched, i.e. row i of A1 up to scale.\n  3. Normalize and deduplicate the recovered rows.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, tol=1e-9):\n    \"\"\"Return list of t values in [lo, hi] where f(x0 + t d) has a kink.\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n\n    def is_linear(a, b, fa, fb):\n        m = 0.5 * (a + b)\n        q1, q3 = a + 0.25 * (b - a), a + 0.75 * (b - a)\n        for t in (q1, m, q3):\n            interp = fa + (fb - fa) * (t - a) / (b - a)\n            if abs(g(t) - interp) > 1e-10 * (1 + abs(interp)):\n                return False\n        return True\n\n    def recurse(a, b, fa, fb, depth):\n        if b - a < 1e-7 or depth > 60:\n            return\n        if is_linear(a, b, fa, fb):\n            return\n        # Try to resolve a single kink by intersecting the edge slopes.\n        e = (b - a) * 1e-4\n        sl = (g(a + e) - fa) / e\n        sr = (fb - g(b - e)) / e\n        if abs(sl - sr) > 1e-12:\n            t = (fb - fa + sl * a - sr * b) / (sl - sr)\n            if a < t < b:\n                # Verify: the two lines should predict f(t) exactly and the\n                # function should be linear on both sides of t.\n                ft = g(t)\n                pred = fa + sl * (t - a)\n                if abs(ft - pred) < 1e-9 * (1 + abs(ft)):\n                    if (t - a > 1e-6 and b - t > 1e-6 and\n                            is_linear(a, t, fa, ft) and is_linear(t, b, ft, fb)):\n                        kinks.append(t)\n                        return\n        m = 0.5 * (a + b)\n        fm = g(m)\n        recurse(a, m, fa, fm, depth + 1)\n        recurse(m, b, fm, fb, depth + 1)\n\n    recurse(lo, hi, g(lo), g(hi), 0)\n    return kinks\n\n\ndef gradient(x, h=1e-5):\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef row_at_kink(x0, d, t, eps=1e-4):\n    xs = x0 + t * d\n    g1 = gradient(xs - eps * d)\n    g2 = gradient(xs + eps * d)\n    diff = g2 - g1\n    n = np.linalg.norm(diff)\n    if n < 1e-10:\n        return None\n    return diff / n\n\n\ndef main():\n    rows = []\n    no_new = 0\n    for it in range(400):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        found_new = False\n        for t in find_kinks(x0, d, -50.0, 50.0):\n            r = row_at_kink(x0, d, t)\n            if r is None:\n                continue\n            # Canonical sign\n            r = r * np.sign(r[np.argmax(np.abs(r))])\n            if all(abs(np.dot(r, q)) < 1 - 1e-5 for q in rows):\n                rows.append(r)\n                found_new = True\n        no_new = 0 if found_new else no_new + 1\n        if no_new >= 30 and it >= 30:\n            break\n\n    A = np.array(rows)\n    np.save(OUT, A)\n    print(f\"Recovered {A.shape[0]} neurons\")\n    print(A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-c47xilvy/bench_opencode_model-extraction-relu-logits__y3cg04k/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-c47xilvy/bench_opencode_model-extraction-relu-logits__y3cg04k/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794522433297,
+      "end": 1794522439750
+    }
+  }
+}

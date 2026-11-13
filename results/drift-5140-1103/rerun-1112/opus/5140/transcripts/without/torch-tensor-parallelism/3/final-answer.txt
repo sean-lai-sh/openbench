@@ -1,0 +1,10 @@
+I've created `parallel_linear.py` with both classes. A test with 1, 2 and 4 processes passed, comparing each layer's outputs and its weight, bias and input gradients against a regular `nn.Linear` (bias initialised to zero).
+
+- **`ColumnParallelLinear`**: The full weight has shape `(out_features, in_features)`, and this class splits it along the output dimension (`dim 0`). Each rank keeps its slice of the weight and a zero-initialised bias slice of matching size. In the forward pass each rank computes its part of the output, and the parts are joined along the last dimension, as `all_gather` would. In the backward pass each rank takes its slice of the output gradient, and the input gradient is summed across ranks.
+- **`RowParallelLinear`**: This class splits the weight along the input dimension (`dim 1`) and keeps the full zero-initialised bias on every rank. In the forward pass the input is split along its last dimension and each rank computes a partial output. The partial outputs are summed across ranks, as `all_reduce` would, and the bias is added once after the sum. In the backward pass the input gradient is gathered back to full size.
+
+Two behaviours you might not assume:
+- **Input size for `RowParallelLinear`:** it accepts either the full input (size `in_features`) and splits it itself, or an input that's already split (size `in_features / world_size`). Your tests didn't say which they pass, so it handles both. One edge case: with a world size of 1 the two sizes are the same, which is harmless.
+- **Gradient assumption:** the gradients come out correct when every rank computes the same loss on the full output, which is the usual setup and what my test did. If your tests instead give each rank a different loss, the weight gradients won't match.
+
+Both `out_features` (for column) and `in_features` (for row) must divide evenly by the world size; the constructors fail with an assertion otherwise.

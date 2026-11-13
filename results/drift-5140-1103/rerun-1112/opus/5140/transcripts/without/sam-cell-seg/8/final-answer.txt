@@ -1,0 +1,24 @@
+I wrote `convert_masks.py` and ran it on the demo files. All 48 masks came out as polylines, with no overlapping pixels and exactly one connected region per cell. It took about 28 seconds on CPU.
+
+**Usage:**
+```
+python convert_masks.py <weights_path> <output_path> <rgb_path> <csv_path>
+```
+
+**How it works:**
+1. **Model:** it loads MobileSAM (`vit_t`) from the weights file you pass in and uses its predictor without changing the MobileSAM source. It runs on CPU and switches to GPU only if one is available. The image is encoded once.
+2. **Prompts:** every cell gets its bounding <USER> as a prompt. Polyline cells also get a positive point at the most interior pixel of the original polygon.
+3. **Choosing a mask:** SAM gives three candidate masks per cell. Each is clipped to the <USER> plus a 15% margin, cleaned up (small specks removed, largest region kept, holes filled), then scored by SAM's confidence plus how well it matches the original shape. Candidates that spread far outside the <USER> or are tiny fragments are penalised. Prediction runs in batches of 16, which was about 6x faster than one cell at a time.
+4. **Removing overlaps:** where masks overlap, the smaller cell keeps the shared pixels. Neighbouring cells are kept at least 1 pixel apart so their polygons don't overlap when drawn, and each mask is reduced to its single largest region. If SAM gives nothing usable for a cell, the script falls back to the original polygon, or to an ellipse inside the <USER> for rectangles.
+5. **Output:** each mask's outline becomes closed `coords_x`/`coords_y` lists in the same comma-separated format as the input, and `xmin/xmax/ymin/ymax` are recalculated from it.
+
+**Checks on the demo output:**
+- Columns and row order match the input, and every column except the six coordinate columns is unchanged, including the unnamed index column.
+- When I drew all the polygons onto the image, none of them shared a pixel.
+- Every mask is a single connected region, and none is still a 4-corner rectangle.
+- The bounding-<USER> columns match the new coordinates.
+- In an overlay picture, the refined outlines follow the cell boundaries well, including for the former rectangles. One long fibroblast (row 0) has a fairly jagged outline, but it is still a single region.
+
+**Two choices you may want to change:**
+- **Where the file goes:** if `output_path` ends in `.csv`, it is used as the output filename. Otherwise it's treated as a folder (created if needed) and the file gets the same name as the input CSV, e.g. `out/demo_metadata.csv`.
+- **`type` column:** I left it unchanged, because you said only the six coordinate columns should change. Rows that were rectangles therefore still say `rectangle` even though their coordinates are now polylines. If you'd rather it say `polyline`, that's a one-line change.

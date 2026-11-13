@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d1af575c001wrT9NuUSLcEmYi",
+  "sessionID": "ses_e2e50f025ffe97MDH5gwD16QK0",
+  "messageID": "msg_1d1af1cfe001VKSoapSXC5OdX1",
+  "type": "tool",
+  "callID": "toolu_vrtx_01CaL73amWRA8q437BfQAK5k",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-zalzss2m/bench_opencode_model-extraction-relu-logits_f5i9aek6/steal.py",
+      "content": "\"\"\"Extract A1 (up to neuron permutation and row scaling) from a 1-hidden-layer\nReLU network using only black-<USER> queries to forward(x).\n\nIdea: along a random line x(t) = x0 + t*d the network is piecewise linear in t,\nwith a kink exactly where some hidden neuron i crosses zero. At such a kink the\ninput gradient jumps by +/- A2[i] * A1[i, :], i.e. a scaled copy of row i of A1.\nCollect these jumps across many lines and deduplicate by direction.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef grad(x, h=1e-6):\n    g = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef find_kinks_on_line(x0, d, T=20.0, n=4000):\n    ts = np.linspace(-T, T, n)\n    ys = np.array([f(x0 + t * d) for t in ts])\n    dt = ts[1] - ts[0]\n    slopes = np.diff(ys) / dt  # slope in each cell\n    scale = max(1e-12, np.max(np.abs(slopes)))\n    rows = []\n    for k in range(1, len(slopes)):\n        if abs(slopes[k] - slopes[k - 1]) < 1e-7 * max(1.0, scale):\n            continue\n        # Kink lies in cell k-1 or k (between ts[k-1] and ts[k+1]).\n        # Use outer cells (k-2 and k+1) as clean linear pieces when available.\n        if k - 2 < 0 or k + 1 >= len(slopes):\n            continue\n        sL, sR = slopes[k - 2], slopes[k + 1]\n        if abs(sL - sR) < 1e-7 * max(1.0, scale):\n            continue\n        # lines: yL(t)=ys[k-1]+sL*(t-ts[k-1]); yR(t)=ys[k+1]+sR*(t-ts[k+1])\n        tstar = (ys[k + 1] - ys[k - 1] - sR * ts[k + 1] + sL * ts[k - 1]) / (sL - sR)\n        if not (ts[k - 1] - 1e-9 <= tstar <= ts[k + 1] + 1e-9):\n            continue\n        ypred = ys[k - 1] + sL * (tstar - ts[k - 1])\n        if abs(f(x0 + tstar * d) - ypred) > 1e-8 * max(1.0, abs(ypred)):\n            continue  # more than one kink here; skip\n        eps = min(tstar - ts[k - 1], ts[k + 1] - tstar) * 0.5 + 1e-3 * dt\n        gL = grad(x0 + (tstar - max(eps, 1e-4)) * d)\n        gR = grad(x0 + (tstar + max(eps, 1e-4)) * d)\n        diff = gR - gL\n        if np.linalg.norm(diff) > 1e-8:\n            rows.append(diff)\n    return rows\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    j = np.argmax(np.abs(v))\n    return v * np.sign(v[j])\n\n\ndef main():\n    found = []  # list of (unit vector, list of raw vectors)\n    stale = 0\n    lines = 0\n    while stale < 15 and lines < 200:\n        lines += 1\n        x0 = rng.normal(size=DIM) * 2.0\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        new = False\n        for r in find_kinks_on_line(x0, d):\n            u = normalize(r)\n            for entry in found:\n                if abs(np.dot(entry[0], u)) > 0.9999:\n                    entry[1].append(u)\n                    break\n            else:\n                found.append([u, [u]])\n                new = True\n        stale = 0 if new else stale + 1\n\n    # Keep directions observed at least twice (robust against spurious kinks)\n    rows = [np.mean(e[1], axis=0) for e in found if len(e[1]) >= 2]\n    A = np.array([r / np.linalg.norm(r) for r in rows])\n    np.save(OUT, A)\n    print(f\"Recovered {A.shape[0]} neurons from {lines} lines\")\n    print(A)\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-zalzss2m/bench_opencode_model-extraction-relu-logits_f5i9aek6/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-zalzss2m/bench_opencode_model-extraction-relu-logits_f5i9aek6/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794519304967,
+      "end": 1794519311273
+    }
+  }
+}

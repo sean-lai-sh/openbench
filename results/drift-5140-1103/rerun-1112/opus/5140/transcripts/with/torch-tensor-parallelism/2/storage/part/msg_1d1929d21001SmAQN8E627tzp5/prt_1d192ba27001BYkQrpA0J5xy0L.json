@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d192ba27001BYkQrpA0J5xy0L",
+  "sessionID": "ses_e2e6dffc7ffe7NtF76SAJDFHOA",
+  "messageID": "msg_1d1929d21001SmAQN8E627tzp5",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I tested them on CPU (gloo backend) with world sizes 1, 2 and 4. On every rank, the outputs, the weight and bias gradients, and the input gradients matched a plain `torch.nn.Linear` given the same weight.\n\nThe weight is assumed to be stored like `nn.Linear`'s: `master_weight` has shape `(out_features, in_features)`. If the tests pass it the other way round, the constructor's shape check will raise an error.\n\n**`ColumnParallelLinear`**\n- Each rank keeps `out_features / world_size` rows of the weight (the rows in this storage are the columns of the maths matrix).\n- Its bias has the matching `out_features / world_size` entries, all starting at zero.\n- Forward: each rank computes its slice of the output, then the slices are collected and joined along the last dimension (all-gather). In the backward pass, each rank takes back its own slice of the gradient.\n- Each rank sees only part of the input's gradient, so those parts are summed across ranks (all-reduce) to give the full input gradient.\n\n**`RowParallelLinear`**\n- Each rank keeps `in_features / world_size` columns of the weight.\n- Its bias is the full `out_features` length on every rank, starting at zero.\n- Forward: it takes either the full input, which it slices to this rank's part, or an input that is already split. Each rank computes a partial output, the partial outputs are summed (all-reduce), and the bias is added once after the sum.\n- When the layer did the slicing, the backward pass gathers the input gradient back to full size on every rank.\n\n**Other details**\n- Both features must divide evenly by the world size (`out_features` for the column layer, `in_features` for the row layer), or the constructor raises an error.\n- With `bias=False`, `bias` is registered as `None`.\n- If `torch.distributed` hasn't been started, both classes act as a single process (world size 1, rank 0).\n\nThe test script is at `/tmp/tp_test.py`, outside the project folder.",
+  "time": {
+    "start": 1794517416534,
+    "end": 1794517416534
+  }
+}

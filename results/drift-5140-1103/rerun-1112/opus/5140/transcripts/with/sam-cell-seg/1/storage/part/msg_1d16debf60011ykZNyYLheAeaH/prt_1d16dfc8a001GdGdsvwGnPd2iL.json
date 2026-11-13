@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d16dfc8a001GdGdsvwGnPd2iL",
+  "sessionID": "ses_e2e9cf872ffeGj4TK4A4crqbmA",
+  "messageID": "msg_1d16debf60011ykZNyYLheAeaH",
+  "type": "tool",
+  "callID": "toolu_vrtx_01P9MWnKGy9Rja3c42jr4aAZ",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "source /tmp/msenv/bin/activate && cat > /tmp/validate.py <<'EOF'\nimport sys,numpy as np,pandas as pd,cv2\nfrom shapely.geometry import Polygon\ninp=pd.read_csv(sys.argv[1],index_col=0); out=pd.read_csv(sys.argv[2],index_col=0); im=cv2.imread(sys.argv[3])\nassert len(inp)==len(out) and list(inp.columns)==list(out.columns)\nH,W=im.shape[:2]; polys=[]; cnt=np.zeros((H,W),int); bad=0\nfor i,r in out.iterrows():\n    xs=np.array(r.coords_x.split(','),int); ys=np.array(r.coords_y.split(','),int)\n    assert r.xmin==xs.min() and r.xmax==xs.max() and r.ymin==ys.min() and r.ymax==ys.max()\n    p=Polygon(zip(xs,ys)); polys.append(p)\n    if not p.is_valid: print('invalid',i); bad+=1\n    if len(set(zip(xs,ys)))<=4 and len(set(xs))==2 and len(set(ys))==2: print('rect',i); bad+=1\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[np.stack([xs,ys],1)],1)\n    n,_=cv2.connectedComponents(m,connectivity=8)\n    if n!=2: print('components',i,n-1); bad+=1\n    cnt+=m\nprint('raster overlap px:',(cnt>1).sum())\nov=[(i,j,polys[i].intersection(polys[j]).area) for i in range(len(polys)) for j in range(i+1,len(polys)) if polys[i].is_valid and polys[j].is_valid and polys[i].intersection(polys[j]).area>0]\nprint('geom overlaps:',ov); print('bad',bad,'areas',[int(p.area) for p in polys])\nEOF\nuv pip install -q shapely; python /tmp/validate.py demo_metadata.csv /tmp/out/demo_metadata.csv demo_rgb.png",
+      "description": "Validate output polygons"
+    },
+    "output": "invalid 0\nraster overlap px: 0\ngeom overlaps: []\nbad 1 areas [982, 1873, 1658, 1288, 1429, 1251, 1516, 1085, 872, 628, 970, 770, 1204, 713, 930, 923, 742, 827, 785, 841, 778, 641, 758, 606, 434, 470, 569, 581, 578, 512, 460, 663, 630, 616, 717, 649, 539, 703, 511, 455, 505, 544, 471, 486, 502, 388, 350, 276]\n",
+    "title": "Validate output polygons",
+    "metadata": {
+      "output": "invalid 0\nraster overlap px: 0\ngeom overlaps: []\nbad 1 areas [982, 1873, 1658, 1288, 1429, 1251, 1516, 1085, 872, 628, 970, 770, 1204, 713, 930, 923, 742, 827, 785, 841, 778, 641, 758, 606, 434, 470, 569, 581, 578, 512, 460, 663, 630, 616, 717, 649, 539, 703, 511, 455, 505, 544, 471, 486, 502, 388, 350, 276]\n",
+      "exit": 0,
+      "description": "Validate output polygons"
+    },
+    "time": {
+      "start": 1794515014339,
+      "end": 1794515016800
+    }
+  }
+}

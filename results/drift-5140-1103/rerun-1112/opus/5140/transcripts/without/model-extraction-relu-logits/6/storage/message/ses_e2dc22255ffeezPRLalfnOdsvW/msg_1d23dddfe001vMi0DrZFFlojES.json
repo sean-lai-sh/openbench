@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d23dddfe001vMi0DrZFFlojES",
+  "sessionID": "ses_e2dc22255ffeezPRLalfnOdsvW",
+  "role": "user",
+  "time": {
+    "created": 1794528632318
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. It recovers all 20 hidden neurons of A1, and running it saves the result to `stolen_A1.npy` in about a second.\n\n**How it works.** It only learns about the network by calling `forward()`:\n1. **Find the kinks.** The network's output is piecewise linear, and it bends wherever a hidden neuron switches on or off. The script picks random lines through the 10-dimensional input space, from t = −30 to +30. Along each line it keeps splitting the range in half until it pins down exactly where the output stops being linear.\n2. **Get a row from each kink.** At each kink it estimates the gradient on both sides using finite differences. The difference between the two gradients is that neuron's row of A1, multiplied by its output weight in A2, which is just a scale factor.\n3. **Remove duplicates.** It scales each row to unit length and fixes its sign, then groups rows that point the same way (cosine above 1 − 1e-5). A row is kept only if it turns up at least twice, which filters out false detections. It stops once 60 lines in a row find no new neuron.\n\n**Result.** The saved matrix is 20×10, with each row at unit length and its largest entry made positive. Rows are therefore equal to A1's rows up to order and scale (including sign), as you asked.\n\n**Check.** After the script ran, I compared its output against the real `A1` inside `forward.py`. The script itself never reads those weights. Every recovered row matches one true row, and every true row is matched, with |cosine| ≥ 0.9999999999999998.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

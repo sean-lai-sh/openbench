@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d22058ba001iIgEuIvOZj92Zg",
+  "sessionID": "ses_e2de147adffe8SXq4QQIrlE4hd",
+  "messageID": "msg_1d22051040012J1VkL3cvb9IXk",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Et2McZ2smyVtDVgJsetgD4",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-m9cxqx5q/bench_opencode_sam-cell-seg_z2fu7q7d; python - <<'EOF'\nimport pandas as pd, numpy as np, cv2\na=pd.read_csv('demo_metadata.csv',index_col=0); b=pd.read_csv('out/demo_metadata.csv',index_col=0)\nprint(list(a.columns)==list(b.columns), len(a)==len(b))\nfor c in a.columns:\n    if c not in ['xmin','xmax','ymin','ymax','coords_x','coords_y']: assert (a[c]==b[c]).all(),c\nimg=cv2.imread('demo_rgb.png'); H,W=img.shape[:2]\ncnt=np.zeros((H,W),int); bad=0; areas=[]\nvis=img.copy()\nfor _,r in b.iterrows():\n    xs=list(map(int,r.coords_x.split(','))); ys=list(map(int,r.coords_y.split(',')))\n    assert min(xs)==r.xmin and max(ys)==r.ymax\n    if len(set(xs))<=2 and len(set(ys))<=2: bad+=1\n    m=np.zeros((H,W),np.uint8); pts=np.array([xs,ys]).T.astype(np.int32); cv2.fillPoly(m,[pts],1)\n    n,_=cv2.connectedComponents(m); assert n==2\n    cnt+=m; areas.append(m.sum())\n    cv2.polylines(vis,[pts],True,(0,255,0),1)\nfor _,r in a.iterrows():\n    pts=np.array([list(map(int,r.coords_x.split(','))),list(map(int,r.coords_y.split(',')))]).T.astype(np.int32)\n    cv2.polylines(vis,[pts],True,(0,0,255),1)\nprint('rects',bad,'overlap px',(cnt>1).sum(),'areas',min(areas),np.median(areas),max(areas))\ncv2.imwrite('/tmp/vis.png',cv2.resize(vis,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST))\nEOF",
+      "description": "Validate output constraints and visualize"
+    },
+    "output": "True True\nrects 0 overlap px 0 areas 275 673.5 1966\n",
+    "title": "Validate output constraints and visualize",
+    "metadata": {
+      "output": "True True\nrects 0 overlap px 0 areas 275 673.5 1966\n",
+      "exit": 0,
+      "description": "Validate output constraints and visualize"
+    },
+    "time": {
+      "start": 1794526703307,
+      "end": 1794526703808
+    }
+  }
+}

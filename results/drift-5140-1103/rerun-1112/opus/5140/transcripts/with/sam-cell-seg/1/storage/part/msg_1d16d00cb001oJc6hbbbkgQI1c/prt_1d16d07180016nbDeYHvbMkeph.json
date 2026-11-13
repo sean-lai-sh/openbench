@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d16d07180016nbDeYHvbMkeph",
+  "sessionID": "ses_e2e9cf872ffeGj4TK4A4crqbmA",
+  "messageID": "msg_1d16d00cb001oJc6hbbbkgQI1c",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Qnkq58ysaJwP5Rsk8fF4Jh",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "source /tmp/msenv/bin/activate && python - <<'EOF'\nf='convert_masks.py'; s=open(f).read()\na=s.index('def segment_cell('); b=s.index('# ------', a)\nnew='''def cell_roi(ann, shape):\n    \"\"\"Region of interest (<USER> + margin) used to crop SAM outputs for a cell.\"\"\"\n    H, W = shape\n    x0, y0, x1, y1 = ann[\"<USER>\"]\n    margin = max(3, int(round(0.15 * max(x1 - x0, y1 - y0))))\n    return (\n        max(0, int(x0) - margin),\n        max(0, int(y0) - margin),\n        min(W, int(x1) + margin + 1),\n        min(H, int(y1) + margin + 1),\n    )\n\n\ndef prompt_point(ann):\n    \"\"\"Positive point prompt: polygon interior point, or rectangle centre.\"\"\"\n    if ann[\"inner_pt\"] is not None:\n        return ann[\"inner_pt\"]\n    x0, y0, x1, y1 = ann[\"<USER>\"]\n    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)\n\n\ndef segment_group(predictor, group, tile, shape, batch_size=16):\n    \"\"\"Run MobileSAM (batched) for all annotations assigned to one tile.\n\n    Each cell is prompted twice (<USER> only, <USER> + positive point) with\n    multimask output; the candidate with the best combination of SAM's predicted\n    IoU and agreement with the original annotation is kept.\n    Returns {cell_index: (mask_roi, logits_roi, roi)}.\n    \"\"\"\n    tx, ty = tile[0], tile[1]\n    th, tw = tile[3] - tile[1], tile[2] - tile[0]\n    thr = predictor.model.mask_threshold\n    dev = predictor.device\n    best = {a[\"i\"]: (-np.inf, None) for a in group}\n\n    for start in range(0, len(group), batch_size):\n        chunk = group[start:start + batch_size]\n        boxes = np.array(\n            [[a[\"<USER>\"][0] - tx, a[\"<USER>\"][1] - ty, a[\"<USER>\"][2] - tx, a[\"<USER>\"][3] - ty] for a in chunk],\n            dtype=np.float32,\n        )\n        pts = np.array([[[prompt_point(a)[0] - tx, prompt_point(a)[1] - ty]] for a in chunk], np.float32)\n        boxes_t = predictor.transform.apply_boxes_torch(torch.as_tensor(boxes, device=dev), (th, tw))\n        pts_t = predictor.transform.apply_coords_torch(torch.as_tensor(pts, device=dev), (th, tw))\n        lbl_t = torch.ones(pts_t.shape[:2], dtype=torch.int, device=dev)\n\n        for pc, pl in ((None, None), (pts_t, lbl_t)):\n            logits, scores, _ = predictor.predict_torch(\n                pc, pl, boxes=boxes_t, multimask_output=True, return_logits=True\n            )\n            logits = logits.cpu().numpy()\n            scores = scores.cpu().numpy()\n            for j, a in enumerate(chunk):\n                rx0, ry0, rx1, ry1 = a[\"roi\"]\n                x0, y0, x1, y1 = a[\"<USER>\"]\n                ref = None if a[\"rect\"] else a[\"orig_mask\"][ry0:ry1, rx0:rx1]\n                for lg, sc in zip(logits[j], scores[j]):\n                    lg_roi = lg[ry0 - ty:ry1 - ty, rx0 - tx:rx1 - tx]\n                    m = lg_roi > thr\n                    if int(m.sum()) < 4:\n                        continue\n                    if ref is not None:\n                        agree = np.logical_and(m, ref).sum() / float(np.logical_or(m, ref).sum())\n                    else:\n                        bb = mask_bbox(m)\n                        bb = (bb[0] + rx0, bb[1] + ry0, bb[2] + rx0, bb[3] + ry0)\n                        agree = box_iou(bb, (x0, y0, x1, y1))\n                    s = float(sc) + 1.5 * float(agree)\n                    if s > best[a[\"i\"]][0]:\n                        best[a[\"i\"]] = (s, lg_roi.copy())\n\n    out = {}\n    for a in group:\n        lg = best[a[\"i\"]][1]\n        out[a[\"i\"]] = (None if lg is None else lg > thr, lg, a[\"roi\"])\n    return out\n\n\n'''\ns=s[:a]+new+s[b:]\ns=s.replace('''            for a in group:\n                results[a[\"i\"]] = segment_cell(predictor, a, t, (H, W))\n                pbar.update(1)''','''            for i, r in segment_group(predictor, group, t, (H, W)).items():\n                results[i] = r\n            pbar.update(len(group))''')\ns=s.replace('''            dict(i=i, <USER>=(x0, y0, x1, y1), rect=rect, orig_mask=orig, inner_pt=inner)\n        )''','''            dict(i=i, <USER>=(x0, y0, x1, y1), rect=rect, orig_mask=orig, inner_pt=inner)\n        )\n        anns[-1][\"roi\"] = cell_roi(anns[-1], (H, W))''')\nopen(f,'w').write(s)\nEOF\ntime python convert_masks.py --weights_path /tmp/msw/mobile_sam.pt --output_path /tmp/out --rgb_path demo_rgb.png --csv_path demo_metadata.csv 2>&1 | tail -1",
+      "description": "Switch to batched inference and rerun",
+      "timeout": 600000
+    },
+    "output": "Saved 48 refined polyline masks to /tmp/out/demo_metadata.csv\n\nreal\t0m44.750s\nuser\t1m17.953s\nsys\t0m8.329s\n",
+    "title": "Switch to batched inference and rerun",
+    "metadata": {
+      "output": "Saved 48 refined polyline masks to /tmp/out/demo_metadata.csv\n\nreal\t0m44.750s\nuser\t1m17.953s\nsys\t0m8.329s\n",
+      "exit": 0,
+      "description": "Switch to batched inference and rerun"
+    },
+    "time": {
+      "start": 1794514959459,
+      "end": 1794515004308
+    }
+  }
+}

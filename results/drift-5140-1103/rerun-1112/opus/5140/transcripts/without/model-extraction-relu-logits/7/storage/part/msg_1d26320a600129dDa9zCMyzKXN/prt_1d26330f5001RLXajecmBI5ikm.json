@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d26330f5001RLXajecmBI5ikm",
+  "sessionID": "ses_e2d9e64dcffeODigu4PtudJusY",
+  "messageID": "msg_1d26320a600129dDa9zCMyzKXN",
+  "type": "tool",
+  "callID": "toolu_vrtx_01UCUTnjUeAVuorL5XepMgjC",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-5sxsk69d/bench_opencode_model-extraction-relu-logits_yfyrns9p; python - <<'EOF'\np='steal.py'; s=open(p).read()\nold=s[s.index(\"def steal(\"):s.index('if __name__')]\nnew='''def steal(num_lines=300, T=20.0, patience=60, min_count=3):\n    dirs, counts = [], []\n    since_new = 0\n    for _ in range(num_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        kinks = []\n        find_kinks(x0, d, -T, T, f(x0 - T * d), f(x0 + T * d), kinks)\n        kinks = sorted(kinks)\n        merged = []\n        for t in kinks:\n            if not merged or t - merged[-1] > 1e-5:\n                merged.append(t)\n        new_here = False\n        for t in merged:\n            eps = 1e-5\n            gl1, gl2 = grad(x0 + (t - eps) * d), grad(x0 + (t - 3 * eps) * d)\n            gr1, gr2 = grad(x0 + (t + eps) * d), grad(x0 + (t + 3 * eps) * d)\n            # gradients must be stable on each side (only one kink crossed)\n            if (np.linalg.norm(gl1 - gl2) > 1e-6 or\n                    np.linalg.norm(gr1 - gr2) > 1e-6):\n                continue\n            diff = gr1 - gl1\n            if np.linalg.norm(diff) < 1e-6:\n                continue\n            v = canon(diff)\n            for j, w in enumerate(dirs):\n                if abs(np.dot(v, w)) > 0.9999:\n                    counts[j] += 1\n                    if counts[j] == min_count:\n                        new_here = True\n                    break\n            else:\n                dirs.append(v)\n                counts.append(1)\n        since_new = 0 if new_here else since_new + 1\n        if since_new >= patience:\n            break\n    return np.array([w for w, c in zip(dirs, counts) if c >= min_count])\n\n\n'''\ns=s.replace(old,new)\nopen(p,'w').write(s)\nEOF\ntime python steal.py | head -1; python -c \"\nimport numpy as np, forward\nA=forward.A1; S=np.load('stolen_A1.npy')\nAn=A/np.linalg.norm(A,axis=1,keepdims=True); Sn=S/np.linalg.norm(S,axis=1,keepdims=True)\nC=np.abs(An@Sn.T)\nprint(S.shape, 'min best match per true row:', C.max(1).min(), 'per stolen row:', C.max(0).min())\ni=C.argmax(1); r=A/S[i]; print('ratio spread per row:', np.abs(r.std(1)/r.mean(1)).max())\n\"",
+      "description": "Add robustness filters, rerun, verify",
+      "timeout": 600000
+    },
+    "output": "Recovered 20 neurons\n\nreal\t0m6.675s\nuser\t0m2.959s\nsys\t0m0.025s\n(20, 10) min best match per true row: 0.9999999999999994 per stolen row: 0.9999999999999994\nratio spread per row: 2.8692660866444914e-07\n",
+    "title": "Add robustness filters, rerun, verify",
+    "metadata": {
+      "output": "Recovered 20 neurons\n\nreal\t0m6.675s\nuser\t0m2.959s\nsys\t0m0.025s\n(20, 10) min best match per true row: 0.9999999999999994 per stolen row: 0.9999999999999994\nratio spread per row: 2.8692660866444914e-07\n",
+      "exit": 0,
+      "description": "Add robustness filters, rerun, verify"
+    },
+    "time": {
+      "start": 1794531085798,
+      "end": 1794531093035
+    }
+  }
+}

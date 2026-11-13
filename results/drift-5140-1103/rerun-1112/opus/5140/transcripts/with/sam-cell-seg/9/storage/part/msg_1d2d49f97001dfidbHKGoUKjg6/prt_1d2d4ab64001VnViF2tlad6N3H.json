@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2d4ab64001VnViF2tlad6N3H",
+  "sessionID": "ses_e2d2f2d7dffez251WjsQwzIzDY",
+  "messageID": "msg_1d2d49f97001dfidbHKGoUKjg6",
+  "type": "tool",
+  "callID": "toolu_vrtx_01EgTE6PP5znpYpUvQoRnLcH",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/check.py <<'EOF'\nimport pandas as pd, numpy as np, cv2, sys\nd=pd.read_csv(sys.argv[1],index_col=0); o=pd.read_csv('demo_metadata.csv',index_col=0)\nimg=cv2.imread('demo_rgb.png'); H,W=img.shape[:2]\ncnt=np.zeros((H,W),int); vis=img.copy()\nprint(list(d.columns)==list(o.columns), len(d)==len(o))\nfor (i,r),(_,r0) in zip(d.iterrows(),o.iterrows()):\n    xs=np.array(r.coords_x.split(','),int); ys=np.array(r.coords_y.split(','),int)\n    pts=np.stack([xs,ys],1)\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[pts],1)\n    n,_=cv2.connectedComponents(m)\n    assert n==2, (i,n)\n    assert r.xmin==xs.min() and r.xmax==xs.max() and r.ymin==ys.min() and r.ymax==ys.max()\n    if len(set(zip(xs,ys)))<=4: print('few pts',i,r0.type)\n    cnt+=m\n    cv2.polylines(vis,[pts],True,(0,255,0),1)\n    x0=np.array(r0.coords_x.split(','),int);y0=np.array(r0.coords_y.split(','),int)\n    cv2.polylines(vis,[np.stack([x0,y0],1)],True,(0,0,255) if r0.type=='rectangle' else (255,0,0),1)\nprint('max overlap',cnt.max())\ncv2.imwrite('/tmp/vis.png',cv2.resize(vis,None,fx=2.5,fy=2.5,interpolation=cv2.INTER_NEAREST))\nEOF\npython /tmp/check.py /tmp/out1/demo_metadata.csv",
+      "description": "Validate output masks"
+    },
+    "output": "True True\nmax overlap 1\n",
+    "title": "Validate output masks",
+    "metadata": {
+      "output": "True True\nmax overlap 1\n",
+      "exit": 0,
+      "description": "Validate output masks"
+    },
+    "time": {
+      "start": 1794538520793,
+      "end": 1794538521658
+    }
+  }
+}

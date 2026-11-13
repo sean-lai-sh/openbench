@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d16e61710010MqnuL6Rbm0Jb7",
+  "sessionID": "ses_e2e9cf872ffeGj4TK4A4crqbmA",
+  "messageID": "msg_1d16e563f001RStRtXWKvXoral",
+  "type": "tool",
+  "callID": "toolu_vrtx_012vFFbXTKzgGwb4124pqmxf",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "source /tmp/msenv/bin/activate && python - <<'EOF'\nf='convert_masks.py'; s=open(f).read()\ns=s.replace('''def polygon_is_rectangle(poly):''','''def clean_mask(mask, seed=None, max_iter=50):\n    \"\"\"Make a mask whose outer contour is a simple (non self-touching) polygon.\n\n    1-px wide necks / spurs make OpenCV trace the same pixel twice, giving an\n    invalid self-touching polygon. We apply a 3x3 opening (when it does not\n    destroy the mask) and then iteratively delete pixels visited more than once\n    by the contour, keeping the largest 4-connected component.\n    \"\"\"\n    m = mask.copy()\n    if not m.any():\n        return m\n    opened = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)\n    if opened.sum() >= max(6, 0.5 * m.sum()):\n        m = opened\n    m = largest_component(m, seed)\n    for _ in range(max_iter):\n        cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)\n        if not cnts:\n            break\n        c = max(cnts, key=len).reshape(-1, 2)\n        pts, counts = np.unique(c, axis=0, return_counts=True)\n        dup = pts[counts > 1]\n        if len(dup) == 0 or len(pts) < 3:\n            break\n        trial = m.copy()\n        trial[dup[:, 1], dup[:, 0]] = False\n        trial = largest_component(trial, seed)\n        if trial.sum() < 3:\n            break\n        m = trial\n    return m\n\n\ndef polygon_is_rectangle(poly):''')\ns=s.replace('''    for k in range(n):\n        cur = label == k\n        poly = mask_to_polygon(cur)''','''    for k in range(n):\n        cur = clean_mask(label == k, anns[k][\"inner_pt\"])\n        label[(label == k) & ~cur] = -1\n        poly = mask_to_polygon(cur)''')\nopen(f,'w').write(s)\nEOF\npython convert_masks.py /tmp/msw/mobile_sam.pt /tmp/out demo_rgb.png demo_metadata.csv 2>&1 | tail -1; python /tmp/validate.py demo_metadata.csv /tmp/out/demo_metadata.csv demo_rgb.png",
+      "description": "Add mask cleanup, rerun with positional args, validate",
+      "timeout": 600000
+    },
+    "output": "Saved 48 refined polyline masks to /tmp/out/demo_metadata.csv\nraster overlap px: 0\ngeom overlaps: []\nbad 0 areas [977, 1870, 1656, 1283, 1427, 1251, 1514, 1084, 870, 628, 969, 768, 1204, 713, 930, 923, 741, 827, 782, 841, 778, 639, 753, 606, 432, 470, 568, 581, 577, 506, 457, 663, 628, 614, 716, 649, 537, 701, 511, 455, 503, 544, 471, 480, 502, 386, 350, 272]\n",
+    "title": "Add mask cleanup, rerun with positional args, validate",
+    "metadata": {
+      "output": "Saved 48 refined polyline masks to /tmp/out/demo_metadata.csv\nraster overlap px: 0\ngeom overlaps: []\nbad 0 areas [977, 1870, 1656, 1283, 1427, 1251, 1514, 1084, 870, 628, 969, 768, 1204, 713, 930, 923, 741, 827, 782, 841, 778, 639, 753, 606, 432, 470, 568, 581, 577, 506, 457, 663, 628, 614, 716, 649, 537, 701, 511, 455, 503, 544, 471, 480, 502, 386, 350, 272]\n",
+      "exit": 0,
+      "description": "Add mask cleanup, rerun with positional args, validate"
+    },
+    "time": {
+      "start": 1794515041477,
+      "end": 1794515088294
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2125111001TmqyfbFHSv0FZI",
+  "sessionID": "ses_e2dedf484ffedOa9ld84F9u2vc",
+  "messageID": "msg_1d212196d001SD6jv05kUkAPRu",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Trd5o9CFzD4DE1HYavkHhN",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-9av2snmq/bench_opencode_model-extraction-relu-logits_0pbcwwu7/steal.py",
+      "content": "\"\"\"Recover A1 (up to row permutation and scaling) of a 1-hidden-layer ReLU net\nusing only black-<USER> queries to forward(x).\n\nMethod: along random lines, locate the kinks (points where some hidden neuron\nswitches on/off). At a kink, the gradient of f jumps by A2_j * A1_j, so the\ndifference of gradients on both sides gives the j-th row of A1 up to scale.\nRows are de-duplicated (up to sign/scale) across many lines.\n\"\"\"\nimport os\nimport sys\n\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef gradient(p, h=1e-6):\n    f0 = f(p)\n    g = np.empty(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(p + e) - f(p - e)) / (2 * h)\n    return g\n\n\ndef find_kinks(x0, d, lo, hi):\n    \"\"\"Return t-values of kinks of g(t)=f(x0+t d) on [lo, hi].\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n\n    def is_linear(a, b, ga, gb):\n        # check at several interior points\n        for frac in (0.25, 0.5, 0.75):\n            t = a + frac * (b - a)\n            pred = ga + frac * (gb - ga)\n            if abs(g(t) - pred) > 1e-9 * (1 + abs(pred)):\n                return False\n        return True\n\n    def rec(a, b, ga, gb, depth=0):\n        if is_linear(a, b, ga, gb):\n            return\n        if b - a < 1e-4 or depth > 60:\n            # assume single kink; intersect left and right linear pieces\n            eps = (b - a) * 1e-3\n            sl = (g(a + eps) - ga) / eps\n            sr = (gb - g(b - eps)) / eps\n            if abs(sl - sr) < 1e-12:\n                return\n            t = (gb - ga + sl * a - sr * b) / (sl - sr)\n            if a <= t <= b:\n                kinks.append(t)\n            return\n        m = 0.5 * (a + b)\n        gm = g(m)\n        rec(a, m, ga, gm, depth + 1)\n        rec(m, b, gm, gb, depth + 1)\n\n    # initial coarse split to reduce chance of cancelling kinks\n    ts = np.linspace(lo, hi, 65)\n    gs = [g(t) for t in ts]\n    for i in range(len(ts) - 1):\n        rec(ts[i], ts[i + 1], gs[i], gs[i + 1])\n    return kinks\n\n\ndef row_at_kink(x0, d, t, delta=1e-4):\n    gp = gradient(x0 + (t + delta) * d)\n    gm = gradient(x0 + (t - delta) * d)\n    diff = gp - gm\n    n = np.linalg.norm(diff)\n    if n < 1e-10:\n        return None\n    return diff / n\n\n\ndef canon(v):\n    # fix sign so the largest-magnitude entry is positive\n    return v * np.sign(v[np.argmax(np.abs(v))])\n\n\ndef steal(num_lines=40, patience=15):\n    rows = []\n    counts = []\n    no_new = 0\n    for it in range(num_lines * 5):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        new_found = False\n        for t in find_kinks(x0, d, -30.0, 30.0):\n            r = row_at_kink(x0, d, t)\n            if r is None:\n                continue\n            r = canon(r)\n            for k, s in enumerate(rows):\n                if abs(np.dot(r, s)) > 0.9999:\n                    counts[k] += 1\n                    # running average for accuracy\n                    rows[k] = canon(s * (counts[k] - 1) + r)\n                    rows[k] /= np.linalg.norm(rows[k])\n                    break\n            else:\n                rows.append(r)\n                counts.append(1)\n                new_found = True\n        no_new = 0 if new_found else no_new + 1\n        if it + 1 >= num_lines and no_new >= patience:\n            break\n    # drop spurious rows seen only once if they are rare outliers\n    rows = [r for r, c in zip(rows, counts) if c >= 2] or rows\n    return np.array(rows)\n\n\nif __name__ == \"__main__\":\n    A1_hat = steal()\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_hat)\n    print(f\"Recovered {A1_hat.shape[0]} neurons; shape {A1_hat.shape}\")\n    print(A1_hat)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-9av2snmq/bench_opencode_model-extraction-relu-logits_0pbcwwu7/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-9av2snmq/bench_opencode_model-extraction-relu-logits_0pbcwwu7/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794525791899,
+      "end": 1794525797769
+    }
+  }
+}

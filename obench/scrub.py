@@ -32,6 +32,11 @@ Detected PII classes -> placeholder:
   long hex blob (>=32) ....... <REDACTED_HEX>
   long base64 blob (>=40) .... <REDACTED_B64>
 
+Field-scoped exception (cell JSON / jsonl only): an exact 40- or 64-hex value
+under binary_sha256, runner_commit, lockfile_sha256, final_workspace_tar_sha256,
+or an exact-hex path segment of binary_path, is provenance, not PII, and is kept
+(see PROVENANCE_HEX_KEYS). The same value anywhere else is still flagged.
+
 The username / home / hostname literals are discovered from the environment at
 runtime (overridable for testing). Over-redaction is deliberate: for a secret
 scrubber a false positive is cheap, a false negative is a leak.
@@ -78,6 +83,82 @@ _BLOB_RULES = [
     ("hex-blob", _HEX_RE, "<REDACTED_HEX>"),
     ("base64-blob", _B64_RE, "<REDACTED_B64>"),
 ]
+
+
+# --- field-scoped provenance exception (cell JSON / jsonl only) -------------
+# Cell records carry content hashes and commit ids that identify WHICH binary,
+# lockfile, runner commit, and workspace tarball a cell used. They are not PII,
+# and redacting them makes a dataset impossible to audit against its MANIFEST
+# (Codex P2 on PR #258). The exception is deliberately narrow:
+#   * only in structured files (.json / .jsonl) -- never free text;
+#   * only as the exact string value of one of these JSON keys (not inside an
+#     escaped JSON string, not under any other key);
+#   * only an exact 40-hex (git sha) or 64-hex (sha256) value -- any other
+#     length, or extra characters in the value, is still flagged;
+#   * for ``binary_path``, only a path segment that is exactly 40/64 hex.
+# Everything else (including MANIFEST.txt sha256 columns and any directory-wide
+# hex) is still reported and redacted.
+PROVENANCE_HEX_KEYS = (
+    "binary_sha256",
+    "runner_commit",
+    "lockfile_sha256",
+    "final_workspace_tar_sha256",
+)
+PROVENANCE_PATH_KEYS = ("binary_path",)
+STRUCTURED_SUFFIXES = (".json", ".jsonl")
+_EXACT_HEX_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+# A JSON key position: start of line or after '{' / ',' (plus whitespace), and
+# an unescaped opening quote. An escaped key (\"runner_commit\") inside a
+# string value never matches, so free text embedded in JSON stays flagged.
+_KEY_PREFIX = r'(?:^|[{,])\s*"'
+_PROVENANCE_HEX_RE = re.compile(
+    _KEY_PREFIX + r"(?:" + "|".join(PROVENANCE_HEX_KEYS) + r')"\s*:\s*"'
+    r"([0-9a-fA-F]{40}|[0-9a-fA-F]{64})"
+    r'"',
+    re.MULTILINE,
+)
+_PROVENANCE_PATH_RE = re.compile(
+    _KEY_PREFIX + r"(?:" + "|".join(PROVENANCE_PATH_KEYS) + r')"\s*:\s*"'
+    r'([^"\\\n]*)"',
+    re.MULTILINE,
+)
+
+
+def is_structured_path(path):
+    """True for files the provenance exception may apply to (.json/.jsonl)."""
+    return str(path).lower().endswith(STRUCTURED_SUFFIXES)
+
+
+def _allowed_hex_spans(text):
+    """(start, end) spans of provenance hex values allowed verbatim in ``text``."""
+    spans = []
+    for m in _PROVENANCE_HEX_RE.finditer(text):
+        spans.append(m.span(1))
+    for m in _PROVENANCE_PATH_RE.finditer(text):
+        value, base = m.group(1), m.start(1)
+        offset = 0
+        for segment in value.split("/"):
+            if _EXACT_HEX_RE.fullmatch(segment):
+                spans.append((base + offset, base + offset + len(segment)))
+            offset += len(segment) + 1
+    return sorted(spans)
+
+
+def _mask_allowed(text, token):
+    """Replace allowed provenance hex with ``token(i)``; return (masked, kept)."""
+    kept, parts, last = [], [], 0
+    for start, end in _allowed_hex_spans(text):
+        parts.append(text[last:start])
+        parts.append(token(len(kept)))
+        kept.append(text[start:end])
+        last = end
+    parts.append(text[last:])
+    return "".join(parts), kept
+
+
+def _keep_token(i):
+    # NUL-delimited, short, and matches no scrub rule.
+    return f"\x00KEEP{i}\x00"
 
 
 def build_context(user=None, home=None, hostnames=None):
@@ -131,18 +212,25 @@ def _rules(ctx):
     return _STATIC_RULES + _dynamic_rules(ctx) + _BLOB_RULES
 
 
-def scrub_text(text, ctx):
+def scrub_text(text, ctx, structured=False):
     """Return ``text`` with every PII class replaced by its placeholder.
 
     Idempotent: placeholders match no rule, so ``scrub_text(scrub_text(x)) ==
-    scrub_text(x)``.
+    scrub_text(x)``. With ``structured=True`` (cell JSON / jsonl), the exact
+    provenance hex values under ``PROVENANCE_HEX_KEYS`` / ``binary_path`` are
+    kept verbatim; nothing else changes.
     """
+    kept = []
+    if structured:
+        text, kept = _mask_allowed(text, _keep_token)
     for _category, pattern, placeholder in _rules(ctx):
         text = pattern.sub(placeholder, text)
+    for i, value in enumerate(kept):
+        text = text.replace(_keep_token(i), value, 1)
     return text
 
 
-def find_pii(text, ctx):
+def find_pii(text, ctx, structured=False):
     """Report (category, line_no, matched_snippet) for every hit, no mutation.
 
     Powers ``--check``. Snippets are truncated so a huge blob doesn't flood the
@@ -152,6 +240,8 @@ def find_pii(text, ctx):
     findings = []
     rules = _rules(ctx)
     for lineno, line in enumerate(text.splitlines(), start=1):
+        if structured:
+            line, _kept = _mask_allowed(line, lambda _i: "<ALLOWED_HEX>")
         for category, pattern, _placeholder in rules:
             for m in pattern.finditer(line):
                 snippet = m.group(0)
@@ -198,7 +288,8 @@ def scrub_tree(src, out_dir, ctx):
         dest = os.path.join(out_dir, rel)
         os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
         with open(dest, "w", encoding="utf-8") as fh:
-            fh.write(scrub_text(_read_text(full), ctx))
+            fh.write(scrub_text(_read_text(full), ctx,
+                                structured=is_structured_path(full)))
         written.append(dest)
     return written
 
@@ -207,7 +298,7 @@ def check_tree(src, ctx):
     """Return {rel_path: [findings]} for every file under ``src`` with PII."""
     report = {}
     for full, rel in _iter_files(src):
-        hits = find_pii(_read_text(full), ctx)
+        hits = find_pii(_read_text(full), ctx, structured=is_structured_path(full))
         if hits:
             report[rel] = hits
     return report

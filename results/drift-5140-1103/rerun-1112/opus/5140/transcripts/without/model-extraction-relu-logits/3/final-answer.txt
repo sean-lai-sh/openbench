@@ -1,0 +1,13 @@
+I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy` that matches the real A1 up to neuron order and a positive scale per row, with the correct sign on every row.
+
+I only peeked at the real `A1` in `forward.py` afterwards, to check the result; `steal.py` itself never reads it and gets everything from `forward()` calls. Every recovered row lines up with exactly one true row (cosine similarity at least 0.99999999999998), and each of the 20 true rows is matched once. The run took about 36 seconds.
+
+**How it works:**
+1. **Finding neurons:** the network's output changes slope wherever one neuron switches on or off. The script draws random lines through the 10-dimensional input space and finds those slope changes along each line by repeatedly splitting the line and checking whether the output is still a straight line.
+2. **Reading off a row:** at each slope change, it estimates the gradient just before and just after. The difference points along that neuron's row of A1, multiplied by its output weight. Normalising it gives the row's direction, and repeats of a neuron already found are discarded. It stops after 30 lines in a row turn up nothing new, which found all 20 neurons.
+3. **Fixing signs:** the gradient alone can't tell which side of each boundary a neuron is active on. At any input, the gap between the actual gradient and the gradient you'd get if every neuron were "on" on its positive side adds up to the jumps of the neurons whose sign is flipped. The script finds that set by searching all 2^20 combinations; the best fit left an error of only 3.8e-10, and 6 rows were flipped.
+
+**Limits:**
+- Rows are scaled to length 1, because the size of a row can't be separated from that neuron's output weight.
+- It made about 1.48 million queries. That number could be cut a lot if query cost matters.
+- The exact sign step only runs when 26 or fewer neurons are found. With more, the rows are still correct but their signs are arbitrary.

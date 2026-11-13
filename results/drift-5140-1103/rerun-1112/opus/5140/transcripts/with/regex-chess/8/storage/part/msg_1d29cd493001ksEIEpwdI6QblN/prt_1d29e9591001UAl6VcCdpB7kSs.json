@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d29e9591001UAl6VcCdpB7kSs",
+  "sessionID": "ses_e2d633b2dffeyQ0HrBF190i7As",
+  "messageID": "msg_1d29cd493001ksEIEpwdI6QblN",
+  "type": "tool",
+  "callID": "toolu_vrtx_019S5tAKY1wQjoLEkpXVm98b",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "mkdir -p /tmp/gen && cat > /tmp/gen/gen.py <<'EOF'\nimport json\nOUT=\"/tmp/obench-cell-79jyxh4f/bench_opencode_regex-chess_hw9fw5w3/re.json\"\nR=[]\ndef sq(i): return \"abcdefgh\"[i%8]+str(8-i//8)\ndef onb(r,c): return 0<=r<8 and 0<=c<8\n\n# --- preprocessing\nfor d in range(8,0,-1):\n    R.append([str(d)+r\"(?=[^ ]* w)\", \".\"*d])\nR.append([r\"/\", \"\"])\nR.append([r\" w (\\S+) (\\S+).*\", r\" \\1 \\2\"])\nR.append([r\"\\A(\\S{64}) - \", r\"\\1  \"])\n\n# --- generation\ndef gen_rule(cons, changes, cpat=r\"([^ ]*)\", eppat=r\"[^ \\n]*\", newep=\"-\"):\n    pat=\"\\\\A\"; rep=\"\"; g=0; seg=[]\n    def flush():\n        nonlocal pat,rep,g,seg\n        if seg:\n            s=\"\"; run=0\n            for c in seg:\n                if c==\".\": run+=1\n                else:\n                    if run: s+=\".{%d}\"%run; run=0\n                    s+=c\n            if run: s+=\".{%d}\"%run\n            g+=1; pat+=\"(\"+s+\")\"; rep+=\"\\\\g<%d>\"%g; seg=[]\n    for i in range(64):\n        if i in changes:\n            flush(); pat+=cons.get(i,\".\"); rep+=changes[i]\n        else:\n            seg.append(cons.get(i,\".\"))\n    flush()\n    g+=1\n    pat+=\" \"+cpat+\" \"+eppat\n    rep+=\" \\\\g<%d> \"%g+newep\n    R.append([pat,\"\\\\g<0>\\n\"+rep])\n\nTGT=\"[.a-z]\"\nORTH=[(0,1),(0,-1),(1,0),(-1,0)]; DIAG=[(1,1),(1,-1),(-1,1),(-1,-1)]\nKN=[(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]\nfor f in range(64):\n    r,c=divmod(f,8)\n    for piece,dirs in ((\"R\",ORTH),(\"B\",DIAG),(\"Q\",ORTH+DIAG)):\n        for dr,dc in dirs:\n            path=[]; k=1\n            while onb(r+dr*k,c+dc*k):\n                t=(r+dr*k)*8+c+dc*k\n                cons={f:piece,t:TGT}\n                for p in path: cons[p]=r\"\\.\"\n                gen_rule(cons,{f:\".\",t:piece})\n                path.append(t); k+=1\n    for piece,dirs in ((\"N\",KN),(\"K\",ORTH+DIAG)):\n        for dr,dc in dirs:\n            if onb(r+dr,c+dc):\n                t=(r+dr)*8+c+dc\n                gen_rule({f:piece,t:TGT},{f:\".\",t:piece})\n    # pawns\n    if 1<=r<=6:\n        np_=\"Q\" if r==1 else \"P\"\n        t=f-8\n        gen_rule({f:\"P\",t:r\"\\.\"},{f:\".\",t:np_})\n        for dc in (-1,1):\n            if onb(r-1,c+dc):\n                t=f-8+dc\n                gen_rule({f:\"P\",t:\"[a-z]\"},{f:\".\",t:np_})\n        if r==6:\n            gen_rule({f:\"P\",f-8:r\"\\.\",f-16:r\"\\.\"},{f:\".\",f-16:\"P\"},newep=sq(f-8))\n        if r==3:\n            for dc in (-1,1):\n                if onb(r-1,c+dc):\n                    t=f-8+dc\n                    gen_rule({f:\"P\",t:r\"\\.\",t+8:\"p\"},{f:\".\",t:\"P\",t+8:\".\"},eppat=sq(t))\n# castling\ngen_rule({60:\"K\",61:r\"\\.\",62:r\"\\.\",63:\"R\"},{60:\"E\",61:\"S\",62:\"K\",63:\".\"},cpat=r\"([^ ]*K[^ ]*)\")\ngen_rule({60:\"K\",59:r\"\\.\",58:r\"\\.\",57:r\"\\.\",56:\"R\"},{60:\"E\",59:\"S\",58:\"K\",57:\".\",56:\".\"},cpat=r\"([^ ]*Q[^ ]*)\")\n\n# remove original line\nR.append([r\"\\A[^\\n]*\\n?\", \"\"])\n\n# --- attack filter\ndef la(cons):\n    s=\"(?=\"; prev=0\n    for i in sorted(cons):\n        if i>prev: s+=\".{%d}\"%(i-prev)\n        s+=cons[i]; prev=i+1\n    return s+\")\"\ngroups=[]\nfor p in range(64):\n    r,c=divmod(p,8); alts=[]\n    for dirs,cls in ((ORTH,\"[rq]\"),(DIAG,\"[bq]\")):\n        for dr,dc in dirs:\n            path=[]; k=1\n            while onb(r+dr*k,c+dc*k):\n                q=(r+dr*k)*8+c+dc*k\n                cons={q:cls}\n                for x in path: cons[x]=\"[.E]\"\n                alts.append(la(cons)); path.append(q); k+=1\n    for dirs,cls in ((KN,\"n\"),(ORTH+DIAG,\"k\"),([(-1,-1),(-1,1)],\"p\")):\n        for dr,dc in dirs:\n            if onb(r+dr,c+dc): alts.append(la({(r+dr)*8+c+dc:cls}))\n    groups.append(la({p:\"[KES]\"})+\"(?:\"+\"|\".join(alts)+\")\")\nR.append([r\"(?m)^(?:\"+\"|\".join(groups)+r\")[^\\n]*\\n?\", \"\"])\nR.append([r\"\\n+\\Z\", \"\"]); R.append([r\"\\n\\n+\", \"\\n\"])\nR.append([r\"E\", \".\"]); R.append([r\"S\", \"R\"])\n\n# --- castling rights\nfor cond,letters in (((60,\"K\"),\"KQ\"),((63,\"R\"),\"K\"),((56,\"R\"),\"Q\"),((4,\"k\"),\"kq\"),((7,\"r\"),\"k\"),((0,\"r\"),\"q\")):\n    i,ch=cond\n    for L in letters:\n        R.append([r\"(?m)^(.{%d}[^%s].{%d} [^ %s]*)%s\"%(i,ch,63-i,L,L), r\"\\1\"])\nR.append([r\"(?m)^(\\S{64})  \", r\"\\1 - \"])\n# --- rebuild\nR.append([r\"(?m)^\"+\"(.{8})\"*8+\" \", \"/\".join(\"\\\\%d\"%i for i in range(1,9))+\" \"])\nfor d in range(8,0,-1):\n    R.append([r\"\\.\"*d, str(d)])\nR.append([r\"(?m)^(\\S+) (\\S+) (\\S+)$\", r\"\\1 b \\2 \\3 0 0\"])\njson.dump(R,open(OUT,\"w\"))\nprint(len(R), len(json.dumps(R)))\nEOF\npython3 /tmp/gen/gen.py",
+      "description": "Generate re.json"
+    },
+    "output": "3860 426095\n",
+    "title": "Generate re.json",
+    "metadata": {
+      "output": "3860 426095\n",
+      "exit": 0,
+      "description": "Generate re.json"
+    },
+    "time": {
+      "start": 1794534987912,
+      "end": 1794534988431
+    }
+  }
+}

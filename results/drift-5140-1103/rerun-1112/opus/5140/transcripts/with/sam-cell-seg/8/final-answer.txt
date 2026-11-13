@@ -1,0 +1,26 @@
+I wrote `convert_masks.py`, and on the demo image it converted all 48 masks to polylines with no overlaps and one contiguous region per cell. It runs on CPU in about 8 seconds. I haven't been able to test it on any other image.
+
+**How to run it.** Arguments work as flags or in the order shown:
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir --rgb_path img.png --csv_path meta.csv
+python convert_masks.py mobile_sam.pt out_dir img.png meta.csv
+```
+If `output_path` is a folder, the result is saved there under the input CSV's file name. If it ends in `.csv`, it's written to exactly that file.
+
+**What it does for each mask:**
+1. **Prompting:** MobileSAM (`vit_t`) is given each cell's bounding <USER>. For cells that are already polylines, it's also given the existing outline as a hint.
+2. **Choosing a mask:** SAM returns a few candidate masks per cell. The script picks one based on SAM's confidence plus how well it matches the original annotation. For a rectangle, it compares against an ellipse drawn inside the <USER>. Masks can't spread more than about 15% beyond the original <USER>.
+3. **Clean-up:** each mask keeps only its largest connected piece and its holes are filled.
+4. **Removing overlaps:** where masks overlap, each pixel goes to the cell SAM is most confident about there. A final strict pass then guarantees nothing overlaps.
+5. **Saving:** each mask's outline becomes `coords_x` / `coords_y`, and `xmin` / `xmax` / `ymin` / `ymax` are recalculated from it. All other columns and the index stay the same.
+
+**Checks on the demo:**
+- When I redrew the saved polylines as filled shapes, no pixel belonged to more than one cell.
+- Each cell came out as a single connected shape.
+- The new bounding boxes match the new coordinates.
+- The column layout matches the input file.
+- In an overlay image, the former rectangles now follow the nuclei closely.
+
+**Decision for you:** I also changed the `type` column from `rectangle` to `polyline`, since every mask is now a polyline. That goes slightly beyond your list of columns to update. If you want `type` left as it was, remove the line that sets it near the end of the script.
+
+**Fallbacks:** if SAM gives no usable mask for a cell, the script uses the original outline instead (or the ellipse, for a rectangle). If a cell is completely covered by its neighbours, it gets whatever part of its original area is still free. These cases didn't come up on the demo.

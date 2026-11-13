@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d22218c7001MylUjBr5tTsB37",
+  "sessionID": "ses_e2ddde74affeSpS1ddKE2V3UK7",
+  "role": "user",
+  "time": {
+    "created": 1794526812359
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers",
+    "body": "I created `parallel_linear.py` with both classes. A test run on CPU with world sizes 1, 2 and 4 compared them against `torch.nn.Linear` with the same weights. Outputs, input gradients, and the weight and bias gradients for each rank's slice all matched.\n\nThe weight uses the `nn.Linear` layout `(out_features, in_features)`, and each rank copies its slice from `master_weight`. Bias, when used, starts at zero.\n\n**`ColumnParallelLinear`**\n- Each rank keeps its share of the output features: `weight[out/ws, in]` and `bias[out/ws]`.\n- In the forward pass, each rank computes its part of the output, and the parts are joined along the last dimension with `all_gather`.\n- In the backward pass, each rank keeps only its part of the output gradient. The input gradient is summed across ranks with `all_reduce`.\n\n**`RowParallelLinear`**\n- Each rank keeps its share of the input features: `weight[out, in/ws]`, plus the full `bias[out]`.\n- In the forward pass, each rank's partial output (computed without bias) is summed with `all_reduce`, and the full bias is added afterwards.\n- The layer accepts either the full input or input that's already split. If the last dimension equals `in_features`, it takes its own slice, and the backward pass reassembles the full input gradient with `all_gather`.\n\n**Things to know:**\n- `in_features` and `out_features` must divide evenly by the world size, and `master_weight` must have shape `(out_features, in_features)`. Otherwise the constructor raises an error.\n- If `torch.distributed` hasn't been initialized, both classes run as a single process (world size 1, rank 0).",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

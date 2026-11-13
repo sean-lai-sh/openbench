@@ -1,0 +1,19 @@
+I wrote `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`, and the two programs print the same results for N = 0, 1, 2, 3, 10, 50, 90 and 180 (for example, N=10 gives 89 and N=180 gives <REDACTED_HEX>).
+
+**How it works:** Rust allows block comments inside other block comments, but C++ does not. The file uses that difference to show each compiler only its own code:
+
+```
+/* /* */        <- Rust: comment depth 2→1 (still in comment). C++: complete comment.
+...C++ code...  <- Rust: still inside the comment. C++: real code.
+#if 0           <- C++ starts skipping from here.
+/* */ // */     <- Rust: depth 2→1, then the final */ brings it to 0. C++: just comments.
+...Rust code... <- Rust: real code. C++: skipped by #if 0.
+/* /* */        <- Rust: opens a comment again.
+#endif          <- C++ stops skipping. Rust: inside a comment.
+/* */ // */     <- Rust: closes the comment. C++: just comments.
+```
+
+**Limits:**
+- Both versions use 128-bit unsigned integers (`u128` in Rust, `unsigned __int128` in C++), so results are correct up to about N=183.
+- The Rust version also works out the next Fibonacci number, so it fails at N=184. In a default `rustc` build that's an overflow panic. The C++ version doesn't crash there, but it gives wrong (wrapped-around) answers from N=185 onwards.
+- The Rust code must not contain apostrophes (e.g. char literals or lifetimes). The C++ preprocessor still reads the text it skips, and an unmatched `'` can cause an error there.

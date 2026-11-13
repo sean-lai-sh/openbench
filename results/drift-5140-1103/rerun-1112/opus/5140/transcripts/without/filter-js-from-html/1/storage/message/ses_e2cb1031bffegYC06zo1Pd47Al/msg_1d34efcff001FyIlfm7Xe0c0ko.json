@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d34efcff001FyIlfm7Xe0c0ko",
+  "sessionID": "ses_e2cb1031bffegYC06zo1Pd47Al",
+  "role": "user",
+  "time": {
+    "created": 1794546531583
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I've created `filter.py`. It takes the file path as `argv[1]`, removes the JavaScript and rewrites the file in place. Everything that isn't removed is copied through byte for byte, so line endings, non-UTF-8 bytes, whitespace and attribute quoting stay exactly as they were. If nothing dangerous is found, the file isn't rewritten at all.\n\n**Testing:** I ran it on about 30 common attack examples and every one came out harmless. A plain document with a doctype, styles, a table, links, comments, a `data:image` picture and loose `<` / `>` in text came out byte-for-byte identical. Running it on a real file also worked: Windows line endings and odd bytes survived, and calling it with no file argument exits with an error. I haven't checked the output by loading it in a real browser.\n\n**How it works:** it reads the HTML the same way a browser would, including comments, `<!DOCTYPE>`, quoted and unquoted attributes, and text-only elements like `<style>` and `<textarea>`. It then cuts out only the dangerous parts. It repeats this until nothing more changes, so removing one piece can't stitch together a new attack (e.g. `<scr<script></script>ipt>`).\n\n**What gets removed:**\n- `<script>` and `<iframe>` elements, along with their contents.\n- The tags only (contents kept) for `<object>`, `<embed>`, `<applet>`, `<frame>`, `<frameset>`, `<base>`, `<portal>` and `<fencedframe>`.\n- The `<svg>` and `<math>` tags. Browsers read their contents by different rules, so I remove the tags and let the contents be read as ordinary HTML. This means SVG graphics and maths markup won't display as intended, but the text inside survives.\n- Any attribute starting with `on` (`onclick`, `onerror`, `onload`, …) and `srcdoc`.\n- Attribute values containing `javascript:` or `vbscript:`, even when disguised with character codes, tabs, odd capitals or leading spaces.\n- `data:` links in link-type attributes, unless they are images, audio, video or fonts.\n- `style` attributes, and the contents of `<style>` blocks, that use `expression()`, `-moz-binding`, `behavior:` or `url(javascript:…)`.\n- `<meta http-equiv=\"refresh\">` that redirects to a `javascript:` or `data:` address.\n\n**Things that might surprise you:**\n- Any attribute value containing `javascript:` is removed, even harmless text like a `title` that mentions it.\n- If the text inside a comment, `<noscript>`, `<title>`, `<textarea>` or `<style>` would be dangerous when read as normal HTML, it gets cleaned too. That can change the visible text of a `<title>` or `<textarea>` in rare cases.\n- An unfinished tag at the very end of the file is dropped, which is what browsers already do with it.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

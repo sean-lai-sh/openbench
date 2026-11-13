@@ -1,0 +1,28 @@
+I've created `filter.py`. It uses only the Python standard library and rewrites the file given as `argv[1]` in place. I tested it on a clean HTML page, a copy of that page with Windows (CRLF) line endings, and about 40 known XSS attack strings. I haven't checked the output in a real browser, so whether these attacks are actually blocked there is unconfirmed.
+
+**What I tested:**
+- **Clean HTML:** a page with a doctype, meta tags, a style block, tables, forms, an inline image, a textarea, comments and SVG came out byte-for-byte identical. The CRLF copy was also unchanged.
+- **Attacks:** every attack string I tried came out with the dangerous part removed and the rest kept, for example `<img src=x onerror=alert(1)>` became `<img src=x >`. The set included `<script>` tags, `onerror`/`onload` handlers, encoded and mixed-case `javascript:` links, `iframe`/`object`/`embed`, SVG scripts and animations, `formaction`, meta refresh, CSS `expression()`, `data:text/html` links, and tricks that exploit parser quirks.
+
+**How it works:**
+- It reads through the HTML following the same tokenizing rules browsers use (quoting, `/` between attributes, comments, raw-text elements like `<style>` and `<textarea>`).
+- Anything that isn't harmful is copied exactly as it was. Formatting, entities, quoting style and line endings stay the same.
+- Harmful pieces are cut out:
+  - **Removed with their content:** `<script>` and `<iframe>`.
+  - **Tag removed, content kept:** `frame`, `frameset`, `object`, `embed`, `applet`, `param`, `base`, SVG `set`/`animate*`, and similar.
+  - **Attributes removed:** every `on*` event handler and `srcdoc`.
+  - **Attributes removed if the value is dangerous:** any value that becomes `javascript:`, `vbscript:` and similar once entities, whitespace and control characters are handled. Also link/source attributes with `data:` URLs (except plain raster images), and `style` values containing `expression(` or `-moz-binding`.
+  - **Other:** meta refresh tags pointing to `javascript:` or `data:` URLs, and comments containing scripts or IE conditional comments.
+- Text inside raw-text elements like `<style>` and `<textarea>` is cleaned as HTML too, because inside SVG or MathML those elements aren't raw text.
+- **Repeats until nothing changes:** it keeps re-running on its own output, so removing something can't join leftover pieces into new dangerous markup (e.g. `<<script>script>…`).
+
+**Things that may be removed even though they're harmless:**
+- Any attribute whose value contains `javascript:`, for example `title="javascript: a language"` or a URL with `javascript:` in its query string.
+- `<base>` tags.
+- Comments that contain the word "script".
+- Script-like text inside a `<textarea>`.
+- Content inside `CDATA` blocks.
+
+**Other limits:**
+- The file is read as UTF-8 (other bytes pass through untouched). Attacks that rely on a different character encoding, like UTF-7, aren't handled.
+- `<style>` blocks and `style` attributes are kept unless they contain one of the patterns above. That relies on modern browsers not running JavaScript from CSS.

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d274cb5f001SWpWzJVCOrFmsv",
+  "sessionID": "ses_e2d8d2a0affedIqtRHBYxsyxe2",
+  "messageID": "msg_1d274c538001nV6aryjk3l4KW7",
+  "type": "tool",
+  "callID": "toolu_vrtx_01NxTEhksewPU4BS8bFSfQU1",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-wdotrlk2/bench_opencode_sam-cell-seg_pk1451hs; python - <<'EOF'\nimport pandas as pd,numpy as np,cv2\nd=pd.read_csv('out/demo_metadata.csv',index_col=0); o=pd.read_csv('demo_metadata.csv',index_col=0)\nimg=cv2.imread('demo_rgb.png'); H,W=img.shape[:2]\ncnt=np.zeros((H,W),int); vis=img.copy(); bad=0; ious=[]\nfor (i,r),(_,q) in zip(d.iterrows(),o.iterrows()):\n    p=np.stack([list(map(int,r.coords_x.split(','))),list(map(int,r.coords_y.split(',')))],1)\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[p],1)\n    n,_=cv2.connectedComponents(m); bad+= n!=2\n    cnt+=m\n    assert r.xmin==p[:,0].min() and r.ymax==p[:,1].max()\n    pq=np.stack([list(map(int,q.coords_x.split(','))),list(map(int,q.coords_y.split(',')))],1)\n    m2=np.zeros((H,W),np.uint8); cv2.fillPoly(m2,[pq],1)\n    ious.append(((m&m2).sum()/(m|m2).sum(), q.type))\n    cv2.polylines(vis,[p],True,(0,255,0),1)\n    if q.type=='rectangle': cv2.polylines(vis,[pq],True,(0,0,255),1)\nprint('overlap px',(cnt>1).sum(),'noncontig',bad, 'rows',len(d), (d.columns==o.columns).all())\nprint('poly iou',np.mean([a for a,t in ious if t=='polyline']),'rect iou',np.mean([a for a,t in ious if t=='rectangle']))\ncv2.imwrite('/tmp/vis.png',cv2.resize(vis,None,fx=2,fy=2))\nEOF",
+      "description": "Validate output masks"
+    },
+    "output": "overlap px 0 noncontig 0 rows 48 True\npoly iou 0.7772086417034473 rect iou 0.5772542675282565\n",
+    "title": "Validate output masks",
+    "metadata": {
+      "output": "overlap px 0 noncontig 0 rows 48 True\npoly iou 0.7772086417034473 rect iou 0.5772542675282565\n",
+      "exit": 0,
+      "description": "Validate output masks"
+    },
+    "time": {
+      "start": 1794532237560,
+      "end": 1794532238675
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d1deea1e001VjFWsP6WUVy0Yi",
+  "sessionID": "ses_e2e211640ffee0ydf60yPoUp90",
+  "role": "user",
+  "time": {
+    "created": 1794522409503
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. When run, it recovers A1 using only calls to `forward(x)` and saves it to `stolen_A1.npy`. It takes about 1.5 seconds.\n\n**How it works:**\n1. **Finding the kinks:** it walks along random lines `x0 + t·d` with t from -50 to 50 and looks for points where the output's slope changes. Each of these points is where one hidden neuron switches on or off. It narrows down each point by splitting the interval in half repeatedly and by intersecting the slopes from each side.\n2. **Reading off a row:** at each kink it estimates the output's gradient just before and just after the point. The difference between the two equals `A2_i · A1_i`, which is row i of A1 up to a scale factor.\n3. **Filtering:** it skips a kink if another boundary is close enough to distort the gradients. It then normalizes the rows, fixes their sign, merges near-identical directions, and keeps only directions seen at least 3 times.\n\n**Results:** the script found 20 hidden neurons. I checked the output against the true `A1` in `forward.py`; the script itself never reads those weights. Every true row matches a recovered row with |cosine similarity| ≥ 0.9999999999999997, and there are no extra rows. I got the same result with three other random seeds.\n\nThe first version without the filtering step found every true row but also produced 573 rows in total, mostly junk. The local-linearity check and the repeat-count rule removed them.\n\nThe output rows are unit-length with a fixed sign, so they match A1 up to row order and a scale factor per row, which may be negative.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

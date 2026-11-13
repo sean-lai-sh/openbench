@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d2f5f9ab001A2FRZ0WH9hvD9n",
+  "sessionID": "ses_e2d0ce8ebffeTk21uoUu3it8Qs",
+  "messageID": "msg_1d2f5ec62001iBEeFKdwkGcr6Z",
+  "type": "tool",
+  "callID": "toolu_vrtx_01D6P91zmGXbSVC3vK3ewPdc",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/rgen/test.py <<'EOF'\nimport json, re, random, chess, time, sys\nR = json.load(open('/tmp/obench-cell-doh95cuh/bench_opencode_regex-chess_y449y763/re.json'))\ndef run(fen):\n    for p, r in R: fen = re.sub(p, r, fen)\n    return fen.split(\"\\n\")\ndef ref(fen):\n    b = chess.Board(fen); s = set()\n    for m in b.legal_moves:\n        if m.promotion and m.promotion != chess.QUEEN: continue\n        c = b.copy(); c.push(m); s.add(\" \".join(c.fen().split(\" \")[:-2]))\n    return s\nex = \"<REDACTED_B64> w kq - 0 1\"\nprint(run(ex))\nrandom.seed(int(sys.argv[1]) if len(sys.argv)>1 else 0)\nn=0; t=time.time(); bad=0\nfor g in range(300):\n    b = chess.Board()\n    for ply in range(random.randint(1,200)):\n        ms = list(b.legal_moves)\n        if not ms: break\n        # bias to promotions/castling/ep\n        sp = [m for m in ms if m.promotion or b.is_castling(m) or b.is_en_passant(m)]\n        b.push(random.choice(sp) if sp and random.random()<0.5 else random.choice(ms))\n        if b.turn == chess.WHITE and not b.is_game_over():\n            fen = b.fen(en_passant='fen') if random.random()<0.5 else b.fen()\n            ours = [\" \".join(x.split(\" \")[:-2]) for x in run(fen)]\n            r = ref(fen); n+=1\n            ok = len(ours)==len(r) and all(x in r or x.rpartition(\" \")[0]+\" -\" in r for x in ours)\n            if not ok:\n                bad+=1\n                if bad<4: print(\"FAIL\", fen, set(ours)^r)\nprint(n, \"positions\", bad, \"bad\", time.time()-t)\nEOF\npython3 /tmp/rgen/test.py",
+      "description": "Run random-position comparison test",
+      "timeout": 1200000
+    },
+    "output": "\n\n<bash_metadata>\nbash tool terminated commmand after exceeding timeout 1200000 ms\n</bash_metadata>",
+    "title": "Run random-position comparison test",
+    "metadata": {
+      "output": "\n\n<bash_metadata>\nbash tool terminated commmand after exceeding timeout 1200000 ms\n</bash_metadata>",
+      "exit": null,
+      "description": "Run random-position comparison test"
+    },
+    "time": {
+      "start": 1794540703803,
+      "end": 1794541903910
+    }
+  }
+}

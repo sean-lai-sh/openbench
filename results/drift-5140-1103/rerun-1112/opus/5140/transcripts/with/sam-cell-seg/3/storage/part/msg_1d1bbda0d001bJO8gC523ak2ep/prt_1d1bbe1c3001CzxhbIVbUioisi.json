@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d1bbe1c3001CzxhbIVbUioisi",
+  "sessionID": "ses_e2e46b21dffezW2TQGhY9k67Fk",
+  "messageID": "msg_1d1bbda0d001bJO8gC523ak2ep",
+  "type": "tool",
+  "callID": "toolu_vrtx_01MhjmmPhb2CChUY62CwkTfo",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "python convert_masks.py /tmp/msam/mobile_sam.pt out demo_rgb.png demo_metadata.csv 2>&1 | tail -1; python - <<'EOF'\nimport pandas as pd,numpy as np,cv2\nim=cv2.imread('demo_rgb.png');H,W=im.shape[:2]\na=pd.read_csv('demo_metadata.csv',index_col=0);b=pd.read_csv('out/demo_metadata.csv',index_col=0)\nassert list(a.columns)==list(b.columns) and len(a)==len(b)\nassert (a.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])==b.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])).all().all()\ncnt=np.zeros((H,W),int);bad=0;v2=im.copy()\nfor i,o in b.iterrows():\n    xs=np.array(list(map(int,o.coords_x.split(','))));ys=np.array(list(map(int,o.coords_y.split(','))))\n    m=np.zeros((H,W),np.uint8);cv2.fillPoly(m,[np.stack([xs,ys],1)],1)\n    n,_=cv2.connectedComponents(m,connectivity=4)\n    if n!=2: bad+=1;print('noncontig',i)\n    if len(set(xs))<=2 and len(set(ys))<=2: print('rect',i)\n    cnt+=m; cv2.polylines(v2,[np.stack([xs,ys],1)],True,(0,255,255),1)\nprint('max overlap',cnt.max(),'noncontig',bad)\ncv2.imwrite('/tmp/chk/v2.png',cv2.resize(v2,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST))\nEOF",
+      "description": "Rerun and validate"
+    },
+    "output": "Saved 48 refined masks to out/demo_metadata.csv\nmax overlap 1 noncontig 0\n",
+    "title": "Rerun and validate",
+    "metadata": {
+      "output": "Saved 48 refined masks to out/demo_metadata.csv\nmax overlap 1 noncontig 0\n",
+      "exit": 0,
+      "description": "Rerun and validate"
+    },
+    "time": {
+      "start": 1794520118403,
+      "end": 1794520199433
+    }
+  }
+}

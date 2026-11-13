@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d1691aa9001YISl49qoy6gkv1",
+  "sessionID": "ses_e2e97adf8ffe3rm9RsQkycq5s0",
+  "messageID": "msg_1d168f9cb001URfWkGOV1ydITL",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I tested them against a plain `torch.nn.Linear` on world sizes 1, 2 and 4, using 2 processes and 4 processes for the larger sizes. Outputs matched, and so did the gradients for weights, bias and input, with each rank compared to its own slice of the reference.\n\n**How the weight is split.** `master_weight` is expected in the usual `nn.Linear` layout, `(out_features, in_features)`.\n\n- **`ColumnParallelLinear`**\n  - Each rank keeps its share of the output rows: `master_weight[r*k:(r+1)*k, :]`, where `k = out_features / world_size`.\n  - Each rank's bias has length `k` and starts at zero.\n  - In the forward pass, each rank computes its local output and the pieces are joined along the last dimension, like `all_gather`.\n  - In the backward pass, each rank takes its slice of the output gradient. The input gradient is summed across ranks.\n- **`RowParallelLinear`**\n  - Each rank keeps its share of the input columns: `master_weight[:, r*k:(r+1)*k]`, where `k = in_features / world_size`.\n  - Each rank gets the full input and uses only its own slice.\n  - The partial outputs are summed with `all_reduce`, then the full bias (length `out_features`, starting at zero) is added once.\n  - In the backward pass, the input gradient is gathered back to full size.\n\nThe collectives are wrapped in custom autograd functions, so gradients flow through them correctly. With world size 1, or when `torch.distributed` hasn't been set up, they do nothing.\n\n**Things to check:**\n- `out_features` (column version) and `in_features` (row version) must divide evenly by the world size, or the constructor fails an assertion.\n- I added one behaviour you didn't ask for: `RowParallelLinear` also accepts input that has already been split. If the input's last dimension is `in_features / world_size` and the world size is above 1, it uses that input as-is instead of slicing it.\n\nThe test script is at `/tmp/t_pl.py` if you want to run it again.",
+  "time": {
+    "start": 1794514688840,
+    "end": 1794514688840
+  }
+}

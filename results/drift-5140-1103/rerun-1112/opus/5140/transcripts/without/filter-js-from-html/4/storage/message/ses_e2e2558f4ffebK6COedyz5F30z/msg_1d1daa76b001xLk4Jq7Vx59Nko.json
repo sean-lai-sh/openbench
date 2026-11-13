@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d1daa76b001xLk4Jq7Vx59Nko",
+  "sessionID": "ses_e2e2558f4ffebK6COedyz5F30z",
+  "role": "user",
+  "time": {
+    "created": 1794522130283
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I've created `filter.py`. Running `python3 filter.py file.html` rewrites the file in place with the JavaScript removed. It uses only Python's standard library.\n\nI tested it two ways:\n- **Clean HTML:** a sample page with a doctype, meta tags, styles, a comment, headings, a table, links, a data-URI image, a form, a list and an SVG came out byte-for-byte identical. If nothing dangerous is found, the file isn't rewritten at all.\n- **Attacks:** all 40 common XSS payloads I tried were neutralised. These included entity-encoded and whitespace-obfuscated `javascript:` links, payloads hidden inside SVG/MathML, comments and CDATA, and nested `<scr<script>...` tricks.\n\nI didn't open the output in a real browser to confirm no script runs. The safety rests on the filter reading tags the same way a browser does.\n\n**What gets removed**\n- **Whole elements, contents included:** `<script>`, `<noscript>`, `<iframe>`, `<noembed>` and `<noframes>`.\n- **Tags only, contents kept:** `<object>`, `<embed>`, `<applet>`, `<base>` and `<frame>`. Also `<meta http-equiv=\"refresh\">` and `<link rel=\"import\">`.\n- **Single attributes:**\n  - every `on*` event handler, and `srcdoc`\n  - any attribute value containing `javascript:` or `vbscript:` (after decoding entities and stripping hidden whitespace)\n  - `data:` links that aren't images\n  - `style` attributes using `expression(`, `behavior:` or `-moz-binding`\n  - SVG animations that target an event handler or a link\n- **`<style>` blocks:** emptied if they contain any of the same dangerous patterns.\n\n**How it avoids changing anything else**\n- Everything that isn't dangerous is copied through exactly, including whitespace, attribute quoting, entities and comments. The file is read and written as raw bytes, so encoding and line endings are kept too.\n- Where a browser could read something two ways (for example a `<style>` block inside SVG, or text inside a comment), it cleans both readings.\n- It repeats the pass until nothing more changes, so a removal can't leave behind a new working attack.\n\n**Things you might notice**\n- `<noscript>` blocks and iframes are dropped entirely, even harmless ones.\n- If an attribute value contains something that looks like a tag (e.g. `title=\"</p><img ...>\"`), its `<` and `>` are rewritten as `&lt;` and `&gt;`. The value means the same thing, but the bytes differ.\n- Text inside a `<textarea>`, `<title>` or `<style>` that looks like a dangerous tag (e.g. a code sample showing `<script>`) gets cleaned as well, which changes that text.\n- Speed: a 3 MB file took about 4.7 seconds.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

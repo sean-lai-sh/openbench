@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d25b8d3f001b05T5Yav1xY3Zc",
+  "sessionID": "ses_e2da47308ffewHTNKlaICb0I8W",
+  "role": "user",
+  "time": {
+    "created": 1794530577727
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I've created `filter.py`. Run it with `python3 filter.py file.html` and it rewrites the file in place with the JavaScript removed. It uses only the Python standard library. I haven't loaded any output in a real browser; testing was done in Python against the behaviour browsers are specified to have.\n\n**How it keeps the formatting:** the script reads the HTML the same way the HTML5 standard says a browser does, then writes the file back with only the dangerous parts cut out. Everything else stays byte-for-byte the same, including whitespace, CRLF line endings, quoting style, comments and non-UTF-8 bytes. If nothing dangerous is found, the file isn't written at all.\n\n**What it removes:**\n- `<script>` elements and everything inside them, including stray `</script>` tags and a script left unclosed at the end of the file.\n- `<object>`, `<embed>` and `<applet>` tags. The fallback content between them is kept.\n- Any attribute starting with `on` (`onload`, `onerror`, etc.), and `srcdoc`.\n- Attributes whose value is a `javascript:` or `vbscript:` (or similar) URL. It decodes HTML character codes and ignores hidden whitespace first, so tricks like `&#106;avascript:`, `jav&#x09;ascript:` and `javascript&colon;` are caught.\n- `data:` URLs in link and source attributes, except plain image formats (PNG, GIF, JPEG, WebP and so on). SVG images are removed because they can contain script.\n- SVG animation values that contain a `javascript:` URL, and animations that target an `on…` attribute.\n- `style` attributes with dangerous CSS (`expression(`, `javascript:`, `behavior`, `-moz-binding`, including escaped versions). A `<style>` element containing such CSS is removed whole, even if most of it was harmless.\n- `meta` refresh tags pointing at a `javascript:` URL, and UTF-7 charset declarations.\n- Malformed tags whose name contains `<`, like `<scr<script>`.\n\nIt also covers the known tricks that rely on a sanitizer and a browser reading the same HTML differently. It checks inside comments and inside `<noscript>`, `<title>`, `<textarea>`, `<iframe>`, `<style>` and similar elements. It handles tags inside `<svg>`/`<math>` that try to break out of a title or style element. And it runs repeatedly until nothing changes, so removing one piece can't join the leftovers into a new working tag (e.g. `<<script>x</script>script>alert(1)</script>`).\n\n**Tests run:**\n- A sample page with tables, headings, styles, forms, SVG, inline CSS, `data:image/png` and a textarea holding code came out byte-identical.\n- About 45 known XSS attacks were all removed or made harmless.\n- 20,000 random inputs caused no crashes, and running the filter on its own output changed nothing.\n\n**Things you might notice:**\n- After an attribute is removed, an extra space is left behind (`<img src=x >`). This has no effect on how the page works.\n- Some harmless text that looks like an attack is left alone, because browsers treat it as plain text or as part of another value. For example, `<img/src=x/onerror=alert(1)>` has no event handler, since the whole `x/onerror=alert(1)` is the image source. A simple text search for \"onerror\" would still find it.\n- Tag-like text inside comments, `<title>` or `<textarea>` is cleaned too. So an `<img onerror=…>` written inside a comment gets edited even though browsers never run it.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

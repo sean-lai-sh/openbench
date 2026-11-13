@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d1bf821b001EiMZ0acXlCYp7d",
+  "sessionID": "ses_e2e4549c2ffe1EMLYv4rW2eMni",
+  "messageID": "msg_1d1bf7b5c001dgwxEGsInGNgJv",
+  "type": "tool",
+  "callID": "toolu_vrtx_01LZ4KzwEponXnKeA3pihn2A",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-iwdeb86q/bench_opencode_sam-cell-seg_smo93y8w; rm -rf /tmp/outtest; time python convert_masks.py /opt/uvcache/git-<REDACTED_B64>mobile_sam.pt /tmp/outtest demo_rgb.png demo_metadata.csv 2>&1 | tail -1\ncat > /tmp/validate.py <<'EOF'\nimport pandas as pd, numpy as np, cv2, sys\ninp=pd.read_csv(sys.argv[1],index_col=0); out=pd.read_csv(sys.argv[2],index_col=0)\nimg=cv2.imread(sys.argv[3]); H,W=img.shape[:2]\nassert list(inp.columns)==list(out.columns) and len(inp)==len(out)\nacc=np.zeros((H,W),int); bad=0\nfor i,r in out.iterrows():\n    xs=np.array(r.coords_x.split(','),int); ys=np.array(r.coords_y.split(','),int)\n    pts={(a,b) for a,b in zip(xs,ys)}\n    if len(pts)==4 and len({p[0] for p in pts})==2: print('rect',i); bad+=1\n    assert r.xmin==xs.min() and r.xmax==xs.max() and r.ymin==ys.min() and r.ymax==ys.max()\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[np.stack([xs,ys],1)],1)\n    nc,_=cv2.connectedComponents(m,connectivity=4)\n    if nc-1!=1: print('noncontig',i,nc-1); bad+=1\n    acc+=m\n    cv2.polylines(img,[np.stack([xs,ys],1)],True,(0,255,0),1)\nfor i,r in inp.iterrows():\n    xs=np.array(r.coords_x.split(','),int); ys=np.array(r.coords_y.split(','),int)\n    cv2.polylines(img,[np.stack([xs,ys],1)],True,(255,0,0),1)\nprint('overlap pixels',(acc>1).sum(),'bad',bad)\ncv2.imwrite('/tmp/overlay.png',cv2.resize(img,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST))\nEOF\npython /tmp/validate.py demo_metadata.csv /tmp/outtest/demo_metadata.csv demo_rgb.png",
+      "description": "Run batched script and validate",
+      "timeout": 600000
+    },
+    "output": "Saved 48 refined masks to /tmp/outtest/demo_metadata.csv\n\nreal\t0m21.656s\nuser\t0m48.779s\nsys\t0m6.019s\noverlap pixels 0 bad 0\n",
+    "title": "Run batched script and validate",
+    "metadata": {
+      "output": "Saved 48 refined masks to /tmp/outtest/demo_metadata.csv\n\nreal\t0m21.656s\nuser\t0m48.779s\nsys\t0m6.019s\noverlap pixels 0 bad 0\n",
+      "exit": 0,
+      "description": "Run batched script and validate"
+    },
+    "time": {
+      "start": 1794520357938,
+      "end": 1794520380398
+    }
+  }
+}

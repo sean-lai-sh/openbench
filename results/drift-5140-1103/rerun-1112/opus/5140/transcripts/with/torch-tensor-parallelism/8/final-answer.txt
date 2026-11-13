@@ -1,0 +1,12 @@
+I created `parallel_linear.py` with both classes. I tested them against a plain `nn.Linear` using 1, 2 and 4 processes, and outputs, input gradients, and weight and bias gradients all matched.
+
+**How the weights and bias are split** (the weight uses the `nn.Linear` layout, shape `(out_features, in_features)`):
+- **`ColumnParallelLinear`**: each rank keeps an equal slice of the output features (`out_features / world_size` rows of the weight). The bias is split the same way and starts at zero. Each rank computes its part of the output, then the parts are gathered and joined along the last dimension. In the backward pass, each rank takes back its own slice of the gradient. The gradient for the input is summed across ranks, so it comes out the same as for a single full layer.
+- **`RowParallelLinear`**: each rank keeps an equal slice of the input features (`in_features / world_size` columns of the weight). Each rank's partial output is summed across all ranks, and then the full bias (starting at zero) is added on every rank. As a result, every rank gets the full bias gradient.
+
+**Things that behave differently from what you might assume:**
+- **Input to `RowParallelLinear`**: your spec didn't say whether this layer receives the full input or one already split across ranks, so it accepts both. If the last dimension equals `in_features`, it takes this rank's slice itself and the input gradient is gathered back to full size. If it equals `in_features / world_size`, it uses the input as given.
+- **Divisibility**: the split dimension must divide evenly by `world_size` (`out_features` for column, `in_features` for row), otherwise the constructor raises a `ValueError`.
+- **Without distributed setup**: if `torch.distributed` hasn't been initialised, both layers act as a single process (`world_size=1`, `rank=0`).
+
+The editor flags the `backward` methods with type-checker errors. These are false positives from the standard `torch.autograd.Function` pattern and don't affect how the code runs.
