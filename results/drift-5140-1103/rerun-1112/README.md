@@ -4,8 +4,25 @@
 
 Stored beside the earlier 2026-11-03 partial data in `results/drift-5140-1103/` (not overwritten).
 180/180 cells (with/without, 90 each): 171 from the 2026-11-12 session plus 9 slot reruns finished 2026-11-13 00:08–00:46 ET. Everything was on the same VM (`thesis-h1-cpu`), runner head `b1cbded32a92`, `@ai-sdk/anthropic` pin `2.0.50`, image `h2-env:1022`, and `cell.sh`. The 11/12 session ran with STOPAT $300 (never reached) and driver exit 0.
-Transcripts scrubbed with `obench/scrub.py` (`--check` clean on `opus/`, `excluded-1103/opus/` and the logs; the only `--check` hits are the sha256 columns of the two MANIFEST files). Workspace tarballs are NOT committed. `MANIFEST.txt` lists the 180 in-tally tarballs (size + sha256), and the originals remain on VM `thesis-h1-cpu` under `~/h2/drift-5140-1103/opus`.
+Transcripts scrubbed with `obench/scrub.py` (`--check` clean on `opus/`, `excluded-1103/opus/` and the logs; the only `--check` hits are the sha256 columns of the two MANIFEST files, which stay flagged by design). The four provenance hash fields and the hex segment of `binary_path` in the cell JSON and jsonl were restored after scrubbing; see "Provenance hashes restored" below. Workspace tarballs are NOT committed. `MANIFEST.txt` lists the 180 in-tally tarballs (size + sha256), and the originals remain on VM `thesis-h1-cpu` under `~/h2/drift-5140-1103/opus`.
 Tracing: the proxy ledger is the trace of record, but some requests are untraced (title calls). `untraced_requests` is 170 of 1,339 requests, across 149 of the 180 cells.
+
+## Provenance hashes restored (Codex P2)
+
+The scrub had replaced the provenance hashes in every cell record and jsonl row with `<REDACTED_HEX>`. That hid which binary each arm ran and made the data impossible to check against `MANIFEST.txt`. These are content hashes and commit ids, not personal data, so they were restored from the raw, unscrubbed cells on VM `thesis-h1-cpu` (`~/h2/drift-5140-1103/opus` and `~/h2/drift-5140-1103/excluded-1103/opus`). Restored fields: `binary_sha256`, `runner_commit`, `lockfile_sha256`, `final_workspace_tar_sha256`, and the hex path segment of `binary_path`. Restored in all 189 cell JSON files (180 in tally under `opus/`, 9 under `excluded-1103/opus/`) and all 189 jsonl rows (`opus/5140/{with,without}.jsonl`, `excluded-1103/opus/5140/{with,without}.jsonl`). No other field changed. The hex inside `cmd`, `harness_version`, `cell_image` and `provider_pin_sha256` is still redacted, along with the per-file `sha256` values under `checker_workspace_files`.
+
+| Arm | `binary_sha256` | `binary_path` | Cells |
+|---|---|---|---|
+| with | `2aeae8457f8e…` | `/h1/opencode-src/bin/75a4dcbce833…/opencode` | 94 (90 + 4 excluded) |
+| without | `24c7c44c841d…` | `/h1/opencode-src/bin/3a179fcd34ae…/opencode` | 95 (90 + 5 excluded) |
+
+(Prefixes shown here; the full values are in the cell files, and free text in this README would be flagged by `--check`.) All cells share `runner_commit` `b1cbded32a92…` and `lockfile_sha256` `ef8af7527908…`. **MANIFEST check:** every `final_workspace_tar_sha256` (and `final_workspace_tar_bytes`) matches its tarball's MANIFEST line: 180/180 against `MANIFEST.txt` and 9/9 against `excluded-1103/MANIFEST.txt`, with no mismatches. The 9 excluded cells still record their original `final_workspace_tar` path under `opus/`, because that field was left unchanged. Their tarballs now live under `excluded-1103/opus/` on the VM.
+
+`obench/scrub.py` now has a field-scoped exception so these values pass `--check`. It applies only in `.json`/`.jsonl` files, only as the exact string value of those five keys (for `binary_path`, only a path segment that is exactly hex), and only for an exact 40-hex or 64-hex value. The same value under any other key, in an escaped/free-text string, or in any other file type is still flagged (`obench/tests/test_scrub.py::TestProvenanceHexException`). There is no directory-wide hex allow.
+
+## Location under `results/` (Codex P1 accepted)
+
+`AGENTS.md` reserves `results/` for gitignored scratch, and committed data belongs under `data/`. The parent `results/drift-5140-1103/` (the 2026-11-03 partial) is already on `main`, so this PR keeps the dataset together there rather than splitting it across two trees. A follow-up PR will move the whole `results/drift-5140-1103/` tree to `data/` with a plain `git mv` and no history rewrite.
 
 ## 2026-11-03 partial cells: excluded, then rerun
 
