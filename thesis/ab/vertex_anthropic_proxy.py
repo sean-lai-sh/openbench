@@ -1008,6 +1008,33 @@ def _usage_from_json(payload: bytes) -> dict | None:
     return merge_message_usage([usage]) if isinstance(usage, dict) else None
 
 
+def _text_or_none(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def stop_reason_from_json(payload: bytes | str | None) -> str | None:
+    """``stop_reason`` on a non-stream Anthropic message body, or None.
+
+    A stream records the same fact in the SSE ``message_delta``. An error
+    body and a body with no ``stop_reason`` both return None.
+    """
+    if payload is None:
+        return None
+    raw = payload.encode("utf-8") if isinstance(payload, str) else payload
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw.decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return _text_or_none(obj.get("stop_reason"))
+
+
 def _cell_file_stem(cell_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", cell_id)
 
@@ -1204,6 +1231,9 @@ def _append_ledger(
     stream: dict | None = None,
     no_usage: bool = False,
     loaded_anthropic: str | None = None,
+    anthropic_beta_received: str | None = None,
+    anthropic_beta_upstream: str | None = None,
+    stop_reason: str | None = None,
 ) -> None:
     path = (cell_no_usage_path if no_usage else cell_ledger_path)(Path(directory), cell_id)
     row: dict = {"record_type": "request"}
@@ -1243,6 +1273,18 @@ def _append_ledger(
     # object did not carry output_tokens_details.thinking_tokens. Not the
     # harness tokens_reasoning column.
     row["thinking_tokens"] = server_thinking_tokens(usage if isinstance(usage, dict) else None)
+    # anthropic-beta on every request. Null when that side did not carry the
+    # header. ``received`` is the harness value; ``upstream`` is what this
+    # proxy forwarded after Claude Code betas were stripped.
+    row["anthropic_beta_received"] = _text_or_none(anthropic_beta_received)
+    row["anthropic_beta_upstream"] = _text_or_none(anthropic_beta_upstream)
+    # Same field for a streamed message_delta and a non-stream JSON body.
+    # Null when the response did not name a stop.
+    stop = _text_or_none(stop_reason)
+    if stop is None and isinstance(stream, dict):
+        stop = _text_or_none(stream.get("stop_reason"))
+    row["stop_reason"] = stop
+    row["hit_max_tokens"] = stop == "max_tokens"
     if isinstance(upstream_model, str) and upstream_model:
         row["upstream_model"] = upstream_model
     # The model id on the incoming body, before this proxy chooses the Vertex
@@ -2550,6 +2592,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 responses_ctx=responses_ctx,
                 received_thinking_json=received_thinking_json,
                 received_output_config_json=received_output_config_json,
+                anthropic_beta_received=_text_or_none(self.headers.get("anthropic-beta")),
+                anthropic_beta_upstream=_text_or_none(beta_header),
             )
 
         def _send(self, status: int, content_type: str, payload: bytes, extra: dict | None = None) -> None:
@@ -2589,7 +2633,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     thinking_json: str | None = None,
                     output_config_json: str | None = None,
                     received_thinking_json: str | None = None,
-                    received_output_config_json: str | None = None) -> None:
+                    received_output_config_json: str | None = None,
+                    anthropic_beta_received: str | None = None,
+                    anthropic_beta_upstream: str | None = None,
+                    stop_reason: str | None = None) -> None:
             # One row per messages or chat-completions POST on /c/<cell-id>/.
             # A subagent or child session that reused that base URL is included
             # in the cell total. The role tag does not change that total.
@@ -2603,6 +2650,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 output_config_json=output_config_json,
                 received_thinking_json=received_thinking_json,
                 received_output_config_json=received_output_config_json,
+                anthropic_beta_received=anthropic_beta_received,
+                anthropic_beta_upstream=anthropic_beta_upstream,
+                stop_reason=stop_reason,
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
                 endpoint_location=location,
@@ -2617,7 +2667,10 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                           thinking_json: str | None = None,
                           output_config_json: str | None = None,
                           received_thinking_json: str | None = None,
-                          received_output_config_json: str | None = None) -> None:
+                          received_output_config_json: str | None = None,
+                          anthropic_beta_received: str | None = None,
+                          anthropic_beta_upstream: str | None = None,
+                          stop_reason: str | None = None) -> None:
             if ledger is None or not cell:
                 return
             _append_ledger(
@@ -2627,6 +2680,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 output_config_json=output_config_json,
                 received_thinking_json=received_thinking_json,
                 received_output_config_json=received_output_config_json,
+                anthropic_beta_received=anthropic_beta_received,
+                anthropic_beta_upstream=anthropic_beta_upstream,
+                stop_reason=stop_reason if stop_reason is not None else stop_reason_from_json(payload),
                 upstream_model=upstream_model_id or model,
                 requested_model=requested_model,
                 endpoint_location=location,
@@ -2641,7 +2697,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                      requested_model: str | None = None,
                      responses_ctx=None,
                      received_thinking_json: str | None = None,
-                     received_output_config_json: str | None = None) -> None:
+                     received_output_config_json: str | None = None,
+                     anthropic_beta_received: str | None = None,
+                     anthropic_beta_upstream: str | None = None) -> None:
             thinking_json, output_config_json = wire_json_fields(body)
             request = urllib.request.Request(url, data=body, headers=headers, method="POST")
             response = None
@@ -2698,6 +2756,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                         thinking_json=thinking_json, output_config_json=output_config_json,
                         received_thinking_json=received_thinking_json,
                         received_output_config_json=received_output_config_json,
+                        anthropic_beta_received=anthropic_beta_received,
+                        anthropic_beta_upstream=anthropic_beta_upstream,
                     )
                     if presentation == "openai":
                         payload = openai_error_bytes(payload)
@@ -2715,6 +2775,8 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                         thinking_json=thinking_json, output_config_json=output_config_json,
                         received_thinking_json=received_thinking_json,
                         received_output_config_json=received_output_config_json,
+                        anthropic_beta_received=anthropic_beta_received,
+                        anthropic_beta_upstream=anthropic_beta_upstream,
                         requested_model=requested_model,
                     )
                     if presentation == "openai":
@@ -2774,13 +2836,20 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                             responses_ctx.raw_request_file if responses_ctx is not None else None),
                     })
                 if kind != "count":
+                    info = stream_record(usage=usage)
+                    stop = _text_or_none(info.get("stop_reason")) if isinstance(info, dict) else None
+                    if stop is None and kind != "stream":
+                        stop = stop_reason_from_json(bytes(raw))
                     self._record(
                         cell, usage, status, identity, thinking_sent, call_role, called,
                         requested_model=requested_model,
-                        stream=stream_record(usage=usage),
+                        stream=info,
                         thinking_json=thinking_json, output_config_json=output_config_json,
                         received_thinking_json=received_thinking_json,
                         received_output_config_json=received_output_config_json,
+                        anthropic_beta_received=anthropic_beta_received,
+                        anthropic_beta_upstream=anthropic_beta_upstream,
+                        stop_reason=stop,
                     )
                     recorded = True
                 if upstream_error is not None:
@@ -2814,12 +2883,19 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             except _DISCONNECT:
                 self.close_connection = True
                 if not recorded and kind != "count":
+                    info = stream_record(disconnected=True)
+                    stop = _text_or_none(info.get("stop_reason")) if isinstance(info, dict) else None
+                    if stop is None and kind != "stream":
+                        stop = stop_reason_from_json(bytes(raw))
                     self._record(
                         cell, finish_usage(), status, identity, thinking_sent, call_role, called,
-                        requested_model=requested_model, stream=stream_record(disconnected=True),
+                        requested_model=requested_model, stream=info,
                         thinking_json=thinking_json, output_config_json=output_config_json,
                         received_thinking_json=received_thinking_json,
                         received_output_config_json=received_output_config_json,
+                        anthropic_beta_received=anthropic_beta_received,
+                        anthropic_beta_upstream=anthropic_beta_upstream,
+                        stop_reason=stop,
                     )
             finally:
                 if response is not None:

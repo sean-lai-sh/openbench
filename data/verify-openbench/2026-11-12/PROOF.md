@@ -22,7 +22,7 @@ Stub plans for those three flag combinations exit 0 with `cells: 2`. No cell was
 
 ## Scoring replay
 
-`python3 -m thesis.ab.step8_scoring_parity --out results/verify-openbench/2026-11-12/scoring-parity.csv`
+`python3 -m thesis.ab.step8_scoring_parity --out data/verify-openbench/2026-11-12/scoring-parity.csv`
 
 Exit 0.
 
@@ -37,7 +37,7 @@ CSV: 181 lines (header + 180). The committed `data/step8-pins/scoring-parity.csv
 
 ## Summarize
 
-`python3 -m thesis.ab.summarize results/step8-full413-1020/prs.csv --results results/step8-full413-1020-F03-1-rerun --out results/verify-openbench/2026-11-12/summary`
+`python3 -m thesis.ab.summarize results/step8-full413-1020/prs.csv --results results/step8-full413-1020-F03-1-rerun --out data/verify-openbench/2026-11-12/summary`
 
 Exit 0. Wrote `summary.md` and `summary.csv`.
 

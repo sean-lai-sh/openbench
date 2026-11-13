@@ -1939,6 +1939,21 @@ def proxy_trace_public(row: dict) -> dict:
     return {key: row.get(key) for key in PROXY_TRACE_FIELDS}
 
 
+def _record_hit_max_tokens(record) -> bool:
+    """True when this ledger row stopped because it hit ``max_tokens``."""
+    if not isinstance(record, dict):
+        return False
+    if record.get("hit_max_tokens") is True:
+        return True
+    if record.get("hit_max_tokens") is False:
+        return False
+    stop = record.get("stop_reason")
+    if not isinstance(stop, str):
+        stream = record.get("stream")
+        stop = stream.get("stop_reason") if isinstance(stream, dict) else None
+    return stop == "max_tokens"
+
+
 def apply_cell_meter(
     row: dict,
     proxy: dict | None,
@@ -1962,7 +1977,11 @@ def apply_cell_meter(
     from thesis.ab.vertex_anthropic_proxy import read_no_usage_records, stream_summary
     no_usage = read_no_usage_records(str(ledger), str(cell))
     row["proxy_requests_no_usage"] = len(no_usage)
-    row.update(stream_summary(list(records or []) + no_usage))
+    observed = list(records or []) + no_usage
+    row.update(stream_summary(observed))
+    hits = sum(1 for record in observed if _record_hit_max_tokens(record))
+    row["proxy_hit_max_tokens"] = hits
+    row["proxy_hit_max_tokens_any"] = hits > 0
     from thesis.ab.route import route_label
     row["route"] = route_label(proxy, sum(1 for r in records or [] if isinstance(r, dict)))
     if not records:
