@@ -15,7 +15,9 @@ requires:
 3. ``thinking_explicit``: every request carried the explicit setting;
 4. ``usage_thinking``: every main call's usage reported a thinking-token
    count (Carbon: thinking is a summary/omitted/none kind, tokens still
-   from usage; gpt-oss: 0 is recorded as reported);
+   from usage). gpt-oss passes on "reported 0, text present" (flagged
+   ``reported_zero_text_present``) and fails only on missing/empty reasoning
+   text; its counts are not comparable with Carbon's and Opus's;
 5. ``cost``: every call has a cost (``cost_usd``) and the run total is
    logged;
 6. ``pin``: the binary is the pinned OpenCode build.
@@ -76,7 +78,6 @@ def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: li
     thinking = [tr.thinking_setting(w["provider_wire"], w["request"])["explicit"] for w in wires
                 if isinstance(w.get("request"), dict)]
     costs = [w.get("cost_usd") for w in wires]
-    thinking_tokens = [((r.get("usage") or {}).get("thinking_tokens")) for r in records or []]
     return {
         "model": {"command_model": arg, "served": served,
                   "pass": arg == vm.opencode_model_arg(model) and bool(wires)
@@ -86,14 +87,38 @@ def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: li
                    "pass": records is not None and len(records) == len(main) > 0},
         "thinking_explicit": {"requests": len(thinking), "explicit": sum(thinking),
                               "setting": model.thinking, "pass": bool(thinking) and all(thinking)},
-        "usage_thinking": {"per_step": thinking_tokens,
-                           "kinds": [((r.get("thinking") or {}).get("kind")) for r in records or []],
-                           "pass": bool(records) and all(isinstance(t, int) for t in thinking_tokens)},
+        "usage_thinking": usage_thinking(model, records),
         "cost": {"per_call": costs, "total_usd": round(sum(c for c in costs if c is not None), 6) if costs else None,
                  "price_verified": model.price_verified, "price_source": model.price_source,
                  "pass": bool(costs) and all(isinstance(c, (int, float)) for c in costs)},
         "pin": {"check": pin_check, "pass": pin_check is not None},
     }
+
+
+def usage_thinking(model: vm.VertexModel, records: list[dict] | None) -> dict:
+    """Check 4. Every step's usage must report a thinking-token count (the
+    usage value is always the one recorded). For gpt-oss, whose usage
+    reports 0 alongside real reasoning text, a step instead passes on
+    non-empty reasoning text: "reported 0, text present", flagged
+    ``reported_zero_text_present``. Missing or empty text is the only failure
+    there. Carbon and Opus pass on any reported count; Carbon's thinking is
+    summaries by design."""
+    from_text = model.key in vm.THINKING_TOKENS_FROM_TEXT
+    steps = []
+    for r in records or []:
+        thinking, tokens = r.get("thinking") or {}, (r.get("usage") or {}).get("thinking_tokens")
+        reported = isinstance(tokens, int) and not isinstance(tokens, bool)
+        ok = reported and (bool(thinking.get("text")) if from_text else True)
+        steps.append({"step": r.get("step"), "thinking_tokens": tokens, "kind": thinking.get("kind"),
+                      "chars": thinking.get("chars"), "flag": thinking.get("flag"),
+                      "tokens_counted": thinking.get("tokens_counted"),
+                      "tokens_counted_by": thinking.get("tokens_counted_by"), "pass": ok})
+    return {"per_step": steps,
+            "rule": ("reported count + non-empty reasoning text (usage reports 0 on Vertex)" if from_text
+                     else "reported count from response usage"),
+            "comparable_with_other_models": not from_text,
+            "flags": sorted({s["flag"] for s in steps if s["flag"]}),
+            "pass": bool(steps) and all(s["pass"] for s in steps)}
 
 
 def run(args) -> int:
@@ -135,7 +160,8 @@ def run(args) -> int:
     try:
         events = tr.parse_events(events_path.read_text(encoding="utf-8").splitlines())
         records = tr.build_trace(events, wires, run={"model": model.key, "task": task.name, "kind": "smoke"},
-                                 cost_fn=lambda rec: (vm.cost_usd(model, rec["usage"]), "reflection.vertex_models"))
+                                 cost_fn=lambda rec: (vm.cost_usd(model, rec["usage"]), "reflection.vertex_models"),
+                                 count_thinking_tokens=vm.THINKING_TOKENS_FROM_TEXT.get(model.key))
         tr.write_trace(out / "trace.jsonl", records)
     except tr.TraceError as exc:
         trace_error = str(exc)

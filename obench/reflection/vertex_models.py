@@ -94,6 +94,24 @@ MODELS = {
     ),
 }
 
+def count_o200k_harmony(text: str) -> tuple[int | None, str]:
+    """Our own token count of gpt-oss reasoning text with the ``o200k_harmony``
+    encoding (tiktoken). Recorded as ``thinking.tokens_counted``, separate from
+    and never pooled with the usage value. Optional: no tiktoken, no count."""
+    try:
+        import tiktoken
+
+        encoding = tiktoken.get_encoding("o200k_harmony")
+    except (ImportError, ValueError, KeyError) as exc:
+        return None, f"unavailable: {type(exc).__name__}: {exc}"
+    return len(encoding.encode(text, disallowed_special=())), "computed: tiktoken o200k_harmony (not provider usage)"
+
+
+# Models whose usage thinking-token count can't be compared with the others'.
+# gpt-oss on Vertex reports 0 even when it returns reasoning text, so its
+# thinking is evidenced by the text (chars, optional counted tokens) instead.
+THINKING_TOKENS_FROM_TEXT = {"gpt-oss-120b": count_o200k_harmony}
+
 # Body model sent upstream for the OpenAI-compatible endpoint (publisher/model).
 OPENAI_BODY_MODEL = {"gpt-oss-120b": "openai/gpt-oss-120b-maas"}
 

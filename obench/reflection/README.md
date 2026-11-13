@@ -71,6 +71,13 @@ Each `--out` directory gets:
 - `summary.json` with six checks: `model`, `traced`, `thinking_explicit`, `usage_thinking`, `cost` and `pin`;
 - `trace.jsonl`, `wire.jsonl`, `opencode-events.jsonl` and `opencode-stderr.txt`.
 
+**gpt-oss thinking counts aren't comparable with Carbon's and Opus's.**
+Vertex reports 0 gpt-oss thinking tokens even when reasoning text comes back.
+The trace keeps the usage value (0), flags it `reported_zero_text_present`,
+and records the text, its length in characters and, if tiktoken is installed,
+our own `o200k_harmony` count (`thinking.tokens_counted`, labelled computed,
+never pooled with usage). Say so in any writeup that reports thinking tokens.
+
 The default task is `tasks/fix-failing-test`, a small multi-step task run in a
 copy of its workspace. `--out` must be outside `results/` and `data/`. Scrub
 the files before they go into the separate smoke-data PR.

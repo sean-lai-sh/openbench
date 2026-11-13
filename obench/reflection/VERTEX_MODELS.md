@@ -29,7 +29,17 @@ All three use `global`.
 |---|---|---|
 | Gemini 4 Carbon | `generationConfig.thinkingConfig = {"thinkingLevel": "HIGH", "includeThoughts": true}`. Allowed levels are `LOW`, `MEDIUM` (the model's default) and `HIGH`; `thinking_budget` and `MINIMAL` return 400. | **Rolling thought summaries only.** The trace records `thinking.kind = summary` (or `omitted` when tokens are billed but no text returns). That is expected, not a smoke failure. Tokens come from `usageMetadata.thoughtsTokenCount`. |
 | Claude Opus 5.5 | `thinking = {"type": "adaptive"}`. The proxy drops `temperature`/`top_p`/`top_k` when present, since they conflict with thinking. | Summarized thinking blocks. Tokens come from `usage.output_tokens_details.thinking_tokens`. |
-| gpt-oss 120B | `reasoning_effort = "high"` | `reasoning_content` text. **Known Vertex gap:** the model page lists "Thinking: Not supported", and a public report shows `completion_tokens_details.reasoning_tokens = 0` even at high effort. The trace records what usage reports (possibly 0) and never estimates from text. |
+| gpt-oss 120B | `reasoning_effort = "high"` is the explicit setting. | `reasoning_content` text. **Known Vertex gap:** the model page lists "Thinking: Not supported", and usage reports `completion_tokens_details.reasoning_tokens = 0` even at high effort. Handled like Carbon and Opus: the trace records the usage value (0), flagged `thinking.flag = reported_zero_text_present` when reasoning text came back, with the text and `thinking.chars`. Optionally, `thinking.tokens_counted` is our own `o200k_harmony` count of the text (tiktoken, labelled computed). It never replaces or pools with the usage value. |
+
+**gpt-oss thinking counts are not comparable with Carbon's and Opus's.**
+Their usage reports real thinking-token counts, while gpt-oss's usage
+reports 0. Compare gpt-oss thinking by `thinking.chars` or
+`thinking.tokens_counted`. Never pool those with any model's usage value, and
+note this in every writeup that reports thinking tokens.
+
+The smoke's `usage_thinking` check passes gpt-oss on "reported 0, text
+present" (flagged) and fails it only when the reasoning text is missing or
+empty. Carbon and Opus pass on any reported usage count.
 
 The client's own thinking setting is overridden and recorded in the wire
 record's `thinking_enforced`. `HIGH` for Carbon and `high` for gpt-oss are

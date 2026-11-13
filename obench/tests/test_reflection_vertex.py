@@ -285,6 +285,69 @@ class EndToEnd(ProxyCase):
         self.assertEqual({k: v["pass"] for k, v in result.items()}, dict.fromkeys(result, True))
         self.assertEqual((result["traced"]["wire_calls"], result["traced"]["main_calls"]), (3, 2))
 
+    def gptoss_records(self, reasoning_text):
+        model = vm.resolve("gpt-oss-120b")
+        body = {"model": "gpt-oss-120b-maas", "messages": [{"role": "user", "content": "go"}],
+                "tools": [{"type": "function", "function": {"name": "bash", "parameters": {}}}]}
+        self.post("/m/gpt-oss-120b/v1/chat/completions", body)
+        def ev(kind, ts, **part):
+            ptype = {"step_start": "step-start", "step_finish": "step-finish"}.get(kind, kind)
+            return {"type": kind, "timestamp": ts, "sessionID": "s", "part": {"messageID": "m1", "type": ptype, **part}}
+        events = [ev("step_start", 1)]
+        if reasoning_text is not None:
+            events.append(ev("reasoning", 2, text=reasoning_text, time={"start": 1, "end": 2}))
+        events.append(ev("step_finish", 3, reason="stop", cost=0.0,
+                         tokens={"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}))
+        counter = lambda text: (len(text.split()), "computed: fake o200k_harmony (test)")
+        return model, tr.build_trace(tr.parse_events([json.dumps(e) for e in events]), self.records(),
+                                     count_thinking_tokens=counter)
+
+    def test_gpt_oss_reported_zero_with_text_passes_flagged(self):
+        text = "We need to check the failing test first."
+        model, records = self.gptoss_records(text)
+        step = records[0]
+        self.assertEqual(step["usage"]["thinking_tokens"], 0)  # the usage value, never replaced
+        self.assertEqual(step["request"]["thinking_setting"], {"explicit": True, "field": "reasoning_effort",
+                                                               "value": "high"})
+        thinking = step["thinking"]
+        self.assertEqual((thinking["flag"], thinking["chars"], thinking["text"]), ("reported_zero_text_present", len(text), text))
+        self.assertEqual((thinking["tokens_counted"], thinking["tokens_counted_by"]),
+                         (8, "computed: fake o200k_harmony (test)"))
+        check = smoke.usage_thinking(model, records)
+        self.assertTrue(check["pass"])
+        self.assertEqual(check["flags"], ["reported_zero_text_present"])
+        self.assertFalse(check["comparable_with_other_models"])
+        self.assertEqual(check["per_step"][0]["thinking_tokens"], 0)
+
+    def test_gpt_oss_fails_only_when_reasoning_text_is_missing_or_empty(self):
+        for text in (None, "", "   "):
+            with self.subTest(text=text):
+                self.wire.unlink(missing_ok=True)
+                model, records = self.gptoss_records(text)
+                check = smoke.usage_thinking(model, records)
+                self.assertFalse(check["pass"])
+                self.assertIsNone(records[0]["thinking"]["flag"])
+                self.assertEqual(records[0]["thinking"]["chars"], 0)
+
+    def test_other_models_keep_the_usage_rule_and_counter_is_optional(self):
+        opus = vm.resolve("claude-opus-5-5")
+        records = [{"step": 1, "usage": {"thinking_tokens": 0}, "thinking": {"text": "", "kind": "none", "chars": 0}}]
+        self.assertTrue(smoke.usage_thinking(opus, records)["pass"])  # Opus: a reported 0 is fine
+        self.assertTrue(smoke.usage_thinking(opus, records)["comparable_with_other_models"])
+        self.assertNotIn("claude-opus-5-5", vm.THINKING_TOKENS_FROM_TEXT)
+        self.assertNotIn("gemini-4-carbon", vm.THINKING_TOKENS_FROM_TEXT)
+        import builtins
+        from unittest.mock import patch
+        real_import = builtins.__import__
+        def no_tiktoken(name, *a, **k):
+            if name == "tiktoken":
+                raise ImportError("no tiktoken")
+            return real_import(name, *a, **k)
+        with patch("builtins.__import__", no_tiktoken):
+            count, label = vm.count_o200k_harmony("some reasoning")
+        self.assertIsNone(count)
+        self.assertTrue(label.startswith("unavailable:"))
+
     def test_checks_fail_on_wrong_command_model_or_missing_usage(self):
         model = vm.resolve("claude-opus-5-5")
         self.post("/m/claude-opus-5-5/v1/messages", {"model": "claude-opus-5-5", "stream": True,

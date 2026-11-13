@@ -52,6 +52,10 @@ call together with its result (`tool_calls[].source = "next_request"`).
 | `thinking.source` | string | yes | `opencode.reasoning` |
 | `thinking.rule` | string | yes | Why `kind` was assigned |
 | `thinking.metadata` | array | yes | Reasoning-part metadata (signatures, redacted data) |
+| `thinking.chars` | int | yes | Length of `thinking.text` in characters |
+| `thinking.flag` | string\|null | yes | `reported_zero_text_present` when usage reports 0 thinking tokens but thinking text came back (gpt-oss on Vertex); else null |
+| `thinking.tokens_counted` | int\|null | yes | **Our own** token count of `thinking.text` (gpt-oss: `o200k_harmony` via tiktoken). Never replaces, and never pools with, `usage.thinking_tokens`. Null when not computed. |
+| `thinking.tokens_counted_by` | string\|null | yes | What computed `tokens_counted` (e.g. `computed: tiktoken o200k_harmony`), or why it wasn't (`unavailable: ...`) |
 | `usage.source` | string | yes | `response.usage`: always the provider response |
 | `usage.input_tokens` | int | yes | Anthropic `input_tokens`, OpenAI `prompt_tokens`, Gemini `promptTokenCount` |
 | `usage.output_tokens` | int | yes | As reported (Anthropic and OpenAI include thinking; Gemini `candidatesTokenCount` doesn't, and defaults to 0 when absent) |
@@ -64,6 +68,12 @@ call together with its result (`tool_calls[].source = "next_request"`).
 | `cost.source` | string\|null | yes | `opencode.step_finish`, the `cost_fn` source, or null |
 | `finish_reason` | string\|null | yes | `step_finish.reason` (`tool-calls`, `stop`, …) |
 | `opencode_tokens` | object\|null | yes | OpenCode's own token split. **For comparison only, never the source of truth.** Its `reasoning` is 0 even when the server billed thinking. |
+
+**Thinking tokens are not comparable across models.** `usage.thinking_tokens`
+is always what the provider reported. gpt-oss on Vertex reports 0 even when it
+returns reasoning text (flagged `reported_zero_text_present`), while Carbon
+and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
+`thinking.tokens_counted`, never by pooling either with the usage value.
 
 **Thinking kinds.**
 - `full`: the model's own reasoning text (OpenAI-chat reasoning content, or Anthropic with `display: "full"`).
@@ -136,7 +146,7 @@ The CLI prints the error and exits 2.
     {"call_id": "toolu_2", "name": "bash", "arguments": {"command": "cargo build"}, "result": "error[E0425]: …", "status": "error", "source": "next_request"}
   ],
   "assistant_text": "",
-  "thinking": {"kind": "summary", "text": "The build failed on an unresolved name…", "parts": 1, "source": "opencode.reasoning", "rule": "Claude 4+ returns summarized thinking unless display=full", "metadata": []},
+  "thinking": {"kind": "summary", "text": "The build failed on an unresolved name…", "parts": 1, "source": "opencode.reasoning", "rule": "Claude 4+ returns summarized thinking unless display=full", "metadata": [], "chars": 40, "flag": null, "tokens_counted": null, "tokens_counted_by": null},
   "usage": {"source": "response.usage", "input_tokens": 12, "output_tokens": 410, "thinking_tokens": 233, "thinking_tokens_field": "output_tokens_details.thinking_tokens", "cache_read_tokens": 15840, "cache_write_tokens": 512, "raw": {"input_tokens": 12, "output_tokens": 410, "cache_read_input_tokens": 15840, "cache_creation_input_tokens": 512, "output_tokens_details": {"thinking_tokens": 233}}},
   "cost": {"usd": 0.0412, "source": "opencode.step_finish"},
   "finish_reason": "tool-calls",
