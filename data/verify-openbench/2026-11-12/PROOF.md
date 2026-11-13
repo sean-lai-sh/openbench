@@ -5,8 +5,8 @@ Feature driven end to end: OpenCode `--model claude-sonnet-5-5` on the existing 
 ## Doctor
 
 - Python 3.12.3
-- `thesis` loaded from `/agent/repos/openbench/thesis/__init__.py` (this checkout, not site-packages)
-- `obench` loaded from `/agent/repos/openbench/obench/__init__.py` after `pip install -e .`
+- `thesis` loaded from `<repo>/thesis/__init__.py` (this checkout, not site-packages)
+- `obench` loaded from `<repo>/obench/__init__.py` after `pip install -e .`
 - `resolve_runner_commit` = `HEAD` = `39875fac6670b24c1cef2635aaf077e5c6e04741` (main at verification time; the Sonnet change was in the working tree)
 - `RUNNER_SHA` unset
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT` all unset
@@ -22,7 +22,7 @@ Stub plans for those three flag combinations exit 0 with `cells: 2`. No cell was
 
 ## Scoring replay
 
-`python3 -m thesis.ab.step8_scoring_parity --out results/verify-openbench/2026-11-12/scoring-parity.csv`
+`python3 -m thesis.ab.step8_scoring_parity --out data/verify-openbench/2026-11-12/scoring-parity.csv`
 
 Exit 0.
 
@@ -37,7 +37,7 @@ CSV: 181 lines (header + 180). The committed `data/step8-pins/scoring-parity.csv
 
 ## Summarize
 
-`python3 -m thesis.ab.summarize results/step8-full413-1020/prs.csv --results results/step8-full413-1020-F03-1-rerun --out results/verify-openbench/2026-11-12/summary`
+`python3 -m thesis.ab.summarize results/step8-full413-1020/prs.csv --results results/step8-full413-1020-F03-1-rerun --out data/verify-openbench/2026-11-12/summary`
 
 Exit 0. Wrote `summary.md` and `summary.csv`.
 
@@ -48,4 +48,8 @@ Exit 0. Plan is `cells: 2`, `order: sides`, PR 4204, task `trig-subagent-followu
 ## Tests
 
 Focused thesis modules plus `obench.tests.test_opencode_vertex`: 160 tests, OK.
-Full `python3 -m unittest discover -s obench/tests`: 2336 tests, 1 failure and 81 errors, all from the publish PII check on hostname `cursor`.
+Full `python3 -m unittest discover -s obench/tests`: 2336 tests, 1 failure and 81 errors, all from the publish PII check on the machine hostname (written here as `<host>`).
+
+## Scrub
+
+Machine details in these logs were replaced before commit. `$HOME` stands in for the home directory, `<repo>` for this checkout, and `<host>` for the machine hostname. Cursor harness test names were left as written. 40-character git SHAs are unchanged. Longer hex blobs are `<REDACTED_HEX>`, and the fixture address in `unittest.log` is `<EMAIL>`. `SCRUB_ALLOW_GIT_SHA` tells `obench/scrub.py --check` to ignore the exact 40-hex commit IDs in this directory only.

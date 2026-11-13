@@ -228,6 +228,79 @@ def compaction_overflow(context: int, output_limit: int, counted: int, output_ca
     return int(counted) > compaction_usable(context, output_limit, output_cap)
 
 
+MATCHED_CONTEXT = 200_000
+# Thinking types the bundled OpenCode Anthropic provider-options schema accepts.
+# ``between_tools`` and ``adaptive`` are rejected before a request is sent
+# (AI_InvalidArgumentError on ba54cee). ``output_config`` is not a provider
+# option. The matched wire is injected by the Vertex proxy instead.
+BUNDLED_SDK_THINKING_TYPES = frozenset({"enabled", "disabled"})
+
+
+def bundled_sdk_accepts_config(config: dict) -> bool:
+    """True when no model option uses a thinking shape that pin rejects."""
+    providers = config.get("provider") if isinstance(config, dict) else None
+    if not isinstance(providers, dict):
+        return True
+    for provider in providers.values():
+        if not isinstance(provider, dict):
+            continue
+        models = provider.get("models")
+        if not isinstance(models, dict):
+            continue
+        for model in models.values():
+            if not isinstance(model, dict):
+                continue
+            options = model.get("options")
+            if not isinstance(options, dict):
+                continue
+            if "output_config" in options:
+                return False
+            thinking = options.get("thinking")
+            if thinking is None:
+                continue
+            if not isinstance(thinking, dict):
+                return False
+            if thinking.get("type") not in BUNDLED_SDK_THINKING_TYPES:
+                return False
+    return True
+
+
+def apply_matched_pair_config(config: dict) -> dict:
+    """OpenCode config for the matched Pi vs OpenCode pair.
+
+    Every model context limit becomes 200000. Thinking and ``output_config``
+    are not written: the bundled SDK rejects ``between_tools`` and
+    ``adaptive``, and the Vertex proxy injects those objects on the wire.
+    A thinking type the SDK rejects, or an ``output_config`` option already
+    on the model, is removed. Provider ``options`` (apiKey, baseURL) stay.
+    """
+    body = apply_context_limit(config, MATCHED_CONTEXT)
+    providers = body.get("provider")
+    if not isinstance(providers, dict):
+        return body
+    for provider in providers.values():
+        if not isinstance(provider, dict):
+            continue
+        models = provider.get("models")
+        if not isinstance(models, dict):
+            continue
+        for model in models.values():
+            if not isinstance(model, dict):
+                continue
+            options = model.get("options")
+            if not isinstance(options, dict):
+                continue
+            thinking = options.get("thinking")
+            if isinstance(thinking, dict) and thinking.get("type") not in BUNDLED_SDK_THINKING_TYPES:
+                options.pop("thinking", None)
+            elif "thinking" in options and not isinstance(thinking, dict):
+                options.pop("thinking", None)
+            options.pop("output_config", None)
+            if not options:
+                model.pop("options", None)
+    return body
+
+
 def apply_context_limit(config: dict, limit: int) -> dict:
     """Return a copy of an OpenCode config with every model context limit set.
 

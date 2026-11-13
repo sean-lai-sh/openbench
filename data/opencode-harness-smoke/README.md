@@ -24,8 +24,27 @@ note that this is a documented deviation from that Haiku default.
 `--require-model-match` defaults on: a request whose model id is not that
 upstream model stops the smoke. `--no-require-model-match` is the H2 / PR
 3052 shape (ask for Opus, serve Sonnet). Each cell record stores
-`network_mode` and `proxy_observed` (thinking mode, thinking field, and
+`network_mode` and `proxy_observed` (thinking mode, thinking field, server
+`thinking_tokens` from `usage.output_tokens_details.thinking_tokens`, and
 reasoning tokens the proxy saw). An empty ledger is an empty list.
+`thinking_tokens` is not the harness `tokens_reasoning` column.
+
+## Matched pair (opt-in)
+
+`--matched-config` sets the context limit to 200000 and does not put a
+thinking option in the OpenCode config (the bundled SDK rejects
+`between_tools` and `adaptive`). The Vertex proxy writes Sonnet
+`thinking: {type: between_tools}` and Opus `thinking: {type: adaptive}`
+plus `output_config.effort` (`--matched-effort`, default `low`) onto the
+Anthropic request. `--model` (same as `--vertex-model`) selects the
+OpenCode `-m` ref, so Opus is `anthropic/claude-opus-5-5`. Without the
+flag the config stays the historical 1_000_000 document and the request
+body is not rewritten. The same flag is `run_ab --matched-config`.
+
+```bash
+python3 data/opencode-harness-smoke/cell.py \
+  --out /tmp/oc-matched --sha "$OPENCODE_SHA" --matched-config
+```
 
 `python3 -m thesis.ab.run_ab --exec docker` passes `--image` (or
 `OBENCH_CELL_IMAGE`) through to `run_cell` as `docker_image`. A task that

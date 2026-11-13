@@ -506,7 +506,8 @@ def order_cells(cells: list[dict], *, order: str = "sides", seed: int | None = N
 
 
 def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None,
-                with_aa: bool = False, order: str = "sides", seed: int | None = None) -> str:
+                with_aa: bool = False, order: str = "sides", seed: int | None = None,
+                matched_config: bool = False) -> str:
     lines = []
     arms = _cell_arms(aa=aa, with_aa=with_aa)
     for pr in prs:
@@ -544,6 +545,12 @@ def format_plan(prs, tasks, trials: int, *, aa: bool = False, fixtures=None,
         lines.append("arm: ab+aa")
     elif aa:
         lines.append("arm: parent-vs-parent")
+    if matched_config:
+        from thesis.ab.vertex_anthropic_proxy import matched_opus_effort
+        lines.append(
+            "matched-config: context=200000 sonnet=between_tools "
+            f"opus=adaptive effort={matched_opus_effort()}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -1053,24 +1060,42 @@ def ledger_records(proxy: dict | None) -> list:
     return read_proxy_ledger(str(ledger), str(cell))
 
 
+_THINKING_SENT_VALUES = {
+    "none", "enabled+budget_tokens", "adaptive", "adaptive+effort",
+    "between_tools", "disabled",
+}
+
+
 def attach_thinking(row: dict, mode: str, records: list | None = None) -> dict:
     """Record the configured thinking mode and what each request sent.
 
     A ledger row stores one ``thinking_sent`` string (``none``,
-    ``enabled+budget_tokens``, or ``adaptive``). A result row stores the
-    configured mode and those per-request values in ledger order.
+    ``enabled+budget_tokens``, ``adaptive``, ``adaptive+effort``,
+    ``between_tools``, or ``disabled``) and the
+    server-returned ``thinking_tokens`` count (``usage.output_tokens_details
+    .thinking_tokens``, or null when the server omitted it). A result row
+    stores the configured mode and those per-request values in ledger order.
+    ``thinking_tokens`` is not the harness ``tokens_reasoning`` column.
     """
     if not isinstance(row, dict):
         return row
     row["thinking_mode"] = mode if mode in {"default", "adaptive", "off"} else "default"
     sent = []
+    tokens = []
     for record in records or []:
         if not isinstance(record, dict):
             continue
         value = record.get("thinking_sent")
-        if value in {"none", "enabled+budget_tokens", "adaptive"}:
-            sent.append(value)
+        if value not in _THINKING_SENT_VALUES:
+            continue
+        sent.append(value)
+        raw = record.get("thinking_tokens")
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            tokens.append(None)
+        else:
+            tokens.append(int(raw))
     row["thinking_sent"] = sent
+    row["thinking_tokens"] = tokens
     return row
 
 
@@ -1233,6 +1258,16 @@ def _fill(spec: dict, prepared: dict, out_dir: Path, tasks_dir: str, adapters: s
     fixtures = filled.get("fixtures") if isinstance(filled.get("fixtures"), dict) else {}
     config = filled.get("config") or {}
     changed = False
+    if (
+        (filled.get("harness") or "opencode") == "opencode"
+        and isinstance(config, dict)
+        and config.get("provider")
+        and os.environ.get("OBENCH_MATCHED_CONFIG", "").strip().lower() in {"1", "true", "yes", "on"}
+    ):
+        from thesis.ab.cell_fixtures import apply_matched_pair_config
+
+        config = apply_matched_pair_config(config)
+        changed = True
     context = fixtures.get("context")
     if isinstance(context, int) and context > 0:
         config = apply_context_limit(config, context)
@@ -1904,6 +1939,21 @@ def proxy_trace_public(row: dict) -> dict:
     return {key: row.get(key) for key in PROXY_TRACE_FIELDS}
 
 
+def _record_hit_max_tokens(record) -> bool:
+    """True when this ledger row stopped because it hit ``max_tokens``."""
+    if not isinstance(record, dict):
+        return False
+    if record.get("hit_max_tokens") is True:
+        return True
+    if record.get("hit_max_tokens") is False:
+        return False
+    stop = record.get("stop_reason")
+    if not isinstance(stop, str):
+        stream = record.get("stream")
+        stop = stream.get("stop_reason") if isinstance(stream, dict) else None
+    return stop == "max_tokens"
+
+
 def apply_cell_meter(
     row: dict,
     proxy: dict | None,
@@ -1927,7 +1977,11 @@ def apply_cell_meter(
     from thesis.ab.vertex_anthropic_proxy import read_no_usage_records, stream_summary
     no_usage = read_no_usage_records(str(ledger), str(cell))
     row["proxy_requests_no_usage"] = len(no_usage)
-    row.update(stream_summary(list(records or []) + no_usage))
+    observed = list(records or []) + no_usage
+    row.update(stream_summary(observed))
+    hits = sum(1 for record in observed if _record_hit_max_tokens(record))
+    row["proxy_hit_max_tokens"] = hits
+    row["proxy_hit_max_tokens_any"] = hits > 0
     from thesis.ab.route import route_label
     row["route"] = route_label(proxy, sum(1 for r in records or [] if isinstance(r, dict)))
     if not records:
@@ -2768,6 +2822,12 @@ def resolve_vertex_model(model: str, vertex_model: str | None) -> str:
     return "claude-opus-5-5"
 
 
+def _matched_config_on() -> bool:
+    return os.environ.get("OBENCH_MATCHED_CONFIG", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
           worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
@@ -2777,7 +2837,61 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
           vertex_model: str | None = None,
           require_model_match: bool = False,
           rerun_from: Path | None = None,
-          cells: set[str] | None = None):
+          cells: set[str] | None = None,
+          matched_config: bool = False,
+          matched_effort: str | None = None):
+    """Set the matched-pair env for the call, then run ``_drive_impl``.
+
+    The env is restored afterwards. Workers spawned inside the call inherit
+    it. ``matched_config`` or an already-set ``OBENCH_MATCHED_CONFIG`` turns
+    the profile on; neither leaves historical plans and configs alone.
+    ``matched_effort`` sets ``OBENCH_MATCHED_EFFORT`` for the Opus 5.5
+    ``output_config.effort`` value and is restored afterwards.
+    """
+    requested = bool(matched_config) or _matched_config_on()
+    previous = os.environ.get("OBENCH_MATCHED_CONFIG")
+    effort_text = matched_effort.strip().lower() if isinstance(matched_effort, str) else ""
+    effort_previous = os.environ.get("OBENCH_MATCHED_EFFORT")
+    if requested:
+        os.environ["OBENCH_MATCHED_CONFIG"] = "1"
+    if effort_text:
+        os.environ["OBENCH_MATCHED_EFFORT"] = effort_text
+    try:
+        return _drive_impl(
+            prs, tasks, trials, out_dir, jobs=jobs, model=model, timeout_s=timeout_s,
+            cache=cache, max_cost_usd=max_cost_usd, dry_run=dry_run, tasks_dir=tasks_dir,
+            build_fn=build_fn, assess_fn=assess_fn, worker=worker, proxy_url=proxy_url,
+            model_route=model_route, preflight_fn=preflight_fn,
+            transcripts_dir=transcripts_dir, aa=aa, fixtures=fixtures, order=order,
+            seed=seed, with_aa=with_aa, no_progress_s=no_progress_s,
+            omp_thinking=omp_thinking, vertex_model=vertex_model,
+            require_model_match=require_model_match, rerun_from=rerun_from,
+            cells=cells, matched_config=requested,
+        )
+    finally:
+        if requested:
+            if previous is None:
+                os.environ.pop("OBENCH_MATCHED_CONFIG", None)
+            else:
+                os.environ["OBENCH_MATCHED_CONFIG"] = previous
+        if effort_text:
+            if effort_previous is None:
+                os.environ.pop("OBENCH_MATCHED_EFFORT", None)
+            else:
+                os.environ["OBENCH_MATCHED_EFFORT"] = effort_previous
+
+
+def _drive_impl(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
+          max_cost_usd, dry_run, tasks_dir, build_fn=None, assess_fn=None,
+          worker=None, proxy_url=None, model_route="proxy", preflight_fn=None,
+          transcripts_dir=None, aa: bool = False, fixtures=None,
+          order: str = "sides", seed: int | None = None, with_aa: bool = False,
+          no_progress_s: float = 300, omp_thinking: str = "default",
+          vertex_model: str = "claude-opus-5-5",
+          require_model_match: bool = False,
+          rerun_from: Path | None = None,
+          cells: set[str] | None = None,
+          matched_config: bool = False):
     """Build, assess, and run. Returns ``(plan_text, launched, stopped_reason)``.
 
     ``tasks`` is one tuple shared by every PR, or a ``{pr: tasks}`` map.
@@ -2795,7 +2909,7 @@ def drive(prs, tasks, trials, out_dir, *, jobs, model, timeout_s, cache,
         tasks = tuple(tasks)
     plan = format_plan(
         prs, tasks, trials, aa=aa, fixtures=fixtures, with_aa=with_aa,
-        order=order, seed=seed,
+        order=order, seed=seed, matched_config=matched_config,
     )
     if dry_run and cells:
         plan += f"cells: {len(cells)} listed (--cells)\n" + "".join(f"  {k}\n" for k in sorted(cells))
@@ -3158,6 +3272,30 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--matched-config",
+        action="store_true",
+        help=(
+            "Pi vs OpenCode matched pair. Pi context window 200000 and "
+            "thinking level off; OpenCode context limit 200000. Sonnet 5.5 "
+            "requests send thinking.type=between_tools. Opus 5.5 requests "
+            "send thinking.type=adaptive plus output_config.effort "
+            "(--matched-effort, default low). Other models send "
+            "thinking.type=disabled. Off by default, so historical configs "
+            "stay unchanged. Sets OBENCH_MATCHED_CONFIG=1 for the process "
+            "and its cells."
+        ),
+    )
+    parser.add_argument(
+        "--matched-effort",
+        default=None,
+        help=(
+            "Opus 5.5 output_config.effort while --matched-config is on. "
+            "Default is low, the lowest documented level. Any identifier "
+            "is forwarded so a smoke can step upward without a code change. "
+            "Sets OBENCH_MATCHED_EFFORT for the process."
+        ),
+    )
+    parser.add_argument(
         "--omp-thinking",
         choices=("default", "adaptive", "off"),
         default="default",
@@ -3378,6 +3516,8 @@ def main(argv: list[str] | None = None) -> int:
             require_model_match=args.require_model_match,
             rerun_from=args.rerun_from,
             cells=parse_cells(args.cells, prs) if args.cells else None,
+            matched_config=args.matched_config,
+            matched_effort=args.matched_effort,
         )
     except (PrListError, RunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
