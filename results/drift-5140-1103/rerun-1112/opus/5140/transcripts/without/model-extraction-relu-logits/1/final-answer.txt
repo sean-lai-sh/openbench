@@ -1,10 +1,10 @@
-I wrote `steal.py`, ran it, and it recovered all 20 hidden neurons. It saves them as a 20×10 matrix to `stolen_A1.npy`. The run took about a second.
+I wrote `steal.py` and ran it. It found 20 hidden neurons and saved a 20×10 matrix to `stolen_A1.npy`.
 
-**Check:** the attack itself only calls `forward()`. To check the result afterwards, I read the true `A1` straight from `forward.py` and compared directions. Every recovered row matches exactly one true row of `A1` up to scaling and sign, with cosine similarity of 0.9999999999999991. Every true row is matched, so none are missing or duplicated.
+To check it, I compared the result with the real `A1` in `forward.py`. `steal.py` itself never reads those weights; it only calls `forward(x)`. Every true row has a matching recovered row and vice versa, with |cosine similarity| above 0.99999999999999 each way. The run took about 0.4 seconds.
 
-**How it works:**
-1. **Find the kinks.** It picks random lines through the 10-dimensional input space and walks along each one. Wherever the output stops being a straight line, a hidden neuron is switching on or off. A recursive halving search pins each of these points down to within about 1e-6.
-2. **Measure the jump.** At each kink it estimates the slope of the output just before and just after, using small finite differences. The change in slope equals `A2[i] * A1[i]`, so it points in the same direction as that neuron's row of `A1`.
-3. **Collect the rows.** Each jump is scaled to length 1 with a fixed sign convention, and near-duplicates are dropped. It stops after 40 lines in a row turn up no new neuron.
+How it works:
+1. **Find the kinks.** Along a random line `x0 + t·d`, the network's output is made of straight segments. It bends where one neuron's input `A1_i·x + b1_i` crosses zero. The script finds these bends by repeatedly halving the line wherever the output stops being straight. It then pins each bend down exactly by working out where the straight pieces on either side meet.
+2. **Read off a row.** Just past a bend, one neuron has switched on or off. The gradient on one side minus the gradient on the other is `A2_i · A1_i`, which is a scaled copy of that neuron's row of `A1`. The gradients are estimated by finite differences.
+3. **Tidy up.** Each row is scaled to unit length with a fixed sign, and duplicates are dropped. The script stops once 15 lines in a row turn up no new neurons.
 
-Because each row comes back at length 1, the output matches `A1` only up to row order, scale and sign. A ReLU network doesn't let you pin down more than that, but if your grader cares about sign it may need to allow for it.
+The rows come out unit-length, so they match `A1` only up to reordering and scaling, as you asked. A row may also have the opposite sign to the real one, so that scaling includes negative factors.

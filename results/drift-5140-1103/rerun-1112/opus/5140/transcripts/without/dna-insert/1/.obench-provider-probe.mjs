@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-const cache = "/tmp/obench-cell-a2wd82mu/opencode_home_n3iq0eaz/.cache/opencode";
+const cache = "/tmp/obench-cell-ro2f6o0d/opencode_home_1eivbdwb/.cache/opencode";
 const require = createRequire(import.meta.url);
 let printed = "";
 function versionOf(pkgJson) {

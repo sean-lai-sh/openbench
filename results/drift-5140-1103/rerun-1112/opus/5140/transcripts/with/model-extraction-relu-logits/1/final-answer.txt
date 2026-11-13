@@ -1,8 +1,10 @@
-I wrote `steal.py`, ran it, and it recovers A1. It finds 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. The script itself only calls `forward()`. After it ran, I compared the result against the real `A1` in `forward.py`: every true row matches exactly one stolen row, with cosine similarity of 1.0 to within about 1e-15. The signs also came out right, so each stolen row is the true row times a positive number. The run takes about 40 seconds.
+I wrote `steal.py` and ran it. It found all 20 hidden neurons and saved a 20×10 matrix to `stolen_A1.npy`.
+
+To check the result, I compared it against the true `A1` in `forward.py`. `steal.py` itself never reads the weights; it only calls `forward(x)`. After normalising each row, every true row matches a stolen row with |cosine| ≈ 1.0 (to about 1e-16). Every stolen row matches a true row the same way, so no extra rows were picked up. The run took under a second.
 
 **How it works:**
-1. **Find the kinks.** Along random straight lines through the input space, the network's output is piecewise linear. It bends exactly where one hidden neuron switches on or off. The script finds these bend points by repeatedly splitting the line into smaller pieces and checking whether each piece is straight.
-2. **Read off each row.** At each bend, it estimates the gradient just before and just after (by finite differences). The change in gradient equals `A2[i] * A1[i]` for the neuron that switched, which gives that row of A1 up to scaling. It normalises these, removes duplicates, and stops once 8 new lines in a row turn up no new neurons. Nine lines found all 20.
-3. **Fix the signs.** Plain ReLU networks determine each row's sign, so the script also recovers it. It fits the output using the hidden-unit features it has found plus a linear term. It then works out which rows must have been flipped to explain that linear term, by checking all 2^20 on/off combinations. This step is an extra beyond what you asked for. If it fails, the rows are saved with an arbitrary sign, which is still correct up to scaling.
+1. **Find the bends.** Along a random straight line through input space, the network's output changes linearly except at points where one hidden neuron switches on or off. The script finds these bend points by repeatedly halving the line until each piece is straight. It then pins down each bend exactly by intersecting the two straight pieces on either side.
+2. **Read off a row.** At a bend, the gradient (estimated with small finite-difference steps) differs between the two sides by `±A2[i]·A1[i]`. That difference is row `i` of `A1` up to a scale factor.
+3. **Clean up.** Each row is scaled to length 1 and given a fixed sign, and duplicates are merged. The script keeps sampling new lines until 60 in a row turn up no new neurons. It also drops any row seen only once, to filter out false detections.
 
-One limit: the sign step's full search only runs when there are at most 22 neurons. With more, it's skipped and the signs are arbitrary.
+The rows come out in arbitrary order with unit length, which is the "up to permuting neurons and scaling" form you asked for.

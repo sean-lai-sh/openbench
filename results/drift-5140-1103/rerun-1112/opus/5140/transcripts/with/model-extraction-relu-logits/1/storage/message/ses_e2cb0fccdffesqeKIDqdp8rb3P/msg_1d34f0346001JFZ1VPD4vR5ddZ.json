@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d34f0346001JFZ1VPD4vR5ddZ",
+  "sessionID": "ses_e2cb0fccdffesqeKIDqdp8rb3P",
+  "role": "user",
+  "time": {
+    "created": 1794546533190
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py` and ran it. It found all 20 hidden neurons and saved a 20×10 matrix to `stolen_A1.npy`.\n\nTo check the result, I compared it against the true `A1` in `forward.py`. `steal.py` itself never reads the weights; it only calls `forward(x)`. After normalising each row, every true row matches a stolen row with |cosine| ≈ 1.0 (to about 1e-16). Every stolen row matches a true row the same way, so no extra rows were picked up. The run took under a second.\n\n**How it works:**\n1. **Find the bends.** Along a random straight line through input space, the network's output changes linearly except at points where one hidden neuron switches on or off. The script finds these bend points by repeatedly halving the line until each piece is straight. It then pins down each bend exactly by intersecting the two straight pieces on either side.\n2. **Read off a row.** At a bend, the gradient (estimated with small finite-difference steps) differs between the two sides by `±A2[i]·A1[i]`. That difference is row `i` of `A1` up to a scale factor.\n3. **Clean up.** Each row is scaled to length 1 and given a fixed sign, and duplicates are merged. The script keeps sampling new lines until 60 in a row turn up no new neurons. It also drops any row seen only once, to filter out false detections.\n\nThe rows come out in arbitrary order with unit length, which is the \"up to permuting neurons and scaling\" form you asked for.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

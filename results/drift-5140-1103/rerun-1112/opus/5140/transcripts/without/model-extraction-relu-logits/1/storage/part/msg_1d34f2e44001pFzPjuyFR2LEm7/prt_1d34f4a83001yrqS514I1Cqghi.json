@@ -1,0 +1,28 @@
+{
+  "id": "prt_1d34f4a83001yrqS514I1Cqghi",
+  "sessionID": "ses_e2cb0db86ffeP56M2NC4o3cksq",
+  "messageID": "msg_1d34f2e44001pFzPjuyFR2LEm7",
+  "type": "tool",
+  "callID": "toolu_vrtx_01BfMtQJ6FxYEYQ8MgTjnZsk",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-dcsa_kp6/bench_opencode_model-extraction-relu-logits_0_ubsfil/steal.py",
+      "content": "\"\"\"Extract A1 (up to permutation and scaling of rows) from a 1-hidden-layer ReLU\nnetwork using only black-<USER> queries to forward(x).\n\nApproach:\n  1. Along random lines x0 + t*d, the network is piecewise linear in t.\n     Find the breakpoints (critical points, where some neuron's preactivation is 0)\n     with a recursive linearity test plus precise slope-intersection.\n  2. At each critical point, estimate the input gradient just on either side.\n     The difference is A2_i * A1_i for the neuron i that switches, i.e. a\n     scaled row of A1.\n  3. Normalise and deduplicate the rows found.\n\"\"\"\nimport os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, a, b, fa, fb, out, depth=0):\n    \"\"\"Recursively locate breakpoints of g(t) = f(x0 + t d) on [a, b].\"\"\"\n    m = 0.5 * (a + b)\n    fm = f(x0 + m * d)\n    lin = 0.5 * (fa + fb)\n    scale = max(1.0, abs(fa), abs(fb))\n    if abs(fm - lin) < 1e-12 * scale and depth > 3:\n        return\n    if b - a < 1e-6:\n        out.append(m)\n        return\n    find_kinks(x0, d, a, m, fa, fm, out, depth + 1)\n    find_kinks(x0, d, m, b, fm, fb, out, depth + 1)\n\n\ndef refine_kink(x0, d, t, w=1e-4):\n    \"\"\"Refine a kink location by intersecting the left and right lines.\"\"\"\n    h = w * 0.1\n    tl, tr = t - w, t + w\n    fl0, fl1 = f(x0 + (tl - h) * d), f(x0 + tl * d)\n    fr0, fr1 = f(x0 + tr * d), f(x0 + (tr + h) * d)\n    sl = (fl1 - fl0) / h\n    sr = (fr1 - fr0) / h\n    if abs(sl - sr) < 1e-10:\n        return None\n    # fl1 + sl (t - tl) = fr0 + sr (t - tr)\n    tk = (fr0 - fl1 + sl * tl - sr * tr) / (sl - sr)\n    if abs(tk - t) > 2 * w:\n        return None\n    return tk\n\n\ndef gradient(x, h=1e-6):\n    g = np.zeros(DIM)\n    fx = f(x)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - fx) / h\n    return g\n\n\ndef normalise(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\ndef main():\n    rows = []\n    stable = 0\n    T = 20.0\n    for it in range(200):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        kinks = []\n        find_kinks(x0, d, -T, T, f(x0 - T * d), f(x0 + T * d), kinks)\n        # merge near-duplicates\n        kinks = sorted(kinks)\n        merged = []\n        for k in kinks:\n            if not merged or k - merged[-1] > 1e-5:\n                merged.append(k)\n        before = len(rows)\n        for t in merged:\n            tk = refine_kink(x0, d, t)\n            if tk is None:\n                continue\n            xk = x0 + tk * d\n            delta = 1e-4\n            gl = gradient(xk - delta * d)\n            gr = gradient(xk + delta * d)\n            diff = gr - gl\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = normalise(diff)\n            if not any(np.linalg.norm(v - r) < 1e-3 for r in rows):\n                rows.append(v)\n        stable = stable + 1 if len(rows) == before else 0\n        if stable >= 15 and it >= 20:\n            break\n\n    A1_est = np.array(rows)\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_est)\n    print(f\"Recovered {A1_est.shape[0]} neurons\")\n    print(A1_est)\n    return A1_est\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-dcsa_kp6/bench_opencode_model-extraction-relu-logits_0_ubsfil/steal.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-dcsa_kp6/bench_opencode_model-extraction-relu-logits_0_ubsfil/steal.py": []
+      },
+      "filepath": "/tmp/obench-cell-dcsa_kp6/bench_opencode_model-extraction-relu-logits_0_ubsfil/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794546564065,
+      "end": 1794546568546
+    }
+  }
+}

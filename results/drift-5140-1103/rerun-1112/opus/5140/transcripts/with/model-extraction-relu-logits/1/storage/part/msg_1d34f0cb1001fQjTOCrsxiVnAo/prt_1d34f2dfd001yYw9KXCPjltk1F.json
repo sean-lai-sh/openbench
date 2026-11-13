@@ -1,0 +1,28 @@
+{
+  "id": "prt_1d34f2dfd001yYw9KXCPjltk1F",
+  "sessionID": "ses_e2cb0fccdffesqeKIDqdp8rb3P",
+  "messageID": "msg_1d34f0cb1001fQjTOCrsxiVnAo",
+  "type": "tool",
+  "callID": "toolu_vrtx_017ECoV8AfJ1STAXEavpTiT5",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-07iyebp5/bench_opencode_model-extraction-relu-logits_xjshab1r/steal.py",
+      "content": "\"\"\"Extract A1 (up to row permutation and scaling) from a 1-hidden-layer ReLU\nnetwork using only black-<USER> queries to forward(x).\n\nMethod (critical-point / kink attack):\n  * Along random lines x(t) = x0 + t*d the network is piecewise linear in t.\n    Each kink is a point where some hidden neuron i crosses zero, i.e. lies\n    on the hyperplane A1[i] . x + b1[i] = 0.\n  * At such a point the gradient of f jumps by +/- A2[i] * A1[i], so the\n    difference of the gradients on either side gives row i of A1 up to scale.\n  * Repeat over many lines, normalise the recovered rows, and deduplicate.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef grad(x, h=1e-6):\n    \"\"\"Exact (up to fp) gradient in a linear region via central differences.\"\"\"\n    g = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef find_kinks(x0, d, t0, t1, f0, f1, out, depth=0):\n    \"\"\"Recursively locate kinks of g(t)=f(x0+t d) in [t0, t1].\"\"\"\n    tm = 0.5 * (t0 + t1)\n    fm = f(x0 + tm * d)\n    scale = max(1.0, abs(f0), abs(f1), abs(fm))\n    if abs(fm - 0.5 * (f0 + f1)) < 1e-11 * scale and depth > 3:\n        return  # looks linear on this segment\n    if t1 - t0 < 1e-3 or depth > 40:\n        # Try to resolve a single kink by intersecting the two end lines.\n        delta = (t1 - t0) * 1e-3\n        sl = (f(x0 + (t0 + delta) * d) - f0) / delta\n        sr = (f1 - f(x0 + (t1 - delta) * d)) / delta\n        if abs(sl - sr) < 1e-9:\n            return\n        # f0 + sl (t - t0) = f1 + sr (t - t1)\n        tk = (f1 - f0 + sl * t0 - sr * t1) / (sl - sr)\n        if not (t0 <= tk <= t1):\n            return\n        pred = f0 + sl * (tk - t0)\n        if abs(f(x0 + tk * d) - pred) < 1e-9 * scale:\n            out.append(tk)\n        elif depth <= 60:\n            # more than one kink: keep splitting\n            find_kinks(x0, d, t0, tm, f0, fm, out, depth + 1)\n            find_kinks(x0, d, tm, t1, fm, f1, out, depth + 1)\n        return\n    find_kinks(x0, d, t0, tm, f0, fm, out, depth + 1)\n    find_kinks(x0, d, tm, t1, fm, f1, out, depth + 1)\n\n\ndef row_from_kink(x0, d, tk):\n    eps = 1e-4\n    dn = d / np.linalg.norm(d)\n    xk = x0 + tk * d\n    gp = grad(xk + eps * dn)\n    gm = grad(xk - eps * dn)\n    r = gp - gm\n    n = np.linalg.norm(r)\n    if n < 1e-10:\n        return None\n    r = r / n\n    # canonical sign: largest-magnitude entry positive\n    if r[np.argmax(np.abs(r))] < 0:\n        r = -r\n    return r\n\n\ndef main():\n    rows = []      # unique normalised rows\n    counts = []\n    lines_without_new = 0\n    n_lines = 0\n    while lines_without_new < 60 and n_lines < 2000:\n        n_lines += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        T = 10.0\n        kinks = []\n        find_kinks(x0, d, -T, T, f(x0 - T * d), f(x0 + T * d), kinks)\n        new = False\n        for tk in kinks:\n            r = row_from_kink(x0, d, tk)\n            if r is None:\n                continue\n            for i, u in enumerate(rows):\n                if abs(abs(np.dot(u, r)) - 1) < 1e-5:\n                    counts[i] += 1\n                    # refine by averaging consistent sign\n                    break\n            else:\n                rows.append(r)\n                counts.append(1)\n                new = True\n        lines_without_new = 0 if new else lines_without_new + 1\n\n    # Keep rows observed more than once (guard against spurious detections)\n    A = np.array([r for r, c in zip(rows, counts) if c >= 2])\n    print(f\"Queried {n_lines} lines, recovered {A.shape[0]} neurons\")\n    np.save(OUT, A)\n    print(A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-07iyebp5/bench_opencode_model-extraction-relu-logits_xjshab1r/steal.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-07iyebp5/bench_opencode_model-extraction-relu-logits_xjshab1r/steal.py": []
+      },
+      "filepath": "/tmp/obench-cell-07iyebp5/bench_opencode_model-extraction-relu-logits_xjshab1r/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794546558513,
+      "end": 1794546563853
+    }
+  }
+}

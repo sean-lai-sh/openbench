@@ -1,19 +1,19 @@
-I've written `re.json`: 3,936 regex pairs, about 338 KB, well under both limits. It matched python-chess on every position I tried:
+I've written `re.json`. It contains 2,470 [regex, replacement] pairs and is about 400 KB, well under both limits. On your example position it gives exactly the three expected moves, and the provided `check.py` passes all 18 positions from the Opera Game. I changed only its hard-coded `/app/re.json` path, in a temporary copy.
 
-- **The example position:** it returns the same three moves as your expected output, in a different order (the queen move comes first). `check.py` compares them as a set, so the order doesn't affect the score.
-- **`check.py`:** passes. I ran a copy with the path changed from `/app/re.json` to the local file.
-- **Random games:** about 18,000 white-to-move positions from random games, picked to favour castling, en passant and promotion. No mismatches, at roughly 0.15 s per position.
-- **Hand-picked edge cases:** all 16 passed. They include en passant that's illegal because it uncovers a check along the rank, castling through or out of check, losing castling rights when a rook on a8/h8 is captured, and promotions that capture.
+**How it works:** the rules are made by a Python script, `gen.py`, which I left in the folder. They run in five stages:
+1. **Unpack the input.** The FEN becomes one working line holding the 64 squares (digits expanded into one `.` per empty square), the castling rights and the en-passant square.
+2. **List candidate moves.** There is one rule for each possible from/to move per piece type: rook/queen and bishop/queen slides with clear-path checks, knights, king steps, pawn pushes and captures, double pushes, en passant and queen-only promotion. Each rule that fits adds a new line with that move made.
+   - **Castling** is only added if the right is still held, the squares between are empty, and the king's square and the square it passes over aren't attacked.
+3. **Remove illegal moves.** Any candidate that leaves the white king attacked by a black piece is deleted.
+4. **Update castling rights.** A right is dropped once its king or rook is no longer on its home square, whether it moved or was captured.
+5. **Rebuild the FEN.** Each line goes back to FEN text with black to move, and the move counters are always written as `0 1`.
 
-**How it works:**
-1. **Read the input:** turns the FEN into one fixed-length line: a start marker, 64 board squares (empty squares written as `1`), 4 castling characters, and the en-passant file.
-2. **List candidate moves:** one rule per possible move: each piece type and from/to square pair, plus pawn pushes, double pushes, captures, queen promotions, en passant and both castles. Each rule checks the squares that matter (start square, target, the path in between) and adds a new line with the move made. A castling rule also checks that e1 and the square the king passes over aren't attacked.
-3. **Remove illegal moves:** 64 rules, one per king square, delete any new line where the white king is attacked by a black pawn, knight, king or sliding piece with a clear path.
-4. **Update castling rights:** a right is removed if the king or that rook is no longer on its starting square. This covers rook captures on a8/h8 too.
-5. **Write the FEN back:** adds the slashes, turns runs of `1` back into digits, writes `-` when no castling rights are left, and ends each line with ` b <castling> <ep> 0 0`.
+**En passant:** after a double push, the output shows the en-passant square only if a black pawn sits next to the pawn that moved. `python-chess` goes further and shows it only when the capture is actually legal. In the rare case where they differ, `check.py` still accepts the answer because it also accepts `-` in that field.
 
-**Two limits:**
-- **En-passant field:** after a two-square pawn move I always write the en-passant square (e.g. `c3`), even when black can't capture there. `check.py` accepts this, because it also tries each answer with that field set to `-`.
-- **Checkmate and stalemate:** with no legal moves the function returns `[""]` rather than an empty list. A regex can't do better, because splitting an empty string always gives one item.
+**Testing:** I compared the output against `python-chess` on about 18,000 white-to-move positions, all of which matched. They came from random games, from standard test positions (such as Kiwipete), and from setups built to exercise castling through or out of check, en passant, and promotions with and without captures.
 
-The script that builds the file is `gen.py`, in the same folder. Run `python3 gen.py` to rebuild `re.json`.
+**Limitations:**
+- **No legal moves:** for checkmate or stalemate positions the output is a single empty string rather than an empty list, because of how `split` behaves. The provided test never feeds in such a position.
+- **Speed:** each position takes about 0.4 s. Almost all of that is Python compiling the 2,470 patterns; actually running them takes about 0.04 s.
+
+`test.py`, my comparison script, is also still in the folder, so you can delete it and `gen.py` if you only want `re.json`.
