@@ -1,0 +1,17 @@
+[
+ "python3",
+ "-c",
+ "\nimport importlib.util, sys, os, json as _json, threading, hashlib, time\nimport thesis.ab.vertex_anthropic_proxy as v\n_d = os.path.join(sys.argv[sys.argv.index(\"--out\") + 1], \"requests\"); os.makedirs(_d, exist_ok=True)\n_n = [0]; _l = threading.Lock(); _tl = threading.local()\nclass _J:\n    def __getattr__(self, a): return getattr(_json, a)\n    def loads(self, s, *a, **k):\n        if getattr(_tl, \"armed\", False) and sys._getframe(1).f_code.co_name == \"do_POST\":\n            _tl.armed = False\n            raw = s.encode(\"utf-8\") if isinstance(s, str) else bytes(s)\n            with _l:\n                _n[0] += 1; _tl.k = _n[0]\n            open(os.path.join(_d, \"%04d.received.bin\" % _tl.k), \"wb\").write(raw)\n            _tl.meta = {\"k\": _tl.k, \"route\": getattr(_tl, \"path\", None), \"t_received\": time.time(),\n                        \"received_sha256\": hashlib.sha256(raw).hexdigest(), \"received_bytes\": len(raw)}\n        return _json.loads(s, *a, **k)\nv.json = _J()\n_split = v.split_cell_path\ndef _split_cell_path(path):\n    if sys._getframe(1).f_code.co_name == \"do_POST\":\n        _tl.armed = True; _tl.k = None; _tl.path = path\n    return _split(path)\nv.split_cell_path = _split_cell_path\n_tb = v.translate_body\ndef _translate_body(path, body):\n    kind, out = _tb(path, body)\n    k = getattr(_tl, \"k\", None)\n    if k is None:\n        with _l:\n            _n[0] += 1; k = _n[0]\n        _tl.meta = {\"k\": k, \"route\": path, \"received\": \"not captured\"}\n    open(os.path.join(_d, \"%04d.edited.json\" % k), \"wb\").write(body)\n    open(os.path.join(_d, \"%04d.upstream.json\" % k), \"wb\").write(out)\n    m = dict(getattr(_tl, \"meta\", {}) or {}); m.update({\"translate_route\": path, \"kind\": kind, \"t_forward\": time.time(),\n        \"edited_sha256\": hashlib.sha256(body).hexdigest(), \"upstream_sha256\": hashlib.sha256(out).hexdigest(), \"upstream_bytes\": len(out)})\n    open(os.path.join(_d, \"%04d.meta.json\" % k), \"w\").write(_json.dumps(m))\n    _tl.k = None\n    return kind, out\nv.translate_body = _translate_body\nH = 'pi'; TASK = 'regex-chess'\nif H == \"pi\":\n    s = importlib.util.spec_from_file_location(\"c\", \"data/pi-harness-smoke/cell.py\"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); m.TASK = TASK\nelse:\n    s = importlib.util.spec_from_file_location(\"c\", \"data/opencode-harness-smoke/cell.py\"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\nsys.exit(m.main(sys.argv[1:]))\n",
+ "--out",
+ "<HOME>/h2/matched245-gate-1112/cells/1-pi-claude-sonnet-5-5-regex-chess/pi",
+ "--models",
+ "claude-sonnet-5-5",
+ "--exec",
+ "docker",
+ "--image",
+ "h1-env:1027-strace",
+ "--cache",
+ "<HOME>/h1/pi-src",
+ "--require-model-match",
+ "--matched-config"
+]
