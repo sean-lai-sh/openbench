@@ -201,6 +201,51 @@ class ThinkingShapes(unittest.TestCase):
         self.assertEqual(rec["thinking"]["kind"], "none")
 
 
+class GeminiToolMatching(unittest.TestCase):
+    """Repeated or parallel calls to one tool each get their own response."""
+
+    def body(self, calls, responses):
+        return {"contents": [{"role": "user", "parts": [{"text": "go"}]},
+                             {"role": "model", "parts": [{"functionCall": c} for c in calls]},
+                             {"role": "user", "parts": [{"functionResponse": r} for r in responses]}]}
+
+    def results(self, calls, responses):
+        return [(c["call_id"], c["result"]) for c in tr.tool_calls_from_next_request("gemini", self.body(calls, responses))]
+
+    def test_matched_by_call_id_even_out_of_order(self):
+        calls = [{"id": "c1", "name": "bash", "args": {"command": "ls"}},
+                 {"id": "c2", "name": "bash", "args": {"command": "pwd"}}]
+        responses = [{"id": "c2", "name": "bash", "response": {"output": "/app"}},
+                     {"id": "c1", "name": "bash", "response": {"output": "main.rs"}}]
+        self.assertEqual(self.results(calls, responses),
+                         [("c1", {"output": "main.rs"}), ("c2", {"output": "/app"})])
+
+    def test_without_ids_falls_back_to_occurrence_order_per_name(self):
+        calls = [{"name": "bash", "args": {"command": "ls"}}, {"name": "read", "args": {"path": "a"}},
+                 {"name": "bash", "args": {"command": "pwd"}}]
+        responses = [{"name": "bash", "response": {"output": "main.rs"}}, {"name": "read", "response": {"text": "A"}},
+                     {"name": "bash", "response": {"output": "/app"}}]
+        self.assertEqual([r for _, r in self.results(calls, responses)],
+                         [{"output": "main.rs"}, {"text": "A"}, {"output": "/app"}])
+
+    def test_missing_response_is_none_not_another_calls_result(self):
+        calls = [{"id": "c1", "name": "bash", "args": {}}, {"id": "c2", "name": "bash", "args": {}}]
+        responses = [{"id": "c1", "name": "bash", "response": {"output": "one"}}]
+        self.assertEqual(self.results(calls, responses), [("c1", {"output": "one"}), ("c2", None)])
+
+
+class Packaging(unittest.TestCase):
+    def test_pin_and_schema_are_package_data(self):
+        """load_pin() reads opencode_pin.json at run time, so a wheel must ship it."""
+        import fnmatch
+        import tomllib
+
+        root = Path(oc.__file__).resolve().parents[2]
+        globs = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["obench"]
+        for rel in ("reflection/opencode_pin.json", "reflection/TRACE_SCHEMA.md"):
+            self.assertTrue(any(fnmatch.fnmatch(rel, g) for g in globs), rel)
+
+
 class Failures(unittest.TestCase):
     def assert_code(self, code, events, wires, step=None):
         with self.assertRaises(tr.TraceError) as caught:

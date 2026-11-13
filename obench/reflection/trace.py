@@ -228,6 +228,28 @@ def _block_text(content: Any) -> Any:
     return content
 
 
+def _match_gemini_responses(calls: list[dict], responses: list[dict]) -> list[Any]:
+    """The ``functionResponse.response`` for each ``functionCall``: by ``id``
+    when the call carries one and a response has the same id, otherwise the
+    next unused response with the same name, in order. So repeated or parallel
+    calls to one tool each get their own result."""
+    used: set[int] = set()
+    out = []
+    for call in calls:
+        pick = None
+        if call.get("id") is not None:
+            pick = next((i for i, r in enumerate(responses) if i not in used and r.get("id") == call["id"]), None)
+        if pick is None:
+            pick = next((i for i, r in enumerate(responses) if i not in used and r.get("id") in (None, call.get("id"))
+                         and r.get("name") == call.get("name")), None)
+        if pick is None:
+            out.append(None)
+            continue
+        used.add(pick)
+        out.append(responses[pick].get("response"))
+    return out
+
+
 def tool_calls_from_next_request(wire: str, body: dict | None) -> list[dict]:
     """Tool calls of the previous assistant turn, as the next request replays
     them with their results. At the pin OpenCode's JSON stream emits only
@@ -240,19 +262,13 @@ def tool_calls_from_next_request(wire: str, body: dict | None) -> list[dict]:
                        default=None)
         if model_at is None:
             return []
-        results = {}
-        for c in contents[model_at + 1:]:
-            for p in (c.get("parts") or []) if isinstance(c, dict) else []:
-                fr = p.get("functionResponse") if isinstance(p, dict) else None
-                if isinstance(fr, dict):
-                    results.setdefault(fr.get("name"), fr.get("response"))
-        calls = []
-        for p in contents[model_at].get("parts") or []:
-            fc = p.get("functionCall") if isinstance(p, dict) else None
-            if isinstance(fc, dict):
-                calls.append({"call_id": fc.get("id"), "name": fc.get("name"), "arguments": fc.get("args"),
-                              "result": results.get(fc.get("name")), "is_error": None})
-        return calls
+        responses = [p["functionResponse"] for c in contents[model_at + 1:] if isinstance(c, dict)
+                     for p in c.get("parts") or [] if isinstance(p, dict) and isinstance(p.get("functionResponse"), dict)]
+        calls_raw = [p["functionCall"] for p in contents[model_at].get("parts") or []
+                     if isinstance(p, dict) and isinstance(p.get("functionCall"), dict)]
+        return [{"call_id": fc.get("id"), "name": fc.get("name"), "arguments": fc.get("args"),
+                 "result": result, "is_error": None}
+                for fc, result in zip(calls_raw, _match_gemini_responses(calls_raw, responses))]
     messages = body.get("messages") or []
     asst_at = max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "assistant"),
                   default=None)
