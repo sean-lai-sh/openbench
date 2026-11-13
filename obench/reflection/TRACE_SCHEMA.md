@@ -86,9 +86,16 @@ call together with its result (`tool_calls[].source = "next_request"`).
 | `request` | object | yes | Request body as sent |
 | `response_usage` | object\|null | yes | The provider response's `usage` (`usageMetadata` for Gemini) |
 | `status` | int\|null | no | HTTP status |
+| `route` | string | no | The proxy route (reflection model key) the call went through (`wire_proxy.py`) |
+| `thinking_enforced` | object | no | `{setting, client[, removed]}`: the thinking setting the proxy sent, what the client asked for, and any params dropped as incompatible |
+| `cost_usd` | number\|null | no | Per-call cost from `vertex_models.cost_usd` (null when a needed rate is missing) |
+| `error` | string | no | Transport error when the upstream was unreachable |
+| `usage_error` | string | no | `TraceError` code when the response usage could not be normalized |
 
-`wire_records_from_proxy_ledger` builds these from the existing Vertex proxy
-ledger, taking the request bodies from its raw request capture.
+The reflection loop's own routes write these directly: `wire_proxy.py`
+(SEA-105, one fixed Vertex route per model). `wire_records_from_proxy_ledger`
+builds them from the existing harness-comparison Vertex proxy ledger, taking
+the request bodies from its raw request capture.
 
 ## Failures
 

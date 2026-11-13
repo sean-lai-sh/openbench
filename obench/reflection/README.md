@@ -42,3 +42,35 @@ provider's response usage. The join produces one schema'd record per step.
 Writing wire records for the Vertex routes (Gemini 4 Carbon, Claude Opus,
 gpt-oss 120B) is SEA-105. `wire_records_from_proxy_ledger` already reads the
 existing Vertex proxy ledger together with its raw request capture.
+
+## Vertex models and the one-cell smoke (SEA-105)
+
+The three models and their exact Vertex IDs, locations, endpoints, thinking
+settings, prices and sources are in [`VERTEX_MODELS.md`](VERTEX_MODELS.md):
+Gemini 4 Carbon, Claude Opus 5.5 and gpt-oss 120B, all on `global`.
+`vertex_models.resolve()` accepts only those three keys. A missing,
+misspelled, Sonnet or Qwen name raises, and nothing falls back.
+
+`wire_proxy.py` is the only route. It checks that the client named the
+route's model, sets the model's thinking explicitly, forwards to the fixed
+Vertex URL with an ADC token, and writes one `wire/v1` record per call with
+request, served model, usage and cost.
+
+One-cell smoke per model. This is **paid**: run it on the thesis VM only, one
+cell per model.
+
+```bash
+export GOOGLE_CLOUD_PROJECT=<project>   # ADC must be available (gcloud auth application-default login, or the VM's service account)
+OPENCODE="$HOME/h1/opencode-src/bin/ba54cee55e18b47fb70badc84ae2cbac7c83d258/opencode"
+for m in gemini-4-carbon claude-opus-5-5 gpt-oss-120b; do
+  python3.11 -m obench.reflection.smoke --model "$m" --opencode "$OPENCODE" --out "$HOME/reflection-smoke/$m"
+done
+```
+
+Each `--out` directory gets:
+- `summary.json` with six checks: `model`, `traced`, `thinking_explicit`, `usage_thinking`, `cost` and `pin`;
+- `trace.jsonl`, `wire.jsonl`, `opencode-events.jsonl` and `opencode-stderr.txt`.
+
+The default task is `tasks/fix-failing-test`, a small multi-step task run in a
+copy of its workspace. `--out` must be outside `results/` and `data/`. Scrub
+the files before they go into the separate smoke-data PR.

@@ -390,7 +390,12 @@ class SchemaDoc(unittest.TestCase):
         self.assertEqual(self.documented("## Step record"), self.written(record))
 
     def test_wire_fields_match_the_doc(self):
-        self.assertEqual(self.documented("## Wire record"), set(anthropic_wires()[0]))
+        documented = self.documented("## Wire record")
+        section = DOC.read_text().split("## Wire record", 1)[1].split("\n## ", 1)[0]
+        required = {m.group(1) for m in re.finditer(r"^\| `([a-z_]+)` \| [^|]+ \| yes \|", section, re.M)}
+        written = set(anthropic_wires()[0])
+        self.assertLessEqual(required, written)
+        self.assertLessEqual(written, documented)
 
     def test_error_codes_and_kinds_match_the_doc(self):
         text = DOC.read_text()
