@@ -284,7 +284,7 @@ class Runner:
         if result.status not in STATUSES:
             result = TrialResult(status="error", passed=None, error=f"executor returned status {result.status!r}")
         model = vm.resolve(spec.model)
-        wrong = [s for s in result.served_models if s and not str(s).startswith(model.vertex_id)]
+        wrong = [s for s in result.served_models if s and not vm.served_matches(model, s)]
         task = self.known[spec.task]
         row = {"schema": TRIAL_SCHEMA, "run_id": spec.run_id, "trial_id": spec.trial_id, "task": spec.task,
                "bench": task.bench["bench"], "bench_commit": task.bench["commit"], "model": spec.model,

@@ -319,6 +319,41 @@ class EndToEnd(ProxyCase):
         self.assertFalse(check["comparable_with_other_models"])
         self.assertEqual(check["per_step"][0]["thinking_tokens"], 0)
 
+    def test_gpt_oss_usage_without_any_reasoning_field_passes_flagged(self):
+        """The 2026-11-13 VM smoke: usage had only prompt/completion/total tokens."""
+        self.vertex.reply = lambda path: (200, "application/json", json.dumps({
+            "model": "openai/gpt-oss-120b-maas", "choices": [{"message": {"role": "assistant", "content": "ok",
+                                                                         "reasoning_content": "x" * 888}}],
+            "usage": {"prompt_tokens": 84, "completion_tokens": 612, "total_tokens": 696}}).encode())
+        text = "x" * 888
+        model, records = self.gptoss_records(text)
+        step = records[0]
+        self.assertIsNone(step["usage"]["thinking_tokens"])          # absent, recorded as null
+        self.assertIsNone(step["usage"]["thinking_tokens_field"])
+        self.assertEqual((step["thinking"]["flag"], step["thinking"]["chars"]), ("reported_absent_text_present", 888))
+        check = smoke.usage_thinking(model, records)
+        self.assertTrue(check["pass"])
+        self.assertEqual(check["flags"], ["reported_absent_text_present"])
+        self.assertIsNone(check["per_step"][0]["thinking_tokens"])
+        cmd = ["opencode", "--model", vm.opencode_model_arg(model)]
+        result = smoke.checks(model, cmd, self.records(), records, None, {"sha": "x"})
+        self.assertTrue(result["model"]["pass"], result["model"])     # served "openai/gpt-oss-120b-maas" accepted
+        self.assertEqual(result["model"]["served"], ["openai/gpt-oss-120b-maas"])
+
+    def test_served_model_matching(self):
+        oss, opus = vm.resolve("gpt-oss-120b"), vm.resolve("claude-opus-5-5")
+        self.assertTrue(vm.served_matches(oss, "openai/gpt-oss-120b-maas"))
+        self.assertTrue(vm.served_matches(oss, "gpt-oss-120b-maas"))
+        self.assertFalse(vm.served_matches(oss, "openai/gpt-oss-20b-maas"))
+        self.assertTrue(vm.served_matches(opus, "claude-opus-5-5"))
+        self.assertFalse(vm.served_matches(opus, "claude-sonnet-5-5"))
+        self.assertFalse(vm.served_matches(opus, None))
+
+    def test_opus_and_carbon_still_need_a_reported_count(self):
+        records = [{"step": 1, "usage": {"thinking_tokens": None}, "thinking": {"text": "summary", "chars": 7}}]
+        for key in ("claude-opus-5-5", "gemini-4-carbon"):
+            self.assertFalse(smoke.usage_thinking(vm.resolve(key), records)["pass"])
+
     def test_gpt_oss_fails_only_when_reasoning_text_is_missing_or_empty(self):
         for text in (None, "", "   "):
             with self.subTest(text=text):

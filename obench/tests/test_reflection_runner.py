@@ -129,6 +129,16 @@ class Tables(Base):
         self.assertEqual(rows[1]["wrong_model_served"], ["claude-sonnet-5-5"])
         self.assertEqual(rn.read_rows(self.dir / "summary.jsonl")[0]["wrong_model_trials"], 2)
 
+    def test_gpt_oss_body_model_form_is_not_a_wrong_model(self):
+        class OssServed(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                res = super().run_trial(spec, run_dir)
+                res.served_models = ["openai/gpt-oss-120b-maas"]
+                return res
+        self.run_with(OssServed({}), models=[OSS], tasks=["extract-elf"], max_rounds=1)
+        rows = rn.read_rows(self.dir / "trials.jsonl")
+        self.assertTrue(all(r["wrong_model_served"] == [] for r in rows))
+
     def test_resume_skips_trials_already_written(self):
         executor = rn.FixtureExecutor({})
         self.run_with(executor, models=[OPUS], tasks=["extract-elf"])
