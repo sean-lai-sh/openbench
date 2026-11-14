@@ -39,7 +39,8 @@ WIRES = ("anthropic", "openai_chat", "gemini")
 THINKING_KINDS = ("full", "summary", "redacted", "omitted", "none")
 # thinking.flag: typed notes on how the reported thinking tokens relate to the returned text.
 THINKING_FLAGS = (
-    "reported_zero_text_present",   # usage reports 0 thinking tokens but thinking text came back (gpt-oss on Vertex)
+    "reported_zero_text_present",   # usage reports 0 thinking tokens but thinking text came back
+    "reported_absent_text_present", # usage has no thinking-token field at all, but thinking text came back (gpt-oss on Vertex)
 )
 ERROR_CODES = (
     "events_malformed",     # the OpenCode stream is not a sequence of steps
@@ -352,7 +353,8 @@ def _thinking(step: dict, wire: str, setting: dict, thinking_tokens: int | None,
             "summary", "Claude 4+ returns summarized thinking unless display=full")
     else:
         kind, rule = "full", "OpenAI-chat reasoning content is the model's own reasoning text"
-    flag = "reported_zero_text_present" if thinking_tokens == 0 and text else None
+    flag = (("reported_zero_text_present" if thinking_tokens == 0 else
+             "reported_absent_text_present" if thinking_tokens is None else None) if text else None)
     counted, counted_by = (count_tokens(text) if count_tokens and text else (None, None))
     return {"kind": kind, "text": text, "parts": len(parts), "source": "opencode.reasoning", "rule": rule,
             "metadata": metadata, "chars": len(text), "flag": flag,
