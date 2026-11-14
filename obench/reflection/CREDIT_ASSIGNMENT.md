@@ -62,8 +62,8 @@ table is rewritten whole, so a rerun is idempotent.
 
 | Key | Default | Status |
 |---|---|---|
-| `k` | **2** | **Provisional** (open) |
-| `near_error_weight` | **0.5** | **Provisional** (open) |
+| `k` | **4** | Sean, 2026-11-13 (was a provisional 2) |
+| `near_error_weight` | **0.5** | Kept for now (Sean, 2026-11-13) |
 | `correct_weight` / `past_cutoff_weight` | 1.0 / 0.0 | The scheme in the ticket |
 | `cutoff_rule` | `first_failing_step_onward` | |
 | `system1_model` | **`gemini-3.8-flash`** (Gemini Flash, Vertex `global`; the newest GA Flash, released 2026-09-02) | **Open:** Sean called the model "Jev". Until he confirms whether "Jev" is a specific endpoint, Gemini Flash is the default. Switching is a one-line config change. |

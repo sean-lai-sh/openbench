@@ -37,7 +37,7 @@ SIX = [step(1, call("bash", "ok")), step(2, call("bash", "ok")), step(3, call("b
 class Weights(unittest.TestCase):
     def test_one_before_window_partial_near_error_zero_past_cutoff(self):
         row = cb.method_b_row({"trial_id": "t", "task": "x", "model": "m"}, SIX, FakeJudge({4: "near_error"}),
-                              cb.MethodBConfig())
+                              cb.MethodBConfig.from_dict({"k": 2}))
         self.assertEqual(row["first_failing_step"], 5)
         self.assertEqual(row["window"], [3, 4])
         self.assertEqual([(w["step"], w["weight"], w["why"]) for w in row["weights"]],
@@ -45,13 +45,19 @@ class Weights(unittest.TestCase):
                           (4, 0.5, "near_error"), (5, 0.0, "past_cutoff"), (6, 0.0, "past_cutoff")])
         self.assertEqual(row["labels"], {"3": "correct", "4": "near_error"})
 
+    def test_default_k_is_4(self):
+        row = cb.method_b_row({"trial_id": "t", "task": "x", "model": "m"}, SIX, FakeJudge({1: "near_error"}),
+                              cb.MethodBConfig())
+        self.assertEqual((row["k"], row["window"]), (4, [1, 2, 3, 4]))
+        self.assertEqual([w["weight"] for w in row["weights"]], [0.5, 1.0, 1.0, 1.0, 0.0, 0.0])
+
     def test_k_and_partial_weight_come_from_config(self):
         cfg = cb.MethodBConfig.from_dict({"k": 3, "near_error_weight": 0.25})
         row = cb.method_b_row({"trial_id": "t", "task": "x", "model": "m"}, SIX, FakeJudge({2: "near_error", 4: "near_error"}), cfg)
         self.assertEqual(row["window"], [2, 3, 4])
         self.assertEqual([w["weight"] for w in row["weights"]], [1.0, 0.25, 1.0, 0.25, 0.0, 0.0])
         self.assertEqual((row["k"], row["near_error_weight"]), (3, 0.25))
-        self.assertEqual((cb.K, cb.NEAR_ERROR_WEIGHT, cb.SYSTEM1_MODEL), (2, 0.5, "gemini-3.8-flash"))
+        self.assertEqual((cb.K, cb.NEAR_ERROR_WEIGHT, cb.SYSTEM1_MODEL), (4, 0.5, "gemini-3.8-flash"))
 
     def test_same_first_failure_as_method_a(self):
         from obench.reflection.credit_locator import first_failure
