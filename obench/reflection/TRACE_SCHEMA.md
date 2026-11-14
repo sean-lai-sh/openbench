@@ -101,6 +101,7 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `cost_usd` | number\|null | no | Per-call cost from `vertex_models.cost_usd` (null when a needed rate is missing) |
 | `error` | string | no | Transport error when the upstream was unreachable |
 | `usage_error` | string | no | `TraceError` code when the response usage could not be normalized |
+| `patch_id` | string | no | The ideation alternative whose patch the proxy applied (SEA-110). The per-op log is in `thinking_enforced.patch_log`. |
 
 The reflection loop's own routes write these directly: `wire_proxy.py`
 (SEA-105, one fixed Vertex route per model). `wire_records_from_proxy_ledger`

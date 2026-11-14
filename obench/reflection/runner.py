@@ -173,9 +173,11 @@ class Runner:
         self.pool: Suite = load_suite(self.suite.pool, **kwargs)
         self.known = {t.id: t for t in (*self.suite.tasks, *self.pool.tasks)}
         if config.tasks:
-            missing = sorted(set(config.tasks) - set(self.suite.ids()))
+            allowed = set(self.known) if config.patch_id is not None else set(self.suite.ids())
+            missing = sorted(set(config.tasks) - allowed)
             if missing:
-                raise RunnerError(f"tasks not in suite {config.suite!r}: {missing}")
+                raise RunnerError(f"tasks not in suite {config.suite!r}" + (" or its pool" if config.patch_id else "")
+                                  + f": {missing}")
         self.trials_path = self.run_dir / "trials.jsonl"
         self.summary_path = self.run_dir / "summary.jsonl"
 
@@ -258,6 +260,8 @@ class Runner:
         return self._status("done")
 
     def _round_tasks(self, state: dict) -> list[str]:
+        if self.config.patch_id is not None:  # ideation: exactly the parent's task, even a swapped-in pool task
+            return list(self.config.tasks or swap.current_tasks(state))
         if self.config.tasks:
             return [t for t in swap.current_tasks(state) if t in self.config.tasks or t not in self.suite.ids()]
         return swap.current_tasks(state)
