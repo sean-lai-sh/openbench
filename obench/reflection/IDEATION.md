@@ -51,15 +51,17 @@ parent's task and model. It goes through the SEA-107 runner, into
 `ideation/<proposal_id>/`, with `patch_id` set (patch runs never swap the
 suite).
 
-`decide(baseline, alternative)`:
+`decide(baseline, alternative)` (Sean, 2026-11-13):
 1. **Both sides must have completed all N trials.** Otherwise the result is
    `complete: false` and is not judged.
-2. `beats_baseline`: alternative passes > baseline passes (the ticket's
-   minimum bar).
-3. **`success`**: `beats_baseline` **and** a one-sided Fisher exact test,
-   `p <= ALPHA` (0.05). A single lucky pass never counts: 1/30 vs 0/30 gives
-   p = 0.5. 6/30 vs 0/30 gives p ≈ 0.012 and counts.
+2. **`success`**: the alternative has more passes than the baseline at
+   N = 30. This is the bare "beats the baseline at N=30" rule, so **1/30 vs
+   0/30 counts**.
+3. `fisher_p`: the one-sided Fisher exact p-value, **recorded on every result
+   row as a reported statistic and not a gate** (`ALPHA = 1.0`). For example,
+   1/30 vs 0/30 gives p = 0.5 and 6/30 vs 0/30 gives p ≈ 0.012. Passing
+   `alpha=0.05` to `decide` re-enables a significance gate for sensitivity
+   analysis only.
 
 Result rows record the baseline and alternative passes, completed counts,
-spend, `fisher_p`, `beats_baseline`, `success` and `credit_method`. Set
-`ALPHA = 1.0` to fall back to the bare "beats the baseline at N=30" rule.
+spend, `fisher_p`, `alpha`, `beats_baseline`, `success` and `credit_method`.

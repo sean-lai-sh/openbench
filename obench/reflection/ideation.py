@@ -16,12 +16,14 @@ Every proposal row records its parent trial and the credit method (``A``,
 Evaluation: each accepted proposal runs ``n_trials`` (default 30) on the
 parent's task and model through the SEA-107 runner, with the patch applied
 by the recording proxy. ``decide`` compares it with the baseline summary row
-(same task, model, N). The success rule is in ``decide``:
-- ``beats_baseline``: both completed all N trials and alternative passes >
-  baseline passes. This is the minimum bar.
-- ``success``: ``beats_baseline`` **and** a one-sided Fisher exact
-  p <= ``ALPHA`` (0.05). So one lucky pass (1/30 vs 0/30, p = 0.5) never
-  counts, and nothing short of N completed trials is judged at all.
+(same task, model, N). The success rule (Sean, 2026-11-13) is in ``decide``:
+- ``success``: both sides completed all N trials **and** the alternative has
+  more passes than the baseline. 1/30 vs 0/30 counts. Nothing short of N
+  completed trials on both sides is judged.
+- ``fisher_p``: the one-sided Fisher exact p-value, recorded on every row as
+  a reported statistic. It does not gate success (``ALPHA = 1.0``). Passing a
+  smaller ``alpha`` to ``decide`` re-enables a significance gate for
+  sensitivity analysis.
 
 Tables (in the run directory, separate from the trial and credit tables):
 ``ideation.jsonl`` (proposals) and ``ideation_results.jsonl`` (one row per
@@ -43,7 +45,7 @@ from obench.reflection.credit_locator import read_trace
 from obench.reflection.patches import OPS, PATCH_SCHEMA, patch_id, validate_patch
 
 N_ALTERNATIVES = 5
-ALPHA = 0.05
+ALPHA = 1.0   # no significance gate (Sean, 2026-11-13); fisher_p is still reported
 PROMPT_VERSION = "I1"
 PROPOSAL_SCHEMA = "openbench.reflection.ideation/v1"
 RESULT_SCHEMA = "openbench.reflection.ideation_result/v1"
@@ -165,10 +167,12 @@ def decide(baseline: dict, alternative: dict, n: int = rn.N_TRIALS, alpha: float
                 "reason": f"needs {n} completed trials on both sides"}
     beats = alternative["passes"] > baseline["passes"]
     p = fisher_one_sided(alternative["passes"], n, baseline["passes"], n)
+    success = beats and p <= alpha
     return {"complete": True, "beats_baseline": beats, "fisher_p": round(p, 6), "alpha": alpha,
-            "success": beats and p <= alpha,
-            "reason": "beats baseline at N with p <= alpha" if beats and p <= alpha else
-                      "beats baseline but not significant" if beats else "does not beat baseline"}
+            "success": success,
+            "reason": ("beats baseline at N" if success and alpha >= 1.0 else
+                       "beats baseline at N with p <= alpha" if success else
+                       "beats baseline but not significant at alpha" if beats else "does not beat baseline")}
 
 
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,

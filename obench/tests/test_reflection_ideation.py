@@ -87,22 +87,28 @@ class Rule(unittest.TestCase):
     def s(self, passes, completed=30):
         return {"passes": passes, "completed": completed}
 
-    def test_single_lucky_pass_never_counts(self):
+    def test_bare_beat_counts_including_one_pass_against_zero(self):
         d = idn.decide(self.s(0), self.s(1))
-        self.assertTrue(d["beats_baseline"])
-        self.assertFalse(d["success"])
-        self.assertAlmostEqual(d["fisher_p"], 0.5)
+        self.assertEqual((d["beats_baseline"], d["success"], d["alpha"]), (True, True, 1.0))
+        self.assertAlmostEqual(d["fisher_p"], 0.5)  # reported, not gating
+        self.assertEqual(d["reason"], "beats baseline at N")
+        self.assertEqual(idn.ALPHA, 1.0)
 
     def test_needs_full_n_on_both_sides(self):
         for base, alt in ((self.s(0), self.s(1, completed=1)), (self.s(0, completed=29), self.s(20))):
             d = idn.decide(base, alt)
             self.assertEqual((d["complete"], d["success"]), (False, False))
 
-    def test_real_improvement_counts_and_ties_do_not(self):
-        self.assertTrue(idn.decide(self.s(0), self.s(6))["success"])
-        self.assertTrue(idn.decide(self.s(10), self.s(20))["success"])
-        self.assertFalse(idn.decide(self.s(10), self.s(10))["beats_baseline"])
+    def test_ties_and_regressions_do_not_count(self):
+        self.assertTrue(idn.decide(self.s(10), self.s(11))["success"])
+        self.assertFalse(idn.decide(self.s(10), self.s(10))["success"])
         self.assertFalse(idn.decide(self.s(12), self.s(9))["success"])
+        self.assertIsNotNone(idn.decide(self.s(12), self.s(9))["fisher_p"])  # always recorded
+
+    def test_optional_significance_gate_for_sensitivity_analysis(self):
+        d = idn.decide(self.s(0), self.s(1), alpha=0.05)
+        self.assertEqual((d["beats_baseline"], d["success"]), (True, False))
+        self.assertTrue(idn.decide(self.s(0), self.s(6), alpha=0.05)["success"])
 
     def test_fisher(self):
         self.assertAlmostEqual(idn.fisher_one_sided(30, 30, 0, 30), 1 / 118264581564861424, places=25)
