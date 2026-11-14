@@ -53,7 +53,7 @@ call together with its result (`tool_calls[].source = "next_request"`).
 | `thinking.rule` | string | yes | Why `kind` was assigned |
 | `thinking.metadata` | array | yes | Reasoning-part metadata (signatures, redacted data) |
 | `thinking.chars` | int | yes | Length of `thinking.text` in characters |
-| `thinking.flag` | string\|null | yes | `reported_zero_text_present` when usage reports 0 thinking tokens but thinking text came back (gpt-oss on Vertex); else null |
+| `thinking.flag` | string\|null | yes | `reported_zero_text_present` when usage reports 0 thinking tokens but thinking text came back; `reported_absent_text_present` when usage has no thinking-token field at all but thinking text came back (gpt-oss on Vertex); else null |
 | `thinking.tokens_counted` | int\|null | yes | **Our own** token count of `thinking.text` (gpt-oss: `o200k_harmony` via tiktoken). Never replaces, and never pools with, `usage.thinking_tokens`. Null when not computed. |
 | `thinking.tokens_counted_by` | string\|null | yes | What computed `tokens_counted` (e.g. `computed: tiktoken o200k_harmony`), or why it wasn't (`unavailable: ...`) |
 | `usage.source` | string | yes | `response.usage`: always the provider response |

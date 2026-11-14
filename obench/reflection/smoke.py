@@ -16,7 +16,8 @@ requires:
 4. ``usage_thinking``: every main call's usage reported a thinking-token
    count (Carbon: thinking is a summary/omitted/none kind, tokens still
    from usage). gpt-oss passes on "reported 0, text present" (flagged
-   ``reported_zero_text_present``) and fails only on missing/empty reasoning
+   ``reported_zero_text_present``, or ``reported_absent_text_present`` when usage has
+   no reasoning field) and fails only on missing/empty reasoning
    text; its counts are not comparable with Carbon's and Opus's;
 5. ``cost``: every call has a cost (``cost_usd``) and the run total is
    logged;
@@ -81,7 +82,7 @@ def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: li
     return {
         "model": {"command_model": arg, "served": served,
                   "pass": arg == vm.opencode_model_arg(model) and bool(wires)
-                  and all(str(w.get("upstream_model") or "").startswith(model.vertex_id) for w in wires)},
+                  and all(vm.served_matches(model, w.get("upstream_model")) for w in wires)},
         "traced": {"wire_calls": len(wires), "main_calls": len(main), "steps": len(records or []),
                    "trace_error": trace_error,
                    "pass": records is not None and len(records) == len(main) > 0},
@@ -108,13 +109,14 @@ def usage_thinking(model: vm.VertexModel, records: list[dict] | None) -> dict:
     for r in records or []:
         thinking, tokens = r.get("thinking") or {}, (r.get("usage") or {}).get("thinking_tokens")
         reported = isinstance(tokens, int) and not isinstance(tokens, bool)
-        ok = reported and (bool(thinking.get("text")) if from_text else True)
+        # gpt-oss: Vertex reports 0 or omits the reasoning field entirely; the text is the evidence.
+        ok = bool((thinking.get("text") or "").strip()) if from_text else reported
         steps.append({"step": r.get("step"), "thinking_tokens": tokens, "kind": thinking.get("kind"),
                       "chars": thinking.get("chars"), "flag": thinking.get("flag"),
                       "tokens_counted": thinking.get("tokens_counted"),
                       "tokens_counted_by": thinking.get("tokens_counted_by"), "pass": ok})
     return {"per_step": steps,
-            "rule": ("reported count + non-empty reasoning text (usage reports 0 on Vertex)" if from_text
+            "rule": ("non-empty reasoning text; usage thinking tokens recorded as reported (0 or absent on Vertex)" if from_text
                      else "reported count from response usage"),
             "comparable_with_other_models": not from_text,
             "flags": sorted({s["flag"] for s in steps if s["flag"]}),
