@@ -144,7 +144,13 @@ class Registry(unittest.TestCase):
         self.assertEqual(vm.cost_usd(carbon, {"input_tokens": 1_000_000, "output_tokens": 0, "thinking_tokens": 1_000_000,
                                                "cache_read_tokens": 0}), 24.0)
         gptoss = vm.resolve("gpt-oss-120b")
-        self.assertIsNone(vm.cost_usd(gptoss, {"input_tokens": 10, "output_tokens": 1, "cache_read_tokens": 5}))
+        # The 2026-11-13 rerun: cached_tokens with no published cached price -> input rate, flagged estimate.
+        detail = vm.cost_detail(gptoss, {"input_tokens": 12000, "output_tokens": 300, "cache_read_tokens": 9512})
+        self.assertEqual(detail["basis"], ["list_unverified", "cache_read_at_input_rate"])
+        self.assertTrue(detail["estimate"])
+        self.assertAlmostEqual(detail["usd"], (12000 * 0.15 + 300 * 0.60) / 1e6)  # cached billed at the input rate
+        self.assertEqual(vm.cost_usd(gptoss, {"input_tokens": 10, "output_tokens": 1}), round((10 * 0.15 + 0.60) / 1e6, 8))
+        self.assertEqual(vm.cost_detail(opus, {"input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 3})["basis"], ["list"])
 
     def test_docs_record_ids_regions_and_sources(self):
         text = Path(vm.__file__).with_name("VERTEX_MODELS.md").read_text()
@@ -250,6 +256,70 @@ class OpenAIRoute(ProxyCase):
                                                           "messages": []})
         self.assertEqual(self.vertex.seen[-1]["body"]["stream_options"], {"include_usage": True})
         self.assertEqual(self.records()[-1]["response_usage"]["prompt_tokens"], 5)
+
+
+class SmokeRun(ProxyCase):
+    """smoke.run end to end with OpenCode faked: outputs survive an undeletable temp HOME and a timeout."""
+
+    def setUp(self):
+        super().setUp()
+        import os
+        self.addCleanup(os.environ.pop, "GOOGLE_CLOUD_PROJECT", None)
+        os.environ["GOOGLE_CLOUD_PROJECT"] = "proj"
+        self.out = self.tmp / "smoke-out"
+
+    def fake_opencode(self, timeout=False):
+        proxy_base = {}
+
+        class P(smoke.WireProxy):
+            def __init__(inner, project, wire_path, token, **kw):
+                super().__init__(project, wire_path, token, upstream_host=self.proxy.upstream_host, **kw)
+                proxy_base["url"] = inner.base_url
+
+        def run(cmd, cwd, env, stdout, **kw):
+            import os, subprocess as sp
+            home = Path(env["HOME"])
+            stuck = home / ".cache" / "bun" / "pile"
+            stuck.mkdir(parents=True)
+            (stuck / "x.pile").write_text("x")
+            os.chmod(stuck, 0o500)          # cleanup can't delete inside: the VM's Errno 39
+            self.addCleanup(os.chmod, stuck, 0o700)
+            if timeout:
+                raise sp.TimeoutExpired(cmd, 1, stderr=b"slow")
+            body = {"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "messages": []}
+            req = urllib.request.Request(proxy_base["url"] + "/m/claude-opus-5-5/v1/messages",
+                                         data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+            ev = [{"type": "step_start", "timestamp": 1, "sessionID": "s", "part": {"messageID": "m", "type": "step-start"}},
+                  {"type": "step_finish", "timestamp": 2, "sessionID": "s", "part": {"messageID": "m", "type": "step-finish",
+                   "reason": "stop", "cost": 0, "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}]
+            stdout.write("".join(json.dumps(e) + "\n" for e in ev))
+            import subprocess
+            return subprocess.CompletedProcess(cmd, 0, None, "")
+        return P, run
+
+    def go(self, timeout=False):
+        from unittest.mock import patch
+        P, run = self.fake_opencode(timeout)
+        argv = ["--model", "claude-opus-5-5", "--opencode", "/x/bin/sha/opencode", "--out", str(self.out)]
+        with patch.object(smoke.oc, "verify_binary", return_value={"sha": "x"}), \
+                patch("thesis.ab.vertex_anthropic_proxy.AdcToken", return_value=lambda: "tok"), \
+                patch.object(smoke, "WireProxy", P), patch.object(smoke.subprocess, "run", run):
+            return smoke.main(argv)
+
+    def test_outputs_written_despite_cleanup_errors(self):
+        code = self.go()
+        summary = json.loads((self.out / "summary.json").read_text())
+        self.assertEqual((summary["opencode_exit"], summary["opencode_timed_out"]), (0, False))
+        self.assertTrue((self.out / "trace.jsonl").is_file())
+        self.assertEqual(code, 0, summary)
+
+    def test_timeout_still_writes_the_summary(self):
+        self.assertEqual(self.go(timeout=True), 1)
+        summary = json.loads((self.out / "summary.json").read_text())
+        self.assertEqual((summary["opencode_exit"], summary["opencode_timed_out"]), (None, True))
+        self.assertEqual((self.out / "opencode-stderr.txt").read_text(), "slow")
 
 
 class EndToEnd(ProxyCase):
