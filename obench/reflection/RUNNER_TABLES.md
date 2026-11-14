@@ -86,5 +86,28 @@ So a model's suite keeps its planned size. If the pool runs out, `PoolExhausted`
 `Executor` is the interface: `estimate_cost_usd(model)` and
 `run_trial(spec, run_dir) -> TrialResult`.
 
-- `FixtureExecutor`: offline dry runs and tests.
-- **Containerized cell executor: next step, needed before the pilot (SEA-111).** One task-image container per trial runs the pinned OpenCode against the `wire_proxy` route, with `--format json --thinking`, then the task checker. It builds `trace.jsonl` with `trace.build_trace` and returns cost, thinking tokens and served models from the wire records. It needs the VM (Docker and the task images) to build and prove.
+- `FixtureExecutor` (`--fixture`): offline dry runs and tests.
+- `CellExecutor` (`--cell`, `cell_executor.py`): one container of the
+  task's image per trial.
+  1. The task workspace is mounted at WORKDIR.
+  2. The pinned OpenCode runs (`--format json --thinking`) against a
+     per-trial recording proxy, bound to the Docker bridge gateway and
+     carrying the ideation patch if there is one. Provider API hosts are
+     sinkholed.
+  3. The task's `checker.sh` runs on the workspace.
+  4. The trace is built from the events and wire records.
+
+  The agent's image comes from `task.toml` `docker_image` (with
+  `docker_image_id` checked), else the pinned image named in `checker.sh`,
+  else `--default-image` (`h1-env:1027-strace`, for openbench-tb-hard). Each
+  trial's `cell.json` records which.
+
+  A trace that can't be built makes the trial an `error`, so the group is
+  `incomplete`: missing traces never pass silently. A timeout is `timeout`.
+
+  Per-trial preflight estimates are provisional (`DEFAULT_ESTIMATES_USD`:
+  Carbon $1.50, Opus $2.00, gpt-oss $0.10). Calibrate them from the smokes
+  with `--estimates`.
+
+  Tested with a fake Docker that plays the container: real proxy, fake Vertex,
+  real trace and checker. **Untested** against real images until the VM run.

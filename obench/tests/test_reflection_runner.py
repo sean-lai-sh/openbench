@@ -194,7 +194,7 @@ class Doc(unittest.TestCase):
             self.assertEqual(rn.main(["--config", str(cfg), "--out", str(d / "run"), "--fixture", str(fx)]), 0)
         self.assertEqual(rn.read_rows(d / "run" / "summary.jsonl")[0]["verdict"], "pass")
         with self.assertRaises(SystemExit):
-            rn.main(["--config", str(cfg), "--out", str(d / "run")])  # no live executor yet
+            rn.main(["--config", str(cfg), "--out", str(d / "run")])  # no executor chosen
 
 
 if __name__ == "__main__":
