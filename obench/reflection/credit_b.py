@@ -14,8 +14,8 @@ For every failed trial (the same rows Method A reads), Method B:
 It writes its own table, ``credit_b.jsonl``. It never touches
 ``trials.jsonl`` or ``credit_a.jsonl``.
 
-**Provisional, open (CREDIT_ASSIGNMENT.md):** ``K = 2`` and
-``NEAR_ERROR_WEIGHT = 0.5``. The System 1 model defaults to Gemini Flash
+**Defaults (CREDIT_ASSIGNMENT.md):** ``K = 4`` (Sean, 2026-11-13) and
+``NEAR_ERROR_WEIGHT = 0.5`` (kept for now). The System 1 model defaults to Gemini Flash
 (``gemini-3.8-flash`` on Vertex, location ``global``) until Sean confirms
 whether "Jev" is a specific endpoint. All of these are config: change
 ``MethodBConfig`` or pass ``--config``.
@@ -38,7 +38,7 @@ TABLE = "credit_b.jsonl"
 LABELS = ("correct", "near_error")
 
 # Provisional defaults (open items; see CREDIT_ASSIGNMENT.md).
-K = 2
+K = 4                                        # Sean 2026-11-13 (was 2)
 NEAR_ERROR_WEIGHT = 0.5
 CORRECT_WEIGHT = 1.0
 PAST_CUTOFF_WEIGHT = 0.0
