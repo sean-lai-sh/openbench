@@ -1,0 +1,13 @@
+I wrote `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`, and both programs give the same results: f(0)=1, f(1)=1, f(2)=2, f(3)=3, f(10)=89, f(50)=20365011074, f(90)=4660046610375530309.
+
+It works because the two languages handle `/* */` comments differently:
+
+- **Rust lets comments nest; C++ doesn't.** In C++, `/* /* */` is one complete comment. In Rust it leaves you still inside a comment, one level deep.
+- **The C++ code** sits right after that opening, so C++ compiles it and Rust treats it as comment text.
+- **A `// */` line** then closes the comment for Rust. C++ sees it as an ordinary `//` line comment.
+- **The Rust code** comes next, and C++ skips it because it's wrapped in `#if 0` … `#endif`. Rust never sees those two lines, because they're inside its comments.
+
+**Limits:**
+- Both versions use 64-bit unsigned integers, so results are correct up to N = 92. Above that the number overflows and wraps around in both.
+- Both exit with code 1 if you don't pass an argument.
+- The Rust version stops with an error if the argument isn't a non-negative integer. The C++ version doesn't check, and treats a non-number as 0.

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a3f18726001ghnPHd0YsXldDY",
+  "sessionID": "ses_e5c0ee5f8ffeK8i41QBTPyhBcz",
+  "messageID": "msg_1a3f12492001bLQlvKHZa9VsLC",
+  "type": "tool",
+  "callID": "toolu_vrtx_01GpkL4uK7sowHwgEg9TxqwP",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-pwh20kwa/bench_opencode_model-extraction-relu-logits_bw9o4jb1/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, flo, fhi, depth=0, out=None):\n    \"\"\"Recursively locate the points where f(x0 + t d) is non-linear in t.\"\"\"\n    if out is None:\n        out = []\n    mid = 0.5 * (lo + hi)\n    fmid = f(x0 + mid * d)\n    lin = 0.5 * (flo + fhi)\n    scale = max(1.0, abs(flo), abs(fhi))\n    if abs(fmid - lin) < 1e-12 * scale and depth > 3:\n        return out\n    if hi - lo < 1e-7:\n        out.append(mid)\n        return out\n    # Try to solve exactly if interval contains a single kink\n    if depth > 3:\n        q1, q3 = lo + 0.25 * (hi - lo), lo + 0.75 * (hi - lo)\n        f1, f3 = f(x0 + q1 * d), f(x0 + q3 * d)\n        sl = (f1 - flo) / (q1 - lo)\n        sr = (fhi - f3) / (hi - q3)\n        if abs(sl - sr) > 1e-12:\n            # intersection of the two lines\n            t = (fhi - sr * hi - flo + sl * lo) / (sl - sr)\n            if lo < t < hi:\n                ft = f(x0 + t * d)\n                pred = flo + sl * (t - lo)\n                # check the single-kink hypothesis at a couple of points\n                ok = abs(ft - pred) < 1e-9 * scale\n                if ok:\n                    ok = abs(fmid - (flo + sl * (mid - lo) if mid <= t\n                                     else fhi + sr * (mid - hi))) < 1e-9 * scale\n                if ok:\n                    out.append(t)\n                    return out\n    find_kinks(x0, d, lo, mid, flo, fmid, depth + 1, out)\n    find_kinks(x0, d, mid, hi, fmid, fhi, depth + 1, out)\n    return out\n\n\ndef grad(x, h=1e-5):\n    g = np.zeros(DIM)\n    fx = f(x)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - fx) / h\n    return g\n\n\ndef main():\n    neurons = []  # list of (u, point) with u = a2_i * w_i (sign ambiguous)\n    no_new = 0\n    it = 0\n    while no_new < 60 and it < 2000:\n        it += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        T = 20.0\n        kinks = find_kinks(x0, d, -T, T, f(x0 - T * d), f(x0 + T * d))\n        kinks = sorted(set(kinks))\n        found_new = False\n        for t in kinks:\n            # make sure neighbouring kinks are not too close\n            others = [abs(t - s) for s in kinks if s != t]\n            delta = 1e-3\n            if others and min(others) < 10 * delta:\n                continue\n            xs = x0 + t * d\n            gp = grad(xs + delta * d)\n            gm = grad(xs - delta * d)\n            u = gp - gm\n            if np.linalg.norm(u) < 1e-8:\n                continue\n            un = u / np.linalg.norm(u)\n            dup = False\n            for j, (v, p) in enumerate(neurons):\n                vn = v / np.linalg.norm(v)\n                if abs(abs(un @ vn) - 1) < 1e-5 and abs(vn @ (xs - p)) < 1e-4:\n                    dup = True\n                    break\n            if not dup:\n                neurons.append((u, xs))\n                found_new = True\n        no_new = 0 if found_new else no_new + 1\n\n    U = np.array([u for u, _ in neurons])          # a_i * w_i (up to sign of each)\n    P = np.array([p for _, p in neurons])          # a point on each hyperplane\n    n = len(U)\n\n    # Resolve signs: g(x) = sum_i u_i * 1[w_i.x + b_i > 0].\n    # With h_i(x) = u_i.(x - p_i): if a_i>0 active iff h_i>0, else iff h_i<0.\n    # g(x) - sum_i u_i 1[h_i>0] = -sum_i z_i u_i sgn(h_i),  z_i = 1[a_i<0].\n    rows, rhs = [], []\n    for _ in range(max(10, 3 * n)):\n        x = rng.normal(size=DIM) * 2\n        h = np.einsum('ij,ij->i', U, x - P)\n        g = grad(x)\n        rhs.append(g - (U * (h > 0)[:, None]).sum(0))\n        rows.append(-(U * np.sign(h)[:, None]).T)\n    M = np.vstack(rows)\n    r = np.concatenate(rhs)\n    z, *_ = np.linalg.lstsq(M, r, rcond=None)\n    signs = np.where(z > 0.5, -1.0, 1.0)\n\n    A1 = U * signs[:, None]\n    # normalise rows (scaling is arbitrary)\n    A1 = A1 / np.linalg.norm(A1, axis=1, keepdims=True)\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1)\n    print(A1)\n    return A1\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-pwh20kwa/bench_opencode_model-extraction-relu-logits_bw9o4jb1/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-pwh20kwa/bench_opencode_model-extraction-relu-logits_bw9o4jb1/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793751892997,
+      "end": 1793751897888
+    }
+  }
+}

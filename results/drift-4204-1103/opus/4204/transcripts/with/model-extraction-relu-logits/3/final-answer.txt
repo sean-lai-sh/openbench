@@ -1,0 +1,10 @@
+I wrote `steal.py`. When run, it recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`, using only calls to `forward()`.
+
+**How it works:** the network's output is made of straight-line pieces, with a kink wherever a hidden neuron switches on or off.
+1. The script picks random lines through the 10-dimensional input space and finds each kink along them by repeatedly halving the interval. It then pins down the exact location by intersecting the straight pieces on either side.
+2. At each kink only one neuron changes state. So the output's slope (gradient) on one side minus the other equals `A2[i] * A1[i,:]`, which is row `i` of `A1` up to a scale factor. The script measures these gradients with tiny input steps.
+3. Each row is scaled to length 1 with a fixed sign, and repeats are dropped. The search stops once 10 lines in a row turn up no new neurons.
+
+**Check:** I compared the result against the real `A1` in `forward.py`, which the script itself never reads. Every recovered row matches exactly one true row with |cosine similarity| ≈ 1 − 2e-15, and every true row is matched. So the matrix equals `A1` up to row order and per-row scaling (including sign).
+
+A neuron that never switches on for any input, or whose output weight is zero, has no effect on the output, so this method can't find it. That didn't happen with this network.

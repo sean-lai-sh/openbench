@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a41c3031001ndO8Gy3Fdm9RBN",
+  "sessionID": "ses_e5be3d043ffeGG0I2eGJw1B7Na",
+  "role": "user",
+  "time": {
+    "created": 1793754673202
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. When run, it recovers all 20 hidden neurons and saves a 20×10 matrix to `stolen_A1.npy`. The script itself only calls `forward(x)`. To test it afterwards, I compared the output with the real `A1` stored in `forward.py`. Every recovered row matches a different true row with cosine similarity 0.99999999999996, and the signs match too, so each row is a positive multiple of the real one.\n\n**How it works:**\n1. **Finding kinks:** The network's output is made of straight-line pieces along any line through input space. The script picks random lines and splits them in half repeatedly until it finds each point where the slope changes. It then pins that point down exactly by intersecting the two straight pieces on either side.\n2. **Reading off a row:** Each kink is where one hidden neuron switches on or off. The gradient just past the kink minus the gradient just before it equals `A2_i · A1_i`, which is a scaled copy of that neuron's row of `A1`. The script normalises these, removes duplicates and averages repeat sightings. It stops after 15 lines in a row turn up no new neuron.\n3. **Fixing signs:** Gradient differences only give each row up to ±1, and my first version got about half of them backwards. In case \"up to scaling\" doesn't allow negative factors, I added a step (`resolve_signs`) that finds the correct signs:\n   - It fits the network's output using the recovered neurons plus a straight-line (affine) term.\n   - A flipped neuron leaves a specific straight-line term behind, because `ReLU(-z) = ReLU(z) - z`.\n   - It then tries all 2²⁰ on/off combinations to find which set of flipped rows explains that leftover term, and flips those rows back.\n\nRows are saved with length 1, in whatever order the neurons were found.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

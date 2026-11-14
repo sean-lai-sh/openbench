@@ -1,0 +1,26 @@
+I've written `convert_masks.py`. It runs MobileSAM on CPU and turns every mask in the csv, rectangles and polylines alike, into a polyline.
+
+**Usage**
+```
+python convert_masks.py <weights_path> <output_path> <rgb_path> <csv_path>
+```
+- If `output_path` is a folder, the result is saved there under the input csv's file name (e.g. `out/demo_metadata.csv`). If it ends in `.csv`, it is used as the output file name.
+- The output keeps the same columns, row index and other values. Only `xmin, ymin, xmax, ymax, coords_x, coords_y` are rewritten, plus `type` is set to `polyline` (see the last point below).
+
+**Test results**
+- **Demo (48 masks):** every mask is a polyline, no two masks overlap, each is a single connected region, and none are rectangles. That held both when the polygons were filled in as pixels and when they were checked as shapes with the `shapely` library. All shapes were valid. The overlay image showed the new outlines following the nuclei closely.
+- **Larger image:** I tiled the demo 3×3 to get 432 masks and ran it again. The first run gave one invalid shape whose outline touched itself at a single pixel; I fixed this and the rerun passed every check.
+
+**How it works**
+1. **Prompts:** each mask's bounding box is given to MobileSAM as a box prompt, using the standard `vit_t` model loaded from `mobile_sam`. Large images are cut into tiles of about 512 px so small cells stay sharp; the demo fits in one tile.
+2. **Choosing a mask:** MobileSAM proposes 3 candidate masks per cell. The script picks one using MobileSAM's own confidence, how much of it lies inside the box, and how well it matches the original outline (for rectangles, an oval drawn inside the box stands in for that outline). Each mask may extend at most 15% beyond its box.
+3. **Overlaps:** where two masks claim the same pixel, it goes to the one MobileSAM is more confident about. A 1-pixel gap is then left between touching cells.
+4. **Cleanup:** stray pixels are removed, only the largest piece of each mask is kept, holes are filled, and any single-pixel pinches are removed. If a mask still fills its whole bounding box, it is trimmed to an oval.
+5. **Fallbacks:** if MobileSAM returns nothing usable for a cell, the script falls back to the original outline (or an oval for rectangles), so every row always gets a mask.
+6. **Output:** outlines are written as comma-separated whole-number coordinates, closed by repeating the first point, the same format as the input.
+
+**Before you run it on the test set**
+- **`timm` dependency:** MobileSAM itself imports the `timm` package, so it has to be present wherever `mobile_sam` is installed, even though it's not on your list.
+- **What I installed here:** this machine didn't have `mobile_sam`, `pandas`, OpenCV, `tqdm` or a working `torchvision`. To test, I installed them along with `timm`, `shapely` and a CPU `torchvision` that matches the installed torch.
+- **Extra files in the folder:** I put the weights in `weights/mobile_sam.pt` and my test files in `scratch/`. The script doesn't use `shapely` or anything in `scratch/`, so both folders can be deleted.
+- **The `type` column:** I changed it to `polyline` because every mask now is one. If the output should differ from the input only in the six coordinate columns, delete the two lines that set `out["type"]` near the end of the script.

@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a4bb5a38001z9bSUG8BFTXofi",
+  "sessionID": "ses_e5b44a620ffe2lRm2s5kHKghTi",
+  "role": "user",
+  "time": {
+    "created": 1793765104184
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py` and ran it. It found 20 hidden neurons in 44,661 calls to `forward()` and saved a 20×10 matrix to `stolen_A1.npy`. When I checked it against the real `A1`, every row matched exactly one true row with cosine similarity 1.0 (to about 1e-16), including the sign. The script itself only calls `forward()`; it never reads `A1` directly. I used the real `A1` only for that one-off check after the run.\n\nHow it works:\n\n1. **Finding the neurons.** Along random straight lines through input space, the output is linear except where a neuron switches on or off. The script splits each line into smaller pieces until it pins down those \"kink\" points exactly.\n2. **Getting each row.** At each kink, it measures the gradient just before and just after, using finite differences. The jump between them is that neuron's row of `A1`, times an unknown factor. It also gets the matching bias from where the kink sits.\n3. **Removing duplicates.** Hits that point the same way with the same bias are grouped and averaged. Rows seen only once are dropped as likely noise. It stops after 40 lines in a row turn up no new neuron.\n4. **Fixing the signs.** Gradient jumps can't tell a row from its negative, so the script fits the output exactly as a sum of the recovered neurons plus a linear term, then tries every combination of sign flips to make the linear term vanish. The best combination fits with a residual of about 7e-11, so each row has the correct sign and a positive scale. That's stricter than \"up to scaling\" requires.\n\nEach saved row has length 1, so it equals the true row divided by that row's length, with neurons in whatever order they were found.\n\nTo run it: `python steal.py` from that directory.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a434da69001HLHwYbGi81uZ9k",
+  "sessionID": "ses_e5bcb25afffezFidCOE8CVzGjs",
+  "role": "user",
+  "time": {
+    "created": 1793756289641
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with both classes. I tested them on CPU across 1, 2 and 4 processes against a plain `torch.nn.Linear` with the same weight and a zero bias. For both classes, the outputs, the weight and bias gradients for each rank's slice, and the input gradients all matched.\n\n**`ColumnParallelLinear`**\n- The weight follows `nn.Linear`'s `(out_features, in_features)` layout. \"Splitting by columns\" splits the output dimension, so each rank keeps rows `[rank*n:(rank+1)*n]` of `master_weight`, giving shape `(out_features/world_size, in_features)`.\n- The bias is sharded the same way to `(out_features/world_size,)` and starts at zero.\n- Forward: each rank computes its part of the output, then the parts are gathered and joined along the last dimension. In the backward pass each rank keeps only its own slice of the gradient. The input gradient is summed across ranks so it comes out correct.\n\n**`RowParallelLinear`**\n- Each rank keeps columns `[:, rank*n:(rank+1)*n]` of `master_weight`, giving shape `(out_features, in_features/world_size)`.\n- The bias is full size `(out_features,)` on every rank and starts at zero.\n- Forward: the layer accepts either the full input, which it splits by rank, or an input that is already split. It sums the partial outputs across ranks and then adds the bias once. The input gradient is gathered back to full size in the backward pass.\n\n**Other behaviour**\n- If `torch.distributed` isn't initialized, both classes act as a single process (world size 1, rank 0).\n- The constructor raises an error if `master_weight` isn't shaped `(out_features, in_features)` or if the dimension being split doesn't divide evenly by the world size.\n\nThe test script is at `/tmp/t_pl.py`, outside the project folder.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

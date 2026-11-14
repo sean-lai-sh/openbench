@@ -1,0 +1,20 @@
+{
+  "id": "prt_1a544b8e4001bYlrSGxY64YcDF",
+  "sessionID": "ses_e5abc71fbffeaA5Go4lcbVkIjf",
+  "messageID": "msg_1a544b0d8001ug32KABY6T9l1V",
+  "type": "tool",
+  "callID": "toolu_vrtx_01GVQGYRAyJTRywvxrp2t2tA",
+  "tool": "bash",
+  "state": {
+    "status": "error",
+    "input": {
+      "command": "cd /tmp && cat > /tmp/pp_test.py <<'EOF'\nimport os, sys, copy, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, \"/tmp/obench-cell-ng6tboxb/bench_opencode_torch-pipeline-parallelism_3cps75yp\")\nfrom transformers import LlamaConfig, LlamaForCausalLM\nimport torch.nn.functional as F\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(29511+ws)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    from pipeline_parallel import train_step_pipeline_afab\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5, num_attention_heads=4, num_key_value_heads=2)\n    model = LlamaForCausalLM(cfg); ref = copy.deepcopy(model)\n    x = torch.randint(0,128,(8,16)); y = torch.randint(0,128,(8,16))\n    xs, ys = list(x.chunk(4)), list(y.chunk(4))\n    loss = train_step_pipeline_afab(model, xs, ys, torch.device(\"cpu\"), torch.float32)\n    rl = 0\n    for a,b in zip(xs,ys):\n        l = F.cross_entropy(ref(a).logits.reshape(-1,128), b.reshape(-1))/4; l.backward(); rl += l.item()\n    md = 0\n    for (n,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None: md = max(md, (p.grad-q.grad).abs().max().item())\n    print(rank, \"loss\", loss, rl, \"maxdiff\", md)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for ws in (1,2): mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython /tmp/pp_test.py 2>&1 | grep -v Warn",
+      "description": "Test pipeline vs reference"
+    },
+    "error": "Error: This command references paths outside of /tmp/obench-cell-ng6tboxb/bench_opencode_torch-pipeline-parallelism_3cps75yp so it is not allowed to be executed.",
+    "time": {
+      "start": 1793774112413,
+      "end": 1793774112492
+    }
+  }
+}

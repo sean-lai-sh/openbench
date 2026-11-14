@@ -1,0 +1,11 @@
+{
+  "id": "prt_1a4a867e200134IgKjPgi5wFkZ",
+  "sessionID": "ses_e5b590b11ffeHcVMr4S3v5zXx3",
+  "messageID": "msg_1a4a84949001nglTDAkFSgESXX",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with `ColumnParallelLinear` and `RowParallelLinear`. A test with the `gloo` backend passed at world sizes 1, 2 and 4. It compared outputs, input gradients, and the gradients of each rank's weight and bias slice against a plain `nn.Linear` using the same weights. I deleted the test script afterwards.\n\n**ColumnParallelLinear**\n- `master_weight` has shape `(out_features, in_features)`. Each rank keeps rows `[rank*n:(rank+1)*n]`, where `n = out_features // world_size`. That's the output dimension, which is what \"columns\" means in Megatron-style tensor parallelism.\n- Bias is sharded the same way, with `n` values per rank, all starting at zero.\n- In the forward pass, each rank computes its share of the output, and the shares are gathered and joined along the last dimension. In the backward pass, each rank takes its own slice of the output gradient, and the input gradient is summed across ranks.\n\n**RowParallelLinear**\n- Each rank keeps columns `[rank*n:(rank+1)*n]` of `master_weight`, where `n = in_features // world_size` (the input dimension).\n- Bias is full size on every rank, starts at zero, and is added once after the sum, so it isn't counted `world_size` times.\n- In the forward pass, each rank computes a partial output and the partials are summed across ranks. The gradient passes straight through that sum in the backward pass.\n- **Input handling:** the spec doesn't say whether the input arrives already split, so the layer accepts both. If the input's last dimension equals `in_features`, it splits it and gathers the gradient back. Otherwise it treats the input as already being this rank's slice.\n\n**Other details**\n- If `torch.distributed` hasn't been initialised, both classes fall back to world size 1 and rank 0.\n- `out_features` (column) and `in_features` (row) must divide evenly by the world size; an assertion checks this.\n- The type checker flags the `backward` method signatures, but that's a known false positive with PyTorch's type stubs and has no effect when the code runs.",
+  "time": {
+    "start": 1793763863216,
+    "end": 1793763863216
+  }
+}

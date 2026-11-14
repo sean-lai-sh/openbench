@@ -1,0 +1,13 @@
+I wrote `steal.py` and ran it. It found 20 hidden neurons and saved a 20×10 matrix to `stolen_A1.npy`.
+
+**Check against the real weights:** `steal.py` itself only calls `forward()`. After it finished, I separately compared its output with the true `A1` in `forward.py`. Every true row has exactly one matching stolen row and the other way round, with a cosine similarity of about 0.9999999999999997 for each pair. So the stolen matrix equals `A1` up to row order and per-row scale, as asked. The script picked the run's random lines with a fixed seed (12345), so it gives the same result each time.
+
+**How it works:**
+1. Without a ReLU kink in the way, the network's output changes in a straight line. Each kink happens where one hidden neuron's input `A1[i]·x + b1[i]` crosses zero.
+2. The script draws random lines through input space and finds every kink on each line. It splits each segment in half until the slopes on both sides match. Then it pins the kink down by intersecting the two linear pieces on either side.
+3. At each kink, it estimates the full 10-dimensional gradient just before and just after, using finite differences. The jump between them is `A2[i] · A1[i,:]`, which is row `i` of `A1` times a constant.
+4. It scales each row to unit length and fixes its sign. It keeps a row only if it gets the same direction when measured at a second distance from the kink, and only if it doesn't duplicate a row already found. It stops after 30 lines in a row turn up nothing new.
+
+The number of neurons (20) wasn't given to the script; it worked that out from the kinks it found.
+
+To re-run it: `python steal.py`

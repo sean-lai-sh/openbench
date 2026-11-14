@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a4b5f5a30015y5ZP36ROoaGOR",
+  "sessionID": "ses_e5b4a8da7ffeleaEfhwrbAZXko",
+  "messageID": "msg_1a4b5875e0014KcS4JuPiYbXnR",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Jf2ukvVB6AfoCgVdq8BWjJ",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-7bst4e62/bench_opencode_model-extraction-relu-logits_i85_l4f6/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef grad(x, h=1e-4):\n    \"\"\"Gradient via central differences (exact inside a linear region).\"\"\"\n    g = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef find_kinks(p, d, t0, t1, f0, f1, depth=0, out=None):\n    \"\"\"Recursively locate kinks of g(t)=f(p+t d) on [t0,t1].\"\"\"\n    if out is None:\n        out = []\n    tm = 0.5 * (t0 + t1)\n    fm = f(p + tm * d)\n    lin = 0.5 * (f0 + f1)\n    if abs(fm - lin) < 1e-11 * (1 + abs(fm)) and depth > 3:\n        return out\n    if t1 - t0 < 1e-6:\n        out.append(tm)\n        return out\n    find_kinks(p, d, t0, tm, f0, fm, depth + 1, out)\n    find_kinks(p, d, tm, t1, fm, f1, depth + 1, out)\n    return out\n\n\ndef refine_kink(p, d, t, w=1e-3):\n    \"\"\"Intersect the two linear pieces on each side of an approximate kink.\"\"\"\n    h = 1e-5\n    tl, tr = t - w, t + w\n    sl = (f(p + (tl + h) * d) - f(p + (tl - h) * d)) / (2 * h)\n    sr = (f(p + (tr + h) * d) - f(p + (tr - h) * d)) / (2 * h)\n    if abs(sr - sl) < 1e-9:\n        return None\n    fl = f(p + tl * d)\n    fr = f(p + tr * d)\n    # fl + sl (x - tl) = fr + sr (x - tr)\n    tk = (fr - fl + sl * tl - sr * tr) / (sl - sr)\n    if not (tl < tk < tr):\n        return None\n    return tk\n\n\ndef collect():\n    dirs, pts = [], []  # deltas (a2_i * A1_i) and points on hyperplanes\n    stale = 0\n    while stale < 60:\n        p = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        R = 30.0\n        ts = find_kinks(p, d, -R, R, f(p - R * d), f(p + R * d))\n        # merge near-duplicate approximations\n        ts = sorted(ts)\n        merged = []\n        for t in ts:\n            if not merged or t - merged[-1] > 1e-4:\n                merged.append(t)\n        new = False\n        for t in merged:\n            tk = refine_kink(p, d, t)\n            if tk is None:\n                continue\n            x = p + tk * d\n            eps = 1e-3\n            g_plus = grad(x + eps * d)\n            g_minus = grad(x - eps * d)\n            delta = g_plus - g_minus\n            n = np.linalg.norm(delta)\n            if n < 1e-8:\n                continue\n            u = delta / n\n            found = False\n            for k, (dd, _) in enumerate(dirs):\n                if np.dot(u, dd / np.linalg.norm(dd)) > 0.9999:\n                    found = True\n                    break\n            if not found:\n                dirs.append((delta, x))\n                new = True\n        stale = 0 if new else stale + 1\n    return dirs\n\n\ndef main():\n    dirs = collect()\n    deltas = np.array([d for d, _ in dirs])  # c_i * w_i, invariant to sign\n    xs = np.array([x for _, x in dirs])\n    n = len(deltas)\n    W = deltas / np.linalg.norm(deltas, axis=1, keepdims=True)\n    B = -np.einsum(\"ij,ij->i\", W, xs)  # hyperplane offsets for unit W\n\n    # Resolve orientation (sign) of each neuron:\n    # grad(x) = sum_i delta_i * active_i(x); with guessed orientation s_i(x),\n    # active_i = s_i if correct else 1 - s_i.\n    rows, rhs = [], []\n    for _ in range(40):\n        x = rng.normal(size=DIM) * 3\n        s = (W @ x + B > 0).astype(float)\n        g = grad(x)\n        r = g - deltas.T @ s\n        M = deltas.T * (1 - 2 * s)[None, :]\n        rows.append(M)\n        rhs.append(r)\n    M = np.vstack(rows)\n    r = np.concatenate(rhs)\n    flip, *_ = np.linalg.lstsq(M, r, rcond=None)\n    flip = np.round(flip).astype(int)\n    signs = np.where(flip == 1, -1.0, 1.0)\n    W = W * signs[:, None]\n\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), W)\n    print(f\"Recovered {n} neurons\")\n    print(W)\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-7bst4e62/bench_opencode_model-extraction-relu-logits_i85_l4f6/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-7bst4e62/bench_opencode_model-extraction-relu-logits_i85_l4f6/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793764764831,
+      "end": 1793764773691
+    }
+  }
+}

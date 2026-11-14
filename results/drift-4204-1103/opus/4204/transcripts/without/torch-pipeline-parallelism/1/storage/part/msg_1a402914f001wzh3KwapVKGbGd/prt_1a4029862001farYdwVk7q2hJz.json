@@ -1,0 +1,107 @@
+{
+  "id": "prt_1a4029862001farYdwVk7q2hJz",
+  "sessionID": "ses_e5bff17a0ffedDf6mDi4NpK1LK",
+  "messageID": "msg_1a402914f001wzh3KwapVKGbGd",
+  "type": "tool",
+  "callID": "toolu_vrtx_0169a4eLa8f9AZEvZqhtLbEf",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-365wm_8l/bench_opencode_torch-pipeline-parallelism_pp_umckf/_test_pp.py",
+      "content": "import os, sys, copy\nimport torch, torch.distributed as dist, torch.multiprocessing as mp\nimport torch.nn.functional as F\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\n\n\ndef run(rank, ws, attn, port):\n    os.environ[\"MASTER_ADDR\"] = \"127.0.0.1\"; os.environ[\"MASTER_PORT\"] = str(port)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=100, hidden_size=32, intermediate_size=64, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)\n    cfg._attn_implementation = attn\n    model = LlamaForCausalLM(cfg).float()\n    ref = copy.deepcopy(model)\n    ins = [torch.randint(0, 100, (2, 8)) for _ in range(3)]\n    tgs = [torch.randint(0, 100, (2, 8)) for _ in range(3)]\n    loss = train_step_pipeline_afab(model, ins, tgs, torch.device(\"cpu\"), torch.float32)\n    rl = 0\n    for x, y in zip(ins, tgs):\n        lg = ref(input_ids=x).logits\n        l = F.cross_entropy(lg.reshape(-1, lg.size(-1)), y.reshape(-1)) / len(ins)\n        l.backward(); rl += l.item()\n    maxd = 0; cnt = 0\n    for (n, p), (_, q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            cnt += 1\n            maxd = max(maxd, (p.grad - q.grad).abs().max().item())\n    print(f\"ws={ws} attn={attn} rank={rank} loss={loss} ref={rl:.6f} params_w_grad={cnt} maxdiff={maxd:.2e}\")\n    dist.destroy_process_group()\n\n\nif __name__ == \"__main__\":\n    port = 29600\n    for ws in (1, 2):\n        for attn in (\"sdpa\", \"eager\"):\n            port += 1\n            mp.spawn(run, args=(ws, attn, port), nprocs=ws)\n"
+    },
+    "output": "\n<project_diagnostics>\n/tmp/obench-cell-365wm_8l/bench_opencode_torch-pipeline-parallelism_pp_umckf/pipeline_parallel.py\nERROR [77:9] Argument of type \"None\" cannot be assigned to parameter \"value\" of type \"Tensor\" in function \"__setitem__\"\n  \"None\" is not assignable to \"Tensor\"\nERROR [140:25] Object of type \"None\" is not subscriptable\n</project_diagnostics>\n\nThis file has errors, please fix\n<file_diagnostics>\nERROR [4:6] Import \"transformers\" could not be resolved\nERROR [51:16] \"spawn\" is not exported from module \"torch.multiprocessing\"\n</file_diagnostics>\n",
+    "title": "tmp/obench-cell-365wm_8l/bench_opencode_torch-pipeline-parallelism_pp_umckf/_test_pp.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-365wm_8l/bench_opencode_torch-pipeline-parallelism_pp_umckf/pipeline_parallel.py": [
+          {
+            "range": {
+              "start": {
+                "line": 76,
+                "character": 8
+              },
+              "end": {
+                "line": 76,
+                "character": 32
+              }
+            },
+            "message": "Argument of type \"None\" cannot be assigned to parameter \"value\" of type \"Tensor\" in function \"__setitem__\"\n  \"None\" is not assignable to \"Tensor\"",
+            "severity": 1,
+            "code": "reportArgumentType",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportArgumentType"
+            }
+          },
+          {
+            "range": {
+              "start": {
+                "line": 139,
+                "character": 24
+              },
+              "end": {
+                "line": 139,
+                "character": 30
+              }
+            },
+            "message": "Object of type \"None\" is not subscriptable",
+            "severity": 1,
+            "code": "reportOptionalSubscript",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportOptionalSubscript"
+            }
+          }
+        ],
+        "/tmp/obench-cell-365wm_8l/bench_opencode_torch-pipeline-parallelism_pp_umckf/_test_pp.py": [
+          {
+            "range": {
+              "start": {
+                "line": 3,
+                "character": 5
+              },
+              "end": {
+                "line": 3,
+                "character": 17
+              }
+            },
+            "message": "Import \"transformers\" could not be resolved",
+            "severity": 1,
+            "code": "reportMissingImports",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportMissingImports"
+            }
+          },
+          {
+            "range": {
+              "start": {
+                "line": 50,
+                "character": 15
+              },
+              "end": {
+                "line": 50,
+                "character": 20
+              }
+            },
+            "message": "\"spawn\" is not exported from module \"torch.multiprocessing\"",
+            "severity": 1,
+            "code": "reportPrivateImportUsage",
+            "source": "Pyright",
+            "codeDescription": {
+              "href": "https://github.<REDACTED_B64>.md#reportPrivateImportUsage"
+            }
+          }
+        ]
+      },
+      "filepath": "/tmp/obench-cell-365wm_8l/bench_opencode_torch-pipeline-parallelism_pp_umckf/_test_pp.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793753002031,
+      "end": 1793753005548
+    }
+  }
+}

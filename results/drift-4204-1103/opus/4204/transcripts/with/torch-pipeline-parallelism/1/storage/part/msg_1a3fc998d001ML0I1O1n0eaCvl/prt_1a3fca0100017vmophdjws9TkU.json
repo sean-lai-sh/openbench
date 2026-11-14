@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a3fca0100017vmophdjws9TkU",
+  "sessionID": "ses_e5c045cbeffesh099acs5hoa2p",
+  "messageID": "msg_1a3fc998d001ML0I1O1n0eaCvl",
+  "type": "tool",
+  "callID": "toolu_vrtx_01XjnwSJLiuRC9L4nq8f6y3M",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-xstgk7i3/bench_opencode_torch-pipeline-parallelism_me5edh82/pipeline_parallel.py",
+      "content": "\"\"\"Pipeline-parallel training step (AFAB schedule) for HuggingFace LlamaForCausalLM.\"\"\"\n\nimport torch\nimport torch.distributed as dist\nimport torch.nn.functional as F\n\n\ndef _partition_layers(num_layers, world_size, rank):\n    \"\"\"Return [start, end) layer indices for `rank`, balanced as evenly as possible.\"\"\"\n    base, rem = divmod(num_layers, world_size)\n    start = rank * base + min(rank, rem)\n    end = start + base + (1 if rank < rem else 0)\n    return start, end\n\n\ndef _causal_mask(batch, seq_len, device, dtype):\n    \"\"\"Additive 4D causal mask [batch, 1, seq, seq] (works for eager and sdpa attention).\"\"\"\n    mask = torch.full((seq_len, seq_len), torch.finfo(dtype).min, device=device, dtype=dtype)\n    mask = torch.triu(mask, diagonal=1)\n    return mask[None, None, :, :].expand(batch, 1, seq_len, seq_len)\n\n\ndef _p2p(ops):\n    if not ops:\n        return\n    reqs = dist.batch_isend_irecv(ops)\n    for r in reqs:\n        r.wait()\n\n\ndef _send(tensor, dst):\n    _p2p([dist.P2POp(dist.isend, tensor.contiguous(), dst)])\n\n\ndef _recv(shape, src, device, dtype):\n    buf = torch.empty(shape, device=device, dtype=dtype)\n    _p2p([dist.P2POp(dist.irecv, buf, src)])\n    return buf\n\n\ndef _run_layer(layer, hidden, mask, position_ids, position_embeddings):\n    kwargs = dict(attention_mask=mask, position_ids=position_ids)\n    if position_embeddings is not None:\n        kwargs[\"position_embeddings\"] = position_embeddings\n    out = layer(hidden, **kwargs)\n    if isinstance(out, (tuple, list)):\n        out = out[0]\n    return out\n\n\ndef train_step_pipeline_afab(model, inputs, targets, device, dtype):\n    rank = dist.get_rank()\n    world_size = dist.get_world_size()\n    is_first = rank == 0\n    is_last = rank == world_size - 1\n\n    base = model.model\n    layers = base.layers\n    hidden_size = model.config.hidden_size\n    start, end = _partition_layers(len(layers), world_size, rank)\n    local_layers = [layers[i] for i in range(start, end)]\n    rotary_emb = getattr(base, \"rotary_emb\", None)\n\n    num_micro = len(inputs)\n    stage_inputs = []   # received hidden states (leaf tensors requiring grad) on non-first ranks\n    stage_outputs = []  # outputs (hidden states) or losses (last rank)\n    total_loss = torch.zeros((), device=device, dtype=torch.float32)\n\n    # ---------------- All forward ----------------\n    for i in range(num_micro):\n        mb = inputs[i]\n        bsz, seq_len = mb.shape[0], mb.shape[1]\n\n        if is_first:\n            input_ids = mb.to(device)\n            hidden = base.embed_tokens(input_ids).to(dtype)\n            stage_inputs.append(None)\n        else:\n            hidden = _recv((bsz, seq_len, hidden_size), rank - 1, device, dtype)\n            hidden.requires_grad_(True)\n            stage_inputs.append(hidden)\n\n        position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(bsz, -1)\n        mask = _causal_mask(bsz, seq_len, device, dtype)\n        position_embeddings = rotary_emb(hidden, position_ids) if rotary_emb is not None else None\n\n        for layer in local_layers:\n            hidden = _run_layer(layer, hidden, mask, position_ids, position_embeddings)\n\n        if is_last:\n            hidden = base.norm(hidden)\n            logits = model.lm_head(hidden)\n            tgt = targets[i].to(device).long()\n            loss = F.cross_entropy(\n                logits.reshape(-1, logits.size(-1)).float(), tgt.reshape(-1)\n            ) / num_micro\n            total_loss = total_loss + loss.detach()\n            stage_outputs.append(loss)\n        else:\n            hidden = hidden.to(dtype)\n            _send(hidden.detach(), rank + 1)\n            stage_outputs.append(hidden)\n\n    # ---------------- All backward ----------------\n    for i in range(num_micro):\n        out = stage_outputs[i]\n        if is_last:\n            out.backward()\n        else:\n            grad = _recv(out.shape, rank + 1, device, dtype)\n            torch.autograd.backward(out, grad_tensors=grad)\n\n        if not is_first:\n            inp = stage_inputs[i]\n            g = inp.grad\n            if g is None:\n                g = torch.zeros_like(inp)\n            _send(g.to(device=device, dtype=dtype), rank - 1)\n\n        stage_outputs[i] = None\n        stage_inputs[i] = None\n\n    return total_loss if is_last else None\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-xstgk7i3/bench_opencode_torch-pipeline-parallelism_me5edh82/pipeline_parallel.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-xstgk7i3/bench_opencode_torch-pipeline-parallelism_me5edh82/pipeline_parallel.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793752617411,
+      "end": 1793752622837
+    }
+  }
+}

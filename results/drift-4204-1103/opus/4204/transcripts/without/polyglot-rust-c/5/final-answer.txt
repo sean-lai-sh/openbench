@@ -1,0 +1,10 @@
+I wrote `polyglot/main.rs`. It compiles with both `rustc` and `g++ -x c++`. I tested both builds with N = 0, 1, 2, 3, 10, 50 and 90, and they printed the same correct results (1, 1, 2, 3, 89, 20365011074, 4660046610375530309).
+
+**How it works:** the two languages treat comments differently.
+
+- **Rust allows comments inside comments; C++ doesn't.** The first line, `/* /* */`, opens a comment and then a second one inside it. The `*/` only closes the inner one, so Rust is still inside a comment. In C++ the first `*/` closes the comment, so the C++ code that follows gets compiled.
+- **After the C++ code comes `#if 0`**, so the C++ preprocessor skips everything else. Inside the skipped part, the line `// */` closes Rust's comment. C++ sees that line only as a line comment.
+- **The Rust `fn main` follows.** Rust compiles it; C++ skips it.
+- **The end of the file repeats the trick.** Another `/* /* */` hides the closing `#endif` from Rust, and a final `// */` closes Rust's comment while C++ sees only a line comment.
+
+Both versions use 128-bit unsigned integers (`u128` and `unsigned __int128`), so results are exact up to about N = 184. Larger N will overflow: the Rust version panics if it was built in debug mode and otherwise wraps silently, and the C++ version always wraps silently.

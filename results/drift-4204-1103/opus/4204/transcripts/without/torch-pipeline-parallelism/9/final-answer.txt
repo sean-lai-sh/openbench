@@ -1,0 +1,13 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on CPU with the gloo backend at world sizes 1 and 2, using a small 5-layer LLaMA and 3 microbatches. In both cases the gradients matched a normal single-process training step to within about 1e-8. I didn't test on GPU or with bf16/fp16.
+
+**How it works:**
+- **Splitting the layers:** decoder layers are divided as evenly as possible, and earlier ranks take any leftover layer. In the test, rank 0 got 3 layers and rank 1 got 2. Rank 0 also runs the token embedding; the last rank also runs the final norm, the output layer and the loss.
+- **Running each stage:** each rank runs only its own layers in a loop, without hooks. It recomputes the causal mask and rotary position embeddings itself. It works whether a layer returns a plain tensor (your installed transformers 5.22.1) or a tuple (older versions).
+- **Forward:** for every microbatch, a stage receives `[mb, seq, hidden]` hidden states from the previous rank, runs its layers and sends the result on. Communication uses `P2POp` with `batch_isend_irecv`. On the last rank, the loss is cross-entropy against the targets divided by the number of microbatches.
+- **Backward:** this starts only after every forward pass is done. The last rank calls `loss.backward()`. The other ranks receive the gradient for their output from the next rank and call `torch.autograd.backward(out, grad)`. Every rank except 0 sends the gradient of its input hidden states back to the previous rank.
+- **Device and dtype:** input IDs are moved to `device` and stay integers. Hidden states and gradients are moved to `device` and `dtype`. The loss is computed in fp32.
+
+**Things to know:**
+- The function doesn't move or cast the model itself, so the model must already be on `device` and in `dtype` before you call it.
+- It returns the summed loss on the last rank and `None` on the others.
+- It never zeroes gradients or steps an optimizer, so gradients add up across calls.

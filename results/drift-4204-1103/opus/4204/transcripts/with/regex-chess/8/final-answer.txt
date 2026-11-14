@@ -1,0 +1,22 @@
+I've written `re.json`, a list of 2,461 [regex, replacement] pairs (about 230 KB), well under both limits. It gives the exact expected output for the example position, and every test I ran matched python-chess:
+
+- **`check.py`:** all 18 positions from the Morphy game pass. I ran it on a copy pointed at the local `re.json`, since the original reads `/app/re.json`.
+- **Random games:** about 1,700 white-to-move positions with no failures. Most of these games were biased toward castling, en passant, promotions and pawn moves.
+- **Edge cases:** 34 hand-picked positions, including castling through or out of check, rights lost when a rook is captured on a8/h8, en passant that would expose the king along a rank, promotion captures, and standard perft test positions.
+
+**One case it can't handle:** if white has no legal moves (checkmate or stalemate), the output is an empty string. `"".split("\n")` returns `[""]`, so the checker sees one move instead of zero. No set of substitutions can make that function return an empty list.
+
+**Speed:** about 1.3 seconds per position. Python's regex cache holds only 512 patterns, so most of the 2,461 get recompiled on every call.
+
+**How it works:**
+1. **Parsing:** the board is expanded so every square is one character and each rank ends with `//`. That makes each rank 10 characters wide, so knight and diagonal moves can't wrap from one edge of the board to the other. Castling rights become four 0/1 flags, and the en-passant square is marked on the board with an `E`.
+2. **Generating moves:** each regex covers one possible move from one square (sliding moves along one line to one distance, knight, king, pawn push, double push, capture, promotion to queen, en passant). It reads the original position and adds the resulting position as a new line. For castling, it temporarily puts a king on every square the king starts on or passes through.
+3. **Legality:** the original line is dropped, and any line where a white king is attacked by a pawn, knight, king or slider is deleted. This handles pins, discovered checks and not castling through check. The temporary castling kings are then turned back into the real king and rook positions.
+4. **Castling rights:** a right is cleared when the king or that rook is no longer on its starting square.
+5. **Output:** lines are converted back to FEN as `... b <castling> <ep> 0 0`. After a double pawn push I always write the en-passant square, because the checker also accepts it when python-chess shows `-`, but not the other way round.
+
+Files are in `/tmp/obench-cell-vn6m4le2/bench_opencode_regex-chess_igw0cgcp`:
+- `re.json`: the answer.
+- `gen.py`: the script that generates `re.json`.
+- `test_rc.py`: the random-game tests.
+- `targeted.py`: the edge-case tests.

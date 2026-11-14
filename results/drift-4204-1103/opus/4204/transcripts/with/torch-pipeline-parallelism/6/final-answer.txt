@@ -1,0 +1,13 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it against a normal single-process model with world_size 1 and 2: the loss and all parameter gradients matched exactly, with a maximum difference of 0. I then deleted the test script, so it isn't in the folder.
+
+**How it works:**
+- **Splitting the layers:** decoder layers are divided as evenly as possible, with any extra layers going to the lower ranks (`_partition_layers`). Rank 0 also does the token embedding. The last rank also runs the final `norm`, `lm_head` and the loss.
+- **Forward phase:** every microbatch goes forward first. Rank 0 starts from input IDs. Every other rank receives a hidden-state tensor of shape `[mb, seq_len, hidden_size]` from the previous rank and marks it as needing gradients. Each rank keeps the inputs and outputs of every microbatch for the backward phase. Ranks before the last send their output to the next rank. The last rank computes `cross_entropy(logits, targets) / num_microbatches`.
+- **Backward phase:** the last rank calls `loss.backward()`. Every other rank receives the output gradient from the next rank and calls `out.backward(grad)`. Each rank except rank 0 then sends its input's gradient back to the previous rank.
+- **Communication:** all sends and receives use `dist.P2POp` with `batch_isend_irecv`. Inputs, hidden states and gradients are always moved to the given device and dtype.
+- **No hooks:** layers are called through their normal `__call__`, so the test's hooks still fire. With 5 layers, 4 microbatches and 2 ranks, rank 0 made 12 layer calls (3 layers) and rank 1 made 8 (2 layers).
+
+**Things to know:**
+- Each rank's layers get their attention mask and rotary position embeddings built the same way `LlamaModel` builds them. The function falls back to a plain causal mask if the transformers mask helper isn't available.
+- The function only accumulates gradients. It doesn't zero them or take an optimizer step.
+- It returns the total loss on the last rank and `None` on the other ranks.

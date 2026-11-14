@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a56b2d640017SF1loKKuHkluY",
+  "sessionID": "ses_e5a9509b4ffeMeRyXw6bR6UVFl",
+  "messageID": "msg_1a56b0776001jf4aRja9u2eLj8",
+  "type": "tool",
+  "callID": "toolu_vrtx_01RbEzczoEv1XA4weXZP1vns",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-d22d36ko/bench_opencode_model-extraction-relu-logits_7g_kpqdb/steal.py",
+      "content": "\"\"\"Extract A1 (up to neuron permutation and row scaling) from a 1-hidden-layer\nReLU network using only black-box queries to forward(x).\n\nMethod: walk along random lines x0 + t*d. f is piecewise linear in t; each\nkink corresponds to a hidden neuron i crossing zero. At a kink the gradient of\nf jumps by A2[i] * A1[i, :], which reveals row i of A1 up to scale. Collect\nthese directions from many lines and deduplicate.\n\"\"\"\nimport os\nimport sys\n\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, eps=1e-7, tol=1e-9):\n    \"\"\"Return t values of kinks of g(t)=f(x0+t d) in [lo, hi].\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n\n    def slope(t, side):\n        if side > 0:\n            return (g(t + eps) - g(t)) / eps\n        return (g(t) - g(t - eps)) / eps\n\n    def rec(a, b, ga, gb, sa, sb, depth):\n        if abs(sa - sb) < tol * max(1.0, abs(sa), abs(sb)):\n            # same slope: check linearity at midpoint to catch cancelling kinks\n            m = 0.5 * (a + b)\n            if abs(g(m) - (ga + gb) / 2) < 1e-10 or depth > 60:\n                return\n        # candidate single kink: intersect left and right lines\n        if abs(sa - sb) > 1e-12:\n            tk = (gb - ga + sa * a - sb * b) / (sa - sb)\n            if a < tk < b:\n                gk = g(tk)\n                pred = ga + sa * (tk - a)\n                if abs(gk - pred) < 1e-9 * max(1.0, abs(gk)):\n                    # verify near kink that slopes match left/right lines\n                    sl = slope(tk - 1e-5, -1) if tk - 1e-5 > a else sa\n                    sr = slope(tk + 1e-5, +1) if tk + 1e-5 < b else sb\n                    if (abs(sl - sa) < 1e-6 * max(1, abs(sa))\n                            and abs(sr - sb) < 1e-6 * max(1, abs(sb))):\n                        kinks.append(tk)\n                        return\n        if b - a < 1e-6 or depth > 60:\n            return\n        m = 0.5 * (a + b)\n        gm = g(m)\n        sml = slope(m, -1)\n        smr = slope(m, +1)\n        rec(a, m, ga, gm, sa, sml, depth + 1)\n        rec(m, b, gm, gb, smr, sb, depth + 1)\n\n    rec(lo, hi, g(lo), g(hi), slope(lo, +1), slope(hi, -1), 0)\n    return kinks\n\n\ndef grad(x, h=1e-6):\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    # canonical sign: largest-magnitude entry positive\n    if v[np.argmax(np.abs(v))] < 0:\n        v = -v\n    return v\n\n\ndef main():\n    rows = []\n    counts = []\n    no_new = 0\n    lines = 0\n    while no_new < 30 and lines < 1000:\n        lines += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        found_new = False\n        for tk in find_kinks(x0, d, -20.0, 20.0):\n            xk = x0 + tk * d\n            delta = 1e-4\n            gdiff = grad(xk + delta * d) - grad(xk - delta * d)\n            if np.linalg.norm(gdiff) < 1e-8:\n                continue\n            v = normalize(gdiff)\n            matched = False\n            for i, r in enumerate(rows):\n                if np.abs(r @ v) > 1 - 1e-5:\n                    # running average for accuracy\n                    rows[i] = normalize(r * counts[i] + v)\n                    counts[i] += 1\n                    matched = True\n                    break\n            if not matched:\n                rows.append(v)\n                counts.append(1)\n                found_new = True\n        no_new = 0 if found_new else no_new + 1\n\n    A1_stolen = np.array(rows)\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_stolen)\n    print(f\"Recovered {len(rows)} neurons using {lines} lines\")\n    print(A1_stolen)\n    return A1_stolen\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-d22d36ko/bench_opencode_model-extraction-relu-logits_7g_kpqdb/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-d22d36ko/bench_opencode_model-extraction-relu-logits_7g_kpqdb/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793776641345,
+      "end": 1793776649056
+    }
+  }
+}

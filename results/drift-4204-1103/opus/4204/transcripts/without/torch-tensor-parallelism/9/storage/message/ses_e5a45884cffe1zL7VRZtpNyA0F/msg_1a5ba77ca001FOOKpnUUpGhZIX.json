@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a5ba77ca001FOOKpnUUpGhZIX",
+  "sessionID": "ses_e5a45884cffe1zL7VRZtpNyA0F",
+  "role": "user",
+  "time": {
+    "created": 1793781823434
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with both classes. I tested them with world sizes 1, 2 and 4 on the gloo backend against a plain `nn.Linear` using the same weight. The outputs, the input gradients, and each rank's weight and bias gradients all matched the corresponding slice of the reference.\n\n**`ColumnParallelLinear`**\n- Weights use PyTorch's layout, `(out_features, in_features)`. Each rank keeps its own block of output rows from `master_weight`, so its weight is `(out_features / world_size, in_features)`.\n- The bias is set to zero and split the same way, `(out_features / world_size,)`.\n- In the forward pass, each rank computes its share of the output, and the shares are gathered and joined along the last dimension.\n- In the backward pass, each rank takes back only its own slice of the output gradient. The gradients with respect to the input are summed across ranks.\n\n**`RowParallelLinear`**\n- Each rank keeps its own block of input columns from `master_weight`, so its weight is `(out_features, in_features / world_size)`.\n- The bias is the full size, `(out_features,)`, and is set to zero on every rank.\n- In the forward pass, each rank computes a partial output and the partial outputs are summed across ranks. The bias is added once, after the sum.\n- The input can be the full width (`in_features`), in which case each rank takes its own slice, or already split (`in_features / world_size`). Any other width raises a `ValueError`.\n\nBoth classes assume `in_features` and `out_features` divide evenly by the world size; there's an assert for this. I used custom autograd functions for the gather, sum, slice and copy steps so that gradients pass through the cross-rank communication correctly. If `torch.distributed` hasn't been initialised, both classes run as a single process.\n\nThe test script is at `/tmp/tp_test.py`.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

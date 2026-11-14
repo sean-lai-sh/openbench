@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a41e7310001EuFg0rqUwj8WZG",
+  "sessionID": "ses_e5be1cd73ffe3Dsp2pZueJSIif",
+  "messageID": "msg_1a41e4373001QjhsKknk23mfsa",
+  "type": "tool",
+  "callID": "toolu_vrtx_01MgoAzrmLk4sWVoEq4pH6dY",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-zqdno7yu/bench_opencode_model-extraction-relu-logits_rr7_kptc/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, a, b, depth=0, out=None):\n    \"\"\"Find all t in [a,b] where g(t)=f(x0+t d) has a kink (piecewise linear).\"\"\"\n    if out is None:\n        out = []\n    g = lambda t: f(x0 + t * d)\n    h = 1e-6 * max(1.0, b - a)\n    ga, gb = g(a), g(b)\n    sa = (g(a + h) - ga) / h\n    sb = (gb - g(b - h)) / h\n    scale = max(1e-12, abs(sa) + abs(sb))\n    if abs(sa - sb) < 1e-9 * max(1.0, scale):\n        # same slope at both ends; check the middle for linearity\n        m = 0.5 * (a + b)\n        if abs(g(m) - (ga + sa * (m - a))) < 1e-10 * max(1.0, abs(ga)) or depth > 60:\n            return out\n    else:\n        # intersection of the two lines\n        t = (gb - ga + sa * a - sb * b) / (sa - sb)\n        if a < t < b:\n            pred = ga + sa * (t - a)\n            if abs(g(t) - pred) < 1e-9 * max(1.0, abs(pred)):\n                # verify single kink: slopes just around t equal sa, sb\n                e = 1e-5 * max(1.0, b - a)\n                if t - e > a and t + e < b:\n                    sl = (g(t - e) - g(t - 2 * e)) / e if t - 2 * e > a else sa\n                    sr = (g(t + 2 * e) - g(t + e)) / e if t + 2 * e < b else sb\n                    tol = 1e-6 * max(1.0, scale)\n                    if abs(sl - sa) < tol and abs(sr - sb) < tol:\n                        out.append(t)\n                        return out\n    if depth > 60 or b - a < 1e-9:\n        return out\n    m = 0.5 * (a + b)\n    find_kinks(x0, d, a, m, depth + 1, out)\n    find_kinks(x0, d, m, b, depth + 1, out)\n    return out\n\n\ndef grad(x, h=1e-6):\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    i = np.argmax(np.abs(v))\n    return v * np.sign(v[i])\n\n\ndef steal(n_lines=12, T=50.0):\n    rows = []\n    counts = []\n    for _ in range(n_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        ks = sorted(set(np.round(find_kinks(x0, d, -T, T), 12)))\n        ks = np.array(ks)\n        for j, t in enumerate(ks):\n            left = ks[j - 1] if j > 0 else -T\n            right = ks[j + 1] if j + 1 < len(ks) else T\n            delta = min(t - left, right - t) / 3.0\n            delta = min(delta, 1e-2)\n            gl = grad(x0 + (t - delta) * d, h=min(1e-6, delta / 10))\n            gr = grad(x0 + (t + delta) * d, h=min(1e-6, delta / 10))\n            diff = gr - gl\n            if np.linalg.norm(diff) < 1e-9:\n                continue\n            v = normalize(diff)\n            for k, r in enumerate(rows):\n                if abs(np.dot(r, v)) > 1 - 1e-5:\n                    counts[k] += 1\n                    break\n            else:\n                rows.append(v)\n                counts.append(1)\n    # keep directions seen on multiple lines (each neuron's hyperplane is\n    # crossed by almost every line) to filter spurious numeric artifacts\n    rows = [r for r, c in zip(rows, counts) if c >= max(2, n_lines // 3)]\n    return np.array(rows)\n\n\nif __name__ == \"__main__\":\n    A1_hat = steal()\n    print(\"Recovered %d neurons\" % A1_hat.shape[0])\n    np.set_printoptions(precision=6, suppress=True, linewidth=150)\n    print(A1_hat)\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_hat)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-zqdno7yu/bench_opencode_model-extraction-relu-logits_rr7_kptc/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-zqdno7yu/bench_opencode_model-extraction-relu-logits_rr7_kptc/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793754834365,
+      "end": 1793754840993
+    }
+  }
+}

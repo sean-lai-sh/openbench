@@ -1,0 +1,25 @@
+{
+  "id": "prt_1a45e5227001tsbfPn2ge4vnMr",
+  "sessionID": "ses_e5ba50f32ffeL16QKB1Y4i0iA5",
+  "messageID": "msg_1a45e3d78001b9v9L4DJflx7U3",
+  "type": "tool",
+  "callID": "toolu_vrtx_01NYgHb5XTY26pdV9wfxaeWX",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-xoj9mko6/bench_opencode_sam-cell-seg_vcgc0tfv/convert_masks.py",
+      "offset": 130,
+      "limit": 60
+    },
+    "output": "<file>\n00131|     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)\n00132|     out = np.zeros_like(m)\n00133|     cv2.drawContours(out, cnts, -1, 1, -1)\n00134|     return out.astype(bool)\n00135| \n00136| \n00137| def iou(a, b):\n00138|     u = np.logical_or(a, b).sum()\n00139|     return float(np.logical_and(a, b).sum()) / u if u else 0.0\n00140| \n00141| \n00142| # --------------------------------------------------------------------------- #\n00143| # SAM refinement\n00144| # --------------------------------------------------------------------------- #\n00145| def refine_cell(predictor, box_local, prior_local, rect, xs_l, ys_l):\n00146|     \"\"\"Run MobileSAM for one cell (local tile coordinates).\n00147| \n00148|     Returns (mask, logits) in local coordinates.\"\"\"\n00149|     lh, lw = prior_local.shape\n00150|     point_coords, point_labels = None, None\n00151|     # positive point at an interior point of the prior (helps tiny cells)\n00152|     dist = cv2.distanceTransform(prior_local.astype(np.uint8), cv2.DIST_L2, 3)\n00153|     if dist.max() > 0:\n00154|         py, px = np.unravel_index(np.argmax(dist), dist.shape)\n00155|         point_coords = np.array([[px, py]], dtype=np.float32)\n00156|         point_labels = np.array([1], dtype=np.int32)\n00157| \n00158|     masks, scores, logits = predictor.predict(\n00159|         point_coords=point_coords,\n00160|         point_labels=point_labels,\n00161|         box=box_local,\n00162|         multimask_output=True,\n00163|         return_logits=True,\n00164|     )\n00165|     # also try a box-only prompt\n00166|     m2, s2, l2 = predictor.predict(\n00167|         box=box_local, multimask_output=True, return_logits=True\n00168|     )\n00169|     masks = np.concatenate([masks, m2], 0)\n00170|     scores = np.concatenate([scores, s2], 0)\n00171| \n00172|     x0, y0, x1, y1 = box_local\n00173|     bw, bh = x1 - x0, y1 - y0\n00174|     pad = 0.15 * max(bw, bh) + 2\n00175|     allowed = np.zeros((lh, lw), bool)\n00176|     allowed[\n00177|         int(max(0, np.floor(y0 - pad))) : int(min(lh, np.ceil(y1 + pad)) + 1),\n00178|         int(max(0, np.floor(x0 - pad))) : int(min(lw, np.ceil(x1 + pad)) + 1),\n00179|     ] = True\n00180|     box_area = max(1.0, (bw + 1) * (bh + 1))\n00181| \n00182|     best, best_score = None, -np.inf\n00183|     for i in range(masks.shape[0]):\n00184|         logit = masks[i]\n00185|         m = (logit > predictor.model.mask_threshold) & allowed\n00186|         m = largest_component(m)\n00187|         area = m.sum()\n00188|         if area < 0.05 * box_area:\n00189|             continue\n00190|         overlap = iou(m, prior_local)\n\n(File has more lines. Use 'offset' parameter to read beyond line 190)\n</file>",
+    "title": "tmp/obench-cell-xoj9mko6/bench_opencode_sam-cell-seg_vcgc0tfv/convert_masks.py",
+    "metadata": {
+      "preview": "    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)\n    out = np.zeros_like(m)\n    cv2.drawContours(out, cnts, -1, 1, -1)\n    return out.astype(bool)\n\n\ndef iou(a, b):\n    u = np.logical_or(a, b).sum()\n    return float(np.logical_and(a, b).sum()) / u if u else 0.0\n\n\n# --------------------------------------------------------------------------- #\n# SAM refinement\n# --------------------------------------------------------------------------- #\ndef refine_cell(predictor, box_local, prior_local, rect, xs_l, ys_l):\n    \"\"\"Run MobileSAM for one cell (local tile coordinates).\n\n    Returns (mask, logits) in local coordinates.\"\"\"\n    lh, lw = prior_local.shape\n    point_coords, point_labels = None, None"
+    },
+    "time": {
+      "start": 1793759008074,
+      "end": 1793759008100
+    }
+  }
+}
