@@ -237,13 +237,14 @@ class WireProxy:
             "call_role": "main" if isinstance(tools, list) and tools else "side",
             "requested_model": model.vertex_id, "upstream_model": served,
             "request": sent, "response_usage": usage, "status": status,
-            "route": model.key, "thinking_enforced": enforced, "cost_usd": None,
+            "route": model.key, "thinking_enforced": enforced, "cost_usd": None, "cost_basis": None,
         }
         if error:
             record["error"] = error
         if usage is not None:
             try:
-                record["cost_usd"] = vm.cost_usd(model, usage_from_response(model.wire, usage, index))
+                detail = vm.cost_detail(model, usage_from_response(model.wire, usage, index))
+                record["cost_usd"], record["cost_basis"] = detail["usd"], detail["basis"]
             except TraceError as exc:
                 record["usage_error"] = exc.code
         with self._lock, self.wire_path.open("a", encoding="utf-8") as fh:
