@@ -174,11 +174,19 @@ def opencode_config_env(model: VertexModel, proxy_base: str) -> str:
     return json.dumps(opencode_config(model, proxy_base), sort_keys=True)
 
 
-def cost_usd(model: VertexModel, usage: dict) -> float | None:
-    """USD for one call from normalized usage (``trace.usage_from_response``).
-    Thinking is billed as output. Gemini's ``promptTokenCount`` includes
-    cached tokens and its ``candidatesTokenCount`` excludes thinking, so both
-    are adjusted. None when a needed rate is missing."""
+def cost_detail(model: VertexModel, usage: dict) -> dict:
+    """``{"usd", "basis", "estimate"}`` for one call from normalized usage
+    (``trace.usage_from_response``).
+    - Thinking is billed as output. Gemini's ``promptTokenCount`` includes
+      cached tokens and its ``candidatesTokenCount`` excludes thinking, so
+      both are adjusted.
+    - When a model has no cached-token rate (gpt-oss: none published), cached
+      tokens are billed at the **uncached input rate**, an upper bound, and the
+      result is marked an estimate.
+    - ``basis`` lists what the number rests on: ``list`` or
+      ``list_unverified`` (``price_verified``), plus
+      ``cache_read_at_input_rate`` / ``cache_write_at_input_rate`` when that
+      fallback was used."""
     p = model.prices
     inp, out = usage.get("input_tokens") or 0, usage.get("output_tokens") or 0
     read, write = usage.get("cache_read_tokens") or 0, usage.get("cache_write_tokens") or 0
@@ -188,9 +196,17 @@ def cost_usd(model: VertexModel, usage: dict) -> float | None:
     elif model.wire == "openai_chat":
         inp = max(inp - read, 0)
     total = inp * p["input"] + out * p["output"]
-    for tokens, rate in ((read, p["cache_read"]), (write, p["cache_write"])):
+    basis = ["list" if model.price_verified else "list_unverified"]
+    for name, tokens, rate in (("cache_read", read, p["cache_read"]), ("cache_write", write, p["cache_write"])):
         if tokens:
             if rate is None:
-                return None
+                rate = p["input"]
+                basis.append(f"{name}_at_input_rate")
             total += tokens * rate
-    return round(total / 1_000_000, 8)
+    return {"usd": round(total / 1_000_000, 8), "basis": basis,
+            "estimate": not model.price_verified or len(basis) > 1}
+
+
+def cost_usd(model: VertexModel, usage: dict) -> float:
+    """USD for one call (``cost_detail``'s number)."""
+    return cost_detail(model, usage)["usd"]
