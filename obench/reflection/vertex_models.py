@@ -107,6 +107,13 @@ def count_o200k_harmony(text: str) -> tuple[int | None, str]:
     return len(encoding.encode(text, disallowed_special=())), "computed: tiktoken o200k_harmony (not provider usage)"
 
 
+def served_matches(model: VertexModel, served) -> bool:
+    """True when the served model Vertex reports is this model. Vertex reports
+    gpt-oss in its publisher/model body form (``openai/gpt-oss-120b-maas``)."""
+    accepted = (model.vertex_id, OPENAI_BODY_MODEL.get(model.key) or model.vertex_id)
+    return isinstance(served, str) and any(served.startswith(a) for a in accepted)
+
+
 # Models whose usage thinking-token count can't be compared with the others'.
 # gpt-oss on Vertex reports 0 even when it returns reasoning text, so its
 # thinking is evidenced by the text (chars, optional counted tokens) instead.
