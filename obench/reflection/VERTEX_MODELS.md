@@ -47,14 +47,19 @@ choices, configurable in `vertex_models.py`.
 
 ## Prices (cost logging)
 
-USD per 1M tokens, Standard tier, global. `cost_usd` is on every wire record,
-and the smoke's `cost` check totals it.
+USD per 1M tokens, Standard tier, global. `cost_usd` and `cost_basis` are on
+every wire record, and the smoke's `cost` check totals them.
+
+Where a model has no cached-token rate (gpt-oss: Vertex reports
+`prompt_tokens_details.cached_tokens` but no cached price is published),
+cached tokens are billed at the uncached input rate. That's an upper bound,
+marked `cache_read_at_input_rate` in `cost_basis`.
 
 | Model | Input | Output (incl. thinking) | Cache read | Cache write | Verified |
 |---|---:|---:|---:|---:|---|
 | Claude Opus 5.5 | 4.00 | 20.00 | 0.20 | 5.00 | yes (`thesis/ab/vertex_list_prices.json`, read 2026-10-29) |
 | Gemini 4 Carbon | 4.00 | 20.00 | 0.40 (assumed 10% of input) | n/a | **no.** Reported global SKU. Google announced an introductory $2/$10. |
-| gpt-oss 120B | 0.15 | 0.60 | n/a | n/a | **no.** GA announcement rate; current aggregators show $0.09/$0.36. |
+| gpt-oss 120B | 0.15 | 0.60 | none published: billed at the input rate (estimate) | n/a | **no.** GA announcement rate; current aggregators show $0.09/$0.36. |
 
 Confirm the two unverified rows on the Agent Platform pricing page before any
 scored run. The page didn't render for automated reading on 2026-11-13.
