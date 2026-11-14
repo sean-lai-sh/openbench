@@ -102,6 +102,7 @@ class RunConfig:
     patch_id: str | None = None
     patch: dict | None = None
     tasks: tuple | None = None           # restrict to these suite tasks (ideation, dry runs)
+    fixed_tasks: bool = False            # run exactly ``tasks`` (suite or pool), never swap: ideation arms
 
     @classmethod
     def load(cls, path: Path) -> "RunConfig":
@@ -118,7 +119,13 @@ class RunConfig:
         cfg.validate()
         return cfg
 
+    @property
+    def fixed(self) -> bool:
+        return self.patch_id is not None or self.fixed_tasks
+
     def validate(self) -> None:
+        if self.fixed_tasks and not self.tasks:
+            raise RunnerError("fixed_tasks needs tasks")
         if not self.run_id or "/" in self.run_id:
             raise RunnerError("run_id must be a non-empty name without '/'")
         if not self.models:
@@ -173,9 +180,11 @@ class Runner:
         self.pool: Suite = load_suite(self.suite.pool, **kwargs)
         self.known = {t.id: t for t in (*self.suite.tasks, *self.pool.tasks)}
         if config.tasks:
-            missing = sorted(set(config.tasks) - set(self.suite.ids()))
+            allowed = set(self.known) if config.fixed else set(self.suite.ids())
+            missing = sorted(set(config.tasks) - allowed)
             if missing:
-                raise RunnerError(f"tasks not in suite {config.suite!r}: {missing}")
+                raise RunnerError(f"tasks not in suite {config.suite!r}" + (" or its pool" if config.fixed else "")
+                                  + f": {missing}")
         self.trials_path = self.run_dir / "trials.jsonl"
         self.summary_path = self.run_dir / "summary.jsonl"
 
@@ -253,11 +262,13 @@ class Runner:
                 states[model], swaps = self._apply_swaps(states[model], summaries, model, cutoff)
                 swapped |= bool(swaps)
             self.write_verdicts(summaries, cutoff)
-            if not swapped or self.config.patch_id is not None:
+            if not swapped or self.config.fixed:
                 break
         return self._status("done")
 
     def _round_tasks(self, state: dict) -> list[str]:
+        if self.config.fixed:  # ideation arms: exactly the parent's task, even a swapped-in pool task
+            return list(self.config.tasks or swap.current_tasks(state))
         if self.config.tasks:
             return [t for t in swap.current_tasks(state) if t in self.config.tasks or t not in self.suite.ids()]
         return swap.current_tasks(state)
@@ -348,8 +359,8 @@ class Runner:
 
     def _apply_swaps(self, state: dict, summaries: list[dict], model: str, cutoff: float) -> tuple[dict, list]:
         """Harder-swap for this model only, on its completed baseline rows.
-        Ideation runs (patch_id set) never swap the suite."""
-        if self.config.patch_id is not None:
+        Ideation arms (patched or fixed baselines) never swap the suite."""
+        if self.config.fixed:
             return state, []
         current = set(swap.current_tasks(state))
         results = {s["task"]: (s["passes"], s["completed"]) for s in summaries
@@ -359,6 +370,28 @@ class Runner:
         self._swap_path(model).parent.mkdir(parents=True, exist_ok=True)
         _write_json(self._swap_path(model), new)
         return new, swaps
+
+
+def ideation_estimate(executor: Executor, failures: dict, n_alternatives: int = 5, n_trials: int = N_TRIALS,
+                      candidate_fraction: float = 1.0) -> dict:
+    """Spend estimate for ideation (SEA-110): selection runs ``n_alternatives
+    x n_trials`` per failure, then every candidate gets a confirmation (a
+    fresh ``n_trials`` alternative run **plus** a fresh ``n_trials`` baseline
+    run). ``failures`` is ``{model: failed trials to ideate on}``.
+    ``candidate_fraction`` = 1.0 is the worst case (every alternative
+    becomes a candidate)."""
+    per_model = {}
+    for model, count in failures.items():
+        unit = executor.estimate_cost_usd(model)
+        selection = count * n_alternatives * n_trials * unit
+        confirmation = count * n_alternatives * candidate_fraction * 2 * n_trials * unit
+        per_model[model] = {"selection_usd": round(selection, 2), "confirmation_usd": round(confirmation, 2),
+                            "total_usd": round(selection + confirmation, 2)}
+    return {"n_alternatives": n_alternatives, "n_trials": n_trials, "candidate_fraction": candidate_fraction,
+            "per_model": per_model,
+            "selection_usd": round(sum(v["selection_usd"] for v in per_model.values()), 2),
+            "confirmation_usd": round(sum(v["confirmation_usd"] for v in per_model.values()), 2),
+            "total_usd": round(sum(v["total_usd"] for v in per_model.values()), 2)}
 
 
 class FixtureExecutor:

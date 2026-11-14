@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Callable
 
 from obench.reflection import vertex_models as vm
+from obench.reflection.patches import PatchError, apply_patch, validate_patch
 from obench.reflection.trace import WIRE_SCHEMA, TraceError, usage_from_response
 
 ANTHROPIC_VERSION = "vertex-2023-10-16"
@@ -131,7 +132,14 @@ class WireProxy:
 
     def __init__(self, project: str, wire_path: Path, token: Callable[[], str], *,
                  host: str = "127.0.0.1", port: int = 0, upstream_host: str | None = None,
-                 opener=urllib.request.urlopen):
+                 opener=urllib.request.urlopen, patch: dict | None = None, patch_id: str | None = None):
+        if (patch is None) != (patch_id is None):
+            raise ValueError("patch and patch_id go together")
+        if patch is not None:
+            reasons = validate_patch(patch)
+            if reasons:
+                raise PatchError("; ".join(reasons))
+        self.patch, self.patch_id = patch, patch_id
         self.project, self.wire_path, self.token = project, Path(wire_path), token
         self.upstream_host, self.opener = upstream_host, opener
         self._lock, self._index = threading.Lock(), 0
@@ -189,6 +197,10 @@ class WireProxy:
         try:
             body = json.loads(raw.decode("utf-8")) if raw else {}
             sent, stream, enforced = prepare_request(model, path, body)
+            patch_log = None
+            if self.patch is not None:  # ideation alternative: prompt / tool-metadata ops only
+                sent, patch_log = apply_patch(model.wire, sent, self.patch)
+                enforced = dict(enforced, patch_id=self.patch_id, patch_log=patch_log)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return self._reply(handler, 400, {"error": "request body is not JSON"})
         except ValueError as exc:
@@ -239,6 +251,8 @@ class WireProxy:
             "request": sent, "response_usage": usage, "status": status,
             "route": model.key, "thinking_enforced": enforced, "cost_usd": None, "cost_basis": None,
         }
+        if self.patch_id is not None:
+            record["patch_id"] = self.patch_id
         if error:
             record["error"] = error
         if usage is not None:
