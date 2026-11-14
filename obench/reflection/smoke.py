@@ -90,6 +90,8 @@ def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: li
                               "setting": model.thinking, "pass": bool(thinking) and all(thinking)},
         "usage_thinking": usage_thinking(model, records),
         "cost": {"per_call": costs, "total_usd": round(sum(c for c in costs if c is not None), 6) if costs else None,
+                 "bases": sorted({b for w in wires for b in (w.get("cost_basis") or [])}),
+                 "estimate": any(b != "list" for w in wires for b in (w.get("cost_basis") or [])),
                  "price_verified": model.price_verified, "price_source": model.price_source,
                  "pass": bool(costs) and all(isinstance(c, (int, float)) for c in costs)},
         "pin": {"check": pin_check, "pass": pin_check is not None},
@@ -147,15 +149,29 @@ def run(args) -> int:
     wire_path.unlink(missing_ok=True)
     proxy = WireProxy(project, wire_path, token)
     cmd = oc.run_command(Path(args.opencode), instruction, vm.opencode_model_arg(model))
+    # OpenCode's bun cache can leave files the temp-dir cleanup trips on (Errno 39 on the VM): the home is
+    # removed with errors ignored, and only after every output below is written.
+    home = Path(tempfile.mkdtemp(prefix="reflection-home-"))
+    opencode_exit, stderr, timed_out = None, "", False
     try:
-        with tempfile.TemporaryDirectory(prefix="reflection-home-") as home:
+        try:
             with events_path.open("w", encoding="utf-8") as events:
-                proc = subprocess.run(cmd, cwd=work, env=child_env(model, proxy.base_url, Path(home)),
+                proc = subprocess.run(cmd, cwd=work, env=child_env(model, proxy.base_url, home),
                                       stdout=events, stderr=subprocess.PIPE, text=True, timeout=args.timeout,
                                       stdin=subprocess.DEVNULL)
+            opencode_exit, stderr = proc.returncode, proc.stderr or ""
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", "replace")
+        finally:
+            proxy.close()
+        return _finish(args, model, out, task, cmd, wire_path, events_path, pin_check, opencode_exit, stderr, timed_out)
     finally:
-        proxy.close()
-    (out / "opencode-stderr.txt").write_text(proc.stderr or "", encoding="utf-8")
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def _finish(args, model, out, task, cmd, wire_path, events_path, pin_check, opencode_exit, stderr, timed_out) -> int:
+    (out / "opencode-stderr.txt").write_text(stderr, encoding="utf-8")
     wires = [json.loads(l) for l in wire_path.read_text(encoding="utf-8").splitlines() if l.strip()] \
         if wire_path.exists() else []
     records, trace_error = None, None
@@ -169,7 +185,8 @@ def run(args) -> int:
         trace_error = str(exc)
     result = checks(model, cmd, wires, records, trace_error, pin_check)
     summary = {"model": model.key, "vertex_id": model.vertex_id, "location": model.location, "task": task.name,
-               "opencode_exit": proc.returncode, "command": [cmd[0], *cmd[1:-1], "<instruction>"],
+               "opencode_exit": opencode_exit, "opencode_timed_out": timed_out,
+               "command": [cmd[0], *cmd[1:-1], "<instruction>"],
                "checks": result, "pass": all(c["pass"] for c in result.values())}
     (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({k: v["pass"] for k, v in result.items()}, sort_keys=True))
