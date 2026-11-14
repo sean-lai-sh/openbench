@@ -16,14 +16,16 @@ Every proposal row records its parent trial and the credit method (``A``,
 Evaluation: each accepted proposal runs ``n_trials`` (default 30) on the
 parent's task and model through the SEA-107 runner, with the patch applied
 by the recording proxy. ``decide`` compares it with the baseline summary row
-(same task, model, N). The success rule (Sean, 2026-11-13) is in ``decide``:
-- ``success``: both sides completed all N trials **and** the alternative has
-  more passes than the baseline. 1/30 vs 0/30 counts. Nothing short of N
-  completed trials on both sides is judged.
-- ``fisher_p``: the one-sided Fisher exact p-value, recorded on every row as
-  a reported statistic. It does not gate success (``ALPHA = 1.0``). Passing a
-  smaller ``alpha`` to ``decide`` re-enables a significance gate for
-  sensitivity analysis.
+(same task, model, N). Two stages (``evaluate``; João Sedoc via Sean, 2026-11-13):
+- **Selection:** a *candidate* iff both sides completed all N trials and
+  the alternative has more passes than the baseline (``decide``: a bare beat,
+  no significance gate; 1/30 vs 0/30 qualifies).
+- **Confirmation:** each candidate gets a fresh N-trial alternative run and a
+  fresh N-trial baseline run (new trial ids, no reuse of the selection
+  trials). ``success`` iff it beats the fresh baseline again.
+
+Both stages record the one-sided Fisher exact p as a reported statistic only.
+``runner.ideation_estimate`` prices selection plus confirmation.
 
 Tables (in the run directory, separate from the trial and credit tables):
 ``ideation.jsonl`` (proposals) and ``ideation_results.jsonl`` (one row per
@@ -175,9 +177,47 @@ def decide(baseline: dict, alternative: dict, n: int = rn.N_TRIALS, alpha: float
                        "beats baseline but not significant at alpha" if beats else "does not beat baseline")}
 
 
+def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: bool, executor: rn.Executor,
+         n_trials: int, spend_cap_usd: float | None) -> tuple[dict, str, str]:
+    """One N-trial arm of one proposal: ``(summary row or {}, run state, relative dir)``.
+    Each arm has its own run_id, so its trial ids are new and never reuse
+    another arm's trials."""
+    pid = proposal["proposal_id"]
+    cfg = rn.RunConfig.from_dict({
+        "run_id": f"{base_cfg['run_id']}--{label}--{pid}", "suite": base_cfg["suite"], "models": [proposal["model"]],
+        "n_trials": n_trials, "tasks": [proposal["task"]], "max_rounds": 1, "fixed_tasks": True,
+        "patch_id": pid if patched else None, "patch": proposal["patch"] if patched else None,
+        "spend_cap_usd": spend_cap_usd})
+    rel = f"ideation/{pid}/{label}"
+    status = rn.Runner(cfg, run_dir / rel, executor).run()
+    rows = [s for s in rn.read_rows(run_dir / rel / "summary.jsonl")
+            if s["patch_id"] == (pid if patched else None) and s["task"] == proposal["task"]]
+    return (rows[0] if rows else {}), status["state"], rel
+
+
+def _stage(prefix: str, baseline: dict, alt: dict, n: int) -> dict:
+    d = decide(baseline, alt, n=n)
+    return {f"{prefix}_baseline_passes": baseline.get("passes"), f"{prefix}_baseline_completed": baseline.get("completed"),
+            f"{prefix}_alt_passes": alt.get("passes"), f"{prefix}_alt_completed": alt.get("completed", 0),
+            f"{prefix}_beats_baseline": d["beats_baseline"], f"{prefix}_complete": d["complete"],
+            f"{prefix}_fisher_p": d["fisher_p"]}
+
+
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,
              spend_cap_usd: float | None = None) -> dict:
-    """Run one accepted proposal at N through the runner, then decide."""
+    """Two-stage evaluation of one accepted proposal (João Sedoc via Sean, 2026-11-13).
+
+    1. **Selection:** the alternative runs N trials. It is a *candidate* iff
+       both it and the original baseline completed N and it has more passes
+       (bare beat, no significance gate; 1/30 vs 0/30 qualifies).
+    2. **Confirmation** (candidates only): a fresh N-trial run of the
+       alternative **and** a fresh N-trial baseline run (no patch), both with
+       new run ids, so new trial ids, and no reuse of the selection trials.
+       ``success`` iff the alternative beats the fresh baseline again (bare
+       beat, full N on both sides).
+
+    The one-sided Fisher p for each stage is recorded as a reported statistic
+    only. ``spend_cap_usd`` applies to each arm."""
     if proposal["status"] != "accepted":
         raise ValueError("only accepted proposals are evaluated")
     run_dir = Path(run_dir)
@@ -186,20 +226,26 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
                 if s["task"] == proposal["task"] and s["model"] == proposal["model"] and s["patch_id"] is None]
     if not baseline:
         raise ValueError(f"no baseline summary for {proposal['task']} / {proposal['model']}")
-    cfg = rn.RunConfig.from_dict({
-        "run_id": f"{base_cfg['run_id']}--{proposal['proposal_id']}", "suite": base_cfg["suite"],
-        "models": [proposal["model"]], "n_trials": n_trials, "tasks": [proposal["task"]], "max_rounds": 1,
-        "patch_id": proposal["proposal_id"], "patch": proposal["patch"], "spend_cap_usd": spend_cap_usd})
-    alt_dir = run_dir / "ideation" / proposal["proposal_id"]
-    status = rn.Runner(cfg, alt_dir, executor).run()
-    alt = [s for s in rn.read_rows(alt_dir / "summary.jsonl") if s["patch_id"] == proposal["proposal_id"]]
-    verdict = decide(baseline[0], alt[0] if alt else {}, n=n_trials)
+    sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd)
+    selection = _stage("selection", baseline[0], sel_alt, n_trials)
+    candidate = selection["selection_complete"] and selection["selection_beats_baseline"]
     row = {"schema": RESULT_SCHEMA, "proposal_id": proposal["proposal_id"], "parent_trial_id": proposal["parent_trial_id"],
            "task": proposal["task"], "model": proposal["model"], "credit_method": proposal["credit_method"],
-           "baseline_passes": baseline[0]["passes"], "baseline_completed": baseline[0]["completed"],
-           "alt_passes": alt[0]["passes"] if alt else None, "alt_completed": alt[0]["completed"] if alt else 0,
-           "alt_spend_usd": alt[0]["spend_usd"] if alt else 0.0, "run_state": status["state"],
-           "alt_run_dir": f"ideation/{proposal['proposal_id']}", **verdict}
+           "n_trials": n_trials, **selection, "candidate": candidate, "selection_spend_usd": sel_alt.get("spend_usd", 0.0),
+           "selection_run_dir": sel_dir, "selection_run_state": sel_state,
+           "confirmation_baseline_passes": None, "confirmation_baseline_completed": None,
+           "confirmation_alt_passes": None, "confirmation_alt_completed": None, "confirmation_beats_baseline": None,
+           "confirmation_complete": None, "confirmation_fisher_p": None, "confirmation_spend_usd": 0.0,
+           "confirmation_run_dirs": None, "confirmation_run_states": None, "confirmed": None, "success": False}
+    if candidate:
+        conf_alt, alt_state, alt_dir = _arm(run_dir, base_cfg, proposal, "confirm", True, executor, n_trials, spend_cap_usd)
+        conf_base, base_state, base_dir = _arm(run_dir, base_cfg, proposal, "confirm-baseline", False, executor,
+                                               n_trials, spend_cap_usd)
+        confirmation = _stage("confirmation", conf_base, conf_alt, n_trials)
+        confirmed = confirmation["confirmation_complete"] and confirmation["confirmation_beats_baseline"]
+        row.update(confirmation, confirmed=confirmed, success=confirmed,
+                   confirmation_spend_usd=round(conf_alt.get("spend_usd", 0.0) + conf_base.get("spend_usd", 0.0), 6),
+                   confirmation_run_dirs=[alt_dir, base_dir], confirmation_run_states=[alt_state, base_state])
     with (run_dir / "ideation_results.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, sort_keys=True) + "\n")
     return row

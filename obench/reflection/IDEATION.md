@@ -44,24 +44,46 @@ Rejected proposals are stored with reasons and never run.
   - `status` (`accepted` or `rejected`), `rejection_reasons` and `complete_set`;
   - the raw ideator output and its usage.
 
-## Evaluation and the success rule (`ideation_results.jsonl`)
+## Evaluation: selection, then confirmation (`ideation_results.jsonl`)
 
-Each accepted proposal runs **N = 30** trials (`runner.N_TRIALS`) on the
-parent's task and model. It goes through the SEA-107 runner, into
-`ideation/<proposal_id>/`, with `patch_id` set (patch runs never swap the
-suite).
+Two stages (João Sedoc via Sean, 2026-11-13). `evaluate(run_dir, proposal, executor)` runs both.
 
-`decide(baseline, alternative)` (Sean, 2026-11-13):
-1. **Both sides must have completed all N trials.** Otherwise the result is
-   `complete: false` and is not judged.
-2. **`success`**: the alternative has more passes than the baseline at
-   N = 30. This is the bare "beats the baseline at N=30" rule, so **1/30 vs
-   0/30 counts**.
-3. `fisher_p`: the one-sided Fisher exact p-value, **recorded on every result
-   row as a reported statistic and not a gate** (`ALPHA = 1.0`). For example,
-   1/30 vs 0/30 gives p = 0.5 and 6/30 vs 0/30 gives p ≈ 0.012. Passing
-   `alpha=0.05` to `decide` re-enables a significance gate for sensitivity
-   analysis only.
+1. **Selection.** The alternative runs **N = 30** trials on the parent's task
+   and model, with its patch (`ideation/<proposal_id>/select/`). It is a
+   **candidate** iff both it and the original baseline completed all N trials
+   and it has **more passes** (`decide`: a bare beat, no significance gate).
+   **1/30 vs 0/30 qualifies.**
+2. **Confirmation (candidates only).** A **fresh** N-trial run of the
+   alternative (`.../confirm/`) **and** a **fresh** N-trial baseline run with
+   no patch (`.../confirm-baseline/`). Each arm has its own run id, so its
+   trial ids are new, and no selection trial is reused. OpenCode has no
+   sampling seed: every trial is an independent sample. **`success`** iff the
+   alternative beats the fresh baseline again: full N on both sides, more
+   passes.
 
-Result rows record the baseline and alternative passes, completed counts,
-spend, `fisher_p`, `alpha`, `beats_baseline`, `success` and `credit_method`.
+Every arm runs through the SEA-107 runner in `fixed_tasks` mode: exactly the
+parent's task (even a pool task), never a suite swap.
+
+**Columns, one row per evaluated proposal:**
+
+| Stage | Columns |
+|---|---|
+| Selection | `selection_baseline_passes`, `selection_baseline_completed`, `selection_alt_passes`, `selection_alt_completed`, `selection_beats_baseline`, `selection_complete`, `selection_fisher_p`, `candidate`, `selection_spend_usd`, `selection_run_dir`, `selection_run_state` |
+| Confirmation | `confirmation_baseline_passes`, `confirmation_baseline_completed`, `confirmation_alt_passes`, `confirmation_alt_completed`, `confirmation_beats_baseline`, `confirmation_complete`, `confirmation_fisher_p`, `confirmed`, `confirmation_spend_usd`, `confirmation_run_dirs`, `confirmation_run_states`. All null for non-candidates. |
+| Outcome | `success` (= `confirmed`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials` |
+
+`*_fisher_p` is the one-sided Fisher exact p for that stage, **reported only,
+never a gate** (`ALPHA = 1.0`). Passing `alpha=0.05` to `decide` re-enables a
+gate for sensitivity analysis.
+
+## Cost
+
+`runner.ideation_estimate(executor, {model: failures}, n_alternatives=5,
+n_trials=30, candidate_fraction=1.0)`:
+- selection costs `failures × 5 × 30` trials;
+- confirmation adds `failures × 5 × candidate_fraction × (30 + 30)` trials
+  (the fresh alternative plus the fresh baseline).
+
+The worst case (`candidate_fraction = 1`) is 3× the selection cost. For
+example, one failure at Opus's provisional $2/trial costs $300 to select and
+up to $600 more to confirm.

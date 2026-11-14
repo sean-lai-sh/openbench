@@ -151,18 +151,74 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("fields", rows[4]["rejection_reasons"][0])
         self.assertIsNone(rows[4]["proposal_id"])
 
-    def test_evaluate_runs_n30_with_the_patch_and_decides(self):
-        rows = idn.propose(self.run, self.trial, "A", FakeIdeator([good(i) for i in range(5)]))
-        executor = rn.FixtureExecutor({("extract-elf", OPUS): 12})
-        result = idn.evaluate(self.run, rows[0], executor)
-        self.assertEqual(len(executor.calls), 30)
-        self.assertTrue(all(c.patch == rows[0]["patch"] and c.patch_id == rows[0]["proposal_id"] for c in executor.calls))
-        self.assertEqual((result["baseline_passes"], result["alt_passes"], result["alt_completed"]), (2, 12, 30))
-        self.assertTrue(result["success"])
-        self.assertEqual(result["credit_method"], "A")
+    def arms(self, select, confirm, confirm_baseline):
+        class Arms(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                arm = ("confirm-baseline" if "--confirm-baseline--" in spec.run_id else
+                       "confirm" if "--confirm--" in spec.run_id else "select")
+                self.passes = {(spec.task, spec.model): {"select": select, "confirm": confirm,
+                                                         "confirm-baseline": confirm_baseline}[arm]}
+                return super().run_trial(spec, run_dir)
+        return Arms({})
+
+    def proposal(self):
+        return idn.propose(self.run, self.trial, "A", FakeIdeator([good(i) for i in range(5)]))[0]
+
+    def test_candidate_confirmed_on_fresh_runs(self):
+        proposal, executor = self.proposal(), self.arms(select=3, confirm=5, confirm_baseline=1)
+        row = idn.evaluate(self.run, proposal, executor)
+        self.assertEqual(len(executor.calls), 90)  # 30 selection + 30 fresh alternative + 30 fresh baseline
+        self.assertEqual((row["selection_baseline_passes"], row["selection_alt_passes"], row["candidate"]), (2, 3, True))
+        self.assertEqual((row["confirmation_baseline_passes"], row["confirmation_alt_passes"], row["confirmed"], row["success"]),
+                         (1, 5, True, True))
+        self.assertIsNotNone(row["selection_fisher_p"])
+        self.assertIsNotNone(row["confirmation_fisher_p"])
+        ids = {}
+        for c in executor.calls:
+            ids.setdefault(c.run_id.split("--")[1], set()).add(c.trial_id)
+        self.assertEqual(sorted(ids), ["confirm", "confirm-baseline", "select"])
+        self.assertFalse(ids["select"] & ids["confirm"] or ids["select"] & ids["confirm-baseline"]
+                         or ids["confirm"] & ids["confirm-baseline"])  # no trial reused across stages or arms
+        baseline_calls = [c for c in executor.calls if "--confirm-baseline--" in c.run_id]
+        self.assertTrue(all(c.patch is None and c.patch_id is None for c in baseline_calls))
+        patched = [c for c in executor.calls if "--confirm-baseline--" not in c.run_id]
+        self.assertTrue(all(c.patch == proposal["patch"] for c in patched))
+        self.assertEqual(row["credit_method"], "A")
         self.assertEqual(len(rn.read_rows(self.run / "ideation_results.jsonl")), 1)
+
+    def test_one_pass_against_zero_is_a_candidate_but_must_confirm(self):
+        self.setUp_zero_baseline()
+        row = idn.evaluate(self.run, self.proposal(), self.arms(select=1, confirm=0, confirm_baseline=0))
+        self.assertEqual((row["candidate"], row["confirmed"], row["success"]), (True, False, False))
+        self.assertAlmostEqual(row["selection_fisher_p"], 0.5)
+
+    def test_non_candidates_are_not_confirmed(self):
+        executor = self.arms(select=2, confirm=30, confirm_baseline=0)
+        row = idn.evaluate(self.run, self.proposal(), executor)
+        self.assertEqual(len(executor.calls), 30)
+        self.assertEqual((row["candidate"], row["confirmed"], row["success"], row["confirmation_alt_passes"]),
+                         (False, None, False, None))
         with self.assertRaises(ValueError):
-            idn.evaluate(self.run, dict(rows[0], status="rejected"), executor)
+            idn.evaluate(self.run, dict(self.proposal(), status="rejected"), executor)
+
+    def setUp_zero_baseline(self):
+        import shutil
+        shutil.rmtree(self.run)
+        self.run.mkdir()
+        cfg = rn.RunConfig.from_dict({"run_id": "base", "suite": "pilot", "models": [OPUS], "n_trials": 30,
+                                      "tasks": ["extract-elf"], "max_rounds": 1})
+        rn.Runner(cfg, self.run, rn.FixtureExecutor({})).run()
+        self.trial = rn.read_rows(self.run / "trials.jsonl")[0]
+        from obench.reflection import credit_a
+        credit_a.run_method_a(self.run)
+
+
+class Estimate(unittest.TestCase):
+    def test_confirmation_is_in_the_cost_estimate(self):
+        est = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1})
+        self.assertEqual((est["selection_usd"], est["confirmation_usd"], est["total_usd"]), (300.0, 600.0, 900.0))
+        half = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, candidate_fraction=0.2)
+        self.assertEqual(half["confirmation_usd"], 120.0)
 
 
 if __name__ == "__main__":

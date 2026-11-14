@@ -17,6 +17,7 @@ inside rows are relative to it, so the tables can be committed after scrubbing.
 | `max_rounds` | 3 | Swap rounds. A swapped-in task runs in the next round. |
 | `patch_id`, `patch` | none | An ideation alternative (SEA-110). Patch runs never swap the suite. |
 | `tasks` | all suite tasks | Restrict to these suite tasks (ideation, dry runs) |
+| `fixed_tasks` | false | Run exactly `tasks` (suite or pool tasks) and never swap. Ideation's selection, confirmation and fresh-baseline arms use it. |
 
 The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS_CUTOFF`
 (`pass_cutoff()`), recorded in `plan.json`, `summary.jsonl` and `verdicts.json`.
@@ -79,6 +80,11 @@ So a model's suite keeps its planned size. If the pool runs out, `PoolExhausted`
 ## Spend
 
 - `preflight()` gives `round_one_usd` (tasks × models × N × the executor's per-trial estimate) and `worst_case_usd` (× `max_rounds`), checked against `spend_cap_usd`.
+- `ideation_estimate(executor, {model: failures})` prices ideation:
+  - selection: `failures × 5 × N` trials;
+  - confirmation: `failures × 5 × candidate_fraction × 2N` trials (a fresh
+    alternative run plus a fresh baseline run);
+  - the worst case (every alternative a candidate) is 3× selection.
 - During the run, spend is the sum of logged trial costs. Every trial checks the cap and the alert thresholds before it starts.
 
 ## Executors
