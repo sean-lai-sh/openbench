@@ -43,3 +43,48 @@ schema `openbench.reflection.credit_a/v1`:
 
 Run it with `python3 -m obench.reflection.credit_a --run <run dir>`. The
 table is rewritten whole, so a rerun is idempotent.
+
+## Method B (`credit_b.py`, prompt `B1`)
+
+1. Find the first failing step `f` with the shared locator.
+2. Ask a **System 1 model** to label each of the `K` steps before `f` as
+   `correct` or `near_error` (contributed to the failure). The prompt is
+   deterministic for the same inputs. The request uses temperature 0, a JSON
+   response schema, and an explicit thinking setting.
+3. Assign weights to every step:
+   - steps before the window: `correct_weight` (1);
+   - window steps labelled `correct`: `correct_weight` (1);
+   - window steps labelled `near_error`: `near_error_weight`;
+   - `f` and every later step: `past_cutoff_weight` (0). The cutoff rule is
+     `first_failing_step_onward`.
+
+### Config (`MethodBConfig`, or `--config` JSON). Open items: provisional, not final
+
+| Key | Default | Status |
+|---|---|---|
+| `k` | **2** | **Provisional** (open) |
+| `near_error_weight` | **0.5** | **Provisional** (open) |
+| `correct_weight` / `past_cutoff_weight` | 1.0 / 0.0 | The scheme in the ticket |
+| `cutoff_rule` | `first_failing_step_onward` | |
+| `system1_model` | **`gemini-3.8-flash`** (Gemini Flash, Vertex `global`; the newest GA Flash, released 2026-09-02) | **Open:** Sean called the model "Jev". Until he confirms whether "Jev" is a specific endpoint, Gemini Flash is the default. Switching is a one-line config change. |
+| `system1_thinking` | `{"thinkingLevel": "LOW"}` | Set explicitly on every judge request (standing rule). Provisional level. |
+
+### Table (`credit_b.jsonl`, schema `openbench.reflection.credit_b/v1`)
+
+| Field | Meaning |
+|---|---|
+| `prompt_version`, `locator_rule_version` | `B1`, `locator-v1` |
+| `run_id`, `trial_id`, `task`, `model`, `patch_id` | The failed trial (the same rows as Method A) |
+| `system1_model`, `system1_thinking` | The judge and its thinking setting |
+| `k`, `near_error_weight`, `correct_weight`, `past_cutoff_weight`, `cutoff_rule` | The config this row used |
+| `first_failing_step`, `signal` | From the shared locator |
+| `window` | The steps the judge labelled (`f-K .. f-1`, those that exist) |
+| `labels` | `{step: correct\|near_error}` |
+| `weights` | `[{step, weight, why}]` for every trace step (`why`: `before_window`, `correct`, `near_error`, `past_cutoff`) |
+| `raw_judge_output`, `judge_usage` | The judge's raw text and its usage, for audit |
+| `judge_error` | Set when the judge failed or answered in an unparseable form (then `weights` is null), or `empty_trace` |
+| `trace` | Pointer to the trial's trace |
+
+Run it with `python3 -m obench.reflection.credit_b --run <run dir> [--config b.json]`.
+It needs `GOOGLE_CLOUD_PROJECT` and Google credentials (ADC). It's paid, but tiny:
+one Flash call per failed trial.
