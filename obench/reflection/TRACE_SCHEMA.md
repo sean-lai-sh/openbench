@@ -100,6 +100,9 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `thinking_enforced` | object | no | `{setting, client[, removed]}`: the thinking setting the proxy sent, what the client asked for, and any params dropped as incompatible |
 | `cost_usd` | number\|null | no | Per-call cost from `vertex_models.cost_detail` (null only when the response had no usage) |
 | `cost_basis` | array\|null | no | What the cost rests on: `list` or `list_unverified`, plus `cache_read_at_input_rate` / `cache_write_at_input_rate` when a model has no cached-token rate and cached tokens were billed at the uncached input rate (an upper-bound estimate) |
+| `response_summary` | object\|null | no | Diagnostic counts of what the model returned: `finish_reasons`, `tool_calls`, `text_chars`, `reasoning_chars` (no content) |
+| `client_disconnected` | bool | no | The client hung up mid-response. The proxy kept reading upstream, so usage and the summary are complete. |
+| `response_bytes` | int | no | Bytes received from upstream |
 | `error` | string | no | Transport error when the upstream was unreachable |
 | `usage_error` | string | no | `TraceError` code when the response usage could not be normalized |
 | `patch_id` | string | no | The ideation alternative whose patch the proxy applied (SEA-110). The per-op log is in `thinking_enforced.patch_log`. |

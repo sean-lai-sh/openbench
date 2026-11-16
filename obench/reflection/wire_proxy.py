@@ -126,6 +126,64 @@ def parse_response(model: vm.VertexModel, raw: bytes, stream: bool) -> tuple[dic
     return usage, served
 
 
+def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
+    """What the model returned, in counts: finish reason(s), tool calls, visible text and reasoning characters.
+    It's diagnostic only (why a turn ended), and no content is stored."""
+    out = {"finish_reasons": [], "tool_calls": 0, "text_chars": 0, "reasoning_chars": 0}
+    events = list(_sse_payloads(raw)) if stream else []
+    if not stream:
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return out
+        events = doc if isinstance(doc, list) else [doc]
+    tool_ids = set()
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if model.wire == "openai_chat":
+            for choice in ev.get("choices") or []:
+                part = choice.get("delta") or choice.get("message") or {}
+                out["text_chars"] += len(part.get("content") or "")
+                out["reasoning_chars"] += len(part.get("reasoning_content") or part.get("reasoning") or "")
+                for call in part.get("tool_calls") or []:
+                    tool_ids.add((call.get("index"), call.get("id")) if stream else id(call))
+                if choice.get("finish_reason"):
+                    out["finish_reasons"].append(choice["finish_reason"])
+        elif model.wire == "anthropic":
+            kind = ev.get("type")
+            if kind == "content_block_start" and (ev.get("content_block") or {}).get("type") == "tool_use":
+                out["tool_calls"] += 1
+            elif kind == "content_block_delta":
+                delta = ev.get("delta") or {}
+                out["text_chars"] += len(delta.get("text") or "")
+                out["reasoning_chars"] += len(delta.get("thinking") or "")
+            elif kind == "message_delta" and (ev.get("delta") or {}).get("stop_reason"):
+                out["finish_reasons"].append(ev["delta"]["stop_reason"])
+            elif "content" in ev and "stop_reason" in ev:  # non-streamed message
+                for block in ev.get("content") or []:
+                    if block.get("type") == "tool_use":
+                        out["tool_calls"] += 1
+                    out["text_chars"] += len(block.get("text") or "")
+                    out["reasoning_chars"] += len(block.get("thinking") or "")
+                if ev.get("stop_reason"):
+                    out["finish_reasons"].append(ev["stop_reason"])
+        else:
+            for cand in ev.get("candidates") or []:
+                for part in (cand.get("content") or {}).get("parts") or []:
+                    if part.get("functionCall"):
+                        out["tool_calls"] += 1
+                    elif part.get("thought"):
+                        out["reasoning_chars"] += len(part.get("text") or "")
+                    else:
+                        out["text_chars"] += len(part.get("text") or "")
+                if cand.get("finishReason"):
+                    out["finish_reasons"].append(cand["finishReason"])
+    if model.wire == "openai_chat":
+        out["tool_calls"] = len(tool_ids)
+    return out
+
+
 class WireProxy:
     """One proxy per run. ``base_url`` goes into the OpenCode config;
     ``wire_path`` collects the wire records."""
@@ -223,26 +281,46 @@ class WireProxy:
         except OSError as exc:
             self._record(index, started, model, sent, enforced, None, None, None, str(exc))
             return self._reply(handler, 502, {"error": f"upstream unreachable: {exc}"})
+        client = {"ok": True}
+
+        def send(data: bytes) -> None:
+            """Write to the client unless it already hung up. A hang-up (BrokenPipe / ConnectionReset) stops the
+            writes; reading upstream continues so the record still gets the full response and usage."""
+            if not client["ok"]:
+                return
+            try:
+                handler.wfile.write(data)
+                handler.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                client["ok"] = False
+                handler.close_connection = True
+
         with response:
             status = getattr(response, "status", None) or response.getcode()
             content_type = response.headers.get("Content-Type", content_type)
-            handler.send_response(status)
-            handler.send_header("Content-Type", content_type)
-            handler.send_header("Transfer-Encoding", "chunked")
-            handler.end_headers()
+            try:
+                handler.send_response(status)
+                handler.send_header("Content-Type", content_type)
+                handler.send_header("Transfer-Encoding", "chunked")
+                handler.end_headers()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                client["ok"] = False
+                handler.close_connection = True
             while True:
                 piece = response.read1(65536) if hasattr(response, "read1") else response.read(65536)
                 if not piece:
                     break
                 chunks.append(piece)
-                handler.wfile.write(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
-                handler.wfile.flush()
+                send(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
             # Record before the final chunk, so the record exists once the client has the full reply.
-            usage, served = parse_response(model, b"".join(chunks), stream) if status == 200 else (None, None)
-            self._record(index, started, model, sent, enforced, usage, served, status, None)
-            handler.wfile.write(b"0\r\n\r\n")
+            raw_all = b"".join(chunks)
+            usage, served = parse_response(model, raw_all, stream) if status == 200 else (None, None)
+            self._record(index, started, model, sent, enforced, usage, served, status, None,
+                         extra={"response_summary": response_summary(model, raw_all, stream) if status == 200 else None,
+                                "client_disconnected": not client["ok"], "response_bytes": len(raw_all)})
+            send(b"0\r\n\r\n")
 
-    def _record(self, index, started, model, sent, enforced, usage, served, status, error) -> None:
+    def _record(self, index, started, model, sent, enforced, usage, served, status, error, extra=None) -> None:
         tools = sent.get("tools")
         record = {
             "schema": WIRE_SCHEMA, "call_index": index, "ts": started, "provider_wire": model.wire,
@@ -255,6 +333,7 @@ class WireProxy:
             record["patch_id"] = self.patch_id
         if error:
             record["error"] = error
+        record.update(extra or {})
         if usage is not None:
             try:
                 detail = vm.cost_detail(model, usage_from_response(model.wire, usage, index))
