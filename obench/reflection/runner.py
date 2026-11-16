@@ -80,6 +80,7 @@ class TrialResult:
     thinking_tokens: int | None = None        # sum of usage.thinking_tokens over steps
     thinking_flags: list = field(default_factory=list)
     served_models: list = field(default_factory=list)
+    route_counts: dict | None = None          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
@@ -156,6 +157,20 @@ def _write_json(path: Path, payload) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _route_repair_summary(trials: list[dict]) -> dict:
+    """How much of the cell rests on the gpt-oss route repair (zero for the other models: they are never rewritten).
+    The share is over tool-call turns; trials with no wire counts (crashes) are left out and counted."""
+    counted = [t["route_counts"] for t in trials if isinstance(t.get("route_counts"), dict)]
+    total = lambda k: sum(int(c.get(k) or 0) for c in counted)
+    repaired_trials = [t for t in trials if (t.get("route_counts") or {}).get("route_repairs")]
+    return {"model_calls": total("model_calls"), "tool_call_turns": total("tool_call_turns"),
+            "route_repairs": total("route_repairs"),
+            "route_repair_share": round(total("route_repairs") / total("tool_call_turns"), 4) if total("tool_call_turns") else None,
+            "trials_with_route_repair": len(repaired_trials),
+            "passes_with_route_repair": sum(1 for t in repaired_trials if t.get("status") == "completed" and t.get("passed")),
+            "trials_without_route_counts": len(trials) - len(counted)}
 
 
 def read_rows(path: Path) -> list[dict]:
@@ -285,7 +300,7 @@ class Runner:
                "checker_exit": result.checker_exit, "steps": result.steps, "cost_usd": result.cost_usd,
                "price_verified": model.price_verified, "thinking_tokens": result.thinking_tokens,
                "thinking_flags": sorted(set(result.thinking_flags)), "served_models": sorted(set(result.served_models)),
-               "wrong_model_served": wrong, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
+               "wrong_model_served": wrong, "route_counts": result.route_counts, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
                "started_at": started, "finished_at": _now(), "error": result.error}
         _append(self.trials_path, row)
 
@@ -319,6 +334,7 @@ class Runner:
                 "thinking_tokens_reported_trials": len(thinking),
                 "thinking_flags": sorted({f for t in trials for f in t.get("thinking_flags") or []}),
                 "wrong_model_trials": sum(1 for t in trials if t.get("wrong_model_served")),
+                **_route_repair_summary(trials),
                 "traces": f"trials/{model}/{task}/*/trace.jsonl",
             })
         tmp = self.summary_path.with_name("summary.jsonl.tmp")
