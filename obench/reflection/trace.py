@@ -222,6 +222,10 @@ def usage_from_response(wire: str, usage: Any, step: int) -> dict:
                               if fields["cache_read"] else None),
         "cache_write_tokens": (_count(usage, fields["cache_write"], required=False, step=step, label="cache write")
                                if fields["cache_write"] else None),
+        # Explicit, so an unreported count is never read as "0 thinking". anthropic and openai_chat output counts
+        # include thinking (max_tokens caps both); Gemini's candidatesTokenCount excludes thoughtsTokenCount.
+        "thinking_tokens_status": "reported" if thinking is not None else "unreported",
+        "output_tokens_include_thinking": wire in ("anthropic", "openai_chat"),
         "raw": usage,
     }
 
@@ -426,6 +430,8 @@ def build_trace(events: list[dict], wire_records: list[dict], *, run: dict | Non
             "finish_reason": finish.get("reason"),
             "opencode_tokens": finish.get("tokens"),
         }
+        if record["thinking"].get("flag") == "reported_zero_text_present":
+            usage["thinking_tokens_status"] = "reported_zero_text_present"  # contradicts the text: don't read as 0
         if cost_fn is not None:
             usd, source = cost_fn(record)
             record["cost"] = {"usd": usd, "source": source}
