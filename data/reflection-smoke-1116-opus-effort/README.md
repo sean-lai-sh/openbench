@@ -52,8 +52,8 @@ a covariate, not a fail.
 
 0. There are 6 wire rows, all status 200, so OpenCode did no 429 or other retries. Commit
 `954286aa` has no explicit per-cell `retries` field yet. This number comes from the wire log.
-A retry-count field still needs adding to the cell executor before the pilot, per the
-Researcher's 4:4x PM ET call.
+The Researcher asked that every pilot cell record its retry count, so the cell executor
+still needs that field before the pilot starts.
 
 ## Files
 
