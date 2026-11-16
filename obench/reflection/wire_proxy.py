@@ -145,6 +145,15 @@ def route_truncated(wire_records: list[dict]) -> dict | None:
     return None
 
 
+def route_repair_counts(wire_records: list[dict]) -> dict:
+    """How much of a trial rests on the gpt-oss route repair: main model calls answered (status 200), how many
+    of them carried a structured tool call to OpenCode, and how many of those the proxy rebuilt from text."""
+    main = [w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200]
+    return {"model_calls": len(main),
+            "tool_call_turns": sum(1 for w in main if (w.get("response_summary") or {}).get("tool_calls")),
+            "route_repairs": sum(1 for w in main if (w.get("route_repair") or {}).get("applied"))}
+
+
 HARMONY_MARKERS = ("<|channel|>", "<|call|>", "<|start|>", "<|message|>", "to=functions.", "<|constrain|>")
 
 
