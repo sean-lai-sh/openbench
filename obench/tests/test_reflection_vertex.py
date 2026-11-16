@@ -358,7 +358,11 @@ class Summary(unittest.TestCase):
                   {"choices": [{"delta": {}, "finish_reason": "stop"}]},
                   {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 9}}) + b"data: [DONE]\n\n"
         self.assertEqual(response_summary(oss, raw, True),
-                         {"finish_reasons": ["stop"], "tool_calls": 0, "text_chars": 0, "reasoning_chars": 31})
+                         {"finish_reasons": ["stop"], "tool_calls": 0, "text_chars": 0, "reasoning_chars": 31,
+                          "harmony_markers_in_text": False, "text_head": ""})
+        harmony = sse({"choices": [{"delta": {"content": "<|channel|>commentary to=functions.bash <|message|>{}"}}]},
+                      {"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        self.assertTrue(response_summary(oss, harmony, True)["harmony_markers_in_text"])
         raw = sse({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "bash"}}]}}]},
                   {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}}]},
                   {"choices": [{"delta": {"tool_calls": [{"index": 1, "id": "c2", "function": {"name": "read"}}]}}]},
