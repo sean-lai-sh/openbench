@@ -68,14 +68,14 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 
 | Field | Meaning |
 |---|---|
-| `task`, `model`, `patch_id` | The group |
+| `task`, `model`, `patch_id` | The group. `gpt-oss-120b-medium` ("gpt-oss at medium", opt-in) is its own model key, so it is never pooled with `gpt-oss-120b` (effort high). |
 | `planned`, `trials`, `completed`, `passes`, `fails`, `errors` | Counts |
 | `route_truncated`, `upstream_4xx` | How many of `errors` were `route_truncated` / `upstream_4xx` trials |
 | `retried_4xx` | Sum of the trials' `retried_4xx` by status code |
 | `image_ids`, `image_matches_pin` | Every image id the group ran; `false` if any trial ran an image that doesn't match its pin, `true` if all matched, `null` if no pin. `verdicts.json` lists such tasks per model as `image_matches_pin_false`. |
 | `suite_label`, `code_commits` | The run label, and every commit the group's trials ran from |
 | `model_calls`, `tool_call_turns`, `route_repairs` | Sums of the trials' `route_counts`. Always 0 repairs for Carbon and Opus, which are never rewritten. |
-| `unknown_recipient_calls` | gpt-oss tool calls to a tool we never offered (e.g. `repo_browser.print_tree`), passed to OpenCode under the model's own name, which answers "unknown tool". Included in `route_repairs`. |
+| `unknown_recipient_calls` | **Model errors:** gpt-oss tool calls to a tool we never offered (e.g. `repo_browser.print_tree`). They are never remapped onto our tools; OpenCode answers them with its `invalid` tool's error. Included in `route_repairs`. Every rebuilt call is also logged per cell by the executor (`<model>/<task>/route_repairs.jsonl`). |
 | `route_repair_share` | `route_repairs / tool_call_turns`: the share of gpt-oss's tool calls that exist only because of our parser (`null` with no tool calls) |
 | `trials_with_route_repair`, `passes_with_route_repair` | Trials with at least one repair, and how many of those passed: the passes that depend on the parser |
 | `trials_without_route_counts` | Trials with no wire counts (crashes), left out of the sums |
