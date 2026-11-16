@@ -117,6 +117,14 @@ def parse_response(model: vm.VertexModel, raw: bytes, stream: bool) -> tuple[dic
             if event.get("type") == "message_start":
                 message = event.get("message") or {}
                 usage, served = dict(message.get("usage") or {}), message.get("model") or served
+                # message_start usage is a start snapshot (output_tokens 1, thinking 0). A thinking count is taken
+                # only from the final message_delta; if that omits it, the count is unreported (None), not 0.
+                usage.pop("thinking_tokens", None)
+                if isinstance(usage.get("output_tokens_details"), dict):
+                    details = {k: v for k, v in usage["output_tokens_details"].items() if k != "thinking_tokens"}
+                    usage["output_tokens_details"] = details
+                    if not details:
+                        usage.pop("output_tokens_details")
             elif event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
                 usage = {**(usage or {}), **event["usage"]}
         elif model.wire == "gemini":
@@ -128,6 +136,20 @@ def parse_response(model: vm.VertexModel, raw: bytes, stream: bool) -> tuple[dic
                 usage = event["usage"]
             served = event.get("model") or served
     return usage, served
+
+
+def usage_events(model: vm.VertexModel, raw: bytes, stream: bool) -> list[dict] | None:
+    """Anthropic streams: every usage object the response carried, in order (message_start, then each
+    message_delta), so it is visible whether Vertex ever reports a thinking count and where."""
+    if not stream or model.wire != "anthropic":
+        return None
+    out = []
+    for event in _sse_payloads(raw):
+        if event.get("type") == "message_start":
+            out.append({"event": "message_start", "usage": (event.get("message") or {}).get("usage")})
+        elif event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
+            out.append({"event": "message_delta", "usage": event["usage"]})
+    return out
 
 
 STOP_REASONS = ("stop", "end_turn", "STOP")
@@ -389,7 +411,8 @@ class WireProxy:
             raw_all = b"".join(chunks)
             usage, served = parse_response(model, raw_all, stream) if status == 200 else (None, None)
             extra = {"response_summary": response_summary(model, raw_all, stream) if status == 200 else None,
-                     "client_disconnected": not client["ok"], "response_bytes": len(raw_all)}
+                     "client_disconnected": not client["ok"], "response_bytes": len(raw_all),
+                     "usage_events": usage_events(model, raw_all, stream) if status == 200 else None}
             if model.repair_text_tool_calls:  # gpt-oss error bodies too: what the route sent, byte for byte
                 extra.update({"route_repair": None, "upstream_response_summary": None,
                               "upstream_raw": self._save_raw(index, raw_all, stream)})
