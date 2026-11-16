@@ -322,6 +322,62 @@ class SmokeRun(ProxyCase):
         self.assertEqual((self.out / "opencode-stderr.txt").read_text(), "slow")
 
 
+class ClientHangUp(ProxyCase):
+    def test_client_disconnect_mid_stream_keeps_a_complete_record(self):
+        import socket
+        pad = [{"type": "content_block_delta", "delta": {"type": "text_delta", "text": "x" * 4000}} for _ in range(200)]
+        start, end = ANTHROPIC_STREAM.split(b"\n\n", 1)[0] + b"\n\n", ANTHROPIC_STREAM.split(b"\n\n", 1)[1]
+        big = start + sse(*pad) + end   # message_start ... 800 KB of deltas ... message_delta(usage), message_stop
+        self.vertex.reply = lambda path: (200, "text/event-stream", big)
+        body = json.dumps({"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "messages": []}).encode()
+        host, port = self.proxy.server.server_address[:2]
+        sock = socket.create_connection((host, port))
+        sock.sendall(b"POST /m/claude-opus-5-5/v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                     + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+        sock.recv(2048)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+        sock.close()                      # hang up (RST) while the proxy is still streaming
+        import time
+        for _ in range(100):
+            if self.records():
+                break
+            time.sleep(0.05)
+        (rec,) = self.records()
+        self.assertEqual(rec["response_bytes"], len(big))                 # read to the end: not truncated
+        self.assertEqual(rec["response_usage"]["output_tokens_details"], {"thinking_tokens": 120})  # final usage present
+        self.assertEqual(rec["response_summary"]["finish_reasons"], [])  # (fixture has no stop_reason) still summarized
+        self.assertGreater(rec["response_summary"]["text_chars"], 700_000)
+        self.assertTrue(rec["client_disconnected"])
+
+
+class Summary(unittest.TestCase):
+    def test_openai_one_reasoning_step_with_no_tool_call_or_text(self):
+        from obench.reflection.wire_proxy import response_summary
+        oss = vm.resolve("gpt-oss-120b")
+        raw = sse({"choices": [{"delta": {"reasoning_content": "We should look at calculator.py"}}]},
+                  {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                  {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 9}}) + b"data: [DONE]\n\n"
+        self.assertEqual(response_summary(oss, raw, True),
+                         {"finish_reasons": ["stop"], "tool_calls": 0, "text_chars": 0, "reasoning_chars": 31})
+        raw = sse({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "bash"}}]}}]},
+                  {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}}]},
+                  {"choices": [{"delta": {"tool_calls": [{"index": 1, "id": "c2", "function": {"name": "read"}}]}}]},
+                  {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+        summary = response_summary(oss, raw, True)
+        self.assertEqual((summary["tool_calls"], summary["finish_reasons"]), (3, ["tool_calls"]))  # (index, id) pairs
+
+    def test_anthropic_and_gemini(self):
+        from obench.reflection.wire_proxy import response_summary
+        opus, carbon = vm.resolve("claude-opus-5-5"), vm.resolve("gemini-4-carbon")
+        raw = sse({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "bash"}},
+                  {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "abc"}},
+                  {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 3}})
+        self.assertEqual(response_summary(opus, raw, True),
+                         {"finish_reasons": ["tool_use"], "tool_calls": 1, "text_chars": 0, "reasoning_chars": 3})
+        s = response_summary(carbon, GEMINI_STREAM, True)
+        self.assertEqual((s["reasoning_chars"], s["text_chars"], s["tool_calls"]), (14, 7, 0))
+
+
 class EndToEnd(ProxyCase):
     """Proxy wire records + an OpenCode event stream -> a complete trace and passing smoke checks."""
 
