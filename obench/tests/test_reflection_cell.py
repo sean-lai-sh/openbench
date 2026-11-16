@@ -36,6 +36,11 @@ class FakeTrialDocker:
         self.image_ids, self.calls = image_ids or {}, []
 
     def bridge_gateway(self):
+        self.gateways = getattr(self, "gateways", []) + ["bridge"]
+        return "127.0.0.1"
+
+    def offline_gateway(self):
+        self.gateways = getattr(self, "gateways", []) + ["offline"]
         return "127.0.0.1"
 
     def image_id(self, ref):
@@ -71,7 +76,7 @@ class FakeTrialDocker:
         return 0, False
 
 
-def make_task(root, name="t1", toml=True, checker_image=None):
+def make_task(root, name="t1", toml=True, checker_image=None, needs_network=None):
     d = Path(root) / name
     (d / "workspace").mkdir(parents=True)
     (d / "workspace" / "seed.txt").write_text("seed\n")
@@ -80,7 +85,8 @@ def make_task(root, name="t1", toml=True, checker_image=None):
     head = f'IMAGE="${{BENCH_TASK_IMAGE:-{checker_image}}}"\nWORKDIR="/work"\n' if checker_image else ""
     (d / "checker.sh").write_text(f"#!/bin/bash\n{head}test -f out.txt && echo 'SCORE: 1.0' && exit 0\necho 'SCORE: 0'; exit 1\n")
     if toml:
-        (d / "task.toml").write_text('docker_image = "task-img:pinned"\ndocker_workdir = "/app"\nagent_timeout_s = 600\n')
+        flag = "" if needs_network is None else f"solution_needs_network = {str(needs_network).lower()}\n"
+        (d / "task.toml").write_text('docker_image = "task-img:pinned"\ndocker_workdir = "/app"\nagent_timeout_s = 600\n' + flag)
     return d
 
 
@@ -184,6 +190,23 @@ class Trial(CellCase):
         self.assertTrue((run_dir / result.trace).is_file())
         detail = json.loads((run_dir / result.trace).with_name("route_truncated.json").read_text())
         self.assertEqual(detail["finish_reasons"], ["end_turn"])
+
+    def test_agent_network_follows_solution_needs_network(self):
+        make_task(self.tasks, "online", needs_network=True)
+        make_task(self.tasks, "offline", needs_network=False)
+        cases = [("online", {}, "bridge", "bridge"), ("offline", {}, "offline", ce.OFFLINE_NETWORK),
+                 ("t1", {}, "bridge", "bridge"), ("t1", {"unflagged_network": "offline"}, "offline", ce.OFFLINE_NETWORK)]
+        for i, (task, kw, network, docker_net) in enumerate(cases):
+            with self.subTest(task=task, **kw):
+                docker = FakeTrialDocker()
+                result = self.executor(docker, **kw).run_trial(self.spec(task=task, index=10 + i), self.tmp / "run")
+                self.assertEqual(result.status, "completed")
+                args = docker.calls[0]
+                self.assertEqual(args[args.index("--network") + 1], docker_net)
+                self.assertEqual(docker.gateways, [network])   # the proxy binds on that network's gateway
+                self.assertEqual("OPENCODE_DISABLE_MODELS_FETCH=1" in args, network == "offline")
+                cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+                self.assertEqual((cell["agent_network"], cell["network_unflagged"]), (network, task == "t1"))
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)

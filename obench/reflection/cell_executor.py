@@ -31,9 +31,24 @@ A trace that can't be built makes the trial ``error``. The runner counts it,
 the group's verdict becomes ``incomplete``, and missing traces never pass
 silently.
 
-Network: the container uses Docker's default bridge (TB tasks are built
-with ``allow_internet = true``). Provider API hosts are sinkholed with
-``--add-host``, so the only model route is the proxy.
+Network (parity with import validation): it follows ``task.toml``
+``solution_needs_network``, which the importer sets by running the reference
+``solve.sh`` offline first.
+
+- ``true``: Docker's default ``bridge``, with internet, the same access the
+  reference solution needed.
+- ``false``: the internal network ``openbench-agent-offline``
+  (``docker network create --internal``). There is no route out; the
+  container can reach only the per-trial proxy, which binds to that
+  network's gateway. OpenCode's models.dev fetch is turned off
+  (``OPENCODE_DISABLE_MODELS_FETCH=1``).
+- Missing (tasks imported before the flag, hand-made tasks):
+  ``unflagged_network``, default ``bridge``, which was the only behavior
+  before. ``cell.json`` records it as unflagged.
+
+On every network, provider API hosts are sinkholed with ``--add-host``, so
+the only model route is the proxy. ``cell.json`` records ``agent_network``
+and ``solution_needs_network``.
 """
 
 from __future__ import annotations
@@ -60,6 +75,9 @@ SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.go
 DEFAULT_ESTIMATES_USD = {"gemini-4-carbon": 1.50, "claude-opus-5-5": 2.00, "gpt-oss-120b": 0.10}
 
 
+OFFLINE_NETWORK = "openbench-agent-offline"
+
+
 class CellError(RuntimeError):
     pass
 
@@ -73,6 +91,19 @@ class TrialDocker:
         if out.returncode != 0 or not out.stdout.strip():
             raise CellError(f"cannot read the docker bridge gateway: {out.stderr.strip()}")
         return out.stdout.strip()
+
+    def offline_gateway(self, name: str = OFFLINE_NETWORK) -> str:
+        """Gateway of the internal (no route out) network, created on first use. The proxy binds here."""
+        inspect = ["docker", "network", "inspect", name, "--format", "{{.Internal}} {{(index .IPAM.Config 0).Gateway}}"]
+        out = subprocess.run(inspect, capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            subprocess.run(["docker", "network", "create", "--internal", name], capture_output=True, text=True, timeout=60)
+            out = subprocess.run(inspect, capture_output=True, text=True, timeout=30)
+        internal, _, gateway = out.stdout.strip().partition(" ")
+        if out.returncode != 0 or internal != "true" or not gateway:
+            raise CellError(f"network {name} is missing, not --internal, or has no gateway: {out.stdout.strip()} "
+                            f"{out.stderr.strip()}")
+        return gateway
 
     def image_id(self, ref: str) -> str:
         out = subprocess.run(["docker", "image", "inspect", ref, "--format", "{{.Id}}"], capture_output=True, text=True,
@@ -105,7 +136,8 @@ class CellExecutor:
     docker: TrialDocker = field(default_factory=TrialDocker)
     platform: str = "linux/amd64"
     default_image: str | None = "h1-env:1027-strace"   # tasks with no image of their own (e.g. openbench-tb-hard)
-    proxy_host: str | None = None        # default: the docker bridge gateway
+    proxy_host: str | None = None        # default: the gateway of the trial's network
+    unflagged_network: str = "bridge"    # tasks with no solution_needs_network: "bridge" (as before) or "offline"
     upstream_host: str | None = None     # tests only: fake Vertex
     checker_runner: Callable = subprocess.run
 
@@ -125,7 +157,8 @@ class CellExecutor:
         task_dir = Path(spec.tasks_dir) / spec.task
         meta = tomllib.loads((task_dir / "task.toml").read_text(encoding="utf-8")) if (task_dir / "task.toml").is_file() else {}
         task = {"dir": task_dir, "image_id": meta.get("docker_image_id"), "workdir": meta.get("docker_workdir") or "/app",
-                "agent_timeout": int(meta.get("agent_timeout_s") or 1800)}
+                "agent_timeout": int(meta.get("agent_timeout_s") or 1800),
+                "solution_needs_network": meta.get("solution_needs_network")}
         if meta.get("docker_image"):
             return dict(task, image=meta["docker_image"], image_source="task.toml")
         checker = (task_dir / "checker.sh").read_text(encoding="utf-8") if (task_dir / "checker.sh").is_file() else ""
@@ -138,14 +171,26 @@ class CellExecutor:
             return dict(task, image=self.default_image, image_source="default_image")
         raise CellError(f"{spec.task}: no docker_image in task.toml, no image in checker.sh, and no default_image")
 
+    def agent_network(self, task: dict) -> str:
+        """``bridge`` or ``offline``, following the task's ``solution_needs_network``."""
+        needs = task.get("solution_needs_network")
+        if needs is None:
+            if self.unflagged_network not in ("bridge", "offline"):
+                raise CellError(f"unflagged_network must be bridge or offline, not {self.unflagged_network!r}")
+            return self.unflagged_network
+        return "bridge" if needs else "offline"
+
     def docker_args(self, spec: TrialSpec, task: dict, workspace: Path, model: vm.VertexModel, proxy_base: str,
-                    instruction: str) -> list[str]:
+                    instruction: str, network: str = "bridge") -> list[str]:
         name = f"obench-reflect-{spec.trial_id}"
         args = ["run", "--rm", "--name", name, "--platform", self.platform,
+                "--network", OFFLINE_NETWORK if network == "offline" else "bridge",
                 "-v", f"{workspace}:{task['workdir']}", "-v", f"{self.mount_root}:{self.mount_root}:ro",
                 "-w", task["workdir"], "-e", "HOME=/tmp/opencode-home",
                 "-e", f"OPENCODE_CONFIG_CONTENT={vm.opencode_config_env(model, proxy_base)}",
                 "-e", "OPENCODE_DISABLE_AUTOUPDATE=1"]
+        if network == "offline":
+            args += ["-e", "OPENCODE_DISABLE_MODELS_FETCH=1"]
         for host in SINKHOLED_HOSTS:
             args += ["--add-host", f"{host}:0.0.0.0"]
         return args + [task["image"], *oc.run_command(self.opencode, instruction, vm.opencode_model_arg(model))]
@@ -166,11 +211,12 @@ class CellExecutor:
         instruction = (task["dir"] / "instruction.md").read_text(encoding="utf-8")
         wire_path, events_path = trial_dir / "wire.jsonl", trial_dir / "opencode-events.jsonl"
         wire_path.unlink(missing_ok=True)
-        host = self.proxy_host or self.docker.bridge_gateway()
+        network = self.agent_network(task)
+        host = self.proxy_host or (self.docker.offline_gateway() if network == "offline" else self.docker.bridge_gateway())
         proxy = WireProxy(self.project, wire_path, self.token, host=host, upstream_host=self.upstream_host,
                           patch=spec.patch, patch_id=spec.patch_id)
         try:
-            args = self.docker_args(spec, task, workspace, model, proxy.base_url, instruction)
+            args = self.docker_args(spec, task, workspace, model, proxy.base_url, instruction, network)
             code, timed_out = self.docker.run_agent(args, events_path, task["agent_timeout"])
         finally:
             proxy.close()
@@ -186,6 +232,9 @@ class CellExecutor:
                                wire=rel(wire_path), error=f"agent timed out after {task['agent_timeout']}s")
         (trial_dir / "cell.json").write_text(json.dumps({"image": task["image"], "image_source": task["image_source"],
                                                          "workdir": task["workdir"], "opencode_exit": code,
+                                                         "agent_network": network,
+                                                         "solution_needs_network": task["solution_needs_network"],
+                                                         "network_unflagged": task["solution_needs_network"] is None,
                                                          "opencode_sha": self.pin["sha"]}, sort_keys=True) + "\n")
         checker_exit = self._check(task, workspace)
         try:
