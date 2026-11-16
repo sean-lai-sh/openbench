@@ -186,6 +186,18 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(row["credit_method"], "A")
         self.assertEqual(len(rn.read_rows(self.run / "ideation_results.jsonl")), 1)
 
+    def test_provider_blocked_cells_never_go_to_ideation(self):
+        proposal = self.proposal()
+        rows = rn.read_rows(self.run / "summary.jsonl")
+        for r in rows:
+            if r["task"] == proposal["task"] and r["model"] == proposal["model"] and r["patch_id"] is None:
+                r.update(provider_blocked=1, verdict="excluded")
+        (self.run / "summary.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        executor = self.arms(select=3, confirm=5, confirm_baseline=1)
+        with self.assertRaisesRegex(ValueError, "provider-blocked"):
+            idn.evaluate(self.run, proposal, executor)
+        self.assertEqual(executor.calls, [])
+
     def test_one_pass_against_zero_is_a_candidate_but_must_confirm(self):
         self.setUp_zero_baseline()
         row = idn.evaluate(self.run, self.proposal(), self.arms(select=1, confirm=0, confirm_baseline=0))

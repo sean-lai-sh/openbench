@@ -206,27 +206,37 @@ class Tables(Base):
                   rn.FixtureExecutor({}, cost_per_trial=0.01), workers=3).run()
         self.assertEqual(len(rn.read_rows(self.dir / "trials.jsonl")), 2)  # a 3rd would pass the cap with 2 running
 
-    def test_prompt_blocked_policies(self):
+    def test_provider_blocked_is_excluded_reported_and_never_swapped(self):
         class Blocked(rn.FixtureExecutor):
             def run_trial(self, spec, run_dir):
                 if spec.task == "extract-elf":
-                    return rn.TrialResult(status="prompt_blocked", passed=None, cost_usd=0.0,
-                                          prompt_blocked={"blockReason": "SAFETY"})
+                    return rn.TrialResult(status="provider_blocked", passed=None, cost_usd=0.0,
+                                          provider_blocked={"blockReason": "SAFETY", "blockReasonMessage": "m"})
                 return super().run_trial(spec, run_dir)
-        got = {}
-        for policy in ("exclude", "fail", "swap"):
-            d = Path(tempfile.mkdtemp())
-            rn.Runner(config(models=[OPUS], prompt_blocked_policy=policy, max_rounds=2), d,
-                      Blocked({("sanitize-git-repo", OPUS): 1}), workers=2).run()
-            s = {r["task"]: r for r in rn.read_rows(d / "summary.jsonl")}["extract-elf"]
-            v = json.loads((d / "verdicts.json").read_text())["models"][OPUS]
-            got[policy] = (s["verdict"], s["prompt_blocked"], s["errors"], s["prompt_block_reasons"],
-                           "extract-elf" in v["current_suite"])
-        self.assertEqual(got["exclude"], ("excluded", 3, 0, ["SAFETY"], True))
-        self.assertEqual(got["fail"], ("fail", 3, 0, ["SAFETY"], True))
-        self.assertEqual(got["swap"], ("excluded", 3, 0, ["SAFETY"], False))  # replaced from the pool
-        with self.assertRaisesRegex(rn.RunnerError, "prompt_blocked_policy"):
-            config(prompt_blocked_policy="ignore")
+        rn.Runner(config(models=[OPUS], max_rounds=2), self.dir, Blocked({("sanitize-git-repo", OPUS): 3}), workers=2).run()
+        s = {r["task"]: r for r in rn.read_rows(self.dir / "summary.jsonl")}["extract-elf"]
+        self.assertEqual((s["verdict"], s["provider_blocked"], s["errors"], s["pass_rate"]), ("excluded", 3, 0, None))
+        v = json.loads((self.dir / "verdicts.json").read_text())["models"][OPUS]
+        self.assertEqual((v["excluded"], v["provider_blocked"]), (["extract-elf"], ["extract-elf"]))
+        self.assertIn("extract-elf", v["current_suite"])  # no swap for a blocked task
+        swaps = json.loads((self.dir / "swaps" / f"{OPUS}.json").read_text())["swaps"]
+        self.assertEqual([x["from"] for x in swaps], ["sanitize-git-repo"])  # only the real pass swapped
+        table = json.loads((self.dir / "provider_blocked.json").read_text())["models"][OPUS]["extract-elf"]
+        self.assertEqual((table["trials_blocked"], table["trials"], table["block_reasons"], table["block_reason_messages"]),
+                         (3, 3, {"SAFETY": 3}, ["m"]))
+
+    def test_workers_are_fixed_recorded_and_models_interleave(self):
+        runner = rn.Runner(config(models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1), self.dir,
+                           rn.FixtureExecutor({}), workers=3)
+        self.assertEqual([s.model for s in runner.plan({CARBON: ["extract-elf"], OPUS: ["extract-elf"]})][:4],
+                         [CARBON, OPUS, CARBON, OPUS])
+        runner.run()
+        rows = rn.read_rows(self.dir / "trials.jsonl")
+        self.assertTrue(all(r["workers"] == 3 and r["wall_seconds"] >= 0 and "cpus" in r["host_load"] for r in rows))
+        self.assertEqual(json.loads((self.dir / "plan.json").read_text())["config"]["workers"], 3)
+        with self.assertRaisesRegex(rn.RunnerError, "workers=3"):
+            rn.Runner(config(models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1), self.dir,
+                      rn.FixtureExecutor({}), workers=8).run()
 
     def test_suite_label_rules(self):
         with self.assertRaisesRegex(rn.RunnerError, "unknown suite_label"):
