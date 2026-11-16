@@ -58,6 +58,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `image_ref`, `image_id` | string\|null | The image ref the agent container ran and its local image id (`docker image inspect .Id`) |
 | `image_matches_pin` | bool\|null | `true` when the task's pinned ref or `docker_image_id` ran; `false` when `--use-image-tag` ran `docker_image_tag` instead (the 4 tb-mid tasks); `null` when the task pins nothing (checker or default image) |
 | `thinking_setting` | object\|null | The exact thinking setting the proxy sent on this trial's requests (`VertexModel.thinking_sent`, e.g. Opus `{"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "high"}}`) |
+| `thinking_tokens_status` | object\|null | Steps by `usage.thinking_tokens_status`, e.g. `{"reported": 3, "unreported": 1}`. An `unreported` step's count is null and is **not** 0: `thinking_tokens` sums reported steps only. |
 | `thinking_tokens_per_step` | array\|null | `usage.thinking_tokens` for each trace step, in order (`null` entries where usage reported none) |
 | `trace`, `wire`, `trial_dir` | string\|null | Relative pointers |
 | `started_at`, `finished_at` | string | ISO-8601 UTC |
@@ -81,6 +82,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `cutoff`, `verdict` | `pass` iff `completed == planned` and `passes / completed >= cutoff` (exact; 27/30 at 0.90). `incomplete` when fewer than `planned` trials completed. |
 | `spend_usd`, `spend_complete` | Sum of trial costs. `spend_complete` is false if any trial had no cost. |
 | `thinking_tokens_total`, `thinking_tokens_reported_trials` | Usage thinking tokens summed over trials that reported them |
+| `thinking_tokens_status` | Steps by thinking-count status, summed over the group's trials. Any `unreported` means `thinking_tokens_total` is a lower bound, not a measurement of zero. |
 | `thinking_flags`, `wrong_model_trials` | Carried up from the trial rows |
 | `traces` | Glob of the group's trace files |
 
