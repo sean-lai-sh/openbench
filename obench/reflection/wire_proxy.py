@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Callable
 
 from obench.reflection import vertex_models as vm
+from obench.reflection.gptoss_repair import repair as repair_text_tool_calls
 from obench.reflection.trace import WIRE_SCHEMA, TraceError, usage_from_response
 
 ANTHROPIC_VERSION = "vertex-2023-10-16"
@@ -123,6 +124,24 @@ def parse_response(model: vm.VertexModel, raw: bytes, stream: bool) -> tuple[dic
                 usage = event["usage"]
             served = event.get("model") or served
     return usage, served
+
+
+STOP_REASONS = ("stop", "end_turn", "STOP")
+
+
+def route_truncated(wire_records: list[dict]) -> dict | None:
+    """The trial's last main call ended ``stop`` with no visible text and no tool call: the route cut the turn
+    (an infrastructure failure, not a task failure). Returns what was seen, or None."""
+    main = [w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200]
+    if not main:
+        return None
+    last = max(main, key=lambda w: w.get("call_index") or 0)
+    summary = last.get("response_summary") or {}
+    finishes = summary.get("finish_reasons") or []
+    if any(f in STOP_REASONS for f in finishes) and not summary.get("tool_calls") and not summary.get("text_chars"):
+        return {"call_index": last.get("call_index"), "finish_reasons": finishes,
+                "reasoning_chars": summary.get("reasoning_chars"), "route_repair": last.get("route_repair")}
+    return None
 
 
 HARMONY_MARKERS = ("<|channel|>", "<|call|>", "<|start|>", "<|message|>", "to=functions.", "<|constrain|>")
@@ -295,6 +314,26 @@ class WireProxy:
         with response:
             status = getattr(response, "status", None) or response.getcode()
             content_type = response.headers.get("Content-Type", content_type)
+            if model.repair_text_tool_calls and status == 200:
+                # Buffer the whole response, rebuild a tool call the route left as text, then send it.
+                raw_all = response.read()
+                sent_bytes, repair = repair_text_tool_calls(raw_all, stream, sent)
+                usage, served = parse_response(model, raw_all, stream)
+                summary = response_summary(model, sent_bytes, stream)
+                try:
+                    handler.send_response(status)
+                    handler.send_header("Content-Type", content_type)
+                    handler.send_header("Transfer-Encoding", "chunked")
+                    handler.end_headers()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    client["ok"] = False
+                send(f"{len(sent_bytes):X}\r\n".encode() + sent_bytes + b"\r\n")
+                self._record(index, started, model, sent, enforced, usage, served, status, None,
+                             extra={"response_summary": summary, "client_disconnected": not client["ok"],
+                                    "response_bytes": len(raw_all), "route_repair": repair,
+                                    "upstream_response_summary": response_summary(model, raw_all, stream) if repair else None})
+                send(b"0\r\n\r\n")
+                return
             try:
                 handler.send_response(status)
                 handler.send_header("Content-Type", content_type)

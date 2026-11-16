@@ -268,7 +268,7 @@ class SmokeRun(ProxyCase):
         os.environ["GOOGLE_CLOUD_PROJECT"] = "proj"
         self.out = self.tmp / "smoke-out"
 
-    def fake_opencode(self, timeout=False):
+    def fake_opencode(self, timeout=False, solve=True):
         proxy_base = {}
 
         class P(smoke.WireProxy):
@@ -276,8 +276,13 @@ class SmokeRun(ProxyCase):
                 super().__init__(project, wire_path, token, upstream_host=self.proxy.upstream_host, **kw)
                 proxy_base["url"] = inner.base_url
 
+        import subprocess as real_sp
+        real_run = real_sp.run
+
         def run(cmd, cwd, env, stdout, **kw):
             import os, subprocess as sp
+            if cmd[0] == "bash":            # the task checker: run it for real on the workspace
+                return real_run(cmd, cwd=cwd, env=env, stdout=stdout, **kw)
             home = Path(env["HOME"])
             stuck = home / ".cache" / "bun" / "pile"
             stuck.mkdir(parents=True)
@@ -295,6 +300,9 @@ class SmokeRun(ProxyCase):
                   {"type": "step_finish", "timestamp": 2, "sessionID": "s", "part": {"messageID": "m", "type": "step-finish",
                    "reason": "stop", "cost": 0, "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}]
             stdout.write("".join(json.dumps(e) + "\n" for e in ev))
+            import shutil as _sh
+            if solve:
+                    _sh.copy(smoke.DEFAULT_TASK / "solution" / "calculator.py", Path(cwd) / "calculator.py")  # agent fixes it
             import subprocess
             return subprocess.CompletedProcess(cmd, 0, None, "")
         return P, run
@@ -314,6 +322,20 @@ class SmokeRun(ProxyCase):
         self.assertEqual((summary["opencode_exit"], summary["opencode_timed_out"]), (0, False))
         self.assertTrue((self.out / "trace.jsonl").is_file())
         self.assertEqual(code, 0, summary)
+
+    def test_unsolved_task_fails_the_smoke(self):
+        from unittest.mock import patch
+        P, run = self.fake_opencode(solve=False)
+        argv = ["--model", "claude-opus-5-5", "--opencode", "/x/bin/sha/opencode", "--out", str(self.out)]
+        with patch.object(smoke.oc, "verify_binary", return_value={"sha": "x"}), \
+                patch("thesis.ab.vertex_anthropic_proxy.AdcToken", return_value=lambda: "tok"), \
+                patch.object(smoke, "WireProxy", P), patch.object(smoke.subprocess, "run", run):
+            code = smoke.main(argv)
+        summary = json.loads((self.out / "summary.json").read_text())
+        self.assertEqual(code, 1)
+        self.assertNotEqual(summary["checks"]["task_solved"]["checker_exit"], 0)
+        self.assertFalse(summary["checks"]["task_solved"]["pass"])
+        self.assertTrue((self.out / "checker-output.txt").read_text())
 
     def test_timeout_still_writes_the_summary(self):
         self.assertEqual(self.go(timeout=True), 1)
@@ -382,6 +404,106 @@ class Summary(unittest.TestCase):
         self.assertEqual((s["reasoning_chars"], s["text_chars"], s["tool_calls"]), (14, 7, 0))
 
 
+class GptOssRepair(unittest.TestCase):
+    TOOLS = [{"type": "function", "function": {"name": "read", "parameters": {"properties": {"filePath": {}, "offset": {}, "limit": {}}, "required": ["filePath"]}}},
+             {"type": "function", "function": {"name": "write", "parameters": {"properties": {"filePath": {}, "content": {}}, "required": ["filePath", "content"]}}},
+             {"type": "function", "function": {"name": "edit", "parameters": {"properties": {"filePath": {}, "oldString": {}, "newString": {}}, "required": ["filePath", "oldString", "newString"]}}},
+             {"type": "function", "function": {"name": "bash", "parameters": {"properties": {"command": {}, "description": {}}, "required": ["command"]}}}]
+
+    def req(self):
+        return {"model": "openai/gpt-oss-120b-maas", "tools": self.TOOLS, "messages": []}
+
+    def stream(self, reasoning, content="", finish="stop", tool_calls=None):
+        delta = {"reasoning_content": reasoning}
+        if content:
+            delta["content"] = content
+        if tool_calls:
+            delta["tool_calls"] = tool_calls
+        return sse({"id": "x", "model": "openai/gpt-oss-120b-maas", "choices": [{"index": 0, "delta": delta}]},
+                   {"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
+                   {"id": "x", "choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 30}}) + b"data: [DONE]\n\n"
+
+    def test_saturdays_case_json_at_end_of_reasoning(self):
+        from obench.reflection import gptoss_repair as gr
+        raw = self.stream('Let\'s read test file.{"filePath": "/app/test_calculator.py"}')
+        out, rec = gr.repair(raw, True, self.req())
+        self.assertEqual((rec["tool"], rec["method"], rec["source"]), ("read", "schema_match", "reasoning"))
+        events = gr._parse_stream(out)
+        calls = [c for e in events for ch in e.get("choices") or [] for c in (ch.get("delta") or {}).get("tool_calls") or []]
+        self.assertEqual(calls[0]["function"], {"name": "read", "arguments": '{"filePath": "/app/test_calculator.py"}'})
+        self.assertEqual([ch.get("finish_reason") for e in events for ch in e.get("choices") or [] if ch.get("finish_reason")],
+                         ["tool_calls"])
+        self.assertEqual(events[-1]["usage"], {"prompt_tokens": 9, "completion_tokens": 30})
+        self.assertTrue(out.endswith(b"data: [DONE]\n\n"))
+
+    def test_harmony_recipient_names_the_tool(self):
+        from obench.reflection import gptoss_repair as gr
+        text = 'Need to run tests.<|start|>assistant<|channel|>commentary to=functions.bash <|constrain|>json<|message|>{"command": "python3 -m unittest"}<|call|>'
+        call = gr.extract_tool_call(text, self.req())
+        self.assertEqual((call["name"], call["method"], call["arguments"]), ("bash", "harmony_recipient", {"command": "python3 -m unittest"}))
+        doc = json.dumps({"model": "m", "choices": [{"message": {"role": "assistant", "content": "", "reasoning_content": text},
+                                                     "finish_reason": "stop"}], "usage": {"prompt_tokens": 1}}).encode()
+        out, rec = gr.repair(doc, False, self.req())
+        msg = json.loads(out)["choices"][0]
+        self.assertEqual((msg["finish_reason"], msg["message"]["tool_calls"][0]["function"]["name"]), ("tool_calls", "bash"))
+
+    def test_left_alone_when_ambiguous_answered_or_already_structured(self):
+        from obench.reflection import gptoss_repair as gr
+        cases = [
+            self.stream('Maybe {"filePath": "/a", "content": "x", "oldString": "y"}'),         # fits no tool
+            self.stream('Consider {"filePath": "/a"} then more prose afterwards that is long enough'),  # not at the end
+            self.stream('{"filePath": "/a"}', content="The bug is fixed; all tests pass."),      # real visible answer
+            self.stream('{"filePath": "/a"}', finish="length"),                                   # not a stop
+            self.stream('{"filePath": "/a"}', tool_calls=[{"index": 0, "id": "c", "function": {"name": "read"}}]),
+            self.stream('All done.'),                                                              # no JSON at all
+        ]
+        for raw in cases:
+            out, rec = gr.repair(raw, True, self.req())
+            self.assertIsNone(rec)
+            self.assertEqual(out, raw)
+        out, rec = gr.repair(self.stream('{"filePath": "/a"}'), True, {"messages": []})  # request offered no tools
+        self.assertIsNone(rec)
+        unknown = 'x<|channel|>commentary to=functions.delete_everything <|message|>{"path": "/"}'
+        self.assertIsNone(gr.extract_tool_call(unknown, self.req()))  # recipient must be an offered tool
+
+
+class RouteRepairInProxy(ProxyCase):
+    def test_gpt_oss_text_tool_call_reaches_opencode_as_tool_calls(self):
+        from obench.reflection import gptoss_repair as gr
+        from obench.reflection.wire_proxy import route_truncated
+        upstream = GptOssRepair().stream('Let\'s read test file.{"filePath": "/app/test_calculator.py"}')
+        self.vertex.reply = lambda path: (200, "text/event-stream", upstream)
+        body = {"model": "gpt-oss-120b-maas", "stream": True, "tools": GptOssRepair.TOOLS, "messages": [{"role": "user", "content": "fix"}]}
+        status, payload = self.post("/m/gpt-oss-120b/v1/chat/completions", body)
+        self.assertEqual(status, 200)
+        calls = [c for e in gr._parse_stream(payload) for ch in e.get("choices") or [] for c in (ch.get("delta") or {}).get("tool_calls") or []]
+        self.assertEqual(calls[0]["function"]["name"], "read")
+        (rec,) = self.records()
+        self.assertEqual((rec["route_repair"]["tool"], rec["response_summary"]["tool_calls"]), ("read", 1))
+        self.assertEqual(rec["upstream_response_summary"]["tool_calls"], 0)
+        self.assertEqual(rec["response_usage"]["completion_tokens"], 30)
+        self.assertIsNone(route_truncated([rec]))
+
+    def test_unrepairable_stop_is_route_truncated(self):
+        from obench.reflection.wire_proxy import route_truncated
+        self.vertex.reply = lambda path: (200, "text/event-stream", GptOssRepair().stream("I think I am done thinking."))
+        body = {"model": "gpt-oss-120b-maas", "stream": True, "tools": GptOssRepair.TOOLS, "messages": []}
+        self.post("/m/gpt-oss-120b/v1/chat/completions", body)
+        (rec,) = self.records()
+        self.assertIsNone(rec["route_repair"])
+        truncated = route_truncated([rec])
+        self.assertEqual(truncated["finish_reasons"], ["stop"])
+        model = vm.resolve("gpt-oss-120b")
+        result = smoke.checks(model, ["x", "--model", vm.opencode_model_arg(model)], [rec], None, None, {"sha": "x"}, 1)
+        self.assertFalse(result["not_route_truncated"]["pass"])
+        self.assertFalse(result["task_solved"]["pass"])
+
+    def test_other_models_are_never_rewritten(self):
+        self.assertFalse(vm.resolve("claude-opus-5-5").repair_text_tool_calls)
+        self.assertFalse(vm.resolve("gemini-4-carbon").repair_text_tool_calls)
+        self.assertTrue(vm.resolve("gpt-oss-120b").repair_text_tool_calls)
+
+
 class EndToEnd(ProxyCase):
     """Proxy wire records + an OpenCode event stream -> a complete trace and passing smoke checks."""
 
@@ -411,7 +533,7 @@ class EndToEnd(ProxyCase):
         self.assertEqual([r["usage"]["thinking_tokens"] for r in records], [120, 120])
         self.assertEqual(records[0]["request"]["thinking_setting"]["value"], {"type": "adaptive"})
         cmd = ["opencode", "run", "--format", "json", "--thinking", "--model", vm.opencode_model_arg(model), "x"]
-        result = smoke.checks(model, cmd, wires, records, None, {"sha": "x"})
+        result = smoke.checks(model, cmd, wires, records, None, {"sha": "x"}, checker_exit=0)
         self.assertEqual({k: v["pass"] for k, v in result.items()}, dict.fromkeys(result, True))
         self.assertEqual((result["traced"]["wire_calls"], result["traced"]["main_calls"]), (3, 2))
 
