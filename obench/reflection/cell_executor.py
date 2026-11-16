@@ -29,8 +29,14 @@ wire record and checker exit are still saved.
 
 A prompt the provider blocked (Gemini ``promptFeedback.blockReason``, HTTP 200
 with no candidates) ends the trial at once: the proxy stops the container and
-refuses OpenCode's retries, and the trial is ``prompt_blocked``. How it scores
-is the run's ``prompt_blocked_policy``.
+refuses OpenCode's retries, and the trial is ``provider_blocked`` (raw
+blockReason and blockReasonMessage kept): neither pass nor fail, excluded from
+the model's pass rate, never swapped, never sent to credit assignment or
+ideation (Researcher ruling 2026-11-17).
+
+Each ``cell.json`` also records the run's fixed ``workers`` value, the agent's
+wall time and the host load average before and after, so contention-driven
+timeouts are visible.
 
 A 4xx that ended or broke the trial (a main call came back 4xx and no main
 call after it succeeded; ``wire_proxy.classify_4xx``) makes the trial
@@ -85,7 +91,7 @@ from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec, code_commit
-from obench.reflection.wire_proxy import WireProxy, classify_4xx, prompt_blocked, route_repair_counts, route_truncated
+from obench.reflection.wire_proxy import WireProxy, classify_4xx, provider_blocked, route_repair_counts, route_truncated
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
                    "aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com")
@@ -94,6 +100,13 @@ DEFAULT_ESTIMATES_USD = {"gemini-4-carbon": 1.50, "claude-opus-5-5": 2.00, "gpt-
 
 
 OFFLINE_NETWORK = "openbench-agent-offline"
+
+
+def _load() -> list | None:
+    try:
+        return [round(x, 2) for x in os.getloadavg()]
+    except OSError:
+        return None
 
 
 class CellError(RuntimeError):
@@ -172,8 +185,13 @@ class CellExecutor:
         self.code = code_commit()  # recorded by the executor itself on every trial (cell.json)
         import threading
         self._record_lock = threading.Lock()  # trials of one cell may finish together (runner --workers)
+        self.run_context: dict = {}
         # The cache root (…/opencode-src) is mounted at its own path: wrapper builds exec absolute paths in it.
         self.mount_root = self.opencode.parents[2]
+
+    def set_run_context(self, context: dict) -> None:
+        """Set by the runner: ``{run_id, workers}``, recorded on every trial's cell.json."""
+        self.run_context = dict(context)
 
     def estimate_cost_usd(self, model: str) -> float:
         return float(self.estimates_usd[model])
@@ -282,12 +300,15 @@ class CellExecutor:
         # retries and the container is stopped, instead of looping until the agent timeout.
         proxy = WireProxy(self.project, wire_path, self.token, host=host, upstream_host=self.upstream_host,
                           patch=spec.patch, patch_id=spec.patch_id,
-                          on_prompt_blocked=lambda info: self.docker.kill(f"obench-reflect-{spec.trial_id}"))
+                          on_provider_blocked=lambda info: self.docker.kill(f"obench-reflect-{spec.trial_id}"))
+        import time as _time
+        load_before, t0 = _load(), _time.monotonic()
         try:
             args = self.docker_args(spec, task, workspace, model, proxy.base_url, instruction, network)
             code, timed_out = self.docker.run_agent(args, events_path, task["agent_timeout"])
         finally:
             proxy.close()
+        agent_seconds, load_after = round(_time.monotonic() - t0, 1), _load()
         # Everything the classification needs is on disk from here, so finish_trial can be rerun offline.
         (trial_dir / "cell.json").write_text(json.dumps({
             "image": task["image"], "image_source": task["image_source"], "image_record": image,
@@ -295,7 +316,9 @@ class CellExecutor:
             "agent_network": network, "image_pin": task["image_pin"],
             "solution_needs_network": task["solution_needs_network"],
             "network_unflagged": task["solution_needs_network"] is None,
-            "opencode_sha": self.pin["sha"], "code": self.code}, sort_keys=True) + "\n")
+            "opencode_sha": self.pin["sha"], "code": self.code,
+            "workers": self.run_context.get("workers"), "agent_seconds": agent_seconds,
+            "host_load": {"before": load_before, "after": load_after, "cpus": os.cpu_count()}}, sort_keys=True) + "\n")
         return self.record(spec, run_dir, self.finish_trial(spec, run_dir, task))
 
     def record(self, spec: TrialSpec, run_dir: Path, result: TrialResult) -> TrialResult:
@@ -309,13 +332,14 @@ class CellExecutor:
         path = trial_dir / "cell.json"
         cell = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         cell.update({"status": result.status, "passed": result.passed, "retried_4xx": result.retried_4xx or {},
-                     "prompt_blocked": result.prompt_blocked,
+                     "provider_blocked": result.provider_blocked,
                      "thinking_tokens_status": result.thinking_tokens_status, "code": cell.get("code") or self.code})
         path.write_text(json.dumps(cell, sort_keys=True) + "\n", encoding="utf-8")
         trials = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(trial_dir.parent.glob("*/cell.json"))]
         add = lambda key: {k: sum(int((t.get(key) or {}).get(k, 0)) for t in trials)
                            for k in sorted({k for t in trials for k in (t.get(key) or {})})}
         counters = {"task": spec.task, "model": spec.model, "patch_id": spec.patch_id, "trials": len(trials),
+                    "workers": sorted({t.get("workers") for t in trials if t.get("workers") is not None}),
                     "status": {s: sum(1 for t in trials if t.get("status") == s) for s in sorted({str(t.get("status")) for t in trials})},
                     "retried_4xx": add("retried_4xx"), "thinking_tokens_status": add("thinking_tokens_status"),
                     "code_commits": sorted({str((t.get("code") or {}).get("commit")) for t in trials})}
@@ -364,13 +388,13 @@ class CellExecutor:
         cost = round(sum(c for c in costs if c is not None), 6) if costs and all(c is not None for c in costs) else (
             None if costs else 0.0)
         fours = classify_4xx(wires)
-        blocked = prompt_blocked(wires)
+        blocked = provider_blocked(wires)
         common = dict(cost_usd=cost, served_models=served, route_counts=counts, thinking_setting=thinking_setting,
                       retried_4xx=fours["retried"], image=image, wire=rel(wire_path))
-        if blocked is not None:  # the provider refused the prompt: its own outcome, scored by the run's policy
-            (trial_dir / "prompt_blocked.json").write_text(json.dumps(blocked, sort_keys=True) + "\n")
-            return TrialResult(status="prompt_blocked", passed=None, prompt_blocked=blocked, **common,
-                               error=f"prompt blocked: {blocked.get('blockReason')}"
+        if blocked is not None:  # the provider refused the prompt: neither pass nor fail
+            (trial_dir / "provider_blocked.json").write_text(json.dumps(blocked, sort_keys=True) + "\n")
+            return TrialResult(status="provider_blocked", passed=None, provider_blocked=blocked, **common,
+                               error=f"provider blocked: {blocked.get('blockReason')}"
                                      + (" (inferred from empty responses)" if blocked.get("inferred") else ""))
         if fours["breaking"]:  # a 4xx ended or broke the trial: infrastructure, never a task fail
             (trial_dir / "upstream_4xx.json").write_text(json.dumps(fours, sort_keys=True) + "\n")

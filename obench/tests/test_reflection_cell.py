@@ -348,8 +348,8 @@ class Trial(CellCase):
         self.assertEqual((counters["route_repairs"], counters["model_errors"]), (2, {"unknown_tool": 1}))
 
     def blocked_carbon_trial(self, index):
-        from obench.tests.test_reflection_vertex import PromptBlocked
-        self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + PromptBlocked.BLOCKED + b"\n\n")
+        from obench.tests.test_reflection_vertex import ProviderBlocked
+        self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + ProviderBlocked.BLOCKED + b"\n\n")
 
         class Looping(FakeTrialDocker):  # OpenCode retrying an empty answer every few seconds
             def run_agent(inner, args, stdout_path, timeout):
@@ -377,14 +377,14 @@ class Trial(CellCase):
 
     def test_blocked_prompt_ends_the_trial_at_once(self):
         docker, spec, result = self.blocked_carbon_trial(0)
-        self.assertEqual((result.status, result.passed), ("prompt_blocked", None))
-        self.assertEqual((result.prompt_blocked["blockReason"], result.prompt_blocked["calls_blocked"]), ("SAFETY", 1))
+        self.assertEqual((result.status, result.passed), ("provider_blocked", None))
+        self.assertEqual((result.provider_blocked["blockReason"], result.provider_blocked["calls_blocked"]), ("SAFETY", 1))
         self.assertEqual(docker.killed, [f"obench-reflect-{spec.trial_id}"])
         self.assertEqual(len(self.vertex.seen), 1)  # never looped upstream
         trial_dir = self.tmp / "run" / spec.trial_dir
-        self.assertEqual(json.loads((trial_dir / "prompt_blocked.json").read_text())["blockReason"], "SAFETY")
+        self.assertEqual(json.loads((trial_dir / "provider_blocked.json").read_text())["blockReason"], "SAFETY")
         counters = json.loads((trial_dir.parent / "cell_counters.json").read_text())
-        self.assertEqual(counters["status"], {"prompt_blocked": 1})
+        self.assertEqual(counters["status"], {"provider_blocked": 1})
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
@@ -436,6 +436,11 @@ class WithRunner(CellCase):
         self.assertEqual((summary["passes"], summary["verdict"]), (2, "pass"))
         counters = json.loads((self.tmp / "run" / "trials" / OPUS / "t1" / "cell_counters.json").read_text())
         self.assertEqual((counters["trials"], counters["status"]), (2, {"completed": 2}))  # both recorded under the lock
+        self.assertEqual(counters["workers"], [2])
+        cell = json.loads(next((self.tmp / "run" / "trials" / OPUS / "t1").glob("*/cell.json")).read_text())
+        self.assertEqual(cell["workers"], 2)
+        self.assertGreaterEqual(cell["agent_seconds"], 0)
+        self.assertEqual(set(cell["host_load"]), {"before", "after", "cpus"})
 
 
     def test_old_upstream_4xx_trials_are_reclassified_offline(self):
@@ -506,7 +511,7 @@ class WithRunner(CellCase):
 
 
     def test_pilot1_blocked_timeouts_are_reclassified(self):
-        """pilot-1: Carbon looped on blocked prompts until the 30-min timeout. Those rows become prompt_blocked
+        """pilot-1: Carbon looped on blocked prompts until the 30-min timeout. Those rows become provider_blocked
         offline (inferred from all-empty answers), with no model calls."""
         from obench.reflection import reclassify as rc
         p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
@@ -528,11 +533,11 @@ class WithRunner(CellCase):
             spec_dir = run_dir / "trials" / "gemini-4-carbon" / "t1"
             tid = rn.trial_id("pilot1", "t1", "gemini-4-carbon", None, 0)
             (spec_dir / "carbon0").rename(spec_dir / tid)
-            # make it look like pilot-1 wrote it: no prompt_blocked field, the same empty answer 3 times, a timeout
+            # make it look like pilot-1 wrote it: no provider_blocked field, the same empty answer 3 times, a timeout
             wire = spec_dir / tid / "wire.jsonl"
-            first = {k: v for k, v in json.loads(wire.read_text().splitlines()[0]).items() if k != "prompt_blocked"}
+            first = {k: v for k, v in json.loads(wire.read_text().splitlines()[0]).items() if k != "provider_blocked"}
             wire.write_text("".join(json.dumps(dict(first, call_index=i)) + "\n" for i in (1, 2, 3)))
-            (spec_dir / tid / "prompt_blocked.json").unlink()
+            (spec_dir / tid / "provider_blocked.json").unlink()
             (spec_dir / tid / "cell.json").unlink()  # 954286aa wrote no cell.json for a timed-out trial
             row = {"schema": rn.TRIAL_SCHEMA, "run_id": "pilot1", "trial_id": tid, "task": "t1", "bench": "b",
                    "bench_commit": "c", "model": "gemini-4-carbon", "vertex_id": "gemini-4-carbon", "trial_index": 0,
@@ -544,12 +549,12 @@ class WithRunner(CellCase):
             seen = len(self.vertex.seen)
             report = rc.reclassify(run_dir, self.executor(), apply=True, suites_dir=suites)
         self.assertEqual(len(self.vertex.seen), seen)
-        self.assertEqual([(c["from"], c["to"]) for c in report["changed"]], [("timeout", "prompt_blocked")])
+        self.assertEqual([(c["from"], c["to"]) for c in report["changed"]], [("timeout", "provider_blocked")])
         new = rn.read_rows(run_dir / "trials.jsonl")[0]
-        self.assertEqual((new["status"], new["prompt_blocked"]["inferred"], new["prompt_blocked"]["calls_blocked"]),
-                         ("prompt_blocked", True, 3))
+        self.assertEqual((new["status"], new["provider_blocked"]["inferred"], new["provider_blocked"]["calls_blocked"]),
+                         ("provider_blocked", True, 3))
         summary = rn.read_rows(run_dir / "summary.jsonl")[0]
-        self.assertEqual((summary["verdict"], summary["prompt_blocked"], summary["errors"]), ("excluded", 1, 0))
+        self.assertEqual((summary["verdict"], summary["provider_blocked"], summary["errors"]), ("excluded", 1, 0))
 
 
 if __name__ == "__main__":
