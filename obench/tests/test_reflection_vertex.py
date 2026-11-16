@@ -202,6 +202,27 @@ class AnthropicRoute(ProxyCase):
         stale = dict(rec, request={k: v for k, v in rec["request"].items() if k != "output_config"})
         self.assertFalse(smoke.checks(model, cmd, [stale], None, None, {"sha": "x"})["thinking_explicit"]["pass"])
 
+    def test_start_snapshot_thinking_count_is_not_a_measurement(self):
+        stream = sse({"type": "message_start", "message": {"model": "claude-opus-5-5", "usage": {
+                          "input_tokens": 12, "output_tokens": 1, "output_tokens_details": {"thinking_tokens": 0}}}},
+                     {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "summary"}},
+                     {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 640}},
+                     {"type": "message_stop"})
+        self.vertex.reply = lambda path: (200, "text/event-stream", stream)
+        body = {"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "messages": [{"role": "user", "content": "go"}]}
+        self.post("/m/claude-opus-5-5/v1/messages", body)
+        (rec,) = self.records()
+        self.assertEqual(rec["response_usage"], {"input_tokens": 12, "output_tokens": 640})
+        self.assertEqual([e["event"] for e in rec["usage_events"]], ["message_start", "message_delta"])
+        self.assertEqual(rec["usage_events"][0]["usage"]["output_tokens_details"], {"thinking_tokens": 0})  # kept raw
+        usage = tr.usage_from_response("anthropic", rec["response_usage"], 1)
+        self.assertEqual((usage["thinking_tokens"], usage["thinking_tokens_status"], usage["output_tokens_include_thinking"]),
+                         (None, "unreported", True))
+        model = vm.resolve("claude-opus-5-5")
+        step = {"step": 1, "usage": usage, "thinking": {"text": "summary", "kind": "summary"}}
+        self.assertTrue(smoke.usage_thinking(model, [step])["pass"])
+        self.assertFalse(smoke.usage_thinking(model, [dict(step, thinking={"text": ""})])["pass"])
+
     def test_wrong_model_is_refused_without_an_upstream_call(self):
         status, payload = self.post("/m/claude-opus-5-5/v1/messages", {"model": "claude-sonnet-5-5", "messages": []})
         self.assertEqual(status, 400)
