@@ -305,6 +305,45 @@ class Trial(CellCase):
         counters = json.loads((trial_dir.parent / "cell_counters.json").read_text())
         self.assertEqual((counters["retried_4xx"], counters["status"]["completed"]), ({"429": 1}, 1))
 
+    def test_gpt_oss_rebuilt_calls_are_logged_per_cell(self):
+        from obench.tests.test_reflection_vertex import GptOssRepair
+        leak = '<|start|>assistant<|channel|>commentary to=repo_browser.print_tree code<|message|>{"path": "", "depth": 3}<|call|>'
+        docs = [GptOssRepair().doc("Explore.", content=leak, finish="tool_calls"),
+                GptOssRepair().doc('Read it.{"filePath": "/app/out.txt"}')]
+        self.vertex.reply = lambda path: (200, "application/json", docs.pop(0) if docs else GptOssRepair().doc("done", content="Done."))
+
+        class OssDocker(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout):
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                events = []
+                for n in (1, 2):
+                    body = {"model": "gpt-oss-120b-maas", "stream": True, "tools": GptOssRepair.TOOLS,
+                            "messages": [{"role": "user", "content": "go"}]}
+                    urllib.request.urlopen(urllib.request.Request(base + "/chat/completions", data=json.dumps(body).encode(),
+                                           method="POST", headers={"Content-Type": "application/json"}), timeout=10).read()
+                    events += [{"type": "step_start", "timestamp": n * 10, "sessionID": "s", "part": {"messageID": f"m{n}", "type": "step-start"}},
+                               {"type": "reasoning", "timestamp": n * 10 + 1, "sessionID": "s",
+                                "part": {"messageID": f"m{n}", "type": "reasoning", "text": "think", "time": {"start": 1, "end": 2}}},
+                               {"type": "step_finish", "timestamp": n * 10 + 2, "sessionID": "s",
+                                "part": {"messageID": f"m{n}", "type": "step-finish", "reason": "tool-calls", "cost": 0.0,
+                                         "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}]
+                workspace = next(args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v")
+                Path(workspace, "out.txt").write_text("done\n")
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in events))
+                return 0, False
+        spec = rn.TrialSpec(run_id="r", trial_id="oss0", task="t1", tasks_dir=str(self.tasks), model="gpt-oss-120b",
+                            trial_index=0, patch_id=None, patch=None, trial_dir="trials/gpt-oss-120b/t1/oss0")
+        result = self.executor(OssDocker()).run_trial(spec, self.tmp / "run")
+        self.assertEqual(result.route_counts["unknown_recipient_calls"], 1)
+        cell_dir = self.tmp / "run" / "trials" / "gpt-oss-120b" / "t1"
+        log = [json.loads(l) for l in (cell_dir / "route_repairs.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["trial_id"], r["tool"], r["known_tool"]) for r in log],
+                         [("oss0", "repo_browser.print_tree", False), ("oss0", "read", True)])
+        self.assertEqual(json.loads(log[0]["arguments"]), {"path": "", "depth": 3})
+        counters = json.loads((cell_dir / "cell_counters.json").read_text())
+        self.assertEqual((counters["route_repairs"], counters["model_errors"]), (2, {"unknown_tool": 1}))
+
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
         make_task(self.tasks, "bare", toml=False)

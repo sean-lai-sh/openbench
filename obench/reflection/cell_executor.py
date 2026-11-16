@@ -32,6 +32,9 @@ call after it succeeded; ``wire_proxy.classify_4xx``) makes the trial
 ``upstream_4xx``: also an infrastructure failure with ``passed: None``. A 4xx
 OpenCode retried and recovered from is the ``retried_4xx`` covariate. Each
 trial records the image ref and id that actually ran and ``matches_pin``.
+For gpt-oss, every tool call the proxy rebuilt from text is logged per cell in
+``<model>/<task>/route_repairs.jsonl``, and calls to tools we never offered
+are counted in ``cell_counters.json`` as ``model_errors.unknown_tool``.
 ``finish_trial`` classifies from the files on disk, so finished trials can be
 reclassified offline (``obench.reflection.reclassify``).
 Every result carries the exact thinking setting sent (configured and as seen
@@ -298,6 +301,20 @@ class CellExecutor:
                     "status": {s: sum(1 for t in trials if t.get("status") == s) for s in sorted({str(t.get("status")) for t in trials})},
                     "retried_4xx": add("retried_4xx"), "thinking_tokens_status": add("thinking_tokens_status"),
                     "code_commits": sorted({str((t.get("code") or {}).get("commit")) for t in trials})}
+        # Every tool call the proxy rebuilt from gpt-oss text, for the whole cell, regenerated from the trials' wire
+        # records (so a rerun or reclassification never duplicates lines).
+        repairs = []
+        for wire_path in sorted(trial_dir.parent.glob("*/wire.jsonl")):
+            for line in wire_path.read_text(encoding="utf-8").splitlines():
+                rec = json.loads(line) if line.strip() else {}
+                if (rec.get("route_repair") or {}).get("applied"):
+                    repairs.append({"trial_id": wire_path.parent.name, "call_index": rec.get("call_index"),
+                                    "route": rec.get("route"), **rec["route_repair"]})
+        (trial_dir.parent / "route_repairs.jsonl").write_text(
+            "".join(json.dumps(r, sort_keys=True) + "\n" for r in repairs), encoding="utf-8")
+        counters["route_repairs"] = len(repairs)
+        # A call to a tool we never offered is the model's error (OpenCode answers it via its invalid tool).
+        counters["model_errors"] = {"unknown_tool": sum(1 for r in repairs if r.get("known_tool") is False)}
         (trial_dir.parent / "cell_counters.json").write_text(json.dumps(counters, indent=1, sort_keys=True) + "\n",
                                                              encoding="utf-8")
         return result
