@@ -74,7 +74,10 @@ MODELS = {
     "claude-opus-5-5": VertexModel(
         key="claude-opus-5-5", display="Claude Opus 5.5", vertex_id="claude-opus-5-5", publisher="anthropic",
         location="global", wire="anthropic", client_ids=("claude-opus-5-5",),
-        thinking={"type": "adaptive"},
+        # display: the API default on Opus 5.5 is "omitted" (thinking blocks stream with empty text). "summarized"
+        # changes visibility only, not how the model thinks or what is billed; the raw chain of thought is never
+        # returned on any platform. Effort is left to the client (Opus 5.5 default: medium), recorded per call.
+        thinking={"type": "adaptive", "display": "summarized"},
         prices={"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0},
         price_verified=True, price_source="thesis/ab/vertex_list_prices.json (Standard, global, read 2026-10-29)",
         opencode_npm="@ai-sdk/anthropic", opencode_model="claude-opus-5-5",
