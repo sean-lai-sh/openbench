@@ -165,6 +165,24 @@ class Tables(Base):
         with self.assertRaisesRegex(rn.RunnerError, "suite_label"):  # never pooled into the same directory
             self.run_with(Mixed({}), models=[OPUS], tasks=["extract-elf"], max_rounds=1, suite_label=None)
 
+    def test_retried_4xx_and_image_pin_fields(self):
+        class Imaged(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                res = super().run_trial(spec, run_dir)
+                res.retried_4xx = {"429": 1} if spec.trial_index else {}
+                res.image = {"ref": "openbench-tb2-x:pinned", "id": "sha256:" + "e" * 64, "pinned": "x@sha256:d",
+                             "matches_pin": spec.trial_index != 1}
+                return res
+        self.run_with(Imaged({}), models=[OPUS], tasks=["extract-elf"], max_rounds=1)
+        rows = rn.read_rows(self.dir / "trials.jsonl")
+        self.assertEqual((rows[1]["retried_4xx"], rows[1]["image_id"], rows[1]["image_matches_pin"]),
+                         ({"429": 1}, "sha256:" + "e" * 64, False))
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        self.assertEqual((s["retried_4xx"], s["image_matches_pin"], s["status_counts"] if "status_counts" in s else None),
+                         ({"429": 2}, False, None))
+        self.assertEqual(json.loads((self.dir / "verdicts.json").read_text())["models"][OPUS]["image_matches_pin_false"],
+                         ["extract-elf"])
+
     def test_suite_label_rules(self):
         with self.assertRaisesRegex(rn.RunnerError, "unknown suite_label"):
             config(suite_label="pilot-ish")

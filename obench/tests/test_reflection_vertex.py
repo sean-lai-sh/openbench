@@ -536,7 +536,12 @@ class RouteRepairInProxy(ProxyCase):
         self.assertEqual(rec["upstream_response_summary"]["tool_calls"], 0)
         self.assertEqual(rec["response_usage"]["completion_tokens"], 30)
         self.assertIsNone(route_truncated([rec]))
-        from obench.reflection.wire_proxy import route_repair_counts, upstream_4xx
+        from obench.reflection.wire_proxy import classify_4xx, route_repair_counts, upstream_4xx
+        main = lambda i, st: {"call_index": i, "status": st, "call_role": "main"}
+        recovered = [main(1, 200), main(2, 429), main(3, 429), main(4, 200), {"call_index": 5, "status": 400, "call_role": "side"}]
+        self.assertEqual(classify_4xx(recovered), {"breaking": [], "retried": {"429": 2, "400": 1}})
+        ended = [main(1, 200), main(2, 429), main(3, 400)]
+        self.assertEqual(classify_4xx(ended), {"breaking": [main(2, 429), main(3, 400)], "retried": {}})
         self.assertEqual(upstream_4xx([rec, {"call_index": 7, "status": 429, "call_role": "main"}, {"status": 500}]),
                          [{"call_index": 7, "status": 429, "call_role": "main"}])
         side = {"call_role": "side", "status": 200, "route_repair": {"applied": True}}
