@@ -240,6 +240,9 @@ class Trial(CellCase):
         cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
         self.assertEqual(cell["image_pin"], {"pinned": digest, "used": "openbench-tb2-x:pinned",
                                              "used_id": "sha256:" + "e" * 64, "match": False})
+        self.assertEqual(result.image, {"ref": "openbench-tb2-x:pinned", "id": "sha256:" + "e" * 64, "pinned": digest,
+                                        "matches_pin": False})
+        self.assertEqual(cell["image_record"], result.image)
         with self.assertRaisesRegex(ce.CellError, "not on this host either"):
             self.executor(FakeTrialDocker(absent={digest, "openbench-tb2-x:pinned"}), use_image_tag=True).run_trial(
                 self.spec(task="mid", index=22), self.tmp / "run")
@@ -258,6 +261,42 @@ class Trial(CellCase):
         self.assertEqual((result.status, result.passed), ("upstream_4xx", None))
         self.assertIn("-> 429", result.error)
         self.assertEqual(result.thinking_setting["configured"]["output_config"], {"effort": "high"})
+
+    def test_retried_4xx_is_a_covariate_not_a_failure(self):
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            if len(calls) == 1:
+                return 429, "application/json", b'{"error": {"code": 429}}'
+            from obench.tests.test_reflection_vertex import default_reply
+            return default_reply(path)
+        self.vertex.reply = reply
+
+        class Retrying(FakeTrialDocker):  # the 429 is followed by a successful retry, then the next step
+            def run_agent(self, args, stdout_path, timeout):
+                self.steps = 2
+                code, t = super().run_agent(args, stdout_path, timeout)
+                return code, t
+        docker = Retrying()
+        orig = docker.run_agent
+
+        def run_agent(args, stdout_path, timeout):
+            env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+            base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+            body = {"model": OPUS, "stream": True, "max_tokens": 10, "tools": TOOLS, "messages": [{"role": "user", "content": "go"}]}
+            for _ in range(1):  # call 1 -> 429; OpenCode retries and both steps then succeed
+                try:
+                    urllib.request.urlopen(urllib.request.Request(base + "/messages", data=json.dumps(body).encode(),
+                                                                  method="POST", headers={"Content-Type": "application/json"}),
+                                           timeout=10).read()
+                except urllib.error.HTTPError:
+                    pass
+            return orig(args, stdout_path, timeout)
+        docker.run_agent = run_agent
+        result = self.executor(docker).run_trial(self.spec(index=31), self.tmp / "run")
+        self.assertEqual(result.retried_4xx, {"429": 1})
+        self.assertEqual((result.status, result.passed, result.steps), ("completed", True, 2))
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
@@ -307,6 +346,73 @@ class WithRunner(CellCase):
         self.assertTrue(all(r["thinking_tokens"] == 240 and r["served_models"] == [OPUS] for r in rows))
         summary = rn.read_rows(self.tmp / "run" / "summary.jsonl")[0]
         self.assertEqual((summary["passes"], summary["verdict"]), (2, "pass"))
+
+
+    def test_old_upstream_4xx_trials_are_reclassified_offline(self):
+        """Rows written by 954286aa (any 4xx -> upstream_4xx, no cell.json, never graded) become completed when the
+        4xx was retried and recovered; nothing calls the model again."""
+        from obench.reflection import reclassify as rc
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+        suites = self.tmp / "suites"
+        suites.mkdir()
+        task = '[[task]]\nid = "{id}"\nsource = "openbench-tb-hard"\nfrontier_rate = {r}\ndomain = "d"\nwhy = "w"\n'
+        (suites / "mini.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini"\npool = "mini-pool"\n'
+                                          + task.format(id="t1", r=0.5))
+        (suites / "mini-pool.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini-pool"\n'
+                                               + task.format(id="t2", r=0.1))
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            if len(calls) == 1:   # trial 0: its first call is a 429 that OpenCode retried
+                return 429, "application/json", b'{"error": {"code": 429}}'
+            from obench.tests.test_reflection_vertex import default_reply
+            return default_reply(path)
+        self.vertex.reply = reply
+
+        class RetryFirst(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout):
+                if len(calls) == 0:
+                    env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                    base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                    body = {"model": OPUS, "stream": True, "max_tokens": 10, "tools": TOOLS, "messages": []}
+                    try:
+                        urllib.request.urlopen(urllib.request.Request(base + "/messages", data=json.dumps(body).encode(),
+                                               method="POST", headers={"Content-Type": "application/json"}), timeout=10)
+                    except urllib.error.HTTPError:
+                        pass
+                return FakeTrialDocker.run_agent(inner, args, stdout_path, timeout)
+        run_dir = self.tmp / "run"
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            make_task(self.tasks, "t2")
+            cfg = rn.RunConfig.from_dict({"run_id": "old", "suite": "mini", "models": [OPUS], "n_trials": 2, "max_rounds": 1})
+            rn.Runner(cfg, run_dir, self.executor(RetryFirst()), suites_dir=suites).run()
+            rows = rn.read_rows(run_dir / "trials.jsonl")
+            self.assertEqual([r["status"] for r in rows], ["completed", "completed"])
+            # make trial 0 look like 954286aa wrote it
+            old = dict(rows[0], status="upstream_4xx", passed=None, checker_exit=None, steps=None, trace=None)
+            for k in ("retried_4xx", "image_ref", "image_id", "image_matches_pin"):
+                old.pop(k)
+            (run_dir / rows[0]["trial_dir"] / "cell.json").unlink()
+            (run_dir / rows[0]["trial_dir"] / "trace.jsonl").unlink()
+            (run_dir / "trials.jsonl").write_text(json.dumps(old) + "\n" + json.dumps(rows[1]) + "\n")
+            rn.Runner(cfg, run_dir, self.executor(), suites_dir=suites).rebuild_tables()
+            self.assertEqual(rn.read_rows(run_dir / "summary.jsonl")[0]["verdict"], "incomplete")
+            seen = len(self.vertex.seen)
+            dry = rc.reclassify(run_dir, self.executor(), suites_dir=suites)
+            self.assertEqual([(c["from"], c["to"], c["passed"]) for c in dry["changed"]], [("upstream_4xx", "completed", True)])
+            self.assertEqual(rn.read_rows(run_dir / "trials.jsonl")[0]["status"], "upstream_4xx")  # dry run wrote nothing
+            rc.reclassify(run_dir, self.executor(), apply=True, suites_dir=suites)
+            self.assertEqual(len(self.vertex.seen), seen)  # no model calls
+        rows = rn.read_rows(run_dir / "trials.jsonl")
+        self.assertEqual([(r["status"], r["passed"]) for r in rows], [("completed", True)] * 2)
+        self.assertEqual((rows[0]["retried_4xx"], rows[0]["reclassified"]["from"]), ({"429": 1}, "upstream_4xx"))
+        self.assertTrue(all(r["image_id"].startswith("sha256:") for r in rows))
+        self.assertEqual(rn.read_rows(run_dir / "summary.jsonl")[0]["verdict"], "pass")
+        self.assertEqual(len(list(run_dir.glob("trials.pre-reclassify-*.jsonl"))), 1)
 
 
 if __name__ == "__main__":
