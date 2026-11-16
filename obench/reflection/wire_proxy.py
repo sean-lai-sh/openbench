@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Callable
 
 from obench.reflection import vertex_models as vm
-from obench.reflection.gptoss_repair import repair as repair_text_tool_calls
+from obench.reflection.gptoss_repair import repair as repair_text_tool_calls, to_sse
 from obench.reflection.patches import PatchError, apply_patch, validate_patch
 from obench.reflection.trace import WIRE_SCHEMA, TraceError, usage_from_response
 
@@ -165,8 +165,14 @@ def route_truncated(wire_records: list[dict]) -> dict | None:
     last = max(main, key=lambda w: w.get("call_index") or 0)
     summary = last.get("response_summary") or {}
     finishes = summary.get("finish_reasons") or []
-    if any(f in STOP_REASONS for f in finishes) and not summary.get("tool_calls") and not summary.get("text_chars"):
-        return {"call_index": last.get("call_index"), "finish_reasons": finishes,
+    no_call = not summary.get("tool_calls")
+    empty = any(f in STOP_REASONS for f in finishes) and no_call and not summary.get("text_chars")
+    # Harmony markup left in the text with no tool call (unrecovered, or an unknown recipient under "reject"):
+    # the turn ended on a call OpenCode never saw.
+    leaked = no_call and bool(summary.get("harmony_markers_in_text")) and any(
+        f in (*STOP_REASONS, "tool_calls") for f in finishes)
+    if empty or leaked:
+        return {"call_index": last.get("call_index"), "finish_reasons": finishes, "kind": "empty" if empty else "harmony_leak",
                 "reasoning_chars": summary.get("reasoning_chars"), "route_repair": last.get("route_repair")}
     return None
 
@@ -200,7 +206,8 @@ def route_repair_counts(wire_records: list[dict]) -> dict:
     main = [w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200]
     return {"model_calls": len(main),
             "tool_call_turns": sum(1 for w in main if (w.get("response_summary") or {}).get("tool_calls")),
-            "route_repairs": sum(1 for w in main if (w.get("route_repair") or {}).get("applied"))}
+            "route_repairs": sum(1 for w in main if (w.get("route_repair") or {}).get("applied")),
+            "unknown_recipient_calls": sum(1 for w in main if (w.get("route_repair") or {}).get("known_tool") is False)}
 
 
 HARMONY_MARKERS = ("<|channel|>", "<|call|>", "<|start|>", "<|message|>", "to=functions.", "<|constrain|>")
@@ -357,7 +364,11 @@ class WireProxy:
         for name in _FORWARD_HEADERS:
             if handler.headers.get(name):
                 headers[name] = handler.headers[name]
-        request = urllib.request.Request(self._url(model, stream), data=json.dumps(sent).encode("utf-8"),
+        upstream_stream = stream if model.upstream_stream is None else model.upstream_stream
+        if stream and not upstream_stream:  # e.g. gpt-oss: call Vertex non-streaming, re-stream the result
+            sent = dict(sent, stream=False)
+            sent.pop("stream_options", None)
+        request = urllib.request.Request(self._url(model, upstream_stream), data=json.dumps(sent).encode("utf-8"),
                                          headers=headers, method="POST")
         status, chunks, content_type = None, [], "application/json"
         try:
@@ -387,8 +398,10 @@ class WireProxy:
             if model.repair_text_tool_calls and status == 200:
                 # Buffer the whole response, rebuild a tool call the route left as text, then send it.
                 raw_all = response.read()
-                sent_bytes, repair = repair_text_tool_calls(raw_all, stream, sent)
-                usage, served = parse_response(model, raw_all, stream)
+                sent_bytes, repair = repair_text_tool_calls(raw_all, upstream_stream, sent)
+                usage, served = parse_response(model, raw_all, upstream_stream)
+                if stream and not upstream_stream:
+                    sent_bytes, content_type = to_sse(sent_bytes), "text/event-stream"
                 summary = response_summary(model, sent_bytes, stream)
                 try:
                     handler.send_response(status)
@@ -401,8 +414,9 @@ class WireProxy:
                 self._record(index, started, model, sent, enforced, usage, served, status, None,
                              extra={"response_summary": summary, "client_disconnected": not client["ok"],
                                     "response_bytes": len(raw_all), "route_repair": repair,
-                                    "upstream_response_summary": response_summary(model, raw_all, stream),
-                                    "upstream_raw": self._save_raw(index, raw_all, stream)})
+                                    "upstream_response_summary": response_summary(model, raw_all, upstream_stream),
+                                    "upstream_stream": upstream_stream,
+                                    "upstream_raw": self._save_raw(index, raw_all, upstream_stream)})
                 send(b"0\r\n\r\n")
                 return
             try:
@@ -421,13 +435,13 @@ class WireProxy:
                 send(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
             # Record before the final chunk, so the record exists once the client has the full reply.
             raw_all = b"".join(chunks)
-            usage, served = parse_response(model, raw_all, stream) if status == 200 else (None, None)
-            extra = {"response_summary": response_summary(model, raw_all, stream) if status == 200 else None,
+            usage, served = parse_response(model, raw_all, upstream_stream) if status == 200 else (None, None)
+            extra = {"response_summary": response_summary(model, raw_all, upstream_stream) if status == 200 else None,
                      "client_disconnected": not client["ok"], "response_bytes": len(raw_all),
-                     "usage_events": usage_events(model, raw_all, stream) if status == 200 else None}
+                     "usage_events": usage_events(model, raw_all, upstream_stream) if status == 200 else None}
             if model.repair_text_tool_calls:  # gpt-oss error bodies too: what the route sent, byte for byte
-                extra.update({"route_repair": None, "upstream_response_summary": None,
-                              "upstream_raw": self._save_raw(index, raw_all, stream)})
+                extra.update({"route_repair": None, "upstream_response_summary": None, "upstream_stream": upstream_stream,
+                              "upstream_raw": self._save_raw(index, raw_all, upstream_stream)})
             self._record(index, started, model, sent, enforced, usage, served, status, None, extra=extra)
             send(b"0\r\n\r\n")
 

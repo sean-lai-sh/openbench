@@ -285,15 +285,19 @@ class OpenAIRoute(ProxyCase):
         self.assertEqual(rec["response_usage"]["completion_tokens_details"]["reasoning_tokens"], 0)
         self.assertEqual(rec["upstream_model"], "openai/gpt-oss-120b-maas")
 
-    def test_streaming_asks_for_usage(self):
-        chunks = sse({"model": "openai/gpt-oss-120b-maas", "choices": [{"delta": {"content": "x"}}]},
-                     {"model": "openai/gpt-oss-120b-maas", "choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 2,
-                      "completion_tokens_details": {"reasoning_tokens": 0}}}) + b"data: [DONE]\n\n"
-        self.vertex.reply = lambda path: (200, "text/event-stream", chunks)
-        self.post("/m/gpt-oss-120b/v1/chat/completions", {"model": "openai/gpt-oss-120b-maas", "stream": True,
-                                                          "messages": []})
-        self.assertEqual(self.vertex.seen[-1]["body"]["stream_options"], {"include_usage": True})
-        self.assertEqual(self.records()[-1]["response_usage"]["prompt_tokens"], 5)
+    def test_streaming_client_gets_a_stream_from_a_nonstream_upstream(self):
+        doc = json.dumps({"model": "openai/gpt-oss-120b-maas", "choices": [{"index": 0, "finish_reason": "stop",
+                          "message": {"role": "assistant", "content": "x"}}],
+                          "usage": {"prompt_tokens": 5, "completion_tokens": 2,
+                                    "completion_tokens_details": {"reasoning_tokens": 0}}}).encode()
+        self.vertex.reply = lambda path: (200, "application/json", doc)
+        status, payload = self.post("/m/gpt-oss-120b/v1/chat/completions",
+                                    {"model": "openai/gpt-oss-120b-maas", "stream": True, "messages": []})
+        sent = self.vertex.seen[-1]["body"]
+        self.assertEqual((sent["stream"], "stream_options" in sent), (False, False))  # gpt-oss: upstream non-stream
+        self.assertTrue(payload.startswith(b"data: ") and payload.endswith(b"data: [DONE]\n\n"))
+        rec = self.records()[-1]
+        self.assertEqual((rec["response_usage"]["prompt_tokens"], rec["upstream_stream"]), (5, False))
 
 
 class SmokeRun(ProxyCase):
@@ -461,6 +465,12 @@ class GptOssRepair(unittest.TestCase):
                    {"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
                    {"id": "x", "choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 30}}) + b"data: [DONE]\n\n"
 
+    def doc(self, reasoning, content="", finish="stop"):
+        message = {"role": "assistant", "content": content or None, "reasoning_content": reasoning}
+        return json.dumps({"id": "x", "model": "openai/gpt-oss-120b-maas",
+                           "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                           "usage": {"prompt_tokens": 9, "completion_tokens": 30}}).encode()
+
     def test_saturdays_case_json_at_end_of_reasoning(self):
         from obench.reflection import gptoss_repair as gr
         raw = self.stream('Let\'s read test file.{"filePath": "/app/test_calculator.py"}')
@@ -501,8 +511,36 @@ class GptOssRepair(unittest.TestCase):
             self.assertEqual(out, raw)
         out, rec = gr.repair(self.stream('{"filePath": "/a"}'), True, {"messages": []})  # request offered no tools
         self.assertIsNone(rec)
+        # A tool we didn't offer is never mapped onto ours: passed under its own name (OpenCode answers "unknown
+        # tool"), or left alone under "reject". Either way it is labelled.
         unknown = 'x<|channel|>commentary to=functions.delete_everything <|message|>{"path": "/"}'
-        self.assertIsNone(gr.extract_tool_call(unknown, self.req()))  # recipient must be an offered tool
+        self.assertEqual(gr.extract_tool_call(unknown, self.req())["method"], "harmony_unknown_recipient")
+        from unittest.mock import patch
+        with patch.object(gr, "UNKNOWN_RECIPIENT", "reject"):
+            self.assertIsNone(gr.extract_tool_call(unknown, self.req()))
+        self.assertIsNone(gr.extract_tool_call('Set x to=5 then {"filePath": "/a", "content": "x", "oldString": "y"}',
+                                               self.req()))  # "to=" in prose is not a recipient
+
+    def test_nonstream_harmony_leak_from_the_diagnostic(self):
+        """2026-11-16 diag, proxy_nonstream at effort high: finish tool_calls, no tool_calls, the call in content."""
+        from obench.reflection import gptoss_repair as gr
+        leak = '<|start|>assistant<|channel|>commentary to=repo_browser.print_tree code<|message|>{"path": "", "depth": 3}<|call|>'
+        doc = json.dumps({"id": "x", "model": "openai/gpt-oss-120b-maas", "choices": [{"index": 0, "finish_reason": "tool_calls",
+                          "message": {"role": "assistant", "content": leak, "reasoning_content": "Let's look at the repo."}}],
+                          "usage": {"prompt_tokens": 9, "completion_tokens": 40}}).encode()
+        out, rec = gr.repair(doc, False, self.req())
+        self.assertEqual((rec["tool"], rec["method"], rec["known_tool"], rec["source"], rec["original_finish_reason"]),
+                         ("repo_browser.print_tree", "harmony_unknown_recipient", False, "content", "tool_calls"))
+        msg = json.loads(out)["choices"][0]["message"]
+        self.assertEqual((msg["content"], json.loads(msg["tool_calls"][0]["function"]["arguments"])), (None, {"path": "", "depth": 3}))
+        known = leak.replace("repo_browser.print_tree code", "functions.read code").replace('{"path": "", "depth": 3}', '{"filePath": "/app/a"}')
+        out, rec = gr.repair(doc.replace(json.dumps(leak).encode()[1:-1], json.dumps(known).encode()[1:-1]), False, self.req())
+        self.assertEqual((rec["tool"], rec["method"], rec["known_tool"]), ("read", "harmony_recipient", True))
+        events = gr._parse_stream(gr.to_sse(out))   # what a streaming OpenCode then receives
+        self.assertEqual(events[0]["choices"][0]["delta"]["reasoning_content"], "Let's look at the repo.")
+        calls = [c for e in events for ch in e.get("choices") or [] for c in (ch.get("delta") or {}).get("tool_calls") or []]
+        self.assertEqual((calls[0]["index"], calls[0]["function"]["name"]), (0, "read"))
+        self.assertEqual(events[-1]["usage"], {"prompt_tokens": 9, "completion_tokens": 40})
 
 
 class GptOssDiag(unittest.TestCase):
@@ -545,8 +583,8 @@ class RouteRepairInProxy(ProxyCase):
     def test_gpt_oss_text_tool_call_reaches_opencode_as_tool_calls(self):
         from obench.reflection import gptoss_repair as gr
         from obench.reflection.wire_proxy import route_truncated
-        upstream = GptOssRepair().stream('Let\'s read test file.{"filePath": "/app/test_calculator.py"}')
-        self.vertex.reply = lambda path: (200, "text/event-stream", upstream)
+        upstream = GptOssRepair().doc('Let\'s read test file.{"filePath": "/app/test_calculator.py"}')
+        self.vertex.reply = lambda path: (200, "application/json", upstream)
         body = {"model": "gpt-oss-120b-maas", "stream": True, "tools": GptOssRepair.TOOLS, "messages": [{"role": "user", "content": "fix"}]}
         status, payload = self.post("/m/gpt-oss-120b/v1/chat/completions", body)
         self.assertEqual(status, 200)
@@ -567,11 +605,11 @@ class RouteRepairInProxy(ProxyCase):
                          [{"call_index": 7, "status": 429, "call_role": "main"}])
         side = {"call_role": "side", "status": 200, "route_repair": {"applied": True}}
         self.assertEqual(route_repair_counts([rec, side, {"status": 500}]),
-                         {"model_calls": 1, "tool_call_turns": 1, "route_repairs": 1})
+                         {"model_calls": 1, "tool_call_turns": 1, "route_repairs": 1, "unknown_recipient_calls": 0})
 
     def test_unrepairable_stop_is_route_truncated(self):
         from obench.reflection.wire_proxy import route_truncated
-        self.vertex.reply = lambda path: (200, "text/event-stream", GptOssRepair().stream("I think I am done thinking."))
+        self.vertex.reply = lambda path: (200, "application/json", GptOssRepair().doc("I think I am done thinking."))
         body = {"model": "gpt-oss-120b-maas", "stream": True, "tools": GptOssRepair.TOOLS, "messages": []}
         self.post("/m/gpt-oss-120b/v1/chat/completions", body)
         (rec,) = self.records()
@@ -585,6 +623,25 @@ class RouteRepairInProxy(ProxyCase):
         result = smoke.checks(model, ["x", "--model", vm.opencode_model_arg(model)], [rec], None, None, {"sha": "x"}, 1)
         self.assertFalse(result["not_route_truncated"]["pass"])
         self.assertFalse(result["task_solved"]["pass"])
+
+    def test_unknown_recipient_leak_is_passed_and_counted_or_truncated(self):
+        from unittest.mock import patch
+        from obench.reflection import gptoss_repair as gr
+        from obench.reflection.wire_proxy import route_repair_counts, route_truncated
+        leak = '<|start|>assistant<|channel|>commentary to=repo_browser.print_tree code<|message|>{"path": "", "depth": 3}<|call|>'
+        self.vertex.reply = lambda path: (200, "application/json", GptOssRepair().doc("Explore.", content=leak, finish="tool_calls"))
+        body = {"model": "gpt-oss-120b-maas", "stream": True, "tools": GptOssRepair.TOOLS, "messages": []}
+        _, payload = self.post("/m/gpt-oss-120b/v1/chat/completions", body)
+        calls = [c for e in gr._parse_stream(payload) for ch in e.get("choices") or [] for c in (ch.get("delta") or {}).get("tool_calls") or []]
+        self.assertEqual(calls[0]["function"]["name"], "repo_browser.print_tree")  # OpenCode answers "unknown tool"
+        rec = self.records()[-1]
+        self.assertEqual(route_repair_counts([rec])["unknown_recipient_calls"], 1)
+        self.assertIsNone(route_truncated([rec]))
+        with patch.object(gr, "UNKNOWN_RECIPIENT", "reject"):
+            self.post("/m/gpt-oss-120b/v1/chat/completions", body)
+        rec = self.records()[-1]
+        self.assertIsNone(rec["route_repair"])
+        self.assertEqual(route_truncated([rec])["kind"], "harmony_leak")
 
     def test_other_models_are_never_rewritten(self):
         self.assertFalse(vm.resolve("claude-opus-5-5").repair_text_tool_calls)
