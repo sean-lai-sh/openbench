@@ -550,6 +550,41 @@ class GptOssRepair(unittest.TestCase):
         self.assertEqual(events[-1]["usage"], {"prompt_tokens": 9, "completion_tokens": 40})
 
 
+class PromptBlocked(ProxyCase):
+    BLOCKED = json.dumps({"promptFeedback": {"blockReason": "SAFETY", "safetyRatings": [
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "probability": "MEDIUM"}]},
+        "usageMetadata": {"promptTokenCount": 5000, "totalTokenCount": 5000}, "modelVersion": "gemini-4-carbon"}).encode()
+
+    def test_blocked_prompt_is_recorded_reported_and_never_resent(self):
+        from obench.reflection.wire_proxy import prompt_blocked
+        seen = []
+        self.proxy.on_prompt_blocked = seen.append
+        self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + self.BLOCKED + b"\n\n")
+        path = "/m/gemini-4-carbon/v1beta/models/gemini-4-carbon:streamGenerateContent?alt=sse"
+        body = {"contents": [{"role": "user", "parts": [{"text": "primers"}]}], "tools": [{"functionDeclarations": []}]}
+        status, _ = self.post(path, body)
+        self.assertEqual(status, 200)  # what Vertex sent is passed through once
+        self.assertEqual([b["blockReason"] for b in seen], ["SAFETY"])  # the executor is told at once
+        status, payload = self.post(path, body)  # OpenCode's retry: refused here, not sent upstream
+        self.assertEqual((status, json.loads(payload)["error"]["status"]), (400, "PROMPT_BLOCKED"))
+        self.assertEqual(len(self.vertex.seen), 1)
+        first, second = self.records()
+        self.assertEqual(first["prompt_blocked"]["blockReason"], "SAFETY")
+        self.assertTrue(second["short_circuited"])
+        self.assertEqual((second["status"], second["error"]), (None, "prompt_blocked: not sent"))
+        info = prompt_blocked([first, second])
+        self.assertEqual((info["blockReason"], info["calls_blocked"], info.get("inferred")), ("SAFETY", 1, None))
+
+    def test_legacy_records_are_inferred(self):
+        from obench.reflection.wire_proxy import prompt_blocked
+        empty = {"finish_reasons": [], "tool_calls": 0, "text_chars": 0, "reasoning_chars": 0}
+        legacy = [{"call_index": i, "status": 200, "call_role": "main", "provider_wire": "gemini", "response_summary": empty,
+                   "usage_error": "usage_malformed"} for i in (1, 2, 3)]
+        self.assertEqual(prompt_blocked(legacy), {"blockReason": None, "inferred": True, "call_index": 1, "calls_blocked": 3})
+        answered = dict(legacy[0], response_summary=dict(empty, finish_reasons=["STOP"], text_chars=5))
+        self.assertIsNone(prompt_blocked([answered, *legacy[1:]]))
+
+
 class GptOssDiag(unittest.TestCase):
     def test_runs_every_variant_and_saves_raw_bytes(self):
         import os

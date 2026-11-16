@@ -25,7 +25,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 
 | File | What |
 |---|---|
-| `plan.json` | Config (including `suite_label`), cutoff, `code` (commit, branch, dirty), and the preflight cost estimate. Resuming a run directory with a different `suite`, `suite_label`, `models`, `patch_id` or `n_trials` is refused, so populations are never pooled in one directory. |
+| `plan.json` | `workers` (trials run in parallel with `--workers N`: each trial is its own container and proxy; swaps are applied per model after each round, so they are the same at any N; the spend cap counts the estimates of running trials), config (including `suite_label`), cutoff, `code` (commit, branch, dirty), and the preflight cost estimate. Resuming a run directory with a different `suite`, `suite_label`, `models`, `patch_id` or `n_trials` is refused, so populations are never pooled in one directory. |
 | `trials.jsonl` | One `openbench.reflection.trial/v1` row per trial (append-only; a rerun skips ids already present) |
 | `summary.jsonl` | One `openbench.reflection.summary/v1` row per (task, model, patch) |
 | `verdicts.json` | Per model: `pass` / `fail` / `incomplete` tasks, and its current suite after swaps |
@@ -42,7 +42,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `model`, `vertex_id` | string | The reflection model and its Vertex ID |
 | `trial_index` | int | 0..n_trials-1 |
 | `patch_id` | string\|null | Null for baseline rows |
-| `status` | string | `completed`, `error`, `timeout`, `route_truncated` or `upstream_4xx` (a main call came back 4xx and no main call after it succeeded: the 4xx ended or broke the trial; `wire_proxy.classify_4xx`). A 4xx that OpenCode retried and recovered from does not change the status; it is counted in `retried_4xx`. An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text. Both it and `upstream_4xx` are infrastructure failures, not task fails. Every status other than `completed` has `passed: null` and counts in `errors`, so the cell stays `incomplete` until it has N completed trials. |
+| `status` | string | `completed`, `error`, `timeout`, `route_truncated` or `prompt_blocked` (the provider refused the prompt itself, e.g. Gemini `promptFeedback.blockReason: SAFETY`; scored by `prompt_blocked_policy`, see below), `upstream_4xx` (a main call came back 4xx and no main call after it succeeded: the 4xx ended or broke the trial; `wire_proxy.classify_4xx`). A 4xx that OpenCode retried and recovered from does not change the status; it is counted in `retried_4xx`. An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text. Both it and `upstream_4xx` are infrastructure failures, not task fails. Every status other than `completed` has `passed: null` and counts in `errors`, so the cell stays `incomplete` until it has N completed trials. |
 | `passed` | bool\|null | Checker verdict; null unless `completed` |
 | `checker_exit`, `steps` | int\|null | |
 | `cost_usd` | number\|null | From the wire records (`vertex_models.cost_usd`) |
@@ -61,6 +61,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `thinking_tokens_per_step` | array\|null | `usage.thinking_tokens` for each trace step, in order (`null` entries where usage reported none) |
 | `trace`, `wire`, `trial_dir` | string\|null | Relative pointers |
 | `started_at`, `finished_at` | string | ISO-8601 UTC |
+| `prompt_blocked` | object\|null | `{blockReason, blockReasonMessage, safetyRatings, call_index, calls_blocked}` for a `prompt_blocked` trial (`inferred: true` when reclassified from records that predate the field) |
 | `error` | string\|null | |
 
 ## Summary row (`openbench.reflection.summary/v1`)
@@ -70,6 +71,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `task`, `model`, `patch_id` | The group. `gpt-oss-120b-medium` ("gpt-oss at medium", opt-in) is its own model key, so it is never pooled with `gpt-oss-120b` (effort high). |
 | `planned`, `trials`, `completed`, `passes`, `fails`, `errors` | Counts |
 | `route_truncated`, `upstream_4xx` | How many of `errors` were `route_truncated` / `upstream_4xx` trials |
+| `prompt_blocked`, `prompt_blocked_policy`, `prompt_block_reasons` | Trials whose prompt the provider blocked (**not** in `errors`), the scoring policy, and the block reasons seen. `exclude` (default): left out of the pass rate (the cell needs `planned - prompt_blocked` completed trials), and a cell with only blocked trials gets verdict `excluded`. `fail`: counted as completed fails. `swap`: like `exclude`, and the model's excluded task is replaced from the pool after the round (`swap.replace_tasks`, reason `prompt_blocked`). The policy is scoring only: change it in `plan.json` and `rebuild_tables()` recomputes. `verdicts.json` lists `excluded` and `prompt_blocked` tasks per model. |
 | `retried_4xx` | Sum of the trials' `retried_4xx` by status code |
 | `image_ids`, `image_matches_pin` | Every image id the group ran; `false` if any trial ran an image that doesn't match its pin, `true` if all matched, `null` if no pin. `verdicts.json` lists such tasks per model as `image_matches_pin_false`. |
 | `suite_label`, `code_commits` | The run label, and every commit the group's trials ran from |
