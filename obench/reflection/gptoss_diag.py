@@ -161,8 +161,11 @@ def describe(raw: bytes, stream: bool, request: dict, kind: str) -> dict:
     reasoning, content = _texts(raw, stream)
     summary.update({"reasoning_tail": reasoning[-600:], "content_tail": content[-600:],
                     "harmony_markers_anywhere": [m for m in HARMONY_MARKERS if m in reasoning + content],
-                    "recoverable_tool_call": extract_tool_call(reasoning, request) or extract_tool_call(content, request),
+                    "recoverable_tool_call": extract_tool_call(content, request) or extract_tool_call(reasoning, request),
                     "usage": _usage(raw, stream)})
+    from obench.reflection.gptoss_repair import repair
+    _, record = repair(raw, stream, request)
+    summary["route_repair"] = record  # what the proxy would hand OpenCode (None: passed through unchanged)
     return summary
 
 
@@ -244,7 +247,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{tag:22} {str(status):4} finish={row.get('finish_reasons')} tool_calls={row.get('tool_calls')} "
                   f"text={row.get('text_chars')} reasoning={row.get('reasoning_chars')} "
                   f"completion_tokens={u.get('completion_tokens')} markers={row.get('harmony_markers_anywhere') or row.get('harmony_markers')} "
-                  f"recoverable={bool(row.get('recoverable_tool_call'))}", flush=True)
+                  f"recoverable={bool(row.get('recoverable_tool_call'))} "
+                  f"repair={(row.get('route_repair') or {}).get('method')}:{(row.get('route_repair') or {}).get('tool')}", flush=True)
     (args.out / "summary.json").write_text(json.dumps({"url": chat_url.replace(f"/projects/{project}/", "/projects/<project>/"), "rows": rows},
                                                       indent=1), encoding="utf-8")
     print(f"wrote {args.out}/summary.json and per-variant .request.json / .raw")
