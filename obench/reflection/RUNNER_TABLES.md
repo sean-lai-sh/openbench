@@ -26,7 +26,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 
 | File | What |
 |---|---|
-| `plan.json` | Config, cutoff, and the preflight cost estimate |
+| `plan.json` | Config (including `suite_label`), cutoff, `code` (commit, branch, dirty), and the preflight cost estimate. Resuming a run directory with a different `suite`, `suite_label`, `models`, `patch_id` or `n_trials` is refused, so populations are never pooled in one directory. |
 | `trials.jsonl` | One `openbench.reflection.trial/v1` row per trial (append-only; a rerun skips ids already present) |
 | `summary.jsonl` | One `openbench.reflection.summary/v1` row per (task, model, patch) |
 | `verdicts.json` | Per model: `pass` / `fail` / `incomplete` tasks, and its current suite after swaps |
@@ -43,7 +43,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `model`, `vertex_id` | string | The reflection model and its Vertex ID |
 | `trial_index` | int | 0..n_trials-1 |
 | `patch_id` | string\|null | Null for baseline rows |
-| `status` | string | `completed`, `error`, `timeout` or `route_truncated`. An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text: an infrastructure failure, not a task fail. Every status other than `completed` has `passed: null` and counts in `errors`, so the cell stays `incomplete` until it has N completed trials. |
+| `status` | string | `completed`, `error`, `timeout`, `route_truncated` or `upstream_4xx` (a model call came back 4xx: bad request, auth, quota/429, wrong route). An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text. Both it and `upstream_4xx` are infrastructure failures, not task fails. Every status other than `completed` has `passed: null` and counts in `errors`, so the cell stays `incomplete` until it has N completed trials. |
 | `passed` | bool\|null | Checker verdict; null unless `completed` |
 | `checker_exit`, `steps` | int\|null | |
 | `cost_usd` | number\|null | From the wire records (`vertex_models.cost_usd`) |
@@ -52,6 +52,10 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `thinking_flags` | array | E.g. `reported_zero_text_present` (gpt-oss) |
 | `served_models`, `wrong_model_served` | array | Models the provider served. Any not matching `vertex_id` lands in `wrong_model_served`. |
 | `route_counts` | object\|null | `{model_calls, tool_call_turns, route_repairs}` from the trial's wire records (`wire_proxy.route_repair_counts`): main calls answered, those that handed OpenCode a tool call, and those whose tool call the proxy rebuilt from gpt-oss text (`route_repair`). `null` when the executor produced no wire counts. |
+| `suite_label` | string\|null | The run's label (`RunConfig.suite_label`), e.g. `repo pilot suite`. Each label fixes the allowed suites; `repo pilot suite` allows `pilot` only and refuses tasks imported by `obench.taskimport` (their `task.toml` has `docker_image_id_at_import`). Never pool rows with different labels. |
+| `code_commit`, `code_branch`, `code_dirty` | string\|bool\|null | The checkout the runner ran from (`git rev-parse HEAD`, branch, uncommitted changes) |
+| `thinking_setting` | object\|null | The exact thinking setting the proxy sent on this trial's requests (`VertexModel.thinking_sent`, e.g. Opus `{"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "high"}}`) |
+| `thinking_tokens_per_step` | array\|null | `usage.thinking_tokens` for each trace step, in order (`null` entries where usage reported none) |
 | `trace`, `wire`, `trial_dir` | string\|null | Relative pointers |
 | `started_at`, `finished_at` | string | ISO-8601 UTC |
 | `error` | string\|null | |
@@ -62,7 +66,8 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 |---|---|
 | `task`, `model`, `patch_id` | The group |
 | `planned`, `trials`, `completed`, `passes`, `fails`, `errors` | Counts |
-| `route_truncated` | How many of `errors` were `route_truncated` trials |
+| `route_truncated`, `upstream_4xx` | How many of `errors` were `route_truncated` / `upstream_4xx` trials |
+| `suite_label`, `code_commits` | The run label, and every commit the group's trials ran from |
 | `model_calls`, `tool_call_turns`, `route_repairs` | Sums of the trials' `route_counts`. Always 0 repairs for Carbon and Opus, which are never rewritten. |
 | `route_repair_share` | `route_repairs / tool_call_turns`: the share of gpt-oss's tool calls that exist only because of our parser (`null` with no tool calls) |
 | `trials_with_route_repair`, `passes_with_route_repair` | Trials with at least one repair, and how many of those passed: the passes that depend on the parser |
