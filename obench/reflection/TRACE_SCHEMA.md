@@ -61,6 +61,8 @@ call together with its result (`tool_calls[].source = "next_request"`).
 | `usage.output_tokens` | int | yes | As reported (Anthropic and OpenAI include thinking; Gemini `candidatesTokenCount` doesn't, and defaults to 0 when absent) |
 | `usage.thinking_tokens` | int\|null | yes | Anthropic `output_tokens_details.thinking_tokens`, OpenAI `completion_tokens_details.reasoning_tokens`, Gemini `thoughtsTokenCount`; null when not reported |
 | `usage.thinking_tokens_field` | string\|null | yes | Which usage field it came from |
+| `usage.thinking_tokens_status` | string | yes | `reported`; `unreported` (usage carried no thinking count: `thinking_tokens` is null, **not 0**); or `reported_zero_text_present` (usage says 0 but thinking text came back, so don't read it as 0). Anthropic streams take the count only from the final `message_delta`. The `message_start` snapshot's count is not a measurement. |
+| `usage.output_tokens_include_thinking` | bool | yes | True for anthropic and openai_chat, whose output count includes thinking (an upper bound when the count is unreported). False for Gemini, which reports `thoughtsTokenCount` separately. |
 | `usage.cache_read_tokens` | int\|null | yes | Anthropic `cache_read_input_tokens`, OpenAI `prompt_tokens_details.cached_tokens`, Gemini `cachedContentTokenCount` |
 | `usage.cache_write_tokens` | int\|null | yes | Anthropic `cache_creation_input_tokens`; null where the provider has none |
 | `usage.raw` | object | yes | The response usage object, unchanged |
@@ -105,6 +107,7 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `response_bytes` | int | no | Bytes received from upstream |
 | `route_repair` | object\|null | no | gpt-oss only: `{applied, tool, method (harmony_recipient\|schema_match), source (reasoning\|content), original_finish_reason}` when the proxy rebuilt a tool call the Vertex route left as text (`gptoss_repair.py`). `response_summary` then describes what OpenCode received, and `upstream_response_summary` what Vertex sent. |
 | `upstream_response_summary` | object\|null | no | gpt-oss only: the summary of the response exactly as Vertex sent it, before any repair (on every 200 call) |
+| `usage_events` | array\|null | no | Anthropic streams: every usage object the response carried, in order (`{event: message_start\|message_delta, usage}`). Shows whether Vertex ever reports a thinking count, and in which event. |
 | `upstream_raw` | string\|null | no | gpt-oss only: path, relative to the wire file's directory, of the raw upstream bytes (`upstream-raw/<call_index>.sse\|json`), for every call including errors. Model output only, but scrub it before committing like any transcript. |
 | `error` | string | no | Transport error when the upstream was unreachable |
 | `usage_error` | string | no | `TraceError` code when the response usage could not be normalized |
@@ -155,7 +158,7 @@ The CLI prints the error and exits 2.
   ],
   "assistant_text": "",
   "thinking": {"kind": "summary", "text": "The build failed on an unresolved name…", "parts": 1, "source": "opencode.reasoning", "rule": "Claude 4+ returns summarized thinking unless display=full", "metadata": [], "chars": 40, "flag": null, "tokens_counted": null, "tokens_counted_by": null},
-  "usage": {"source": "response.usage", "input_tokens": 12, "output_tokens": 410, "thinking_tokens": 233, "thinking_tokens_field": "output_tokens_details.thinking_tokens", "cache_read_tokens": 15840, "cache_write_tokens": 512, "raw": {"input_tokens": 12, "output_tokens": 410, "cache_read_input_tokens": 15840, "cache_creation_input_tokens": 512, "output_tokens_details": {"thinking_tokens": 233}}},
+  "usage": {"source": "response.usage", "input_tokens": 12, "output_tokens": 410, "thinking_tokens": 233, "thinking_tokens_field": "output_tokens_details.thinking_tokens", "thinking_tokens_status": "reported", "output_tokens_include_thinking": true, "cache_read_tokens": 15840, "cache_write_tokens": 512, "raw": {"input_tokens": 12, "output_tokens": 410, "cache_read_input_tokens": 15840, "cache_creation_input_tokens": 512, "output_tokens_details": {"thinking_tokens": 233}}},
   "cost": {"usd": 0.0412, "source": "opencode.step_finish"},
   "finish_reason": "tool-calls",
   "opencode_tokens": {"input": 12, "output": 177, "reasoning": 233, "cache": {"read": 15840, "write": 512}}
