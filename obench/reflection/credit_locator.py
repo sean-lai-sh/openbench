@@ -93,9 +93,13 @@ def read_trace(path: Path) -> list[dict]:
 
 
 def failed_trials(run_dir: Path) -> list[dict]:
-    """Completed, failing baseline-or-patch trial rows of a runner run (SEA-107)."""
+    """Completed, failing baseline-or-patch trial rows of a runner run (SEA-107), outside provider-blocked cells."""
     path = Path(run_dir) / "trials.jsonl"
     if not path.exists():
         return []
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    return [r for r in rows if r.get("status") == "completed" and r.get("passed") is False]
+    # A cell (task, model, patch) with any provider_blocked trial never goes to credit assignment (Researcher
+    # ruling 2026-11-17), not even its completed trials.
+    blocked = {(r["task"], r["model"], r.get("patch_id")) for r in rows if r.get("status") == "provider_blocked"}
+    return [r for r in rows if r.get("status") == "completed" and r.get("passed") is False
+            and (r["task"], r["model"], r.get("patch_id")) not in blocked]
