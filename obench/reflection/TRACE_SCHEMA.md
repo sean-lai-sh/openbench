@@ -104,7 +104,8 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `client_disconnected` | bool | no | The client hung up mid-response. The proxy kept reading upstream, so usage and the summary are complete. |
 | `response_bytes` | int | no | Bytes received from upstream |
 | `route_repair` | object\|null | no | gpt-oss only: `{applied, tool, method (harmony_recipient\|schema_match), source (reasoning\|content), original_finish_reason}` when the proxy rebuilt a tool call the Vertex route left as text (`gptoss_repair.py`). `response_summary` then describes what OpenCode received, and `upstream_response_summary` what Vertex sent. |
-| `upstream_response_summary` | object\|null | no | The summary of the unrepaired upstream response, when a repair was applied |
+| `upstream_response_summary` | object\|null | no | gpt-oss only: the summary of the response exactly as Vertex sent it, before any repair (on every 200 call) |
+| `upstream_raw` | string\|null | no | gpt-oss only: path, relative to the wire file's directory, of the raw upstream bytes (`upstream-raw/<call_index>.sse\|json`), for every call including errors. Model output only, but scrub it before committing like any transcript. |
 | `error` | string | no | Transport error when the upstream was unreachable |
 | `usage_error` | string | no | `TraceError` code when the response usage could not be normalized |
 | `patch_id` | string | no | The ideation alternative whose patch the proxy applied (SEA-110). The per-op log is in `thinking_enforced.patch_log`. |
