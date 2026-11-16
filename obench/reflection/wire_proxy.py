@@ -152,6 +152,49 @@ def usage_events(model: vm.VertexModel, raw: bytes, stream: bool) -> list[dict] 
     return out
 
 
+def prompt_feedback(model: vm.VertexModel, raw: bytes, stream: bool) -> dict | None:
+    """Gemini: the prompt itself was blocked (HTTP 200, ``promptFeedback.blockReason``, no candidates).
+    Returns ``{blockReason, blockReasonMessage, safetyRatings}``, or None."""
+    if model.wire != "gemini":
+        return None
+    if stream:
+        events = list(_sse_payloads(raw))
+    else:
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        events = doc if isinstance(doc, list) else [doc]
+    events = [e for e in events if isinstance(e, dict)]
+    if any(e.get("candidates") for e in events):
+        return None
+    for e in events:
+        feedback = e.get("promptFeedback") or {}
+        if feedback.get("blockReason"):
+            return {"blockReason": feedback["blockReason"], "blockReasonMessage": feedback.get("blockReasonMessage"),
+                    "safetyRatings": feedback.get("safetyRatings")}
+    return None
+
+
+def prompt_blocked(wire_records: list[dict]) -> dict | None:
+    """The trial's prompt was blocked by the provider (Gemini ``promptFeedback.blockReason``): an outcome of its
+    own, neither a task fail nor route_truncated / upstream_4xx / timeout. Records written before this field
+    existed (2026-11-17) are recognised when every answered main call came back empty (no candidates: no finish
+    reason, text, thinking or tool call); that is marked ``inferred``."""
+    for w in sorted(wire_records, key=lambda w: w.get("call_index") or 0):
+        if w.get("prompt_blocked"):
+            return dict(w["prompt_blocked"], call_index=w.get("call_index"),
+                        calls_blocked=sum(1 for x in wire_records if x.get("prompt_blocked")))
+    main = [w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200]
+    gemini = [w for w in main if w.get("provider_wire") == "gemini"]
+    if gemini and len(gemini) == len(main) and all(
+            not s.get("finish_reasons") and not s.get("text_chars") and not s.get("reasoning_chars")
+            and not s.get("tool_calls") for s in (w.get("response_summary") or {} for w in gemini)):
+        return {"blockReason": None, "inferred": True, "call_index": gemini[0].get("call_index"),
+                "calls_blocked": len(gemini)}
+    return None
+
+
 STOP_REASONS = ("stop", "end_turn", "STOP")
 
 
@@ -282,8 +325,11 @@ class WireProxy:
 
     def __init__(self, project: str, wire_path: Path, token: Callable[[], str], *,
                  host: str = "127.0.0.1", port: int = 0, upstream_host: str | None = None,
-                 opener=urllib.request.urlopen):
+                 opener=urllib.request.urlopen, on_prompt_blocked: Callable[[dict], None] | None = None):
         self.project, self.wire_path, self.token = project, Path(wire_path), token
+        # Gemini blocked the prompt: tell the executor (it stops the agent) and refuse later calls without
+        # sending them, so OpenCode can't loop on an empty answer.
+        self.on_prompt_blocked, self.prompt_blocked = on_prompt_blocked, None
         self.upstream_host, self.opener = upstream_host, opener
         self._lock, self._index = threading.Lock(), 0
         self.wire_path.parent.mkdir(parents=True, exist_ok=True)
@@ -348,6 +394,11 @@ class WireProxy:
             self._index += 1
             index = self._index
         started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        if self.prompt_blocked is not None:
+            self._record(index, started, model, sent, enforced, None, None, None, "prompt_blocked: not sent",
+                         extra={"short_circuited": True})
+            return self._reply(handler, 400, {"error": {"code": 400, "status": "PROMPT_BLOCKED",
+                                                        "message": f"prompt blocked: {self.prompt_blocked.get('blockReason')}"}})
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.token()}"}
         for name in _FORWARD_HEADERS:
             if handler.headers.get(name):
@@ -424,7 +475,9 @@ class WireProxy:
             # Record before the final chunk, so the record exists once the client has the full reply.
             raw_all = b"".join(chunks)
             usage, served = parse_response(model, raw_all, upstream_stream) if status == 200 else (None, None)
+            blocked = prompt_feedback(model, raw_all, upstream_stream) if status == 200 else None
             extra = {"response_summary": response_summary(model, raw_all, upstream_stream) if status == 200 else None,
+                     "prompt_blocked": blocked,
                      "client_disconnected": not client["ok"], "response_bytes": len(raw_all),
                      "usage_events": usage_events(model, raw_all, upstream_stream) if status == 200 else None}
             if model.repair_text_tool_calls:  # gpt-oss error bodies too: what the route sent, byte for byte
@@ -432,6 +485,13 @@ class WireProxy:
                               "upstream_raw": self._save_raw(index, raw_all, upstream_stream)})
             self._record(index, started, model, sent, enforced, usage, served, status, None, extra=extra)
             send(b"0\r\n\r\n")
+            if blocked is not None and self.prompt_blocked is None:
+                self.prompt_blocked = blocked
+                if self.on_prompt_blocked is not None:
+                    try:
+                        self.on_prompt_blocked(blocked)
+                    except Exception:  # stopping the agent must never break the proxy
+                        pass
 
     def _save_raw(self, index: int, raw: bytes, stream: bool) -> str | None:
         """gpt-oss only: the upstream response exactly as Vertex sent it, next to the wire file
