@@ -55,6 +55,7 @@ def prepare_request(model: vm.VertexModel, client_path: str, body: dict) -> tupl
         sent.pop("stream", None) if not stream else None
         sent["anthropic_version"] = ANTHROPIC_VERSION
         record["client"] = body.get("thinking")
+        record["effort"] = (sent.get("output_config") or {}).get("effort")  # None = the model default (medium)
         sent["thinking"] = dict(model.thinking)
         removed = [k for k in _ANTHROPIC_THINKING_CONFLICTS if sent.pop(k, None) is not None]
         if removed:
@@ -340,7 +341,8 @@ class WireProxy:
                 self._record(index, started, model, sent, enforced, usage, served, status, None,
                              extra={"response_summary": summary, "client_disconnected": not client["ok"],
                                     "response_bytes": len(raw_all), "route_repair": repair,
-                                    "upstream_response_summary": response_summary(model, raw_all, stream) if repair else None})
+                                    "upstream_response_summary": response_summary(model, raw_all, stream),
+                                    "upstream_raw": self._save_raw(index, raw_all, stream)})
                 send(b"0\r\n\r\n")
                 return
             try:
@@ -360,10 +362,24 @@ class WireProxy:
             # Record before the final chunk, so the record exists once the client has the full reply.
             raw_all = b"".join(chunks)
             usage, served = parse_response(model, raw_all, stream) if status == 200 else (None, None)
-            self._record(index, started, model, sent, enforced, usage, served, status, None,
-                         extra={"response_summary": response_summary(model, raw_all, stream) if status == 200 else None,
-                                "client_disconnected": not client["ok"], "response_bytes": len(raw_all)})
+            extra = {"response_summary": response_summary(model, raw_all, stream) if status == 200 else None,
+                     "client_disconnected": not client["ok"], "response_bytes": len(raw_all)}
+            if model.repair_text_tool_calls:  # gpt-oss error bodies too: what the route sent, byte for byte
+                extra.update({"route_repair": None, "upstream_response_summary": None,
+                              "upstream_raw": self._save_raw(index, raw_all, stream)})
+            self._record(index, started, model, sent, enforced, usage, served, status, None, extra=extra)
             send(b"0\r\n\r\n")
+
+    def _save_raw(self, index: int, raw: bytes, stream: bool) -> str | None:
+        """gpt-oss only: the upstream response exactly as Vertex sent it, next to the wire file
+        (``upstream-raw/<call_index>.sse|json``). Returns the path relative to the wire file's directory."""
+        rel = Path("upstream-raw") / f"{index:04d}.{'sse' if stream else 'json'}"
+        try:
+            (self.wire_path.parent / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.wire_path.parent / rel).write_bytes(raw)
+        except OSError:
+            return None
+        return str(rel)
 
     def _record(self, index, started, model, sent, enforced, usage, served, status, error, extra=None) -> None:
         tools = sent.get("tools")
