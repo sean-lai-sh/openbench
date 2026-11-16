@@ -62,6 +62,17 @@ class FakeDocker:
         self.calls.append(("build", tag, Path(dockerfile or Path(context) / "Dockerfile").read_text()))
         self.images[tag] = {"workdir": "/app", "files": {"main.py": "print(1)\n"}, "user": ""}
 
+    def rmi(self, refs):
+        self.calls.append(("rmi", tuple(refs)))
+        for r in refs:
+            self.images.pop(r, None)
+
+    def _run(self, args, check=True, timeout=3600):
+        self.calls.append(("_run", tuple(args)))
+        if args[:2] == ["image", "inspect"]:
+            return (0, "[]") if args[2] in self.images else (1, "no such image")
+        return 0, ""
+
     def copy_out(self, image, src, dest):
         self.calls.append(("copy_out", image, src))
         for rel, text in self._lookup(image)["files"].items():
@@ -211,12 +222,17 @@ class Import(unittest.TestCase):
         self.assertEqual((d / "workspace" / "data.txt").read_text(), "x")
         checker = (d / "checker.sh").read_text()
         self.assertIn("openbench-terminal-bench-2-alpha:pinned", checker)
-        self.assertIn("--network none", checker)
         self.assertEqual(subprocess.run(["bash", "-n", str(d / "checker.sh")]).returncode, 0)
+        oracle_run, grade_run = checker.split("bash /openbench-oracle/solve.sh")[0], checker.split("ORACLE FAILED")[1]
+        self.assertNotIn("--network none", oracle_run)   # the reference solution may use the network
+        self.assertIn("--network none", grade_run)       # grading never does (same as agent trials)
+        self.assertNotIn("/openbench-oracle", grade_run)  # grading sees the workspace only
         meta = tomllib.loads((d / "task.toml").read_text())
         self.assertEqual((meta["docker_image"], meta["docker_workdir"], meta["checker_timeout_s"]),
                          ("openbench-terminal-bench-2-alpha:pinned", "/app", 1200))
-        self.assertTrue(meta["docker_image_id"].startswith("sha256:"))
+        self.assertTrue(meta["docker_image_id_at_import"].startswith("sha256:"))
+        self.assertEqual(meta["env_image"], "upstream/x@sha256:" + "a" * 64)
+        self.assertEqual(meta["env_image_kind"], "pulled")
         derived = (d / "checker_data" / "image" / "Dockerfile").read_text()
         self.assertIn("FROM upstream/x@sha256:" + "a" * 64, derived)  # pinned by digest
         self.assertIn("UV_OFFLINE=1 PIP_NO_INDEX=1", derived)
@@ -242,7 +258,10 @@ class Import(unittest.TestCase):
             "passes": ({}, lambda overlay: (0, "SCORE: 1.0", 1.0), "untouched workspace passes"),
             "netfail": ({}, lambda overlay: (1, "SCORE: 0", 0) if not overlay else
                         (1, "curl: (6) Could not resolve host: pypi.org\nFAIL", 0), "needs network"),
-            "badsol": ({}, lambda overlay: (1, "SCORE: 0\nFAIL: reward=0", 0), "solution fails"),
+            "badsol": ({}, lambda overlay: (1, "SCORE: 0\nFAIL: reward=0", 0), "not gradeable offline from WORKDIR"),
+            "oraclefail": ({}, lambda overlay: (1, "SCORE: 0", 0) if not overlay else
+                           (3, "E: no package\nSCORE: 0\nORACLE FAILED: solve.sh exited non-zero", 0),
+                           "reference solution fails even with network"),
             "pullfail": ({"image": "gone/img:1"}, None, "docker: pull"),
             "nosolve": ({"solve": False}, None, "no solution/solve.sh"),
         }
@@ -261,6 +280,46 @@ class Import(unittest.TestCase):
                 self.assertEqual(row["status"], "dropped")
                 self.assertIn(reason, row["reason"])
                 self.assertFalse((self.out / "terminal-bench-2" / name).exists())
+
+    def test_relative_out_is_made_absolute_and_missing_checker_fails_loudly(self):
+        import os
+        harbor_task(self.src, "alpha")
+        seen = []
+
+        def validate(task_dir, overlay):
+            seen.append(task_dir)
+            return (0, "SCORE: 1.0", 1.0) if overlay else (1, "SCORE: 0", 0.0)
+        cwd = os.getcwd()
+        os.chdir(self.out)
+        self.addCleanup(os.chdir, cwd)
+        row = pl.Importer(Path("rel-out"), FakeDocker(), validate).import_task(self.entry("alpha"), self.source)
+        self.assertEqual(row["status"], "admitted", row)
+        self.assertTrue(all(Path(p).is_absolute() for p in seen))
+        harbor_task(self.src, "beta")
+        broken = lambda task_dir, overlay: (127, f"bash: {task_dir}/checker.sh: No such file or directory", None)
+        row = pl.Importer(self.out, FakeDocker(), broken).import_task(self.entry("beta"), self.source)
+        self.assertEqual((row["status"], row["reason"]), ("dropped", "validator could not run checker.sh (path problem)"))
+
+    def test_prune_and_rebuild_images(self):
+        harbor_task(self.src, "alpha")
+        harbor_task(self.src, "built", image=None)
+        docker = FakeDocker(images={"ghcr.io/laude-institute/t-bench/python-3-13:latest": {"workdir": "/", "files": {}}})
+        importer = pl.Importer(self.out, docker, ok_validator(), prune_images=True)
+        row = importer.import_task(self.entry("alpha"), self.source)
+        self.assertEqual(row["images_pruned"], ["upstream/x@sha256:" + "a" * 64, "openbench-terminal-bench-2-alpha:pinned"])
+        self.assertNotIn("openbench-terminal-bench-2-alpha:pinned", docker.images)
+        row = importer.import_task(self.entry("built"), self.source)
+        self.assertEqual(row["status"], "admitted", row)
+        env_df = (self.out / "terminal-bench-2" / "built" / "checker_data" / "environment" / "Dockerfile").read_text()
+        self.assertIn("FROM ghcr.io/laude-institute/t-bench/python-3-13@sha256:" + "a" * 64, env_df)  # base pinned
+        docker.calls.clear()
+        rebuilt = pl.ensure_images(self.out, docker)
+        self.assertEqual({r["task"]: r["action"] for r in rebuilt}, {"alpha": "rebuilt", "built": "rebuilt"})
+        kinds = [(c[0], c[1]) for c in docker.calls if c[0] in ("pull", "build")]
+        self.assertIn(("pull", "upstream/x@sha256:" + "a" * 64), kinds)
+        self.assertIn(("build", "openbench-terminal-bench-2-built:env"), kinds)
+        self.assertEqual({r["action"] for r in pl.ensure_images(self.out, docker)}, {"present"})
+        self.assertEqual(len(pl.prune_images(self.out, docker)), 4)
 
     def test_run_is_resumable_and_report_groups_by_source(self):
         harbor_task(self.src, "alpha")

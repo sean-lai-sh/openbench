@@ -27,9 +27,14 @@ duplicates. Each source is reported as its own group.
   `UV_OFFLINE=1 PIP_NO_INDEX=1`. The agent and the checker both use this image
   (`task.toml` `docker_image` and `docker_image_id`), as in the
   openbench-tb-mid pack.
-- `checker.sh`: runs upstream `tests/test.sh` with `--network none`. The
-  reward is `/logs/verifier/reward.txt`. With the solution overlay it first
-  runs upstream `solve.sh` (`checker_data/oracle/`).
+- `checker.sh`: **grading is always a fresh container with `--network none`
+  on the workspace only**, running upstream `tests/test.sh` (reward from
+  `/logs/verifier/reward.txt`). Agent trials get exactly this. For admission
+  only (`OPENBENCH_SOLUTION_OVERLAY=1`), the reference `solve.sh` first runs
+  **with network** in its own container on the same workspace. Upstream
+  solutions install packages: R `remotes`, `git clone`, pinned pip versions.
+  Only what the solution leaves in WORKDIR reaches grading, which is
+  symmetric with what an agent gets.
 - `task.toml` (image, workdir, checker and agent timeouts, upstream pin) and
   `PROVENANCE.md`.
 
@@ -38,12 +43,37 @@ duplicates. Each source is reported as its own group.
 - multi-container TB1 tasks and interactive TB1 solutions (converter);
 - an image that can't be pulled or built, or that has no WORKDIR;
 - the workspace already passes;
-- the solution fails. When the output shows network errors the reason is
-  "verifier or oracle needs network".
+- `checker.sh` is missing or can't be run ("path problem");
+- the reference solution fails even with network (`ORACLE FAILED`);
+- grading still needs network at check time;
+- the solution isn't gradeable offline from WORKDIR alone. Its result depends
+  on installs or services outside WORKDIR, which no agent's result carries
+  either, so the task would be unwinnable for agents.
 
 **Known limitation:** only WORKDIR carries from the agent's run to the
 checker, the same as the existing TB2 imports. A task graded on system state
 the agent changed outside WORKDIR is graded on a fresh container.
+
+## Disk: `--prune-images` and `ensure-images`
+
+Each task holds about 1–1.6 GB of environment image plus 1.2–1.6 GB of task
+image. `run --prune-images` removes both once the task is saved, whether
+admitted or dropped. They can be rebuilt from what each task keeps:
+- `task.toml` `env_image`: the pinned digest, or the built tag with
+  `checker_data/environment/`, whose FROM lines are pinned to base digests;
+- `checker_data/image/Dockerfile` for the task image.
+
+**Before trials**, the trial executor needs each task's `docker_image` tag
+present on the VM. Rebuild a batch's images, run it, then prune:
+
+```bash
+python3 -m obench.taskimport.pipeline ensure-images --tasks-root tasks-imported --only <task ...>   # before the batch
+python3 -m obench.taskimport.pipeline prune-images  --tasks-root tasks-imported --only <task ...>   # after the batch
+```
+
+A rebuilt image's id differs from `docker_image_id_at_import` (Docker builds
+aren't byte-reproducible). The pinned environment digest and the recipe are
+the identity. The trial executor doesn't enforce that id.
 
 ## Run on the VM
 
@@ -68,7 +98,7 @@ python3 -m obench.taskimport.pipeline plan --repo-root . --out $SRC/plan.json \
   --source "terminal-bench-pro=$SRC/tbpro@https://github.com/alibaba/terminal-bench-pro@82bc46de337f48d57a5d78f4900ce7eabc485101"
 
 # 4. Import + no-network validation (Docker; resumable: re-run to continue, --retry to redo)
-python3 -m obench.taskimport.pipeline run --plan $SRC/plan.json --out tasks-imported --report $SRC/import-report.jsonl
+python3 -m obench.taskimport.pipeline run --plan $SRC/plan.json --out tasks-imported --report $SRC/import-report.jsonl --prune-images
 #    smoke two tasks first:  ... run ... --only bn-fit-modify build-cython-ext
 
 # 5. Per-source report (goes into the imports data PR with tasks-imported/ and plan.json)

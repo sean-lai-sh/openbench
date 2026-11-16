@@ -58,6 +58,11 @@ class Docker:
         finally:
             self._run(["rm", "-f", cid], check=False)
 
+    def rmi(self, refs: list[str]) -> None:
+        """Remove images (missing ones are fine). Frees disk after a task is saved."""
+        if refs:
+            self._run(["rmi", "-f", *refs], check=False)
+
     def run(self, image: str, command: list[str], *, mounts: list[tuple[str, str, bool]] = (), workdir: str | None = None,
             network: str | None = None, timeout: int = 3600) -> tuple[int, str]:
         args = ["run", "--rm", "--platform", self.platform]
