@@ -15,8 +15,9 @@ tool_choice_auto    explicit ``tool_choice: "auto"`` (stream)
 tools_in_system     tool definitions also written into the system prompt, as
                     Vertex's function-calling page recommends for gpt-oss (stream)
 tools_in_system_ns  the same, non-stream
-effort_medium       ``reasoning_effort: "medium"`` (non-stream; diagnosis only, the
-                    study stays on high)
+effort_medium       ``reasoning_effort: "medium"`` (non-stream)
+effort_medium_stream the same, streaming: what the opt-in ``gpt-oss-120b-medium``
+                    route sends
 keep_special        ``skip_special_tokens: false`` (vLLM-style; may be rejected),
                     to see raw Harmony tokens (non-stream)
 raw_completions     ``endpoints/openapi/completions`` with a hand-rendered Harmony
@@ -24,7 +25,7 @@ raw_completions     ``endpoints/openapi/completions`` with a hand-rendered Harmo
                     without the chat-side parser
 ==================  =============================================================
 
-That is 8 calls (×``--repeat``), a few cents at most. Output in ``--out``:
+That is 9 calls (×``--repeat``), a few cents at most. Output in ``--out``:
 ``<variant>.request.json``, ``<variant>.raw`` (bytes as received) and
 ``summary.json``; a table is printed. ``--from-wire`` replays the first main
 gpt-oss request from a smoke's ``wire.jsonl`` (the exact OpenCode request)
@@ -124,6 +125,8 @@ def variants(base: dict) -> dict[str, tuple[str, dict]]:
                 body[k] = val
         if not body.get("stream"):
             body.pop("stream_options", None)
+        else:  # a wire request from the non-stream route has none; streams need it for usage
+            body["stream_options"] = dict(body.get("stream_options") or {}, include_usage=True)
         return body
 
     sys_tools = json.loads(json.dumps(base["messages"]))
@@ -141,6 +144,7 @@ def variants(base: dict) -> dict[str, tuple[str, dict]]:
         "tools_in_system": ("chat", v(stream=True, messages=sys_tools)),
         "tools_in_system_ns": ("chat", v(stream=False, messages=sys_tools)),
         "effort_medium": ("chat", v(stream=False, reasoning_effort="medium")),
+        "effort_medium_stream": ("chat", v(stream=True, reasoning_effort="medium")),  # the gpt-oss-120b-medium route
         "keep_special": ("chat", v(stream=False, skip_special_tokens=False)),
         "raw_completions": ("completions", completions),
     }

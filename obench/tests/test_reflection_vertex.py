@@ -100,7 +100,12 @@ class ProxyCase(unittest.TestCase):
 
 class Registry(unittest.TestCase):
     def test_exactly_the_three_vertex_models(self):
-        self.assertEqual(set(vm.MODELS), {"gemini-4-carbon", "claude-opus-5-5", "gpt-oss-120b"})
+        # three Vertex models, plus the opt-in "gpt-oss at medium" variant of the same gpt-oss model
+        self.assertEqual(set(vm.MODELS), {"gemini-4-carbon", "claude-opus-5-5", "gpt-oss-120b", "gpt-oss-120b-medium"})
+        medium = vm.resolve("gpt-oss-120b-medium")
+        self.assertEqual((medium.thinking, medium.repair_text_tool_calls, medium.upstream_stream),
+                         ({"reasoning_effort": "medium"}, False, None))
+        self.assertEqual(vm.resolve("gpt-oss-120b").thinking, {"reasoning_effort": "high"})  # default unchanged
         self.assertEqual({m.vertex_id for m in vm.MODELS.values()},
                          {"gemini-4-carbon", "claude-opus-5-5", "gpt-oss-120b-maas"})
         self.assertEqual({m.location for m in vm.MODELS.values()}, {"global"})
@@ -531,6 +536,8 @@ class GptOssRepair(unittest.TestCase):
         out, rec = gr.repair(doc, False, self.req())
         self.assertEqual((rec["tool"], rec["method"], rec["known_tool"], rec["source"], rec["original_finish_reason"]),
                          ("repo_browser.print_tree", "harmony_unknown_recipient", False, "content", "tool_calls"))
+        self.assertEqual(json.loads(rec["arguments"]), {"path": "", "depth": 3})  # logged per cell, verbatim
+        self.assertTrue(rec["call_id"].startswith("call_route_"))
         msg = json.loads(out)["choices"][0]["message"]
         self.assertEqual((msg["content"], json.loads(msg["tool_calls"][0]["function"]["arguments"])), (None, {"path": "", "depth": 3}))
         known = leak.replace("repo_browser.print_tree code", "functions.read code").replace('{"path": "", "depth": 3}', '{"filePath": "/app/a"}')
@@ -565,7 +572,7 @@ class GptOssDiag(unittest.TestCase):
             self.assertEqual(gd.main(["--out", str(out)]), 0)
         summary = json.loads((out / "summary.json").read_text())
         rows = {r["variant"]: r for r in summary["rows"]}
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 9)
         self.assertEqual(rows["proxy_stream"]["finish_reasons"], ["stop"])
         self.assertTrue(rows["raw_completions"]["recoverable_tool_call"])
         self.assertIn("unsupported", rows["keep_special"]["error_head"])

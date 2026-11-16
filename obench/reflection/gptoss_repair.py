@@ -25,8 +25,11 @@ It is conservative:
 - **Unknown recipients** (a tool we didn't offer, e.g. ``repo_browser.print_tree``,
   a namespace from gpt-oss's training) are never mapped onto our tools.
   ``UNKNOWN_RECIPIENT = "pass"`` (default) hands them to OpenCode as a tool call
-  under the model's own name, so the harness answers "unknown tool", the model
-  sees its mistake and the turn goes on, as with any wrong tool call.
+  under the model's own name. OpenCode (at the pin, ``session/llm.ts``
+  ``experimental_repairToolCall``) turns an unknown tool name into its ``invalid``
+  tool, which answers the model with an error naming the unavailable tool. The
+  model sees its mistake and the turn goes on, as with any wrong tool call. It
+  is counted per cell as a model error.
   ``"reject"`` leaves the response alone (the trial then ends
   ``route_truncated``). Both are counted (``method: harmony_unknown_recipient``).
 - Every repair is reported to the caller, which records it on the wire record
@@ -184,7 +187,8 @@ def repair(raw: bytes, stream: bool, request: dict) -> tuple[bytes, dict | None]
     call_id = "call_route_" + hashlib.sha256((call["name"] + arguments).encode()).hexdigest()[:16]
     tool_call = {"id": call_id, "type": "function", "function": {"name": call["name"], "arguments": arguments}}
     record = {"applied": True, "tool": call["name"], "method": call["method"], "source": call["source"],
-              "original_finish_reason": finish, "known_tool": call["method"] != "harmony_unknown_recipient"}
+              "original_finish_reason": finish, "known_tool": call["method"] != "harmony_unknown_recipient",
+              "call_id": call_id, "arguments": arguments}
     if stream:
         base = {**meta, "object": "chat.completion.chunk"}
         out = [dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "reasoning_content": reasoning}}]),
