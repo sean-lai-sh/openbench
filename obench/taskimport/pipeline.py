@@ -24,7 +24,13 @@ core 0.1.1 @ 91e10457 after ``tb1_to_harbor``. Three steps, all resumable:
        solution overlay is on. Reward comes from ``/logs/verifier/reward.txt``.
     5. Validate polarity with ``obench.validate_tasks.run_checker`` (what
        ``obench validate`` runs): the untouched workspace must fail and the
-       solution must pass, with no network.
+       solution must pass. Grading never has network. The reference
+       ``solve.sh`` runs **offline first** (``OPENBENCH_ORACLE_NETWORK=none``),
+       and again with network only if that fails. The result is saved as
+       ``solution_needs_network = true|false`` in ``task.toml`` and the
+       report. The agent container follows it (``cell_executor``): a task
+       whose solution needed network gets network, and one solved offline is
+       run offline.
 
     A task that fails any step is moved to ``<out>/_dropped/<task>/`` and its
     reason recorded.
@@ -63,9 +69,9 @@ CHECKER_SH = """#!/bin/bash
 # the hand-run fallback. task.toml owns the image.
 #
 # Grading is always a fresh container with NO network, on the workspace only. This is what an agent's result gets.
-# With OPENBENCH_SOLUTION_OVERLAY=1 (admission only, never in agent trials) the reference solution first runs WITH
-# network in its own container on the same workspace. Only what it leaves in WORKDIR reaches the grading container,
-# exactly as for an agent.
+# With OPENBENCH_SOLUTION_OVERLAY=1 (admission only, never in agent trials) the reference solution first runs in its
+# own container on the same workspace, on OPENBENCH_ORACLE_NETWORK (default: bridge, i.e. with network; the importer
+# tries "none" first). Only what it leaves in WORKDIR reaches the grading container, exactly as for an agent.
 set -uo pipefail
 IMAGE="${{BENCH_TASK_IMAGE:-{image}}}"
 WORKDIR={workdir}
@@ -73,11 +79,12 @@ PLATFORM="${{DOCKER_PLATFORM:-{platform}}}"
 LOG_DIR="$(mktemp -d "${{TMPDIR:-/tmp}}/obench-verifier.XXXXXX")"
 trap 'rm -rf "$LOG_DIR"' EXIT
 if [ "${{OPENBENCH_SOLUTION_OVERLAY:-}}" = "1" ]; then
-  if ! docker run --rm --platform "$PLATFORM" -v "$PWD:$WORKDIR" -v "$TASK_DIR/checker_data/oracle:/openbench-oracle:ro" \
+  ORACLE_NETWORK="${{OPENBENCH_ORACLE_NETWORK:-bridge}}"
+  if ! docker run --rm --network "$ORACLE_NETWORK" --platform "$PLATFORM" -v "$PWD:$WORKDIR" -v "$TASK_DIR/checker_data/oracle:/openbench-oracle:ro" \
       -w "$WORKDIR" "$IMAGE" bash /openbench-oracle/solve.sh > "$LOG_DIR/oracle.log" 2>&1; then
     tail -40 "$LOG_DIR/oracle.log"
     echo "SCORE: 0"
-    echo "ORACLE FAILED: solve.sh exited non-zero (network allowed)"
+    echo "ORACLE FAILED: solve.sh exited non-zero (network: $ORACLE_NETWORK)"
     exit 3
   fi
 fi
@@ -238,7 +245,12 @@ class Importer:
                 return self._drop(row, out, "validate", "validator could not run checker.sh (path problem)")
             if ws_code == 0:
                 return self._drop(row, out, "validate", "untouched workspace passes the checker (expected failure)")
-            sol_code, sol_out, _ = self.validate(str(out), True)
+            # Offline first; network only if the offline solve does not pass. Grading is offline either way.
+            sol_code, sol_out = self._validate_solution(out, "none")
+            needs_network = sol_code != 0
+            row["solution_offline"] = {"exit": sol_code, "tail": " | ".join((sol_out or "").strip().splitlines()[-3:])[:300]}
+            if needs_network:
+                sol_code, sol_out = self._validate_solution(out, "bridge")
             if sol_code != 0:
                 tail = " | ".join((sol_out or "").strip().splitlines()[-3:])[:300]
                 if "ORACLE FAILED" in (sol_out or ""):
@@ -248,13 +260,28 @@ class Importer:
                 else:
                     hint = "solution not gradeable offline from WORKDIR alone (needs state outside WORKDIR)"
                 return self._drop(row, out, "validate", f"{hint}: {tail}")
+            with (out / "task.toml").open("a", encoding="utf-8") as fh:
+                fh.write(f"solution_needs_network = {'true' if needs_network else 'false'}\n")
             row.update({"status": "admitted", "stage": "done", "image": tag, "image_id": derived_id,
-                        "env_image": env_record, "workdir": workdir})
+                        "env_image": env_record, "workdir": workdir, "solution_needs_network": needs_network})
             return self._finish(row)
         except DockerError as exc:
             return self._drop(row, out, row["stage"] or "environment", f"docker: {str(exc)[:300]}")
         except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError) as exc:
             return self._drop(row, out, row["stage"] or "files", f"{type(exc).__name__}: {str(exc)[:300]}")
+
+    def _validate_solution(self, out: Path, network: str) -> tuple[int, str]:
+        """The solution overlay with the reference ``solve.sh`` on ``network`` (``none`` or ``bridge``)."""
+        previous = os.environ.get("OPENBENCH_ORACLE_NETWORK")
+        os.environ["OPENBENCH_ORACLE_NETWORK"] = network
+        try:
+            code, output, _ = self.validate(str(out), True)
+        finally:
+            if previous is None:
+                os.environ.pop("OPENBENCH_ORACLE_NETWORK", None)
+            else:
+                os.environ["OPENBENCH_ORACLE_NETWORK"] = previous
+        return code, output
 
     def _finish(self, row: dict) -> dict:
         """Remove the task's images once it is saved (``--prune-images``); ``ensure-images`` rebuilds them."""
@@ -319,7 +346,9 @@ class Importer:
             f"- **Workspace**: copied from the environment image's WORKDIR `{workdir}`",
             "- **Checker**: upstream `tests/test.sh` with `--network none`; reward from `/logs/verifier/reward.txt`. "
             "With the solution overlay it runs the upstream `solution/solve.sh` (`checker_data/oracle/`) first.",
-            "- **Admission**: imported by `obench.taskimport.pipeline`; untouched workspace fails, solution passes, no network.",
+            "- **Admission**: imported by `obench.taskimport.pipeline`; untouched workspace fails, solution passes; grading has "
+            "no network. The reference `solve.sh` runs offline first, then with network only if needed "
+            "(`solution_needs_network` in `task.toml`).",
             ""]), encoding="utf-8")
 
     def _drop(self, row: dict, out: Path, stage: str, reason: str) -> dict:
@@ -377,6 +406,8 @@ def summarize(plan_doc: dict, report_rows: list[dict]) -> dict:
                                  if e["decision"].startswith("duplicate")),
             "planned": sum(e["decision"] == "import" for e in entries),
             "admitted": sorted(r["task"] for r in rows if r["status"] == "admitted"),
+            "solution_needs_network": sorted(r["task"] for r in rows if r["status"] == "admitted"
+                                             and r.get("solution_needs_network")),
             "dropped": sorted((r["task"], r["stage"], r["reason"]) for r in rows if r["status"] == "dropped"),
             "pending": sum(e["decision"] == "import" for e in entries) - len(rows),
         }
@@ -385,11 +416,11 @@ def summarize(plan_doc: dict, report_rows: list[dict]) -> dict:
 
 def write_report_md(plan_doc: dict, report_rows: list[dict], path: Path) -> str:
     summary = summarize(plan_doc, report_rows)
-    lines = ["# Task import report", "", "| Source | Pin | Candidates | Duplicates removed | Imported | Admitted | Dropped | Pending |",
-             "|---|---|---:|---:|---:|---:|---:|---:|"]
+    lines = ["# Task import report", "", "| Source | Pin | Candidates | Duplicates removed | Imported | Admitted | "
+             "Solution needed network | Dropped | Pending |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for name, s in summary.items():
         lines.append(f"| {name} | `{s['commit'][:12]}` | {s['candidates']} | {len(s['duplicates'])} | {s['planned']} | "
-                     f"{len(s['admitted'])} | {len(s['dropped'])} | {s['pending']} |")
+                     f"{len(s['admitted'])} | {len(s['solution_needs_network'])} | {len(s['dropped'])} | {s['pending']} |")
     for name, s in summary.items():
         lines += ["", f"## {name}", "", f"{s['repo']} @ `{s['commit']}`", ""]
         if s["duplicates"]:
@@ -398,6 +429,9 @@ def write_report_md(plan_doc: dict, report_rows: list[dict], path: Path) -> str:
             lines += ["**Dropped:**", "", "| Task | Stage | Reason |", "|---|---|---|",
                       *[f"| {t} | {st} | {r.replace('|', '/')} |" for t, st, r in s["dropped"]], ""]
         lines += [f"**Admitted ({len(s['admitted'])}):** " + ", ".join(s["admitted"]), ""]
+        if s["solution_needs_network"]:
+            lines += [f"**Reference solution needed network ({len(s['solution_needs_network'])}; agents get network on "
+                      "these):** " + ", ".join(s["solution_needs_network"]), ""]
     text = "\n".join(lines) + "\n"
     Path(path).write_text(text, encoding="utf-8")
     return text

@@ -31,10 +31,14 @@ duplicates. Each source is reported as its own group.
   on the workspace only**, running upstream `tests/test.sh` (reward from
   `/logs/verifier/reward.txt`). Agent trials get exactly this. For admission
   only (`OPENBENCH_SOLUTION_OVERLAY=1`), the reference `solve.sh` first runs
-  **with network** in its own container on the same workspace. Upstream
-  solutions install packages: R `remotes`, `git clone`, pinned pip versions.
-  Only what the solution leaves in WORKDIR reaches grading, which is
-  symmetric with what an agent gets.
+  in its own container on the same workspace, on `OPENBENCH_ORACLE_NETWORK`.
+  The importer runs it **offline first** (`none`), and again **with network**
+  (`bridge`) only if the offline run doesn't pass. Some upstream solutions
+  install packages (R `remotes`, `git clone`, pinned pip versions). The
+  result goes into `task.toml` as `solution_needs_network = true|false` and
+  into the report. Network parity: the agent container follows the flag
+  (`obench/reflection/cell_executor.py`). Only what the solution leaves in
+  WORKDIR reaches grading, which is symmetric with what an agent gets.
 - `task.toml` (image, workdir, checker and agent timeouts, upstream pin) and
   `PROVENANCE.md`.
 

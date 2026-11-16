@@ -241,6 +241,40 @@ class Import(unittest.TestCase):
         self.assertIn("pinned to `upstream/x@sha256:", (d / "PROVENANCE.md").read_text())
         self.assertEqual([c[0] for c in docker.calls], ["pull", "copy_out", "build"])
 
+    def test_solution_runs_offline_first_and_records_network_need(self):
+        import os
+        seen = []
+
+        def validate(task_dir, overlay):
+            net = os.environ.get("OPENBENCH_ORACLE_NETWORK")
+            seen.append((Path(task_dir).name, overlay, net))
+            if not overlay:
+                return 1, "SCORE: 0", 0.0
+            if Path(task_dir).name == "online" and net == "none":
+                return 3, "Could not resolve host: cran.r-project.org\nORACLE FAILED: solve.sh exited non-zero (network: none)", 0
+            return 0, "SCORE: 1.0", 1.0
+        rows = {}
+        for name in ("offline", "online"):
+            harbor_task(self.src, name, image=f"upstream/{name}:1")
+            rows[name] = pl.Importer(self.out, FakeDocker(), validate).import_task(self.entry(name), self.source)
+        self.assertEqual([s for s in seen if s[0] == "offline"], [("offline", False, None), ("offline", True, "none")])
+        self.assertEqual([s for s in seen if s[0] == "online"],
+                         [("online", False, None), ("online", True, "none"), ("online", True, "bridge")])
+        self.assertIsNone(os.environ.get("OPENBENCH_ORACLE_NETWORK"))
+        for name, needs in (("offline", False), ("online", True)):
+            self.assertEqual((rows[name]["status"], rows[name]["solution_needs_network"]), ("admitted", needs))
+            meta = tomllib.loads((self.out / "terminal-bench-2" / name / "task.toml").read_text())
+            self.assertIs(meta["solution_needs_network"], needs)
+        self.assertIn("cran.r-project.org", rows["online"]["solution_offline"]["tail"])
+        checker = (self.out / "terminal-bench-2" / "online" / "checker.sh").read_text()
+        self.assertIn('--network "$ORACLE_NETWORK"', checker.split("bash /openbench-oracle/solve.sh")[0])
+        plan_doc = {"sources": [{"name": "terminal-bench-2", "repo": "r", "commit": "c" * 40}],
+                    "entries": [{"source": "terminal-bench-2", "task": n, "decision": "import"} for n in rows]}
+        summary = pl.summarize(plan_doc, list(rows.values()))["terminal-bench-2"]
+        self.assertEqual(summary["solution_needs_network"], ["online"])
+        self.assertIn("Reference solution needed network (1", pl.write_report_md(plan_doc, list(rows.values()),
+                                                                                self.out / "R.md"))
+
     def test_built_environment_records_image_and_bases(self):
         harbor_task(self.src, "built", image=None)
         docker = FakeDocker(images={"ghcr.io/laude-institute/t-bench/python-3-13:latest": {"workdir": "/", "files": {}}})
@@ -331,7 +365,7 @@ class Import(unittest.TestCase):
         self.assertEqual(sorted((r["task"], r["status"]) for r in rows), [("alpha", "admitted"), ("beta", "dropped")])
         self.assertEqual(pl.run(doc, self.out, report, importer), [])  # resumed: nothing redone
         md = pl.write_report_md(doc, pl.read_report(report), self.out / "IMPORT_REPORT.md")
-        self.assertIn("| terminal-bench-2 | `2fd12b88` | 2 | 0 | 2 | 1 | 1 | 0 |", md)
+        self.assertIn("| terminal-bench-2 | `2fd12b88` | 2 | 0 | 2 | 1 | 0 | 1 | 0 |", md)
         self.assertIn("| beta | plan | needs 2 GPU(s) |", md)
 
 
