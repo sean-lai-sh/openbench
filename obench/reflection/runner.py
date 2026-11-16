@@ -49,7 +49,14 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # error and timeout: it never counts as a task fail.
 # upstream_4xx: a 4xx ended or broke the trial (no successful main call after it; wire_proxy.classify_4xx).
 # Also infrastructure. A 4xx that OpenCode retried and recovered from is not: it is the retried_4xx covariate.
-STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx")
+# prompt_blocked: the provider refused the prompt itself (Gemini promptFeedback.blockReason). Scored by
+# RunConfig.prompt_blocked_policy, not as an infrastructure retry.
+STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "prompt_blocked")
+# How prompt_blocked trials score (Researcher ruling pending; default "exclude"):
+#   exclude: left out of the pass rate; reported. A cell with nothing but blocked trials is verdict "excluded".
+#   fail:    counted as completed trials that failed.
+#   swap:    like exclude, and the model's blocked task is replaced from the pool (swap.replace_tasks).
+PROMPT_BLOCKED_POLICIES = ("exclude", "fail", "swap")
 # Run labels that fix which task population a run may use, so runs with different populations are never pooled.
 # "repo pilot suite": the repo's pilot suite and pool only; tasks imported by obench.taskimport (their task.toml
 # records docker_image_id_at_import) are refused.
@@ -91,7 +98,8 @@ class TrialResult:
     thinking_tokens_status: dict | None = None    # {"reported": n, "unreported": m, ...} over steps
     route_counts: dict | None = None
     retried_4xx: dict | None = None           # {"429": n, ...}: 4xx calls OpenCode recovered from (covariate)
-    image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
+    image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran
+    prompt_blocked: dict | None = None        # {blockReason, blockReasonMessage, ...} when status is prompt_blocked          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
@@ -119,6 +127,7 @@ class RunConfig:
     tasks: tuple | None = None           # restrict to these suite tasks (ideation, dry runs)
     fixed_tasks: bool = False            # run exactly ``tasks`` (suite or pool), never swap: ideation arms
     suite_label: str | None = None       # SUITE_LABELS key; on every row; a run directory never mixes labels
+    prompt_blocked_policy: str = "exclude"  # PROMPT_BLOCKED_POLICIES; scoring only, recomputed by rebuild_tables
 
     @classmethod
     def load(cls, path: Path) -> "RunConfig":
@@ -154,6 +163,8 @@ class RunConfig:
             raise RunnerError("max_rounds must be >= 1")
         if (self.patch is None) != (self.patch_id is None):
             raise RunnerError("patch and patch_id go together")
+        if self.prompt_blocked_policy not in PROMPT_BLOCKED_POLICIES:
+            raise RunnerError(f"prompt_blocked_policy must be one of {PROMPT_BLOCKED_POLICIES}")
         if self.suite_label is not None:
             rule = SUITE_LABELS.get(self.suite_label)
             if rule is None:
@@ -240,9 +251,14 @@ def read_rows(path: Path) -> list[dict]:
 
 
 class Runner:
-    def __init__(self, config: RunConfig, run_dir: Path, executor: Executor, suites_dir: Path | None = None):
+    def __init__(self, config: RunConfig, run_dir: Path, executor: Executor, suites_dir: Path | None = None,
+                 workers: int = 1):
         config.validate()
-        self.config, self.executor = config, executor
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+            raise RunnerError(f"workers must be a positive int, got {workers!r}")
+        self.config, self.executor, self.workers = config, executor, workers
+        import threading
+        self._rows_lock = threading.Lock()
         self.run_dir = Path(run_dir)
         kwargs = {"suites_dir": suites_dir} if suites_dir else {}
         self.suite: Suite = load_suite(config.suite, **kwargs)
@@ -299,7 +315,8 @@ class Runner:
     # ---------------------------------------------------------------- run
 
     def spent(self) -> float:
-        return round(sum(r.get("cost_usd") or 0.0 for r in read_rows(self.trials_path)), 6)
+        with self._rows_lock:
+            return round(sum(r.get("cost_usd") or 0.0 for r in read_rows(self.trials_path)), 6)
 
     def _status(self, state: str, **extra) -> dict:
         status = {"run_id": self.config.run_id, "state": state, "spent_usd": self.spent(), "at": _now(), **extra}
@@ -322,23 +339,16 @@ class Runner:
                 if (list(was) if isinstance(was, (list, tuple)) else was) != (list(now) if isinstance(now, (list, tuple)) else now):
                     raise RunnerError(f"{self.run_dir} was started with {key}={was!r}, not {now!r}: use a new run directory")
         _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff, "code": self.code,
+                                                 "workers": self.workers,
                                                  "preflight": self.preflight(), "written_at": _now()})
         states = {m: self._swap_state(m) for m in self.config.models}
         done = {r["trial_id"] for r in read_rows(self.trials_path)}
         for round_no in range(1, self.config.max_rounds + 1):
             tasks_by_model = {m: self._round_tasks(states[m]) for m in self.config.models}
-            for spec in self.plan(tasks_by_model):
-                if spec.trial_id in done:
-                    continue
-                spent = self.spent()
-                crossed = [t for t in self.config.alert_thresholds_usd if spent >= t and t not in acknowledge_alerts]
-                if crossed:
-                    return self._status("alert", threshold_usd=crossed[0], round=round_no)
-                cap = self.config.spend_cap_usd
-                if cap is not None and spent + self.executor.estimate_cost_usd(spec.model) > cap:
-                    return self._status("capped", spend_cap_usd=cap, round=round_no)
-                self._run_one(spec)
-                done.add(spec.trial_id)
+            stop = self._run_round([s for s in self.plan(tasks_by_model) if s.trial_id not in done], done,
+                                   acknowledge_alerts)
+            if stop is not None:
+                return self._status(stop.pop("state"), round=round_no, **stop)
             summaries = self.write_summary(cutoff)
             swapped = False
             for model in self.config.models:
@@ -348,6 +358,36 @@ class Runner:
             if not swapped or self.config.fixed:
                 break
         return self._status("done")
+
+    def _run_round(self, specs: list[TrialSpec], done: set, acknowledge_alerts: tuple) -> dict | None:
+        """Run a round's trials on ``self.workers`` threads (1 = one at a time, as before). Swaps happen only after
+        the whole round, per model, so they are the same at any worker count. Before each trial starts, spend so
+        far plus the estimate of every trial still running is checked against the alerts and the cap; on a stop,
+        no new trial starts and the running ones finish and are recorded. Returns the stop status, or None."""
+        from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+        cap, pending, running, stop = self.config.spend_cap_usd, list(specs), {}, None
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            while pending or running:
+                while stop is None and pending and len(running) < self.workers:
+                    spec = pending[0]
+                    spent = self.spent()
+                    crossed = [t for t in self.config.alert_thresholds_usd if spent >= t and t not in acknowledge_alerts]
+                    if crossed:
+                        stop = {"state": "alert", "threshold_usd": crossed[0]}
+                        break
+                    reserved = sum(self.executor.estimate_cost_usd(s.model) for s in running.values())
+                    if cap is not None and spent + reserved + self.executor.estimate_cost_usd(spec.model) > cap:
+                        stop = {"state": "capped", "spend_cap_usd": cap}
+                        break
+                    running[pool.submit(self._run_one, spec)] = pending.pop(0)
+                if not running:
+                    break
+                finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    spec = running.pop(future)
+                    future.result()  # _run_one records executor crashes as trial errors; anything else is a bug
+                    done.add(spec.trial_id)
+        return stop
 
     def _round_tasks(self, state: dict) -> list[str]:
         if self.config.fixed:  # ideation arms: exactly the parent's task, even a swapped-in pool task
@@ -379,13 +419,14 @@ class Runner:
                "wrong_model_served": wrong, "route_counts": result.route_counts,
                "suite_label": self.config.suite_label, "code_commit": self.code["commit"],
                "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
-               "retried_4xx": result.retried_4xx or {},
+               "retried_4xx": result.retried_4xx or {}, "prompt_blocked": result.prompt_blocked,
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
                "image_matches_pin": (result.image or {}).get("matches_pin"),
                "thinking_setting": result.thinking_setting, "thinking_tokens_per_step": result.thinking_tokens_per_step,
                "thinking_tokens_status": result.thinking_tokens_status, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
                "started_at": started, "finished_at": _now(), "error": result.error}
-        _append(self.trials_path, row)
+        with self._rows_lock:
+            _append(self.trials_path, row)
 
     # ---------------------------------------------------------------- tables
 
@@ -396,10 +437,16 @@ class Runner:
             groups.setdefault((r["task"], r["model"], r["patch_id"]), []).append(r)
         summaries = []
         for (task, model, patch_id), trials in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0], str(kv[0][2]))):
+            policy = self.config.prompt_blocked_policy
+            blocked = [t for t in trials if t["status"] == "prompt_blocked"]
             completed = [t for t in trials if t["status"] == "completed"]
+            if policy == "fail":
+                completed = completed + [dict(t, passed=False) for t in blocked]
             passes = sum(1 for t in completed if t["passed"])
             n = self.config.n_trials
-            verdict = ("incomplete" if len(completed) < n
+            needed = n if policy == "fail" else n - len(blocked)   # blocked trials leave the denominator
+            verdict = ("excluded" if blocked and policy != "fail" and not completed and needed <= 0
+                       else "incomplete" if not completed or len(completed) < needed
                        else "pass" if swap.passed(passes, len(completed), cutoff) else "fail")
             costs = [t["cost_usd"] for t in trials]
             thinking = [t["thinking_tokens"] for t in trials if isinstance(t.get("thinking_tokens"), int)]
@@ -407,9 +454,11 @@ class Runner:
                 "schema": SUMMARY_SCHEMA, "run_id": self.config.run_id, "task": task, "model": model,
                 "patch_id": patch_id, "planned": n, "trials": len(trials), "completed": len(completed),
                 "passes": passes, "fails": len(completed) - passes,
-                "errors": sum(1 for t in trials if t["status"] != "completed"),
+                "errors": sum(1 for t in trials if t["status"] not in ("completed", "prompt_blocked")),
                 "route_truncated": sum(1 for t in trials if t["status"] == "route_truncated"),
                 "upstream_4xx": sum(1 for t in trials if t["status"] == "upstream_4xx"),
+                "prompt_blocked": len(blocked), "prompt_blocked_policy": policy,
+                "prompt_block_reasons": sorted({str((t.get("prompt_blocked") or {}).get("blockReason")) for t in blocked}),
                 "retried_4xx": _sum_counts(t.get("retried_4xx") for t in trials),
                 "image_ids": sorted({str(t.get("image_id")) for t in trials}),
                 "image_matches_pin": _all_or_none(t.get("image_matches_pin") for t in trials),
@@ -445,6 +494,8 @@ class Runner:
                 "pass": sorted(s["task"] for s in mine if s["verdict"] == "pass"),
                 "fail": sorted(s["task"] for s in mine if s["verdict"] == "fail"),
                 "incomplete": sorted(s["task"] for s in mine if s["verdict"] == "incomplete"),
+                "excluded": sorted(s["task"] for s in mine if s["verdict"] == "excluded"),
+                "prompt_blocked": sorted(s["task"] for s in mine if s.get("prompt_blocked")),
                 "current_suite": swap.current_tasks(self._swap_state(model)),
                 # tasks that ran an image other than the pinned one (--use-image-tag): label, never mix silently
                 "image_matches_pin_false": sorted(s["task"] for s in mine if s.get("image_matches_pin") is False),
@@ -470,9 +521,15 @@ class Runner:
             return state, []
         current = set(swap.current_tasks(state))
         results = {s["task"]: (s["passes"], s["completed"]) for s in summaries
-                   if s["model"] == model and s["patch_id"] is None and s["verdict"] != "incomplete"
+                   if s["model"] == model and s["patch_id"] is None and s["verdict"] in ("pass", "fail")
                    and s["task"] in current}
         new, swaps = swap.apply_results(state, results, self.suite, self.pool, cutoff)
+        if self.config.prompt_blocked_policy == "swap":
+            blocked = {s["task"]: "prompt_blocked" for s in summaries
+                       if s["model"] == model and s["patch_id"] is None and s["verdict"] == "excluded"
+                       and s["task"] in set(swap.current_tasks(new))}
+            new, replaced = swap.replace_tasks(new, blocked, self.suite, self.pool)
+            swaps = swaps + [r for r in replaced if r["to"]]
         self._swap_path(model).parent.mkdir(parents=True, exist_ok=True)
         _write_json(self._swap_path(model), new)
         return new, swaps
@@ -534,6 +591,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="run directory (outside results/ and data/)")
     parser.add_argument("--preflight", action="store_true", help="print the cost estimate and exit")
     parser.add_argument("--fixture", type=Path, help="dry run: JSON {\"task|model\": passes} for FixtureExecutor")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="trials run in parallel (one container each); swaps stay per model, after each round")
     parser.add_argument("--acknowledge-alert", type=float, action="append", default=[])
     args = parser.parse_args(argv)
     if any(part in ("results", "data") for part in args.out.expanduser().resolve().parts):
@@ -544,7 +603,7 @@ def main(argv: list[str] | None = None) -> int:
                          "(see RUNNER_TABLES.md, 'Executors')")
     raw = json.loads(args.fixture.read_text(encoding="utf-8"))
     executor = FixtureExecutor({tuple(k.split("|", 1)): v for k, v in raw.items()})
-    runner = Runner(config, args.out, executor)
+    runner = Runner(config, args.out, executor, workers=args.workers)
     if args.preflight:
         print(json.dumps(runner.preflight(), indent=2))
         return 0
