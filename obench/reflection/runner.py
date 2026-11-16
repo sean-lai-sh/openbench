@@ -195,6 +195,7 @@ def _route_repair_summary(trials: list[dict]) -> dict:
     repaired_trials = [t for t in trials if (t.get("route_counts") or {}).get("route_repairs")]
     return {"model_calls": total("model_calls"), "tool_call_turns": total("tool_call_turns"),
             "route_repairs": total("route_repairs"),
+            "unknown_recipient_calls": total("unknown_recipient_calls"),
             "route_repair_share": round(total("route_repairs") / total("tool_call_turns"), 4) if total("tool_call_turns") else None,
             "trials_with_route_repair": len(repaired_trials),
             "passes_with_route_repair": sum(1 for t in repaired_trials if t.get("status") == "completed" and t.get("passed")),
