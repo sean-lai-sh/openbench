@@ -161,6 +161,30 @@ class Trial(CellCase):
         self.assertEqual(result.status, "error")
         self.assertIn("trace_error: step_call_mismatch", result.error)
 
+    def test_empty_stop_is_route_truncated_not_a_fail(self):
+        from obench.tests.test_reflection_vertex import sse
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            stop = "end_turn" if len(calls) == 2 else "tool_use"
+            body = [{"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},
+                    {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}]
+            if stop == "tool_use":
+                body.append({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "bash", "id": "t"}})
+            body += [{"type": "message_delta", "delta": {"stop_reason": stop},
+                      "usage": {"output_tokens": 30, "output_tokens_details": {"thinking_tokens": 10}}},
+                     {"type": "message_stop"}]
+            return 200, "text/event-stream", sse(*body)
+        self.vertex.reply = reply
+        run_dir = self.tmp / "run"
+        result = self.executor(FakeTrialDocker(write_output=False)).run_trial(self.spec(index=4), run_dir)
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("route_truncated", None, 1))
+        self.assertIn("route_truncated", result.error)
+        self.assertTrue((run_dir / result.trace).is_file())
+        detail = json.loads((run_dir / result.trace).with_name("route_truncated.json").read_text())
+        self.assertEqual(detail["finish_reasons"], ["end_turn"])
+
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
         make_task(self.tasks, "bare", toml=False)
