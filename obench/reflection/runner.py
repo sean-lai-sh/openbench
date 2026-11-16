@@ -454,6 +454,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='--cell: per-trial USD estimates for the preflight, e.g. {"claude-opus-5-5": 2.0}')
     parser.add_argument("--default-image", default="h1-env:1027-strace",
                         help="--cell: agent image for tasks that name none (openbench-tb-hard)")
+    parser.add_argument("--use-image-tag", action="store_true",
+                        help="--cell: when a task.toml digest ref isn't on this host, run its docker_image_tag (recorded)")
     parser.add_argument("--acknowledge-alert", type=float, action="append", default=[])
     args = parser.parse_args(argv)
     if any(part in ("results", "data") for part in args.out.expanduser().resolve().parts):
@@ -474,8 +476,14 @@ def main(argv: list[str] | None = None) -> int:
         token = AdcToken()
         token()  # fail before any trial if credentials are missing
         executor = CellExecutor(args.opencode, project, token, estimates_usd={**DEFAULT_ESTIMATES_USD, **(args.estimates or {})},
-                                default_image=args.default_image)
+                                default_image=args.default_image, use_image_tag=args.use_image_tag)
     runner = Runner(config, args.out, executor)
+    if args.cell:  # every image must be on this host before the first paid call
+        wanted = [(str(t.tasks_dir), t.id) for t in runner.known.values() if not config.tasks or t.id in config.tasks]
+        missing = executor.missing_images(wanted)
+        if missing:
+            print(json.dumps({"missing_images": missing}, indent=2))
+            return 4
     if args.preflight:
         print(json.dumps(runner.preflight(), indent=2))
         return 0

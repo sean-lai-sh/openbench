@@ -31,9 +31,12 @@ TOOLS = [{"name": "bash", "description": "run", "input_schema": {"type": "object
 
 
 class FakeTrialDocker:
-    def __init__(self, steps=2, write_output=True, timeout=False, image_ids=None):
+    def __init__(self, steps=2, write_output=True, timeout=False, image_ids=None, absent=()):
         self.steps, self.write_output, self.timeout = steps, write_output, timeout
-        self.image_ids, self.calls = image_ids or {}, []
+        self.image_ids, self.calls, self.absent = image_ids or {}, [], set(absent)
+
+    def has_image(self, ref):
+        return ref not in self.absent
 
     def bridge_gateway(self):
         self.gateways = getattr(self, "gateways", []) + ["bridge"]
@@ -209,6 +212,28 @@ class Trial(CellCase):
                 self.assertEqual("OPENCODE_DISABLE_MODELS_FETCH=1" in args, network == "offline")
                 cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
                 self.assertEqual((cell["agent_network"], cell["network_unflagged"]), (network, task == "t1"))
+
+    def test_missing_digest_image_fails_before_any_call_or_runs_the_tag_when_allowed(self):
+        digest = "openbench-tb2-x@sha256:" + "d" * 64
+        make_task(self.tasks, "mid")
+        (self.tasks / "mid" / "task.toml").write_text(
+            f'docker_image = "{digest}"\ndocker_image_tag = "openbench-tb2-x:pinned"\ndocker_workdir = "/app"\n')
+        docker = FakeTrialDocker(absent={digest})
+        with self.assertRaisesRegex(ce.CellError, "--use-image-tag"):
+            self.executor(docker).run_trial(self.spec(task="mid", index=20), self.tmp / "run")
+        self.assertEqual((docker.calls, self.vertex.seen), ([], []))
+        self.assertEqual(set(self.executor(docker).missing_images([(str(self.tasks), "mid"), (str(self.tasks), "t1")])),
+                         {"mid"})
+        docker = FakeTrialDocker(absent={digest}, image_ids={"openbench-tb2-x:pinned": "sha256:" + "e" * 64})
+        result = self.executor(docker, use_image_tag=True).run_trial(self.spec(task="mid", index=21), self.tmp / "run")
+        self.assertEqual(result.status, "completed")
+        self.assertIn("openbench-tb2-x:pinned", docker.calls[0])
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        self.assertEqual(cell["image_pin"], {"pinned": digest, "used": "openbench-tb2-x:pinned",
+                                             "used_id": "sha256:" + "e" * 64, "match": False})
+        with self.assertRaisesRegex(ce.CellError, "not on this host either"):
+            self.executor(FakeTrialDocker(absent={digest, "openbench-tb2-x:pinned"}), use_image_tag=True).run_trial(
+                self.spec(task="mid", index=22), self.tmp / "run")
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)

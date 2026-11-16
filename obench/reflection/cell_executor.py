@@ -105,6 +105,9 @@ class TrialDocker:
                             f"{out.stderr.strip()}")
         return gateway
 
+    def has_image(self, ref: str) -> bool:
+        return subprocess.run(["docker", "image", "inspect", ref], capture_output=True, timeout=60).returncode == 0
+
     def image_id(self, ref: str) -> str:
         out = subprocess.run(["docker", "image", "inspect", ref, "--format", "{{.Id}}"], capture_output=True, text=True,
                              timeout=60)
@@ -137,6 +140,7 @@ class CellExecutor:
     platform: str = "linux/amd64"
     default_image: str | None = "h1-env:1027-strace"   # tasks with no image of their own (e.g. openbench-tb-hard)
     proxy_host: str | None = None        # default: the gateway of the trial's network
+    use_image_tag: bool = False          # task.toml digest ref missing locally -> run docker_image_tag (recorded)
     unflagged_network: str = "bridge"    # tasks with no solution_needs_network: "bridge" (as before) or "offline"
     upstream_host: str | None = None     # tests only: fake Vertex
     checker_runner: Callable = subprocess.run
@@ -160,7 +164,7 @@ class CellExecutor:
                 "agent_timeout": int(meta.get("agent_timeout_s") or 1800),
                 "solution_needs_network": meta.get("solution_needs_network")}
         if meta.get("docker_image"):
-            return dict(task, image=meta["docker_image"], image_source="task.toml")
+            return dict(task, image=meta["docker_image"], image_source="task.toml", image_tag=meta.get("docker_image_tag"))
         checker = (task_dir / "checker.sh").read_text(encoding="utf-8") if (task_dir / "checker.sh").is_file() else ""
         found = re.search(r'(?m)^IMAGE="(?:\$\{BENCH_TASK_IMAGE:-)?([^"}]+)\}?"', checker)
         if found:
@@ -179,6 +183,33 @@ class CellExecutor:
                 raise CellError(f"unflagged_network must be bridge or offline, not {self.unflagged_network!r}")
             return self.unflagged_network
         return "bridge" if needs else "offline"
+
+    def resolve_image(self, task: dict, name: str) -> dict:
+        """The image must be on this host before any model call. A ``task.toml`` digest ref
+        (``name@sha256:...``, e.g. openbench-tb-mid's, recorded from an arm64 build) does not exist after a
+        local build; with ``use_image_tag`` the trial runs ``docker_image_tag`` instead and ``cell.json``
+        records both refs and the id actually used."""
+        if self.docker.has_image(task["image"]):
+            return dict(task, image_pin=None)
+        tag = task.get("image_tag")
+        if self.use_image_tag and tag and self.docker.has_image(tag):
+            return dict(task, image=tag, image_pin={"pinned": task["image"], "used": tag,
+                                                    "used_id": self.docker.image_id(tag), "match": False})
+        hint = (f"; build {tag} and pass --use-image-tag to run it" if tag and not self.use_image_tag else
+                f"; {tag} is not on this host either" if tag else "")
+        raise CellError(f"{name}: image {task['image']} ({task['image_source']}) is not on this host{hint}")
+
+    def missing_images(self, tasks: list[tuple[str, str]]) -> dict[str, str]:
+        """``{task: reason}`` for every ``(tasks_dir, task)`` whose image can't be resolved here (preflight)."""
+        missing = {}
+        for tasks_dir, name in tasks:
+            spec = TrialSpec(run_id="preflight", trial_id="preflight", task=name, tasks_dir=tasks_dir, model="",
+                             trial_index=0, patch_id=None, patch=None, trial_dir="")
+            try:
+                self.resolve_image(self._task(spec), name)
+            except (CellError, OSError, tomllib.TOMLDecodeError) as exc:
+                missing[name] = str(exc)
+        return missing
 
     def docker_args(self, spec: TrialSpec, task: dict, workspace: Path, model: vm.VertexModel, proxy_base: str,
                     instruction: str, network: str = "bridge") -> list[str]:
@@ -199,7 +230,7 @@ class CellExecutor:
         from obench.workspace import materialize_workspace
 
         model = vm.resolve(spec.model)
-        task = self._task(spec)
+        task = self.resolve_image(self._task(spec), spec.task)
         if task["image_id"] and self.docker.image_id(task["image"]) != task["image_id"]:
             raise CellError(f"{spec.task}: {task['image']} is not the pinned image {task['image_id']}")
         trial_dir = Path(run_dir) / spec.trial_dir
@@ -233,7 +264,7 @@ class CellExecutor:
                                wire=rel(wire_path), error=f"agent timed out after {task['agent_timeout']}s")
         (trial_dir / "cell.json").write_text(json.dumps({"image": task["image"], "image_source": task["image_source"],
                                                          "workdir": task["workdir"], "opencode_exit": code,
-                                                         "agent_network": network,
+                                                         "agent_network": network, "image_pin": task["image_pin"],
                                                          "solution_needs_network": task["solution_needs_network"],
                                                          "network_unflagged": task["solution_needs_network"] is None,
                                                          "opencode_sha": self.pin["sha"]}, sort_keys=True) + "\n")
