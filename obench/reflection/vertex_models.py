@@ -43,6 +43,7 @@ class VertexModel:
     opencode_npm: str
     opencode_model: str      # model id in OpenCode's config / --model
     notes: tuple = field(default_factory=tuple)
+    repair_text_tool_calls: bool = False   # gptoss_repair: rebuild tool calls the route leaves as text
 
     def upstream_url(self, project: str, stream: bool) -> str:
         base = f"{VERTEX_HOST}/v1/projects/{project}/locations/{self.location}"
@@ -87,7 +88,7 @@ MODELS = {
         price_verified=False,
         price_source=("GA announcement rate ($0.15/$0.60); current aggregators list $0.09/$0.36. Confirm on the "
                       "Agent Platform pricing page before any scored run."),
-        opencode_npm="@ai-sdk/openai-compatible", opencode_model="gpt-oss-120b-maas",
+        opencode_npm="@ai-sdk/openai-compatible", opencode_model="gpt-oss-120b-maas", repair_text_tool_calls=True,
         notes=("Vertex's model page lists 'Thinking: Not supported', yet the endpoint accepts reasoning_effort and "
                "returns reasoning_content; usage reasoning_tokens has been reported as 0 even at high effort. "
                "Thinking tokens are still read from usage (never estimated from text).",),

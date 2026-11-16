@@ -115,6 +115,24 @@ class Tables(Base):
         verdicts = json.loads((self.dir / "verdicts.json").read_text())
         self.assertIn("sanitize-git-repo", verdicts["models"][OPUS]["current_suite"])
 
+    def test_route_truncated_is_an_infra_failure_not_a_fail(self):
+        class Truncating(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.trial_index == 2:
+                    return rn.TrialResult(status="route_truncated", passed=None, steps=1, error="finish stop, no tool call")
+                return super().run_trial(spec, run_dir)
+        self.run_with(Truncating({}), models=[OSS], tasks=["extract-elf"], max_rounds=1)
+        rows = rn.read_rows(self.dir / "trials.jsonl")
+        self.assertEqual((rows[2]["status"], rows[2]["passed"]), ("route_truncated", None))
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        self.assertEqual((s["completed"], s["fails"], s["errors"], s["route_truncated"], s["verdict"]),
+                         (2, 2, 1, 1, "incomplete"))
+
+    def test_model_subset_runs_only_those_models(self):
+        self.run_with(rn.FixtureExecutor({}), models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1)
+        self.assertEqual({r["model"] for r in rn.read_rows(self.dir / "trials.jsonl")}, {CARBON, OPUS})
+        self.assertEqual(set(json.loads((self.dir / "verdicts.json").read_text())["models"]), {CARBON, OPUS})
+
     def test_executor_crash_and_wrong_model_are_recorded(self):
         class Bad(rn.FixtureExecutor):
             def run_trial(self, spec, run_dir):

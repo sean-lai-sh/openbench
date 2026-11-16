@@ -21,7 +21,13 @@ requires:
    text; its counts are not comparable with Carbon's and Opus's;
 5. ``cost``: every call has a cost (``cost_usd``) and the run total is
    logged;
-6. ``pin``: the binary is the pinned OpenCode build.
+6. ``pin``: the binary is the pinned OpenCode build;
+7. ``task_solved``: the task's checker passes on the agent's workspace (the
+   model actually finished the task, not just produced traces);
+8. ``not_route_truncated``: the last main call didn't end ``stop`` with no
+   text and no tool call (``wire_proxy.route_truncated``). gpt-oss tool calls
+   that the route left as text are rebuilt first (``gptoss_repair``) and
+   listed under ``repairs``.
 
 ``--out`` must be outside any ``results/`` or ``data/`` directory. The task
 workspace is copied, so the repo is never edited. Exits 1 if a check fails.
@@ -41,7 +47,7 @@ from pathlib import Path
 from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
-from obench.reflection.wire_proxy import WireProxy
+from obench.reflection.wire_proxy import WireProxy, route_truncated
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_TASK = REPO / "tasks" / "fix-failing-test"
@@ -72,7 +78,7 @@ def child_env(model: vm.VertexModel, proxy_base: str, home: Path) -> dict:
 
 
 def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: list[dict] | None,
-           trace_error: str | None, pin_check: dict | None) -> dict:
+           trace_error: str | None, pin_check: dict | None, checker_exit: int | None = None) -> dict:
     main = [w for w in wires if w.get("call_role") != "side"]
     served = sorted({str(w.get("upstream_model")) for w in wires})
     arg = cmd[cmd.index("--model") + 1] if "--model" in cmd else None
@@ -95,6 +101,11 @@ def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: li
                  "price_verified": model.price_verified, "price_source": model.price_source,
                  "pass": bool(costs) and all(isinstance(c, (int, float)) for c in costs)},
         "pin": {"check": pin_check, "pass": pin_check is not None},
+        # Stricter gate (2026-11-16): the model must actually finish the task, and the route must not cut the turn.
+        "task_solved": {"checker_exit": checker_exit, "pass": checker_exit == 0},
+        "not_route_truncated": {"route_truncated": route_truncated(wires),
+                                "repairs": [w.get("route_repair") for w in wires if w.get("route_repair")],
+                                "pass": route_truncated(wires) is None},
     }
 
 
@@ -170,8 +181,20 @@ def run(args) -> int:
         shutil.rmtree(home, ignore_errors=True)
 
 
+def run_checker(task: Path, work: Path) -> int | None:
+    """The task's own checker on the agent's workspace (``tasks/fix-failing-test``: its unit tests)."""
+    try:
+        proc = subprocess.run(["bash", str(task / "checker.sh")], cwd=work, env=dict(os.environ, TASK_DIR=str(task)),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return 124
+    (work.parent / "checker-output.txt").write_text(proc.stdout or "", encoding="utf-8")
+    return proc.returncode
+
+
 def _finish(args, model, out, task, cmd, wire_path, events_path, pin_check, opencode_exit, stderr, timed_out) -> int:
     (out / "opencode-stderr.txt").write_text(stderr, encoding="utf-8")
+    checker_exit = None if timed_out else run_checker(task, out / "work")
     wires = [json.loads(l) for l in wire_path.read_text(encoding="utf-8").splitlines() if l.strip()] \
         if wire_path.exists() else []
     records, trace_error = None, None
@@ -183,7 +206,7 @@ def _finish(args, model, out, task, cmd, wire_path, events_path, pin_check, open
         tr.write_trace(out / "trace.jsonl", records)
     except tr.TraceError as exc:
         trace_error = str(exc)
-    result = checks(model, cmd, wires, records, trace_error, pin_check)
+    result = checks(model, cmd, wires, records, trace_error, pin_check, checker_exit)
     summary = {"model": model.key, "vertex_id": model.vertex_id, "location": model.location, "task": task.name,
                "opencode_exit": opencode_exit, "opencode_timed_out": timed_out,
                "command": [cmd[0], *cmd[1:-1], "<instruction>"],

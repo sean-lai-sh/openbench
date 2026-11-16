@@ -44,7 +44,10 @@ N_TRIALS = 30
 ALERT_THRESHOLDS_USD = (5_000.0, 10_000.0, 15_000.0)
 TRIAL_SCHEMA = "openbench.reflection.trial/v1"
 SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
-STATUSES = ("completed", "error", "timeout")
+# route_truncated: the model route ended the turn with finish "stop", no tool
+# call and no text (wire_proxy.route_truncated). An infrastructure failure, like
+# error and timeout: it never counts as a task fail.
+STATUSES = ("completed", "error", "timeout", "route_truncated")
 
 
 class RunnerError(Exception):
@@ -69,7 +72,7 @@ class TrialSpec:
 
 @dataclass
 class TrialResult:
-    status: str                       # completed | error | timeout
+    status: str                       # completed | error | timeout | route_truncated
     passed: bool | None               # checker verdict; None when the trial did not complete
     checker_exit: int | None = None
     steps: int | None = None
@@ -318,6 +321,7 @@ class Runner:
                 "patch_id": patch_id, "planned": n, "trials": len(trials), "completed": len(completed),
                 "passes": passes, "fails": len(completed) - passes,
                 "errors": sum(1 for t in trials if t["status"] != "completed"),
+                "route_truncated": sum(1 for t in trials if t["status"] == "route_truncated"),
                 "pass_rate": round(passes / len(completed), 4) if completed else None,
                 "cutoff": cutoff, "verdict": verdict,
                 "spend_usd": round(sum(c for c in costs if c is not None), 6),

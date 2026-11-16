@@ -43,7 +43,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `model`, `vertex_id` | string | The reflection model and its Vertex ID |
 | `trial_index` | int | 0..n_trials-1 |
 | `patch_id` | string\|null | Null for baseline rows |
-| `status` | string | `completed`, `error` or `timeout`. An executor crash is recorded as `error`, never skipped. |
+| `status` | string | `completed`, `error`, `timeout` or `route_truncated`. An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text: an infrastructure failure, not a task fail. Every status other than `completed` has `passed: null` and counts in `errors`, so the cell stays `incomplete` until it has N completed trials. |
 | `passed` | bool\|null | Checker verdict; null unless `completed` |
 | `checker_exit`, `steps` | int\|null | |
 | `cost_usd` | number\|null | From the wire records (`vertex_models.cost_usd`) |
@@ -61,6 +61,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 |---|---|
 | `task`, `model`, `patch_id` | The group |
 | `planned`, `trials`, `completed`, `passes`, `fails`, `errors` | Counts |
+| `route_truncated` | How many of `errors` were `route_truncated` trials |
 | `pass_rate` | `passes / completed` |
 | `cutoff`, `verdict` | `pass` iff `completed == planned` and `passes / completed >= cutoff` (exact; 27/30 at 0.90). `incomplete` when fewer than `planned` trials completed. |
 | `spend_usd`, `spend_complete` | Sum of trial costs. `spend_complete` is false if any trial had no cost. |
