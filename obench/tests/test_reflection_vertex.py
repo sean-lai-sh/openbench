@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 import threading
 import unittest
@@ -175,13 +176,13 @@ class AnthropicRoute(ProxyCase):
         self.assertEqual(seen["headers"].get("anthropic-beta"), "fine-grained-tool-streaming-2025-05-14")
         self.assertNotIn("model", seen["body"])
         self.assertEqual(seen["body"]["anthropic_version"], "vertex-2023-10-16")
-        self.assertEqual(seen["body"]["thinking"], {"type": "adaptive"})
+        self.assertEqual(seen["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
         self.assertNotIn("temperature", seen["body"])
         (rec,) = self.records()
         self.assertEqual((rec["call_role"], rec["upstream_model"], rec["route"]), ("main", "claude-opus-5-5", "claude-opus-5-5"))
         self.assertEqual(rec["response_usage"]["output_tokens_details"], {"thinking_tokens": 120})
-        self.assertEqual(rec["thinking_enforced"], {"setting": {"type": "adaptive"}, "client": None,
-                                                    "removed": ["temperature"]})
+        self.assertEqual(rec["thinking_enforced"], {"setting": {"type": "adaptive", "display": "summarized"}, "client": None,
+                                                    "effort": None, "removed": ["temperature"]})
         self.assertGreater(rec["cost_usd"], 0)
         self.assertLessEqual(set(rec), Registry_documented_wire())
 
@@ -467,6 +468,42 @@ class GptOssRepair(unittest.TestCase):
         self.assertIsNone(gr.extract_tool_call(unknown, self.req()))  # recipient must be an offered tool
 
 
+class GptOssDiag(unittest.TestCase):
+    def test_runs_every_variant_and_saves_raw_bytes(self):
+        import os
+        from unittest.mock import patch
+        from obench.reflection import gptoss_diag as gd
+        out = Path(tempfile.mkdtemp()) / "diag"
+        self.addCleanup(shutil.rmtree, out.parent, True)
+        seen = []
+
+        def call(url, body, token):
+            seen.append((url, body))
+            if url.endswith("/completions") and not url.endswith("chat/completions"):
+                return 200, json.dumps({"choices": [{"text": 'x<|channel|>commentary to=functions.read <|message|>{"filePath": "/app/a"}<|call|>',
+                                                     "finish_reason": "stop"}]}).encode(), 0.1
+            if body.get("stream"):
+                return 200, GptOssRepair().stream("We have a codebase. Let's explore."), 0.1
+            return 400, b'{"error": "skip_special_tokens unsupported"}', 0.1
+        with patch.dict(os.environ, {"GOOGLE_CLOUD_PROJECT": "proj"}), \
+                patch("thesis.ab.vertex_anthropic_proxy.AdcToken", return_value=lambda: "tok"), patch.object(gd, "call", call):
+            self.assertEqual(gd.main(["--out", str(out)]), 0)
+        summary = json.loads((out / "summary.json").read_text())
+        rows = {r["variant"]: r for r in summary["rows"]}
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(rows["proxy_stream"]["finish_reasons"], ["stop"])
+        self.assertTrue(rows["raw_completions"]["recoverable_tool_call"])
+        self.assertIn("unsupported", rows["keep_special"]["error_head"])
+        self.assertTrue((out / "proxy_stream.raw").read_bytes().startswith(b"data:"))
+        self.assertIn("/projects/<project>/", summary["url"])
+        self.assertEqual(json.loads((out / "proxy_stream.request.json").read_text())["reasoning_effort"], "high")
+        ts = json.loads((out / "tools_in_system.request.json").read_text())
+        self.assertIn("filePath", ts["messages"][0]["content"])
+        self.assertNotIn("stream_options", json.loads((out / "proxy_nonstream.request.json").read_text()))
+        with self.assertRaises(SystemExit):
+            gd.main(["--out", str(out.parent / "results" / "x")])
+
+
 class RouteRepairInProxy(ProxyCase):
     def test_gpt_oss_text_tool_call_reaches_opencode_as_tool_calls(self):
         from obench.reflection import gptoss_repair as gr
@@ -495,6 +532,9 @@ class RouteRepairInProxy(ProxyCase):
         self.post("/m/gpt-oss-120b/v1/chat/completions", body)
         (rec,) = self.records()
         self.assertIsNone(rec["route_repair"])
+        self.assertEqual(rec["upstream_response_summary"]["finish_reasons"], ["stop"])  # filled with no repair too
+        raw = (self.wire.parent / rec["upstream_raw"]).read_bytes()
+        self.assertIn(b"I think I am done thinking.", raw)
         truncated = route_truncated([rec])
         self.assertEqual(truncated["finish_reasons"], ["stop"])
         model = vm.resolve("gpt-oss-120b")
@@ -535,7 +575,7 @@ class EndToEnd(ProxyCase):
         records = tr.build_trace(tr.parse_events([json.dumps(e) for e in self.events()]), wires,
                                  cost_fn=lambda rec: (vm.cost_usd(model, rec["usage"]), "reflection.vertex_models"))
         self.assertEqual([r["usage"]["thinking_tokens"] for r in records], [120, 120])
-        self.assertEqual(records[0]["request"]["thinking_setting"]["value"], {"type": "adaptive"})
+        self.assertEqual(records[0]["request"]["thinking_setting"]["value"], {"type": "adaptive", "display": "summarized"})
         cmd = ["opencode", "run", "--format", "json", "--thinking", "--model", vm.opencode_model_arg(model), "x"]
         result = smoke.checks(model, cmd, wires, records, None, {"sha": "x"}, checker_exit=0)
         self.assertEqual({k: v["pass"] for k, v in result.items()}, dict.fromkeys(result, True))
