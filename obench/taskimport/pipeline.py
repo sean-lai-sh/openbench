@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Callable
 
 from obench.taskimport.docker import Docker, DockerError
+from obench.workspace import WORKSPACE_MODES, make_storable
 
 PLAN_SCHEMA = "openbench.taskimport.plan/v1"
 REPORT_SCHEMA = "openbench.taskimport.report/v1"
@@ -212,6 +213,12 @@ class Importer:
                 shutil.rmtree(out)
             (out / "workspace").mkdir(parents=True)
             self.docker.copy_out(env_ref, workdir, str(out / "workspace"))
+            # Files the owner can't read (processing-pipeline ships collect_data.sh as --wx--x--x) are made
+            # storable; the exact modes are restored on every materialized workspace (obench.workspace).
+            modes = make_storable(str(out / "workspace"))
+            if modes:
+                (out / WORKSPACE_MODES).write_text(json.dumps(modes, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+                row["restored_modes"] = modes
             row["stage"] = "files"
             self._write_files(src, out, meta, workdir)
             row["stage"] = "derived_image"

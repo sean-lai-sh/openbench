@@ -153,6 +153,22 @@ class Converter(unittest.TestCase):
         self.assertIn("echo hello", (d / "solution" / "solve.sh").read_text())
         self.assertEqual(subprocess.run(["bash", "-n", str(d / "tests" / "test.sh")]).returncode, 0)
 
+    def test_tests_copied_by_the_upstream_dockerfile_stay_in_the_build_context(self):
+        d = tb1_task(self.src, "blind-maze-explorer-5x5")
+        df = Path(d) / "Dockerfile"
+        df.write_text(df.read_text() + "COPY ./tests /app/tests\nCOPY --chown=1:1 [\"run-tests.sh\", \"/app/\"]\nCOPY . /app/\n")
+        self.assertEqual(tb1.dockerfile_sources(df) & {"tests", "run-tests.sh"}, {"tests", "run-tests.sh"})
+        res = tb1.convert_task(Path(d), self.out)
+        self.assertTrue(res.ok, res.reasons)
+        self.assertEqual(res.context_extras, ["run-tests.sh", "tests"])
+        out = self.out / "blind-maze-explorer-5x5"
+        self.assertTrue((out / "environment" / "tests" / "test_outputs.py").is_file())
+        self.assertTrue((out / "environment" / "run-tests.sh").is_file())
+        self.assertFalse((out / "environment" / "task.yaml").exists())
+        self.assertTrue((out / "tests" / "test.sh").is_file())
+        self.assertIn("the agent can see them", (out / "task.toml").read_text())
+        tomllib.loads((out / "task.toml").read_text())
+
     def test_refusals(self):
         tb1_task(self.src, "multi", compose_services=2)
         tb1_task(self.src, "interactive", solution_yaml=[{"command": "vim x", "append_enter": True},
@@ -274,6 +290,33 @@ class Import(unittest.TestCase):
         self.assertEqual(summary["solution_needs_network"], ["online"])
         self.assertIn("Reference solution needed network (1", pl.write_report_md(plan_doc, list(rows.values()),
                                                                                 self.out / "R.md"))
+
+    def test_unreadable_workspace_files_keep_their_modes(self):
+        import os
+        import stat
+        from obench.workspace import materialize_workspace
+
+        class Locked(FakeDocker):
+            def copy_out(self, image, src, dest):
+                super().copy_out(image, src, dest)
+                os.makedirs(os.path.join(dest, "bin"))
+                Path(dest, "bin", "collect_data.sh").write_text("#!/bin/bash\necho hi\n")
+                os.chmod(os.path.join(dest, "bin", "collect_data.sh"), 0o311)   # --wx--x--x, as upstream ships it
+                os.chmod(os.path.join(dest, "bin"), 0o311)
+        harbor_task(self.src, "processing-pipeline")
+        row = pl.Importer(self.out, Locked(), ok_validator()).import_task(self.entry("processing-pipeline"), self.source)
+        self.assertEqual(row["status"], "admitted", row)
+        d = self.out / "terminal-bench-2" / "processing-pipeline"
+        self.assertEqual(json.loads((d / "workspace_modes.json").read_text()),
+                         {"bin": "0o311", "bin/collect_data.sh": "0o311"})
+        self.assertIn("echo hi", (d / "workspace" / "bin" / "collect_data.sh").read_text())  # stored readable
+        ws = self.out / "materialized"
+        ws.mkdir()
+        materialize_workspace(str(d), str(ws))
+        self.addCleanup(os.chmod, ws / "bin", 0o755)
+        self.assertEqual(stat.S_IMODE(os.lstat(ws / "bin").st_mode), 0o311)
+        os.chmod(ws / "bin", 0o755)
+        self.assertEqual(stat.S_IMODE(os.lstat(ws / "bin" / "collect_data.sh").st_mode), 0o311)
 
     def test_built_environment_records_image_and_bases(self):
         harbor_task(self.src, "built", image=None)

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,6 +68,28 @@ class Converted:
     ok: bool
     reasons: list = field(default_factory=list)
     out: str | None = None
+    context_extras: list = field(default_factory=list)   # verifier files the upstream Dockerfile itself COPYs
+
+
+_COPY_LINE = re.compile(r"(?im)^\s*(?:COPY|ADD)\s+(.+)$")
+
+
+def dockerfile_sources(dockerfile: Path) -> set[str]:
+    """Top-level names the Dockerfile's COPY/ADD lines read from the build context (flags and the destination
+    dropped), e.g. ``COPY ./tests /app/tests`` -> {"tests"}."""
+    names = set()
+    for args in _COPY_LINE.findall(dockerfile.read_text(encoding="utf-8")):
+        args = re.sub(r"^(\s*--\S+\s+)+", "", args).strip()  # --chown=..., --from=... flags
+        try:
+            parts = json.loads(args) if args.startswith("[") else shlex.split(args)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        sources = parts[:-1]
+        for src in sources:
+            top = src.lstrip("./").split("/", 1)[0]
+            if top and top not in ("*", "."):
+                names.add(top)
+    return names
 
 
 def _instruction(meta: dict) -> str | None:
@@ -148,8 +171,12 @@ def convert_task(task_dir: Path, out_root: Path, commit: str = TB1_CORE_COMMIT) 
     if out.exists():
         shutil.rmtree(out)
     (out / "environment").mkdir(parents=True)
+    # Verifier files stay out of the build context, unless the upstream Dockerfile COPYs them itself
+    # (e.g. blind-maze-explorer-5x5: COPY ./tests /app/tests). Then they go in, as upstream built it, and it is noted.
+    wanted = dockerfile_sources(task_dir / "Dockerfile")
+    extras = sorted(n for n in _SKIP_IN_CONTEXT & wanted if (task_dir / n).exists())
     for item in task_dir.iterdir():
-        if item.name in _SKIP_IN_CONTEXT:
+        if item.name in _SKIP_IN_CONTEXT and item.name not in extras:
             continue
         dest = out / "environment" / item.name
         shutil.copytree(item, dest) if item.is_dir() else shutil.copy2(item, dest)
@@ -159,8 +186,10 @@ def convert_task(task_dir: Path, out_root: Path, commit: str = TB1_CORE_COMMIT) 
     (out / "solution").mkdir()
     (out / "solution" / "solve.sh").write_text(solve, encoding="utf-8")
     (out / "instruction.md").write_text(instruction.rstrip() + "\n", encoding="utf-8")
-    (out / "task.toml").write_text(task_toml(task, meta, commit), encoding="utf-8")
-    return Converted(task, True, [], str(out))
+    note = (f"# openbench: the upstream Dockerfile COPYs verifier files into the image ({', '.join(extras)}), so they are in "
+            "the build context and the agent can see them, as upstream.\n" if extras else "")
+    (out / "task.toml").write_text(note + task_toml(task, meta, commit), encoding="utf-8")
+    return Converted(task, True, [], str(out), extras)
 
 
 def core_ids(registry_path: Path, version: str = "0.1.1") -> list[str]:
@@ -184,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     results = [convert_task(args.src / task, args.out, args.commit) for task in core_ids(args.registry, args.version)]
-    report = [{"task": r.task, "ok": r.ok, "reasons": r.reasons} for r in results]
+    report = [{"task": r.task, "ok": r.ok, "reasons": r.reasons, "context_extras": r.context_extras} for r in results]
     (args.out / "convert-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"converted": sum(r.ok for r in results), "refused": sum(not r.ok for r in results)}))
     return 0
