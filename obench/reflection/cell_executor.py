@@ -22,6 +22,11 @@ proxy, then the task's checker on the result:
    records. Return the cost (sum of the wire records), thinking tokens
    (usage), flags and served models.
 
+If the last model call ended with finish reason stop, no tool call and no
+text (``wire_proxy.route_truncated``), the trial is ``route_truncated``: an
+infrastructure failure with ``passed: None``, never a task fail. Its trace,
+wire record and checker exit are still saved.
+
 A trace that can't be built makes the trial ``error``. The runner counts it,
 the group's verdict becomes ``incomplete``, and missing traces never pass
 silently.
@@ -47,7 +52,7 @@ from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec
-from obench.reflection.wire_proxy import WireProxy
+from obench.reflection.wire_proxy import WireProxy, route_truncated
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
                    "aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com")
@@ -195,6 +200,14 @@ class CellExecutor:
                                served_models=served, wire=rel(wire_path), error=f"trace_error: {exc}")
         thinking = [r["usage"]["thinking_tokens"] for r in records if isinstance(r["usage"]["thinking_tokens"], int)]
         flags = sorted({r["thinking"]["flag"] for r in records if r["thinking"].get("flag")})
+        truncated = route_truncated(wires)
+        if truncated is not None:
+            (trial_dir / "route_truncated.json").write_text(json.dumps(truncated, sort_keys=True) + "\n")
+            return TrialResult(status="route_truncated", passed=None, checker_exit=checker_exit, steps=len(records),
+                               cost_usd=cost, thinking_tokens=sum(thinking) if thinking else None, thinking_flags=flags,
+                               served_models=served, trace=rel(trial_dir / "trace.jsonl"), wire=rel(wire_path),
+                               error=f"route_truncated: model call {truncated['call_index']} ended "
+                                     f"{truncated['finish_reasons']} with no tool call and no text")
         return TrialResult(status="completed", passed=checker_exit == 0, checker_exit=checker_exit, steps=len(records),
                            cost_usd=cost, thinking_tokens=sum(thinking) if thinking else None, thinking_flags=flags,
                            served_models=served, trace=rel(trial_dir / "trace.jsonl"), wire=rel(wire_path),
