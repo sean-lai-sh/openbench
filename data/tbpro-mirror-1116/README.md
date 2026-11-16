@@ -7,8 +7,12 @@ Nothing was pushed to Artifact Registry.
 ## Source
 - Upstream: `alibaba/terminal-bench-pro` @ `82bc46de337f48d57a5d78f4900ce7eabc485101`
   (the pin used by `obench/taskimport` on `sea-106/import-pipeline`, PR #264).
-- All 201 `*/environment/Dockerfile` files were read from git objects (no checkout)
-  and their `FROM` lines are in `task-froms.csv`.
+- All 201 Dockerfiles under `*/environment/` were read from git objects (no checkout)
+  and their `FROM` lines are in `task-froms.csv`. That is 200 tasks plus one extra:
+  `fix-docker-python-dependency-conflicts` has a second Dockerfile at
+  `environment/docker/Dockerfile`, which is task content (the broken Dockerfile the agent
+  must fix), not a second build environment. Its `FROM` row is listed too, so
+  `task-froms.csv` has two rows for that task; the task counts below count it once.
 
 ## Distinct base images (`mapping.csv` / `mapping.json`)
 | Base ref | Tasks | Pinned in Dockerfile |
