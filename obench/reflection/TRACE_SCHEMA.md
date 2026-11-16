@@ -123,7 +123,7 @@ the request bodies from its raw request capture.
 |---|---|
 | `events_malformed` | A JSON line isn't an OpenCode event, or a part arrives before any `step_start` |
 | `wire_malformed` | A wire record isn't `wire/v1`, or has an unknown `provider_wire` |
-| `step_call_mismatch` | The number of OpenCode steps differs from the number of main wire calls |
+| `step_call_mismatch` | The number of OpenCode steps differs from the number of answered (status 200) main wire calls. Failed calls that OpenCode retried have no step and are not paired. |
 | `request_missing` | A step's wire record has no request body |
 | `thinking_unset` | The request has no explicit thinking setting (standing rule: set thinking on every request). `require_explicit_thinking=False` turns this off, for inspection only. |
 | `usage_missing` | The response had no usage object |

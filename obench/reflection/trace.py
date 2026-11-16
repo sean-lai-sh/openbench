@@ -387,7 +387,10 @@ def build_trace(events: list[dict], wire_records: list[dict], *, run: dict | Non
     pin = load_pin()
     steps = opencode_steps(events)
     wires = [_check_wire(r, i) for i, r in enumerate(wire_records, 1)]
-    main = sorted((w for w in wires if w.get("call_role", "main") != "side"), key=lambda w: w.get("call_index", 0))
+    # A main call that failed (4xx/5xx) produced no OpenCode step: OpenCode's client retried it. Only answered
+    # calls pair with steps; failed ones stay in wire.jsonl (classify_4xx / retried_4xx).
+    main = sorted((w for w in wires if w.get("call_role", "main") != "side" and w.get("status", 200) == 200),
+                  key=lambda w: w.get("call_index", 0))
     if len(main) != len(steps):
         raise TraceError("step_call_mismatch",
                          f"{len(steps)} OpenCode steps but {len(main)} main wire calls")
