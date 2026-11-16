@@ -183,6 +183,51 @@ class Tables(Base):
         self.assertEqual(json.loads((self.dir / "verdicts.json").read_text())["models"][OPUS]["image_matches_pin_false"],
                          ["extract-elf"])
 
+    def test_workers_give_the_same_results_and_swaps_as_one_at_a_time(self):
+        import time
+        passes = {("sanitize-git-repo", OPUS): 3, ("extract-elf", OPUS): 1, ("sanitize-git-repo", OSS): 0}
+
+        class Slow(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                time.sleep(0.01 * (spec.trial_index % 3))   # finish out of order
+                return super().run_trial(spec, run_dir)
+        outcomes = []
+        for workers in (1, 4):
+            d = Path(tempfile.mkdtemp())
+            rn.Runner(config(max_rounds=2), d, Slow(dict(passes)), workers=workers).run()
+            rows = sorted((r["trial_id"], r["status"], r["passed"]) for r in rn.read_rows(d / "trials.jsonl"))
+            swaps = {m: json.loads((d / "swaps" / f"{m}.json").read_text())["swaps"] for m in (OPUS, OSS)}
+            outcomes.append((rows, swaps, json.loads((d / "verdicts.json").read_text())["models"]))
+        self.assertEqual(outcomes[0], outcomes[1])
+        self.assertTrue(outcomes[0][1][OPUS])  # sanitize-git-repo passed 3/3 for Opus and was swapped
+
+    def test_cap_counts_running_trials(self):
+        rn.Runner(config(models=[OPUS], tasks=["extract-elf"], n_trials=3, spend_cap_usd=0.025), self.dir,
+                  rn.FixtureExecutor({}, cost_per_trial=0.01), workers=3).run()
+        self.assertEqual(len(rn.read_rows(self.dir / "trials.jsonl")), 2)  # a 3rd would pass the cap with 2 running
+
+    def test_prompt_blocked_policies(self):
+        class Blocked(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.task == "extract-elf":
+                    return rn.TrialResult(status="prompt_blocked", passed=None, cost_usd=0.0,
+                                          prompt_blocked={"blockReason": "SAFETY"})
+                return super().run_trial(spec, run_dir)
+        got = {}
+        for policy in ("exclude", "fail", "swap"):
+            d = Path(tempfile.mkdtemp())
+            rn.Runner(config(models=[OPUS], prompt_blocked_policy=policy, max_rounds=2), d,
+                      Blocked({("sanitize-git-repo", OPUS): 1}), workers=2).run()
+            s = {r["task"]: r for r in rn.read_rows(d / "summary.jsonl")}["extract-elf"]
+            v = json.loads((d / "verdicts.json").read_text())["models"][OPUS]
+            got[policy] = (s["verdict"], s["prompt_blocked"], s["errors"], s["prompt_block_reasons"],
+                           "extract-elf" in v["current_suite"])
+        self.assertEqual(got["exclude"], ("excluded", 3, 0, ["SAFETY"], True))
+        self.assertEqual(got["fail"], ("fail", 3, 0, ["SAFETY"], True))
+        self.assertEqual(got["swap"], ("excluded", 3, 0, ["SAFETY"], False))  # replaced from the pool
+        with self.assertRaisesRegex(rn.RunnerError, "prompt_blocked_policy"):
+            config(prompt_blocked_policy="ignore")
+
     def test_suite_label_rules(self):
         with self.assertRaisesRegex(rn.RunnerError, "unknown suite_label"):
             config(suite_label="pilot-ish")
