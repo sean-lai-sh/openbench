@@ -277,6 +277,13 @@ class Failures(unittest.TestCase):
     def test_step_and_call_counts_must_pair(self):
         self.assert_code("step_call_mismatch", opencode_stream(), anthropic_wires()[:3])
 
+    def test_failed_calls_retried_by_opencode_are_not_paired(self):
+        wires = anthropic_wires()
+        failed = dict(wires[0], status=429, response_usage=None, call_index=0)
+        records = tr.build_trace(opencode_stream(), [failed, *wires])
+        self.assertEqual(len(records), len([w for w in wires if w.get("call_role", "main") != "side"]))
+        self.assert_code("step_call_mismatch", opencode_stream(), [failed, *anthropic_wires()[:3]])
+
     def test_missing_request_and_bad_wire(self):
         wires = anthropic_wires()
         wires[0]["request"] = None
