@@ -43,7 +43,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `model`, `vertex_id` | string | The reflection model and its Vertex ID |
 | `trial_index` | int | 0..n_trials-1 |
 | `patch_id` | string\|null | Null for baseline rows |
-| `status` | string | `completed`, `error`, `timeout`, `route_truncated` or `upstream_4xx` (a model call came back 4xx: bad request, auth, quota/429, wrong route). An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text. Both it and `upstream_4xx` are infrastructure failures, not task fails. Every status other than `completed` has `passed: null` and counts in `errors`, so the cell stays `incomplete` until it has N completed trials. |
+| `status` | string | `completed`, `error`, `timeout`, `route_truncated` or `upstream_4xx` (a main call came back 4xx and no main call after it succeeded: the 4xx ended or broke the trial; `wire_proxy.classify_4xx`). A 4xx that OpenCode retried and recovered from does not change the status; it is counted in `retried_4xx`. An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text. Both it and `upstream_4xx` are infrastructure failures, not task fails. Every status other than `completed` has `passed: null` and counts in `errors`, so the cell stays `incomplete` until it has N completed trials. |
 | `passed` | bool\|null | Checker verdict; null unless `completed` |
 | `checker_exit`, `steps` | int\|null | |
 | `cost_usd` | number\|null | From the wire records (`vertex_models.cost_usd`) |
@@ -54,6 +54,9 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `route_counts` | object\|null | `{model_calls, tool_call_turns, route_repairs}` from the trial's wire records (`wire_proxy.route_repair_counts`): main calls answered, those that handed OpenCode a tool call, and those whose tool call the proxy rebuilt from gpt-oss text (`route_repair`). `null` when the executor produced no wire counts. |
 | `suite_label` | string\|null | The run's label (`RunConfig.suite_label`), e.g. `repo pilot suite`. Each label fixes the allowed suites; `repo pilot suite` allows `pilot` only and refuses tasks imported by `obench.taskimport` (their `task.toml` has `docker_image_id_at_import`). Never pool rows with different labels. |
 | `code_commit`, `code_branch`, `code_dirty` | string\|bool\|null | The checkout the runner ran from (`git rev-parse HEAD`, branch, uncommitted changes) |
+| `retried_4xx` | object | 4xx calls the trial recovered from, by status code (e.g. `{"429": 2}`), plus side-call 4xx: a covariate, not a failure |
+| `image_ref`, `image_id` | string\|null | The image ref the agent container ran and its local image id (`docker image inspect .Id`) |
+| `image_matches_pin` | bool\|null | `true` when the task's pinned ref or `docker_image_id` ran; `false` when `--use-image-tag` ran `docker_image_tag` instead (the 4 tb-mid tasks); `null` when the task pins nothing (checker or default image) |
 | `thinking_setting` | object\|null | The exact thinking setting the proxy sent on this trial's requests (`VertexModel.thinking_sent`, e.g. Opus `{"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "high"}}`) |
 | `thinking_tokens_per_step` | array\|null | `usage.thinking_tokens` for each trace step, in order (`null` entries where usage reported none) |
 | `trace`, `wire`, `trial_dir` | string\|null | Relative pointers |
@@ -67,6 +70,8 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `task`, `model`, `patch_id` | The group |
 | `planned`, `trials`, `completed`, `passes`, `fails`, `errors` | Counts |
 | `route_truncated`, `upstream_4xx` | How many of `errors` were `route_truncated` / `upstream_4xx` trials |
+| `retried_4xx` | Sum of the trials' `retried_4xx` by status code |
+| `image_ids`, `image_matches_pin` | Every image id the group ran; `false` if any trial ran an image that doesn't match its pin, `true` if all matched, `null` if no pin. `verdicts.json` lists such tasks per model as `image_matches_pin_false`. |
 | `suite_label`, `code_commits` | The run label, and every commit the group's trials ran from |
 | `model_calls`, `tool_call_turns`, `route_repairs` | Sums of the trials' `route_counts`. Always 0 repairs for Carbon and Opus, which are never rewritten. |
 | `route_repair_share` | `route_repairs / tool_call_turns`: the share of gpt-oss's tool calls that exist only because of our parser (`null` with no tool calls) |

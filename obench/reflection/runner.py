@@ -47,7 +47,8 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # route_truncated: the model route ended the turn with finish "stop", no tool
 # call and no text (wire_proxy.route_truncated). An infrastructure failure, like
 # error and timeout: it never counts as a task fail.
-# upstream_4xx: a model call came back 4xx (bad request, auth, quota, wrong route). Also infrastructure.
+# upstream_4xx: a 4xx ended or broke the trial (no successful main call after it; wire_proxy.classify_4xx).
+# Also infrastructure. A 4xx that OpenCode retried and recovered from is not: it is the retried_4xx covariate.
 STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx")
 # Run labels that fix which task population a run may use, so runs with different populations are never pooled.
 # "repo pilot suite": the repo's pilot suite and pool only; tasks imported by obench.taskimport (their task.toml
@@ -87,7 +88,9 @@ class TrialResult:
     served_models: list = field(default_factory=list)
     thinking_setting: dict | None = None      # the exact thinking setting sent (vertex_models.thinking_sent)
     thinking_tokens_per_step: list | None = None  # usage thinking tokens per trace step (None where not reported)
-    route_counts: dict | None = None          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
+    route_counts: dict | None = None
+    retried_4xx: dict | None = None           # {"429": n, ...}: 4xx calls OpenCode recovered from (covariate)
+    image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
@@ -210,6 +213,22 @@ def _is_imported(task) -> bool:
         return False
     import tomllib
     return "docker_image_id_at_import" in tomllib.loads(toml.read_text(encoding="utf-8"))
+
+
+def _sum_counts(dicts) -> dict:
+    out: dict = {}
+    for d in dicts:
+        for k, v in (d or {}).items():
+            out[k] = out.get(k, 0) + int(v)
+    return dict(sorted(out.items()))
+
+
+def _all_or_none(values) -> bool | None:
+    """False if any trial ran an image that doesn't match its pin; True if all matched; None if no pin known."""
+    values = list(values)
+    if any(v is False for v in values):
+        return False
+    return True if values and all(v is True for v in values) else None
 
 
 def read_rows(path: Path) -> list[dict]:
@@ -358,6 +377,9 @@ class Runner:
                "wrong_model_served": wrong, "route_counts": result.route_counts,
                "suite_label": self.config.suite_label, "code_commit": self.code["commit"],
                "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
+               "retried_4xx": result.retried_4xx or {},
+               "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
+               "image_matches_pin": (result.image or {}).get("matches_pin"),
                "thinking_setting": result.thinking_setting, "thinking_tokens_per_step": result.thinking_tokens_per_step, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
                "started_at": started, "finished_at": _now(), "error": result.error}
         _append(self.trials_path, row)
@@ -385,6 +407,9 @@ class Runner:
                 "errors": sum(1 for t in trials if t["status"] != "completed"),
                 "route_truncated": sum(1 for t in trials if t["status"] == "route_truncated"),
                 "upstream_4xx": sum(1 for t in trials if t["status"] == "upstream_4xx"),
+                "retried_4xx": _sum_counts(t.get("retried_4xx") for t in trials),
+                "image_ids": sorted({str(t.get("image_id")) for t in trials}),
+                "image_matches_pin": _all_or_none(t.get("image_matches_pin") for t in trials),
                 "suite_label": self.config.suite_label,
                 "code_commits": sorted({str(t.get("code_commit")) for t in trials}),
                 "pass_rate": round(passes / len(completed), 4) if completed else None,
@@ -403,6 +428,11 @@ class Runner:
         os.replace(tmp, self.summary_path)
         return summaries
 
+    def rebuild_tables(self) -> dict:
+        """Recompute summary.jsonl and verdicts.json from trials.jsonl (after an offline reclassification)."""
+        cutoff = pass_cutoff()
+        return self.write_verdicts(self.write_summary(cutoff), cutoff)
+
     def write_verdicts(self, summaries: list[dict], cutoff: float) -> dict:
         verdicts = {"cutoff": cutoff, "suite_label": self.config.suite_label, "code": self.code, "models": {}}
         for model in self.config.models:
@@ -412,6 +442,8 @@ class Runner:
                 "fail": sorted(s["task"] for s in mine if s["verdict"] == "fail"),
                 "incomplete": sorted(s["task"] for s in mine if s["verdict"] == "incomplete"),
                 "current_suite": swap.current_tasks(self._swap_state(model)),
+                # tasks that ran an image other than the pinned one (--use-image-tag): label, never mix silently
+                "image_matches_pin_false": sorted(s["task"] for s in mine if s.get("image_matches_pin") is False),
             }
         _write_json(self.run_dir / "verdicts.json", verdicts)
         return verdicts
