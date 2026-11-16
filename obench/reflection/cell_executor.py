@@ -27,6 +27,11 @@ text (``wire_proxy.route_truncated``), the trial is ``route_truncated``: an
 infrastructure failure with ``passed: None``, never a task fail. Its trace,
 wire record and checker exit are still saved.
 
+A prompt the provider blocked (Gemini ``promptFeedback.blockReason``, HTTP 200
+with no candidates) ends the trial at once: the proxy stops the container and
+refuses OpenCode's retries, and the trial is ``prompt_blocked``. How it scores
+is the run's ``prompt_blocked_policy``.
+
 A 4xx that ended or broke the trial (a main call came back 4xx and no main
 call after it succeeded; ``wire_proxy.classify_4xx``) makes the trial
 ``upstream_4xx``: also an infrastructure failure with ``passed: None``. A 4xx
@@ -80,7 +85,7 @@ from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec, code_commit
-from obench.reflection.wire_proxy import WireProxy, classify_4xx, route_repair_counts, route_truncated
+from obench.reflection.wire_proxy import WireProxy, classify_4xx, prompt_blocked, route_repair_counts, route_truncated
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
                    "aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com")
@@ -128,6 +133,9 @@ class TrialDocker:
             raise CellError(f"task image {ref} is not on this host: {out.stderr.strip()}")
         return out.stdout.strip()
 
+    def kill(self, name: str) -> None:
+        subprocess.run(["docker", "kill", name], capture_output=True, timeout=60)
+
     def run_agent(self, args: list[str], stdout_path: Path, timeout: int) -> tuple[int | None, bool]:
         """``(exit code, timed_out)``. stdout goes to ``stdout_path``."""
         name = args[args.index("--name") + 1]
@@ -162,6 +170,8 @@ class CellExecutor:
         self.opencode = Path(self.opencode)
         self.pin = oc.verify_binary(self.opencode)
         self.code = code_commit()  # recorded by the executor itself on every trial (cell.json)
+        import threading
+        self._record_lock = threading.Lock()  # trials of one cell may finish together (runner --workers)
         # The cache root (…/opencode-src) is mounted at its own path: wrapper builds exec absolute paths in it.
         self.mount_root = self.opencode.parents[2]
 
@@ -268,8 +278,11 @@ class CellExecutor:
         wire_path.unlink(missing_ok=True)
         network = self.agent_network(task)
         host = self.proxy_host or (self.docker.offline_gateway() if network == "offline" else self.docker.bridge_gateway())
+        # A blocked prompt (Gemini promptFeedback.blockReason) ends the trial at once: the proxy refuses OpenCode's
+        # retries and the container is stopped, instead of looping until the agent timeout.
         proxy = WireProxy(self.project, wire_path, self.token, host=host, upstream_host=self.upstream_host,
-                          patch=spec.patch, patch_id=spec.patch_id)
+                          patch=spec.patch, patch_id=spec.patch_id,
+                          on_prompt_blocked=lambda info: self.docker.kill(f"obench-reflect-{spec.trial_id}"))
         try:
             args = self.docker_args(spec, task, workspace, model, proxy.base_url, instruction, network)
             code, timed_out = self.docker.run_agent(args, events_path, task["agent_timeout"])
@@ -288,10 +301,15 @@ class CellExecutor:
     def record(self, spec: TrialSpec, run_dir: Path, result: TrialResult) -> TrialResult:
         """The executor's own record of the outcome and covariates, independent of the runner: added to the
         trial's ``cell.json``, then summed over the cell's trials into ``<model>/<task>/cell_counters.json``."""
+        with self._record_lock:
+            return self._record(spec, run_dir, result)
+
+    def _record(self, spec: TrialSpec, run_dir: Path, result: TrialResult) -> TrialResult:
         trial_dir = Path(run_dir) / spec.trial_dir
         path = trial_dir / "cell.json"
         cell = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         cell.update({"status": result.status, "passed": result.passed, "retried_4xx": result.retried_4xx or {},
+                     "prompt_blocked": result.prompt_blocked,
                      "thinking_tokens_status": result.thinking_tokens_status, "code": cell.get("code") or self.code})
         path.write_text(json.dumps(cell, sort_keys=True) + "\n", encoding="utf-8")
         trials = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(trial_dir.parent.glob("*/cell.json"))]
@@ -346,8 +364,14 @@ class CellExecutor:
         cost = round(sum(c for c in costs if c is not None), 6) if costs and all(c is not None for c in costs) else (
             None if costs else 0.0)
         fours = classify_4xx(wires)
+        blocked = prompt_blocked(wires)
         common = dict(cost_usd=cost, served_models=served, route_counts=counts, thinking_setting=thinking_setting,
                       retried_4xx=fours["retried"], image=image, wire=rel(wire_path))
+        if blocked is not None:  # the provider refused the prompt: its own outcome, scored by the run's policy
+            (trial_dir / "prompt_blocked.json").write_text(json.dumps(blocked, sort_keys=True) + "\n")
+            return TrialResult(status="prompt_blocked", passed=None, prompt_blocked=blocked, **common,
+                               error=f"prompt blocked: {blocked.get('blockReason')}"
+                                     + (" (inferred from empty responses)" if blocked.get("inferred") else ""))
         if fours["breaking"]:  # a 4xx ended or broke the trial: infrastructure, never a task fail
             (trial_dir / "upstream_4xx.json").write_text(json.dumps(fours, sort_keys=True) + "\n")
             return TrialResult(status="upstream_4xx", passed=None, **common,

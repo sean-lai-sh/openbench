@@ -11,6 +11,10 @@ what's needed:
   checker runs on the trial's saved workspace (the agent's final state; it was
   never graded) and the trace is built. The new status is ``completed``, or
   ``route_truncated`` / ``error`` / ``timeout``.
+- Trials whose prompt the provider blocked (Gemini ``promptFeedback``; pilot-1
+  Carbon trials that looped on empty answers until the agent timeout) become
+  ``prompt_blocked``. Records from before the field existed are recognised when
+  every answered main call came back empty (``inferred: true``).
 - Every row gets the new covariate and image fields: ``retried_4xx``,
   ``image_ref``, ``image_id``, ``image_matches_pin``.
 
@@ -41,7 +45,7 @@ from pathlib import Path
 from obench.hardsuite.suite import resolve
 from obench.reflection import trace as tr
 from obench.reflection.runner import RunConfig, Runner, TrialSpec, code_commit, read_rows
-from obench.reflection.wire_proxy import classify_4xx
+from obench.reflection.wire_proxy import classify_4xx, prompt_blocked
 
 FINAL_REASONS = ("stop", "end_turn", "length", "max_tokens")
 
@@ -79,9 +83,18 @@ def reclassify(run_dir: Path, executor, apply: bool = False, suites_dir: Path | 
                          trial_index=row["trial_index"], patch_id=row["patch_id"], patch=config.patch,
                          trial_dir=row["trial_dir"])
         new = dict(row)
-        fours = classify_4xx(_wires(trial_dir))
+        wires = _wires(trial_dir)
+        fours = classify_4xx(wires)
+        blocked = prompt_blocked(wires)
+        if blocked is not None and row["status"] != "prompt_blocked" and (trial_dir / "cell.json").exists():
+            # e.g. pilot-1 Carbon trials that looped on a blocked prompt until the agent timeout
+            result = executor.record(spec, run_dir, executor.finish_trial(spec, run_dir))
+            new.update({"status": result.status, "passed": None, "prompt_blocked": result.prompt_blocked,
+                        "error": result.error, "reclassified": {"from": row["status"], "at": now, "code_commit": commit}})
+            changes.append({"trial_id": row["trial_id"], "task": row["task"], "model": row["model"],
+                            "from": row["status"], "to": result.status, "prompt_blocked": result.prompt_blocked})
         task = executor.resolve_image(executor._task(spec), spec.task) if not (trial_dir / "cell.json").exists() else None
-        if row["status"] == "upstream_4xx" and not fours["breaking"]:
+        if blocked is None and row["status"] == "upstream_4xx" and not fours["breaking"]:
             if not (trial_dir / "cell.json").exists():
                 if not _finished_by_itself(trial_dir):
                     new["reclassified"] = {"from": row["status"], "at": now, "code_commit": commit, "note": "unknown_timeout"}

@@ -39,6 +39,9 @@ class FakeTrialDocker:
     def has_image(self, ref):
         return ref not in self.absent
 
+    def kill(self, name):
+        self.killed = getattr(self, "killed", []) + [name]
+
     def bridge_gateway(self):
         self.gateways = getattr(self, "gateways", []) + ["bridge"]
         return "127.0.0.1"
@@ -344,6 +347,45 @@ class Trial(CellCase):
         counters = json.loads((cell_dir / "cell_counters.json").read_text())
         self.assertEqual((counters["route_repairs"], counters["model_errors"]), (2, {"unknown_tool": 1}))
 
+    def blocked_carbon_trial(self, index):
+        from obench.tests.test_reflection_vertex import PromptBlocked
+        self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + PromptBlocked.BLOCKED + b"\n\n")
+
+        class Looping(FakeTrialDocker):  # OpenCode retrying an empty answer every few seconds
+            def run_agent(inner, args, stdout_path, timeout):
+                inner.calls.append(args)
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                body = {"contents": [{"role": "user", "parts": [{"text": "design primers"}]}],
+                        "tools": [{"functionDeclarations": [{"name": "bash"}]}]}
+                for attempt in range(50):
+                    try:
+                        urllib.request.urlopen(urllib.request.Request(
+                            base + "/models/gemini-4-carbon:streamGenerateContent?alt=sse", data=json.dumps(body).encode(),
+                            method="POST", headers={"Content-Type": "application/json"}), timeout=10).read()
+                    except urllib.error.HTTPError:
+                        break  # refused by the proxy; the real container is being killed at this point
+                    if getattr(inner, "killed", None):
+                        break
+                Path(stdout_path).write_text("")
+                return 137, False
+        docker = Looping()
+        spec = rn.TrialSpec(run_id="r", trial_id=f"carbon{index}", task="t1", tasks_dir=str(self.tasks),
+                            model="gemini-4-carbon", trial_index=index, patch_id=None, patch=None,
+                            trial_dir=f"trials/gemini-4-carbon/t1/carbon{index}")
+        return docker, spec, self.executor(docker).run_trial(spec, self.tmp / "run")
+
+    def test_blocked_prompt_ends_the_trial_at_once(self):
+        docker, spec, result = self.blocked_carbon_trial(0)
+        self.assertEqual((result.status, result.passed), ("prompt_blocked", None))
+        self.assertEqual((result.prompt_blocked["blockReason"], result.prompt_blocked["calls_blocked"]), ("SAFETY", 1))
+        self.assertEqual(docker.killed, [f"obench-reflect-{spec.trial_id}"])
+        self.assertEqual(len(self.vertex.seen), 1)  # never looped upstream
+        trial_dir = self.tmp / "run" / spec.trial_dir
+        self.assertEqual(json.loads((trial_dir / "prompt_blocked.json").read_text())["blockReason"], "SAFETY")
+        counters = json.loads((trial_dir.parent / "cell_counters.json").read_text())
+        self.assertEqual(counters["status"], {"prompt_blocked": 1})
+
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
         make_task(self.tasks, "bare", toml=False)
@@ -383,7 +425,7 @@ class WithRunner(CellCase):
             make_task(self.tasks, "t2")
             cfg = rn.RunConfig.from_dict({"run_id": "cellrun", "suite": "mini", "models": [OPUS], "n_trials": 2,
                                           "max_rounds": 1})
-            runner = rn.Runner(cfg, self.tmp / "run", self.executor(), suites_dir=suites)
+            runner = rn.Runner(cfg, self.tmp / "run", self.executor(), suites_dir=suites, workers=2)  # parallel containers
             self.assertEqual(runner.preflight()["round_one_usd"], 4.0)  # 2 trials x the provisional $2 Opus estimate
             status = runner.run()
         self.assertEqual(status["state"], "done")
@@ -392,6 +434,8 @@ class WithRunner(CellCase):
         self.assertTrue(all(r["thinking_tokens"] == 240 and r["served_models"] == [OPUS] for r in rows))
         summary = rn.read_rows(self.tmp / "run" / "summary.jsonl")[0]
         self.assertEqual((summary["passes"], summary["verdict"]), (2, "pass"))
+        counters = json.loads((self.tmp / "run" / "trials" / OPUS / "t1" / "cell_counters.json").read_text())
+        self.assertEqual((counters["trials"], counters["status"]), (2, {"completed": 2}))  # both recorded under the lock
 
 
     def test_old_upstream_4xx_trials_are_reclassified_offline(self):
@@ -459,6 +503,54 @@ class WithRunner(CellCase):
         self.assertTrue(all(r["image_id"].startswith("sha256:") for r in rows))
         self.assertEqual(rn.read_rows(run_dir / "summary.jsonl")[0]["verdict"], "pass")
         self.assertEqual(len(list(run_dir.glob("trials.pre-reclassify-*.jsonl"))), 1)
+
+
+    def test_pilot1_blocked_timeouts_are_reclassified(self):
+        """pilot-1: Carbon looped on blocked prompts until the 30-min timeout. Those rows become prompt_blocked
+        offline (inferred from all-empty answers), with no model calls."""
+        from obench.reflection import reclassify as rc
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+        suites = self.tmp / "suites"
+        suites.mkdir()
+        task = '[[task]]\nid = "{id}"\nsource = "openbench-tb-hard"\nfrontier_rate = {r}\ndomain = "d"\nwhy = "w"\n'
+        (suites / "mini.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini"\npool = "mini-pool"\n'
+                                          + task.format(id="t1", r=0.5))
+        (suites / "mini-pool.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini-pool"\n'
+                                               + task.format(id="t2", r=0.1))
+        run_dir = self.tmp / "run"
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            cfg = rn.RunConfig.from_dict({"run_id": "pilot1", "suite": "mini", "models": ["gemini-4-carbon"],
+                                          "n_trials": 1, "max_rounds": 1})
+            Trial.blocked_carbon_trial(self, 0)   # writes the trial dir the way the new code does
+            spec_dir = run_dir / "trials" / "gemini-4-carbon" / "t1"
+            tid = rn.trial_id("pilot1", "t1", "gemini-4-carbon", None, 0)
+            (spec_dir / "carbon0").rename(spec_dir / tid)
+            # make it look like pilot-1 wrote it: no prompt_blocked field, the same empty answer 3 times, a timeout
+            wire = spec_dir / tid / "wire.jsonl"
+            first = {k: v for k, v in json.loads(wire.read_text().splitlines()[0]).items() if k != "prompt_blocked"}
+            wire.write_text("".join(json.dumps(dict(first, call_index=i)) + "\n" for i in (1, 2, 3)))
+            (spec_dir / tid / "prompt_blocked.json").unlink()
+            cell = json.loads((spec_dir / tid / "cell.json").read_text())
+            (spec_dir / tid / "cell.json").write_text(json.dumps(dict(cell, timed_out=True)))
+            row = {"schema": rn.TRIAL_SCHEMA, "run_id": "pilot1", "trial_id": tid, "task": "t1", "bench": "b",
+                   "bench_commit": "c", "model": "gemini-4-carbon", "vertex_id": "gemini-4-carbon", "trial_index": 0,
+                   "patch_id": None, "status": "timeout", "passed": None, "trial_dir": f"trials/gemini-4-carbon/t1/{tid}",
+                   "cost_usd": 0.0}
+            run_dir.mkdir(exist_ok=True)
+            (run_dir / "trials.jsonl").write_text(json.dumps(row) + "\n")
+            (run_dir / "plan.json").write_text(json.dumps({"config": json.loads(json.dumps(rn.asdict(cfg)))}))
+            seen = len(self.vertex.seen)
+            report = rc.reclassify(run_dir, self.executor(), apply=True, suites_dir=suites)
+        self.assertEqual(len(self.vertex.seen), seen)
+        self.assertEqual([(c["from"], c["to"]) for c in report["changed"]], [("timeout", "prompt_blocked")])
+        new = rn.read_rows(run_dir / "trials.jsonl")[0]
+        self.assertEqual((new["status"], new["prompt_blocked"]["inferred"], new["prompt_blocked"]["calls_blocked"]),
+                         ("prompt_blocked", True, 3))
+        summary = rn.read_rows(run_dir / "summary.jsonl")[0]
+        self.assertEqual((summary["verdict"], summary["prompt_blocked"], summary["errors"]), ("excluded", 1, 0))
 
 
 if __name__ == "__main__":
