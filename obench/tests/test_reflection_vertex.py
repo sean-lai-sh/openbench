@@ -182,9 +182,25 @@ class AnthropicRoute(ProxyCase):
         self.assertEqual((rec["call_role"], rec["upstream_model"], rec["route"]), ("main", "claude-opus-5-5", "claude-opus-5-5"))
         self.assertEqual(rec["response_usage"]["output_tokens_details"], {"thinking_tokens": 120})
         self.assertEqual(rec["thinking_enforced"], {"setting": {"type": "adaptive", "display": "summarized"}, "client": None,
-                                                    "effort": None, "removed": ["temperature"]})
+                                                    "client_effort": None, "effort": "high", "removed": ["temperature"]})
+        self.assertEqual(seen["body"]["output_config"], {"effort": "high"})
         self.assertGreater(rec["cost_usd"], 0)
         self.assertLessEqual(set(rec), Registry_documented_wire())
+
+    def test_opus_effort_overrides_the_client_and_smoke_requires_it(self):
+        body = {"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "output_config": {"effort": "low"},
+                "messages": [{"role": "user", "content": "go"}]}
+        self.post("/m/claude-opus-5-5/v1/messages", body)
+        (rec,) = self.records()
+        self.assertEqual((rec["request"]["output_config"], rec["thinking_enforced"]["client_effort"]), ({"effort": "high"}, "low"))
+        model = vm.resolve("claude-opus-5-5")
+        cmd = ["opencode", "--model", vm.opencode_model_arg(model)]
+        ok = smoke.checks(model, cmd, [rec], None, None, {"sha": "x"})["thinking_explicit"]
+        self.assertTrue(ok["pass"])
+        self.assertEqual(ok["setting"], {"thinking": {"type": "adaptive", "display": "summarized"},
+                                         "output_config": {"effort": "high"}})
+        stale = dict(rec, request={k: v for k, v in rec["request"].items() if k != "output_config"})
+        self.assertFalse(smoke.checks(model, cmd, [stale], None, None, {"sha": "x"})["thinking_explicit"]["pass"])
 
     def test_wrong_model_is_refused_without_an_upstream_call(self):
         status, payload = self.post("/m/claude-opus-5-5/v1/messages", {"model": "claude-sonnet-5-5", "messages": []})
@@ -520,7 +536,9 @@ class RouteRepairInProxy(ProxyCase):
         self.assertEqual(rec["upstream_response_summary"]["tool_calls"], 0)
         self.assertEqual(rec["response_usage"]["completion_tokens"], 30)
         self.assertIsNone(route_truncated([rec]))
-        from obench.reflection.wire_proxy import route_repair_counts
+        from obench.reflection.wire_proxy import route_repair_counts, upstream_4xx
+        self.assertEqual(upstream_4xx([rec, {"call_index": 7, "status": 429, "call_role": "main"}, {"status": 500}]),
+                         [{"call_index": 7, "status": 429, "call_role": "main"}])
         side = {"call_role": "side", "status": 200, "route_repair": {"applied": True}}
         self.assertEqual(route_repair_counts([rec, side, {"status": 500}]),
                          {"model_calls": 1, "tool_call_turns": 1, "route_repairs": 1})
