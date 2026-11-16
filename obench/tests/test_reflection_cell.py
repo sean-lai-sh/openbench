@@ -143,7 +143,7 @@ class Trial(CellCase):
         self.assertEqual(args[args.index("--model") + 1], "vertex-claude-opus-5-5/claude-opus-5-5")
         cell = json.loads((run_dir / result.trace).with_name("cell.json").read_text())
         self.assertEqual((cell["image"], cell["image_source"]), ("task-img:pinned", "task.toml"))
-        self.assertEqual(self.vertex.seen[0]["body"]["thinking"], {"type": "adaptive"})
+        self.assertEqual(self.vertex.seen[0]["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
 
     def test_ideation_patch_reaches_the_model_request(self):
         patch = {"schema": PATCH_SCHEMA, "ops": [{"op": "system_append", "text": "Always run the tests."}]}
