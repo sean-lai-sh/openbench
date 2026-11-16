@@ -103,6 +103,8 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `response_summary` | object\|null | no | Diagnostic counts of what the model returned: `finish_reasons`, `tool_calls`, `text_chars`, `reasoning_chars`. OpenAI-chat (gpt-oss) adds `harmony_markers_in_text` (tool calls left as raw harmony text instead of `tool_calls`) and `text_head` (the first 160 characters of visible text). |
 | `client_disconnected` | bool | no | The client hung up mid-response. The proxy kept reading upstream, so usage and the summary are complete. |
 | `response_bytes` | int | no | Bytes received from upstream |
+| `route_repair` | object\|null | no | gpt-oss only: `{applied, tool, method (harmony_recipient\|schema_match), source (reasoning\|content), original_finish_reason}` when the proxy rebuilt a tool call the Vertex route left as text (`gptoss_repair.py`). `response_summary` then describes what OpenCode received, and `upstream_response_summary` what Vertex sent. |
+| `upstream_response_summary` | object\|null | no | The summary of the unrepaired upstream response, when a repair was applied |
 | `error` | string | no | Transport error when the upstream was unreachable |
 | `usage_error` | string | no | `TraceError` code when the response usage could not be normalized |
 
