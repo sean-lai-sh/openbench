@@ -297,6 +297,13 @@ class Trial(CellCase):
         result = self.executor(docker).run_trial(self.spec(index=31), self.tmp / "run")
         self.assertEqual(result.retried_4xx, {"429": 1})
         self.assertEqual((result.status, result.passed, result.steps), ("completed", True, 2))
+        trial_dir = self.tmp / "run" / self.spec(index=31).trial_dir
+        cell = json.loads((trial_dir / "cell.json").read_text())
+        self.assertEqual((cell["retried_4xx"], cell["status"]), ({"429": 1}, "completed"))
+        self.assertRegex(cell["code"]["commit"], r"^[0-9a-f]{40}$")
+        self.assertEqual(cell["thinking_tokens_status"], {"reported": 2})
+        counters = json.loads((trial_dir.parent / "cell_counters.json").read_text())
+        self.assertEqual((counters["retried_4xx"], counters["status"]["completed"]), ({"429": 1}, 1))
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)

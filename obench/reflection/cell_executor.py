@@ -76,7 +76,7 @@ from typing import Callable
 from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
-from obench.reflection.runner import TrialResult, TrialSpec
+from obench.reflection.runner import TrialResult, TrialSpec, code_commit
 from obench.reflection.wire_proxy import WireProxy, classify_4xx, route_repair_counts, route_truncated
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
@@ -158,6 +158,7 @@ class CellExecutor:
     def __post_init__(self):
         self.opencode = Path(self.opencode)
         self.pin = oc.verify_binary(self.opencode)
+        self.code = code_commit()  # recorded by the executor itself on every trial (cell.json)
         # The cache root (…/opencode-src) is mounted at its own path: wrapper builds exec absolute paths in it.
         self.mount_root = self.opencode.parents[2]
 
@@ -278,8 +279,28 @@ class CellExecutor:
             "agent_network": network, "image_pin": task["image_pin"],
             "solution_needs_network": task["solution_needs_network"],
             "network_unflagged": task["solution_needs_network"] is None,
-            "opencode_sha": self.pin["sha"]}, sort_keys=True) + "\n")
-        return self.finish_trial(spec, run_dir, task)
+            "opencode_sha": self.pin["sha"], "code": self.code}, sort_keys=True) + "\n")
+        return self.record(spec, run_dir, self.finish_trial(spec, run_dir, task))
+
+    def record(self, spec: TrialSpec, run_dir: Path, result: TrialResult) -> TrialResult:
+        """The executor's own record of the outcome and covariates, independent of the runner: added to the
+        trial's ``cell.json``, then summed over the cell's trials into ``<model>/<task>/cell_counters.json``."""
+        trial_dir = Path(run_dir) / spec.trial_dir
+        path = trial_dir / "cell.json"
+        cell = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        cell.update({"status": result.status, "passed": result.passed, "retried_4xx": result.retried_4xx or {},
+                     "thinking_tokens_status": result.thinking_tokens_status, "code": cell.get("code") or self.code})
+        path.write_text(json.dumps(cell, sort_keys=True) + "\n", encoding="utf-8")
+        trials = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(trial_dir.parent.glob("*/cell.json"))]
+        add = lambda key: {k: sum(int((t.get(key) or {}).get(k, 0)) for t in trials)
+                           for k in sorted({k for t in trials for k in (t.get(key) or {})})}
+        counters = {"task": spec.task, "model": spec.model, "patch_id": spec.patch_id, "trials": len(trials),
+                    "status": {s: sum(1 for t in trials if t.get("status") == s) for s in sorted({str(t.get("status")) for t in trials})},
+                    "retried_4xx": add("retried_4xx"), "thinking_tokens_status": add("thinking_tokens_status"),
+                    "code_commits": sorted({str((t.get("code") or {}).get("commit")) for t in trials})}
+        (trial_dir.parent / "cell_counters.json").write_text(json.dumps(counters, indent=1, sort_keys=True) + "\n",
+                                                             encoding="utf-8")
+        return result
 
     def finish_trial(self, spec: TrialSpec, run_dir: Path, task: dict | None = None,
                      run_checker: bool = True) -> TrialResult:
@@ -332,7 +353,9 @@ class CellExecutor:
         thinking = [r["usage"]["thinking_tokens"] for r in records if isinstance(r["usage"]["thinking_tokens"], int)]
         per_step = [r["usage"]["thinking_tokens"] if isinstance(r["usage"]["thinking_tokens"], int) else None for r in records]
         flags = sorted({r["thinking"]["flag"] for r in records if r["thinking"].get("flag")})
+        statuses = [r["usage"].get("thinking_tokens_status", "reported") for r in records]
         done = dict(common, checker_exit=checker_exit, steps=len(records), thinking_tokens=sum(thinking) if thinking else None,
+                    thinking_tokens_status={k: statuses.count(k) for k in sorted(set(statuses))},
                     thinking_flags=flags, thinking_tokens_per_step=per_step, trace=rel(trial_dir / "trace.jsonl"))
         truncated = route_truncated(wires)
         if truncated is not None:

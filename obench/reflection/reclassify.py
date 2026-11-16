@@ -94,7 +94,7 @@ def reclassify(run_dir: Path, executor, apply: bool = False, suites_dir: Path | 
                     "image_record": executor.image_record(task), "workdir": task["workdir"], "opencode_exit": None,
                     "timed_out": False, "reconstructed_by": "reclassify", "reconstructed_at": now},
                     sort_keys=True) + "\n")
-            result = executor.finish_trial(spec, run_dir)
+            result = executor.record(spec, run_dir, executor.finish_trial(spec, run_dir))
             new.update({"status": result.status, "passed": result.passed if result.status == "completed" else None,
                         "checker_exit": result.checker_exit, "steps": result.steps,
                         "thinking_tokens": result.thinking_tokens, "thinking_flags": sorted(set(result.thinking_flags)),
