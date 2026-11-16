@@ -128,6 +128,8 @@ class Trial(CellCase):
         result = self.executor(docker).run_trial(self.spec(), run_dir)
         self.assertEqual((result.status, result.passed, result.checker_exit, result.steps), ("completed", True, 0, 2))
         self.assertEqual(result.served_models, [OPUS])
+        self.assertEqual(result.route_counts["model_calls"], 2)
+        self.assertEqual(result.route_counts["route_repairs"], 0)  # Opus is never rewritten
         self.assertEqual(result.thinking_tokens, 240)  # 120 per call, from response usage
         self.assertGreater(result.cost_usd, 0)
         self.assertTrue((run_dir / result.trace).is_file())
