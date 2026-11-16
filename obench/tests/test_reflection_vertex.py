@@ -483,6 +483,10 @@ class RouteRepairInProxy(ProxyCase):
         self.assertEqual(rec["upstream_response_summary"]["tool_calls"], 0)
         self.assertEqual(rec["response_usage"]["completion_tokens"], 30)
         self.assertIsNone(route_truncated([rec]))
+        from obench.reflection.wire_proxy import route_repair_counts
+        side = {"call_role": "side", "status": 200, "route_repair": {"applied": True}}
+        self.assertEqual(route_repair_counts([rec, side, {"status": 500}]),
+                         {"model_calls": 1, "tool_call_turns": 1, "route_repairs": 1})
 
     def test_unrepairable_stop_is_route_truncated(self):
         from obench.reflection.wire_proxy import route_truncated

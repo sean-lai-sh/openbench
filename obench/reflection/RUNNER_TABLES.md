@@ -51,6 +51,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `thinking_tokens` | int\|null | Sum of `usage.thinking_tokens` (response usage) over steps |
 | `thinking_flags` | array | E.g. `reported_zero_text_present` (gpt-oss) |
 | `served_models`, `wrong_model_served` | array | Models the provider served. Any not matching `vertex_id` lands in `wrong_model_served`. |
+| `route_counts` | object\|null | `{model_calls, tool_call_turns, route_repairs}` from the trial's wire records (`wire_proxy.route_repair_counts`): main calls answered, those that handed OpenCode a tool call, and those whose tool call the proxy rebuilt from gpt-oss text (`route_repair`). `null` when the executor produced no wire counts. |
 | `trace`, `wire`, `trial_dir` | string\|null | Relative pointers |
 | `started_at`, `finished_at` | string | ISO-8601 UTC |
 | `error` | string\|null | |
@@ -62,6 +63,10 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `task`, `model`, `patch_id` | The group |
 | `planned`, `trials`, `completed`, `passes`, `fails`, `errors` | Counts |
 | `route_truncated` | How many of `errors` were `route_truncated` trials |
+| `model_calls`, `tool_call_turns`, `route_repairs` | Sums of the trials' `route_counts`. Always 0 repairs for Carbon and Opus, which are never rewritten. |
+| `route_repair_share` | `route_repairs / tool_call_turns`: the share of gpt-oss's tool calls that exist only because of our parser (`null` with no tool calls) |
+| `trials_with_route_repair`, `passes_with_route_repair` | Trials with at least one repair, and how many of those passed: the passes that depend on the parser |
+| `trials_without_route_counts` | Trials with no wire counts (crashes), left out of the sums |
 | `pass_rate` | `passes / completed` |
 | `cutoff`, `verdict` | `pass` iff `completed == planned` and `passes / completed >= cutoff` (exact; 27/30 at 0.90). `incomplete` when fewer than `planned` trials completed. |
 | `spend_usd`, `spend_complete` | Sum of trial costs. `spend_complete` is false if any trial had no cost. |

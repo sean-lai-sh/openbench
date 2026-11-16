@@ -128,6 +128,21 @@ class Tables(Base):
         self.assertEqual((s["completed"], s["fails"], s["errors"], s["route_truncated"], s["verdict"]),
                          (2, 2, 1, 1, "incomplete"))
 
+    def test_route_repair_counts_per_cell(self):
+        class Repaired(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                res = super().run_trial(spec, run_dir)
+                if spec.trial_index < 2:
+                    res.route_counts = {"model_calls": 5, "tool_call_turns": 4, "route_repairs": spec.trial_index + 1}
+                return res
+        self.run_with(Repaired({("extract-elf", OSS): 3}), models=[OSS], tasks=["extract-elf"], max_rounds=1)
+        rows = rn.read_rows(self.dir / "trials.jsonl")
+        self.assertEqual(rows[0]["route_counts"]["route_repairs"], 1)
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        self.assertEqual((s["model_calls"], s["tool_call_turns"], s["route_repairs"], s["route_repair_share"]), (10, 8, 3, 0.375))
+        self.assertEqual((s["trials_with_route_repair"], s["passes_with_route_repair"], s["trials_without_route_counts"]),
+                         (2, 2, 1))
+
     def test_model_subset_runs_only_those_models(self):
         self.run_with(rn.FixtureExecutor({}), models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1)
         self.assertEqual({r["model"] for r in rn.read_rows(self.dir / "trials.jsonl")}, {CARBON, OPUS})
