@@ -90,6 +90,14 @@ class MethodA(unittest.TestCase):
         self.assertEqual(on_disk, rows)
         self.assertEqual(ca.run_method_a(run), rows)  # idempotent
 
+    def test_provider_blocked_cells_never_go_to_credit_assignment(self):
+        run = self.make_run()
+        rows = [json.loads(l) for l in (run / "trials.jsonl").read_text().splitlines()]
+        rows.append({"run_id": "r", "trial_id": "t9", "task": "t", "model": "claude-opus-5-5", "patch_id": None,
+                     "status": "provider_blocked", "passed": None, "trace": None})
+        (run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in rows))
+        self.assertEqual(ca.run_method_a(run), [])  # the whole cell is out, its completed failures too
+
     def test_documented_fields_match_rows(self):
         import re
         doc = Path(ca.__file__).with_name("CREDIT_ASSIGNMENT.md").read_text()
