@@ -17,7 +17,7 @@ the override recorded.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 VERTEX_HOST = "https://aiplatform.googleapis.com"
 FORBIDDEN_SUBSTRINGS = ("sonnet", "qwen")
@@ -139,10 +139,20 @@ def served_matches(model: VertexModel, served) -> bool:
 # Models whose usage thinking-token count can't be compared with the others'.
 # gpt-oss on Vertex reports 0 even when it returns reasoning text, so its
 # thinking is evidenced by the text (chars, optional counted tokens) instead.
-THINKING_TOKENS_FROM_TEXT = {"gpt-oss-120b": count_o200k_harmony}
+# "gpt-oss at medium" (Researcher, 2026-11-16): the same Vertex model at reasoning_effort medium with standard tool
+# calling and NO text parser. Opt-in only: name it in a run's models list. It is its own model key, so its rows are
+# reported separately ("gpt-oss at medium") and never pooled with gpt-oss at high. The default gpt-oss entry stays
+# at effort high (Sean's decision) until Sean approves a switch.
+MODELS["gpt-oss-120b-medium"] = replace(
+    MODELS["gpt-oss-120b"], key="gpt-oss-120b-medium", display="gpt-oss 120B at medium",
+    thinking={"reasoning_effort": "medium"}, repair_text_tool_calls=False, upstream_stream=None,
+    notes=("Effort medium, standard tool calling, no Harmony text parser. The 2026-11-16 diagnostic returned a real "
+           "tool call only at medium (non-stream); confirm stream and repeatability with gptoss_diag --repeat 3.",))
+
+THINKING_TOKENS_FROM_TEXT = {"gpt-oss-120b": count_o200k_harmony, "gpt-oss-120b-medium": count_o200k_harmony}
 
 # Body model sent upstream for the OpenAI-compatible endpoint (publisher/model).
-OPENAI_BODY_MODEL = {"gpt-oss-120b": "openai/gpt-oss-120b-maas"}
+OPENAI_BODY_MODEL = {"gpt-oss-120b": "openai/gpt-oss-120b-maas", "gpt-oss-120b-medium": "openai/gpt-oss-120b-maas"}
 
 
 def resolve(name: str) -> VertexModel:
