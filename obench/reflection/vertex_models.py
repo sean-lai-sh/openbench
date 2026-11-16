@@ -44,6 +44,18 @@ class VertexModel:
     opencode_model: str      # model id in OpenCode's config / --model
     notes: tuple = field(default_factory=tuple)
     repair_text_tool_calls: bool = False   # gptoss_repair: rebuild tool calls the route leaves as text
+    effort: str | None = None  # anthropic: output_config.effort the proxy sends on every request (overrides the client)
+
+    def thinking_sent(self) -> dict:
+        """The exact thinking setting the proxy puts on every request (recorded on each trial)."""
+        if self.wire == "anthropic":
+            out = {"thinking": dict(self.thinking)}
+            if self.effort:
+                out["output_config"] = {"effort": self.effort}
+            return out
+        if self.wire == "openai_chat":
+            return dict(self.thinking)
+        return {"generationConfig": {"thinkingConfig": dict(self.thinking)}}
 
     def upstream_url(self, project: str, stream: bool) -> str:
         base = f"{VERTEX_HOST}/v1/projects/{project}/locations/{self.location}"
@@ -76,8 +88,10 @@ MODELS = {
         location="global", wire="anthropic", client_ids=("claude-opus-5-5",),
         # display: the API default on Opus 5.5 is "omitted" (thinking blocks stream with empty text). "summarized"
         # changes visibility only, not how the model thinks or what is billed; the raw chain of thought is never
-        # returned on any platform. Effort is left to the client (Opus 5.5 default: medium), recorded per call.
+        # returned on any platform. Thinking can't be disabled on Opus 5.5; effort is its depth control and
+        # defaults to medium, so the proxy sends effort "high" on every request (matches Carbon thinkingLevel HIGH).
         thinking={"type": "adaptive", "display": "summarized"},
+        effort="high",
         prices={"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0},
         price_verified=True, price_source="thesis/ab/vertex_list_prices.json (Standard, global, read 2026-10-29)",
         opencode_npm="@ai-sdk/anthropic", opencode_model="claude-opus-5-5",
