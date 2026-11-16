@@ -27,6 +27,11 @@ text (``wire_proxy.route_truncated``), the trial is ``route_truncated``: an
 infrastructure failure with ``passed: None``, never a task fail. Its trace,
 wire record and checker exit are still saved.
 
+Any model call that came back 4xx (``wire_proxy.upstream_4xx``) makes the
+trial ``upstream_4xx``: also an infrastructure failure with ``passed: None``.
+Every result carries the exact thinking setting sent (configured and as seen
+on the wire) and the usage thinking tokens per step.
+
 A trace that can't be built makes the trial ``error``. The runner counts it,
 the group's verdict becomes ``incomplete``, and missing traces never pass
 silently.
@@ -67,7 +72,7 @@ from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec
-from obench.reflection.wire_proxy import WireProxy, route_repair_counts, route_truncated
+from obench.reflection.wire_proxy import WireProxy, route_repair_counts, route_truncated, upstream_4xx
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
                    "aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com")
@@ -256,11 +261,21 @@ class CellExecutor:
             if wire_path.exists() else []
         served = sorted({w.get("upstream_model") for w in wires if w.get("upstream_model")})
         counts = route_repair_counts(wires)
+        sent = {json.dumps(tr.thinking_setting(w["provider_wire"], w["request"]), sort_keys=True)
+                for w in wires if isinstance(w.get("request"), dict) and w.get("provider_wire")}
+        thinking_setting = {"configured": model.thinking_sent(), "sent": [json.loads(x) for x in sorted(sent)]}
         costs = [w.get("cost_usd") for w in wires]
         cost = round(sum(c for c in costs if c is not None), 6) if costs and all(c is not None for c in costs) else (
             None if costs else 0.0)
+        failed_calls = upstream_4xx(wires)
+        if failed_calls:  # infrastructure, never a task fail
+            (trial_dir / "upstream_4xx.json").write_text(json.dumps(failed_calls, sort_keys=True) + "\n")
+            return TrialResult(status="upstream_4xx", passed=None, cost_usd=cost, served_models=served,
+                               route_counts=counts, thinking_setting=thinking_setting, wire=rel(wire_path),
+                               error="upstream 4xx: " + ", ".join(f"call {c['call_index']} -> {c['status']}"
+                                                                  for c in failed_calls))
         if timed_out:
-            return TrialResult(status="timeout", passed=None, cost_usd=cost, served_models=served, route_counts=counts,
+            return TrialResult(status="timeout", passed=None, cost_usd=cost, served_models=served, route_counts=counts, thinking_setting=thinking_setting,
                                wire=rel(wire_path), error=f"agent timed out after {task['agent_timeout']}s")
         (trial_dir / "cell.json").write_text(json.dumps({"image": task["image"], "image_source": task["image_source"],
                                                          "workdir": task["workdir"], "opencode_exit": code,
@@ -278,20 +293,21 @@ class CellExecutor:
             tr.write_trace(trial_dir / "trace.jsonl", records)
         except tr.TraceError as exc:
             return TrialResult(status="error", passed=None, checker_exit=checker_exit, cost_usd=cost,
-                               served_models=served, route_counts=counts, wire=rel(wire_path), error=f"trace_error: {exc}")
+                               served_models=served, route_counts=counts, thinking_setting=thinking_setting, wire=rel(wire_path), error=f"trace_error: {exc}")
         thinking = [r["usage"]["thinking_tokens"] for r in records if isinstance(r["usage"]["thinking_tokens"], int)]
+        per_step = [r["usage"]["thinking_tokens"] if isinstance(r["usage"]["thinking_tokens"], int) else None for r in records]
         flags = sorted({r["thinking"]["flag"] for r in records if r["thinking"].get("flag")})
         truncated = route_truncated(wires)
         if truncated is not None:
             (trial_dir / "route_truncated.json").write_text(json.dumps(truncated, sort_keys=True) + "\n")
             return TrialResult(status="route_truncated", passed=None, checker_exit=checker_exit, steps=len(records),
-                               cost_usd=cost, thinking_tokens=sum(thinking) if thinking else None, thinking_flags=flags,
-                               served_models=served, route_counts=counts, trace=rel(trial_dir / "trace.jsonl"), wire=rel(wire_path),
+                               cost_usd=cost, thinking_tokens=sum(thinking) if thinking else None, thinking_flags=flags, thinking_tokens_per_step=per_step,
+                               served_models=served, route_counts=counts, thinking_setting=thinking_setting, trace=rel(trial_dir / "trace.jsonl"), wire=rel(wire_path),
                                error=f"route_truncated: model call {truncated['call_index']} ended "
                                      f"{truncated['finish_reasons']} with no tool call and no text")
         return TrialResult(status="completed", passed=checker_exit == 0, checker_exit=checker_exit, steps=len(records),
-                           cost_usd=cost, thinking_tokens=sum(thinking) if thinking else None, thinking_flags=flags,
-                           served_models=served, route_counts=counts, trace=rel(trial_dir / "trace.jsonl"), wire=rel(wire_path),
+                           cost_usd=cost, thinking_tokens=sum(thinking) if thinking else None, thinking_flags=flags, thinking_tokens_per_step=per_step,
+                           served_models=served, route_counts=counts, thinking_setting=thinking_setting, trace=rel(trial_dir / "trace.jsonl"), wire=rel(wire_path),
                            error=None if code == 0 else f"opencode exited {code}")
 
     def _check(self, task: dict, workspace: Path) -> int:

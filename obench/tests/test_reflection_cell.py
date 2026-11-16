@@ -14,6 +14,7 @@ import stat
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -64,8 +65,11 @@ class FakeTrialDocker:
                     "messages": [{"role": "user", "content": "go"}]}
             req = urllib.request.Request(base + "/messages", data=json.dumps(body).encode(), method="POST",
                                          headers={"Content-Type": "application/json", "x-api-key": "openbench-proxy"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                resp.read()
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp.read()
+            except urllib.error.HTTPError:
+                pass  # OpenCode sees the error; the wire record keeps the status
             msg = f"m{n}"
             events += [{"type": "step_start", "timestamp": n * 10, "sessionID": "s", "part": {"messageID": msg, "type": "step-start"}},
                        {"type": "text", "timestamp": n * 10 + 1, "sessionID": "s",
@@ -134,6 +138,11 @@ class Trial(CellCase):
         self.assertEqual(result.route_counts["model_calls"], 2)
         self.assertEqual(result.route_counts["route_repairs"], 0)  # Opus is never rewritten
         self.assertEqual(result.thinking_tokens, 240)  # 120 per call, from response usage
+        self.assertEqual(result.thinking_tokens_per_step, [120, 120])
+        opus_sent = {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "high"}}
+        self.assertEqual(result.thinking_setting["configured"], opus_sent)
+        self.assertEqual(result.thinking_setting["sent"], [{"explicit": True, "field": "thinking", "effort": "high",
+                                                            "value": opus_sent["thinking"]}])
         self.assertGreater(result.cost_usd, 0)
         self.assertTrue((run_dir / result.trace).is_file())
         self.assertFalse(result.trace.startswith("/"))
@@ -234,6 +243,21 @@ class Trial(CellCase):
         with self.assertRaisesRegex(ce.CellError, "not on this host either"):
             self.executor(FakeTrialDocker(absent={digest, "openbench-tb2-x:pinned"}), use_image_tag=True).run_trial(
                 self.spec(task="mid", index=22), self.tmp / "run")
+
+    def test_4xx_is_an_infra_failure(self):
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            if len(calls) == 2:
+                return 429, "application/json", b'{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}'
+            from obench.tests.test_reflection_vertex import default_reply
+            return default_reply(path)
+        self.vertex.reply = reply
+        result = self.executor().run_trial(self.spec(index=30), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("upstream_4xx", None))
+        self.assertIn("-> 429", result.error)
+        self.assertEqual(result.thinking_setting["configured"]["output_config"], {"effort": "high"})
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
