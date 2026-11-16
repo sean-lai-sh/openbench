@@ -47,7 +47,12 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # route_truncated: the model route ended the turn with finish "stop", no tool
 # call and no text (wire_proxy.route_truncated). An infrastructure failure, like
 # error and timeout: it never counts as a task fail.
-STATUSES = ("completed", "error", "timeout", "route_truncated")
+# upstream_4xx: a model call came back 4xx (bad request, auth, quota, wrong route). Also infrastructure.
+STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx")
+# Run labels that fix which task population a run may use, so runs with different populations are never pooled.
+# "repo pilot suite": the repo's pilot suite and pool only; tasks imported by obench.taskimport (their task.toml
+# records docker_image_id_at_import) are refused.
+SUITE_LABELS = {"repo pilot suite": {"suites": ("pilot",), "imported_tasks": False}}
 
 
 class RunnerError(Exception):
@@ -80,6 +85,8 @@ class TrialResult:
     thinking_tokens: int | None = None        # sum of usage.thinking_tokens over steps
     thinking_flags: list = field(default_factory=list)
     served_models: list = field(default_factory=list)
+    thinking_setting: dict | None = None      # the exact thinking setting sent (vertex_models.thinking_sent)
+    thinking_tokens_per_step: list | None = None  # usage thinking tokens per trace step (None where not reported)
     route_counts: dict | None = None          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
@@ -107,6 +114,7 @@ class RunConfig:
     patch: dict | None = None
     tasks: tuple | None = None           # restrict to these suite tasks (ideation, dry runs)
     fixed_tasks: bool = False            # run exactly ``tasks`` (suite or pool), never swap: ideation arms
+    suite_label: str | None = None       # SUITE_LABELS key; on every row; a run directory never mixes labels
 
     @classmethod
     def load(cls, path: Path) -> "RunConfig":
@@ -142,6 +150,22 @@ class RunConfig:
             raise RunnerError("max_rounds must be >= 1")
         if (self.patch is None) != (self.patch_id is None):
             raise RunnerError("patch and patch_id go together")
+        if self.suite_label is not None:
+            rule = SUITE_LABELS.get(self.suite_label)
+            if rule is None:
+                raise RunnerError(f"unknown suite_label {self.suite_label!r}; known: {sorted(SUITE_LABELS)}")
+            if self.suite not in rule["suites"]:
+                raise RunnerError(f"suite_label {self.suite_label!r} allows suites {rule['suites']}, not {self.suite!r}")
+
+
+def code_commit(root: Path | None = None) -> dict:
+    """The checkout the runner runs from: commit, branch, and whether it has uncommitted changes."""
+    import subprocess
+    root = root or Path(__file__).resolve().parents[2]
+    git = lambda *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, timeout=30)
+    head, branch, dirty = git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD"), git("status", "--porcelain")
+    return {"commit": head.stdout.strip() or None, "branch": branch.stdout.strip() or None,
+            "dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None}
 
 
 def trial_id(run_id: str, task: str, model: str, patch_id: str | None, index: int) -> str:
@@ -180,6 +204,14 @@ def _route_repair_summary(trials: list[dict]) -> dict:
             "trials_without_route_counts": len(trials) - len(counted)}
 
 
+def _is_imported(task) -> bool:
+    toml = Path(resolve(task)[0]) / task.id / "task.toml"
+    if not toml.is_file():
+        return False
+    import tomllib
+    return "docker_image_id_at_import" in tomllib.loads(toml.read_text(encoding="utf-8"))
+
+
 def read_rows(path: Path) -> list[dict]:
     if not Path(path).exists():
         return []
@@ -197,6 +229,11 @@ class Runner:
             raise RunnerError(f"suite {config.suite!r} names no harder pool")
         self.pool: Suite = load_suite(self.suite.pool, **kwargs)
         self.known = {t.id: t for t in (*self.suite.tasks, *self.pool.tasks)}
+        if config.suite_label and not SUITE_LABELS[config.suite_label]["imported_tasks"]:
+            imported = sorted(t.id for t in self.known.values() if _is_imported(t))
+            if imported:
+                raise RunnerError(f"suite_label {config.suite_label!r} excludes imported tasks: {imported}")
+        self.code = code_commit()
         if config.tasks:
             allowed = set(self.known) if config.fixed else set(self.suite.ids())
             missing = sorted(set(config.tasks) - allowed)
@@ -256,7 +293,14 @@ class Runner:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         (self.run_dir / "swaps").mkdir(exist_ok=True)
         cutoff = pass_cutoff()
-        _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff,
+        previous = self.run_dir / "plan.json"
+        if previous.exists():  # resuming: never pool a different population into this directory
+            old = json.loads(previous.read_text(encoding="utf-8")).get("config") or {}
+            for key in ("suite", "suite_label", "models", "patch_id", "n_trials"):
+                was, now = old.get(key), asdict(self.config).get(key)
+                if (list(was) if isinstance(was, (list, tuple)) else was) != (list(now) if isinstance(now, (list, tuple)) else now):
+                    raise RunnerError(f"{self.run_dir} was started with {key}={was!r}, not {now!r}: use a new run directory")
+        _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff, "code": self.code,
                                                  "preflight": self.preflight(), "written_at": _now()})
         states = {m: self._swap_state(m) for m in self.config.models}
         done = {r["trial_id"] for r in read_rows(self.trials_path)}
@@ -311,7 +355,10 @@ class Runner:
                "checker_exit": result.checker_exit, "steps": result.steps, "cost_usd": result.cost_usd,
                "price_verified": model.price_verified, "thinking_tokens": result.thinking_tokens,
                "thinking_flags": sorted(set(result.thinking_flags)), "served_models": sorted(set(result.served_models)),
-               "wrong_model_served": wrong, "route_counts": result.route_counts, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
+               "wrong_model_served": wrong, "route_counts": result.route_counts,
+               "suite_label": self.config.suite_label, "code_commit": self.code["commit"],
+               "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
+               "thinking_setting": result.thinking_setting, "thinking_tokens_per_step": result.thinking_tokens_per_step, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
                "started_at": started, "finished_at": _now(), "error": result.error}
         _append(self.trials_path, row)
 
@@ -337,6 +384,9 @@ class Runner:
                 "passes": passes, "fails": len(completed) - passes,
                 "errors": sum(1 for t in trials if t["status"] != "completed"),
                 "route_truncated": sum(1 for t in trials if t["status"] == "route_truncated"),
+                "upstream_4xx": sum(1 for t in trials if t["status"] == "upstream_4xx"),
+                "suite_label": self.config.suite_label,
+                "code_commits": sorted({str(t.get("code_commit")) for t in trials}),
                 "pass_rate": round(passes / len(completed), 4) if completed else None,
                 "cutoff": cutoff, "verdict": verdict,
                 "spend_usd": round(sum(c for c in costs if c is not None), 6),
@@ -354,7 +404,7 @@ class Runner:
         return summaries
 
     def write_verdicts(self, summaries: list[dict], cutoff: float) -> dict:
-        verdicts = {"cutoff": cutoff, "models": {}}
+        verdicts = {"cutoff": cutoff, "suite_label": self.config.suite_label, "code": self.code, "models": {}}
         for model in self.config.models:
             mine = [s for s in summaries if s["model"] == model and s["patch_id"] == self.config.patch_id]
             verdicts["models"][model] = {

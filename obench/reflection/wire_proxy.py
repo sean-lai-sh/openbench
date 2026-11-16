@@ -56,8 +56,11 @@ def prepare_request(model: vm.VertexModel, client_path: str, body: dict) -> tupl
         sent.pop("stream", None) if not stream else None
         sent["anthropic_version"] = ANTHROPIC_VERSION
         record["client"] = body.get("thinking")
-        record["effort"] = (sent.get("output_config") or {}).get("effort")  # None = the model default (medium)
+        record["client_effort"] = (sent.get("output_config") or {}).get("effort")
         sent["thinking"] = dict(model.thinking)
+        if model.effort:  # explicit on every request; whatever the client asked for is recorded above
+            sent["output_config"] = dict(sent.get("output_config") or {}, effort=model.effort)
+        record["effort"] = (sent.get("output_config") or {}).get("effort")
         removed = [k for k in _ANTHROPIC_THINKING_CONFLICTS if sent.pop(k, None) is not None]
         if removed:
             record["removed"] = removed
@@ -144,6 +147,13 @@ def route_truncated(wire_records: list[dict]) -> dict | None:
         return {"call_index": last.get("call_index"), "finish_reasons": finishes,
                 "reasoning_chars": summary.get("reasoning_chars"), "route_repair": last.get("route_repair")}
     return None
+
+
+def upstream_4xx(wire_records: list[dict]) -> list[dict]:
+    """Model calls (main or side) that came back 4xx: an infrastructure failure for the trial (bad request, auth,
+    quota/429, wrong route), never a task fail."""
+    return [{"call_index": w.get("call_index"), "status": w.get("status"), "call_role": w.get("call_role")}
+            for w in wire_records if isinstance(w.get("status"), int) and 400 <= w["status"] < 500]
 
 
 def route_repair_counts(wire_records: list[dict]) -> dict:

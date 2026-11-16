@@ -12,7 +12,8 @@ requires:
    record's served model is it (``upstream_model``);
 2. ``traced``: every main call became a trace step, and the call and step
    counts match;
-3. ``thinking_explicit``: every request carried the explicit setting;
+3. ``thinking_explicit``: every request carried the explicit setting, and
+   for Opus 5.5 also ``output_config.effort = "high"``;
 4. ``usage_thinking``: every main call's usage reported a thinking-token
    count (Carbon: thinking is a summary/omitted/none kind, tokens still
    from usage). gpt-oss passes on "reported 0, text present" (flagged
@@ -82,8 +83,9 @@ def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: li
     main = [w for w in wires if w.get("call_role") != "side"]
     served = sorted({str(w.get("upstream_model")) for w in wires})
     arg = cmd[cmd.index("--model") + 1] if "--model" in cmd else None
-    thinking = [tr.thinking_setting(w["provider_wire"], w["request"])["explicit"] for w in wires
-                if isinstance(w.get("request"), dict)]
+    settings = [tr.thinking_setting(w["provider_wire"], w["request"]) for w in wires if isinstance(w.get("request"), dict)]
+    # Explicit means the thinking field AND, where the model has one, the explicit effort (Opus 5.5: high).
+    thinking = [s["explicit"] and (model.effort is None or s.get("effort") == model.effort) for s in settings]
     costs = [w.get("cost_usd") for w in wires]
     return {
         "model": {"command_model": arg, "served": served,
@@ -92,8 +94,9 @@ def checks(model: vm.VertexModel, cmd: list[str], wires: list[dict], records: li
         "traced": {"wire_calls": len(wires), "main_calls": len(main), "steps": len(records or []),
                    "trace_error": trace_error,
                    "pass": records is not None and len(records) == len(main) > 0},
-        "thinking_explicit": {"requests": len(thinking), "explicit": sum(thinking),
-                              "setting": model.thinking, "pass": bool(thinking) and all(thinking)},
+        "thinking_explicit": {"requests": len(thinking), "explicit": sum(thinking), "setting": model.thinking_sent(),
+                              "efforts_sent": sorted({str(s.get("effort")) for s in settings}),
+                              "pass": bool(thinking) and all(thinking)},
         "usage_thinking": usage_thinking(model, records),
         "cost": {"per_call": costs, "total_usd": round(sum(c for c in costs if c is not None), 6) if costs else None,
                  "bases": sorted({b for w in wires for b in (w.get("cost_basis") or [])}),

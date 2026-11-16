@@ -143,6 +143,37 @@ class Tables(Base):
         self.assertEqual((s["trials_with_route_repair"], s["passes_with_route_repair"], s["trials_without_route_counts"]),
                          (2, 2, 1))
 
+    def test_upstream_4xx_label_commit_and_thinking_fields(self):
+        setting = {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}
+
+        class Mixed(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.trial_index == 0:
+                    return rn.TrialResult(status="upstream_4xx", passed=None, error="model call 3 returned 429")
+                res = super().run_trial(spec, run_dir)
+                res.thinking_setting, res.thinking_tokens_per_step = setting, [120, None]
+                return res
+        self.run_with(Mixed({}), models=[OPUS], tasks=["extract-elf"], max_rounds=1, suite_label="repo pilot suite")
+        rows = rn.read_rows(self.dir / "trials.jsonl")
+        self.assertEqual((rows[0]["status"], rows[0]["passed"]), ("upstream_4xx", None))
+        self.assertEqual((rows[1]["thinking_setting"], rows[1]["thinking_tokens_per_step"]), (setting, [120, None]))
+        self.assertTrue(all(r["suite_label"] == "repo pilot suite" and re.fullmatch(r"[0-9a-f]{40}", r["code_commit"])
+                            for r in rows))
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        self.assertEqual((s["upstream_4xx"], s["errors"], s["verdict"], s["suite_label"]), (1, 1, "incomplete", "repo pilot suite"))
+        self.assertEqual(json.loads((self.dir / "verdicts.json").read_text())["suite_label"], "repo pilot suite")
+        with self.assertRaisesRegex(rn.RunnerError, "suite_label"):  # never pooled into the same directory
+            self.run_with(Mixed({}), models=[OPUS], tasks=["extract-elf"], max_rounds=1, suite_label=None)
+
+    def test_suite_label_rules(self):
+        with self.assertRaisesRegex(rn.RunnerError, "unknown suite_label"):
+            config(suite_label="pilot-ish")
+        with self.assertRaisesRegex(rn.RunnerError, "allows suites"):
+            config(suite="pilot-pool", suite_label="repo pilot suite")
+        with patch.object(rn, "_is_imported", lambda task: task.id == "extract-elf"):
+            with self.assertRaisesRegex(rn.RunnerError, "excludes imported tasks: \\['extract-elf'\\]"):
+                rn.Runner(config(suite_label="repo pilot suite"), self.dir, rn.FixtureExecutor({}))
+
     def test_model_subset_runs_only_those_models(self):
         self.run_with(rn.FixtureExecutor({}), models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1)
         self.assertEqual({r["model"] for r in rn.read_rows(self.dir / "trials.jsonl")}, {CARBON, OPUS})
@@ -219,12 +250,12 @@ class Doc(unittest.TestCase):
         row = rn.read_rows(d / "trials.jsonl")[0]
         trial_doc = text.split("## Trial row", 1)[1].split("\n## ", 1)[0]
         documented = {name for line in re.findall(r"^\| ([^|]+) \|", trial_doc, re.M)
-                      for name in re.findall(r"`([a-z_]+)`", line)}
+                      for name in re.findall(r"`([a-z0-9_]+)`", line)}
         self.assertEqual(set(row), documented)
         summary = rn.read_rows(d / "summary.jsonl")[0]
         summary_doc = text.split("## Summary row", 1)[1].split("\n## ", 1)[0]
         documented = {name for line in re.findall(r"^\| ([^|]+) \|", summary_doc, re.M)
-                      for name in re.findall(r"`([a-z_]+)`", line)}
+                      for name in re.findall(r"`([a-z0-9_]+)`", line)}
         self.assertEqual(set(summary) - {"schema", "run_id"}, documented)
 
     def test_cli_dry_run(self):
