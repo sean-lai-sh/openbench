@@ -45,6 +45,7 @@ class VertexModel:
     notes: tuple = field(default_factory=tuple)
     repair_text_tool_calls: bool = False   # gptoss_repair: rebuild tool calls the route leaves as text
     effort: str | None = None  # anthropic: output_config.effort the proxy sends on every request (overrides the client)
+    upstream_stream: bool | None = None  # None: as the client asked; False: call Vertex non-streaming, re-stream to client
 
     def thinking_sent(self) -> dict:
         """The exact thinking setting the proxy puts on every request (recorded on each trial)."""
@@ -106,6 +107,9 @@ MODELS = {
         price_source=("GA announcement rate ($0.15/$0.60); current aggregators list $0.09/$0.36. Confirm on the "
                       "Agent Platform pricing page before any scored run."),
         opencode_npm="@ai-sdk/openai-compatible", opencode_model="gpt-oss-120b-maas", repair_text_tool_calls=True,
+        # 2026-11-16 diagnostic at effort high: streamed responses lose Harmony tool calls entirely; non-stream ones
+        # leak them as text in content, which gptoss_repair recovers. So the route calls Vertex non-streaming.
+        upstream_stream=False,
         notes=("Vertex's model page lists 'Thinking: Not supported', yet the endpoint accepts reasoning_effort and "
                "returns reasoning_content; usage reasoning_tokens has been reported as 0 even at high effort. "
                "Thinking tokens are still read from usage (never estimated from text).",),
