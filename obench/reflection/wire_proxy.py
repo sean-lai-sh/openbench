@@ -126,10 +126,14 @@ def parse_response(model: vm.VertexModel, raw: bytes, stream: bool) -> tuple[dic
     return usage, served
 
 
+HARMONY_MARKERS = ("<|channel|>", "<|call|>", "<|start|>", "<|message|>", "to=functions.", "<|constrain|>")
+
+
 def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
     """What the model returned, in counts: finish reason(s), tool calls, visible text and reasoning characters.
     It's diagnostic only (why a turn ended), and no content is stored."""
     out = {"finish_reasons": [], "tool_calls": 0, "text_chars": 0, "reasoning_chars": 0}
+    text_parts: list[str] = []
     events = list(_sse_payloads(raw)) if stream else []
     if not stream:
         try:
@@ -145,6 +149,7 @@ def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
             for choice in ev.get("choices") or []:
                 part = choice.get("delta") or choice.get("message") or {}
                 out["text_chars"] += len(part.get("content") or "")
+                text_parts.append(part.get("content") or "")
                 out["reasoning_chars"] += len(part.get("reasoning_content") or part.get("reasoning") or "")
                 for call in part.get("tool_calls") or []:
                     tool_ids.add((call.get("index"), call.get("id")) if stream else id(call))
@@ -181,6 +186,10 @@ def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
                     out["finish_reasons"].append(cand["finishReason"])
     if model.wire == "openai_chat":
         out["tool_calls"] = len(tool_ids)
+        text = "".join(text_parts)
+        # gpt-oss: tool calls left as raw harmony text in content (not parsed into tool_calls) end the turn early.
+        out["harmony_markers_in_text"] = any(m in text for m in HARMONY_MARKERS)
+        out["text_head"] = text[:160]
     return out
 
 
