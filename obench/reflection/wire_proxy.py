@@ -149,10 +149,26 @@ def route_truncated(wire_records: list[dict]) -> dict | None:
 
 
 def upstream_4xx(wire_records: list[dict]) -> list[dict]:
-    """Model calls (main or side) that came back 4xx: an infrastructure failure for the trial (bad request, auth,
-    quota/429, wrong route), never a task fail."""
+    """Every model call (main or side) that came back 4xx."""
     return [{"call_index": w.get("call_index"), "status": w.get("status"), "call_role": w.get("call_role")}
             for w in wire_records if isinstance(w.get("status"), int) and 400 <= w["status"] < 500]
+
+
+def classify_4xx(wire_records: list[dict]) -> dict:
+    """Researcher ruling (2026-11-16): a 4xx is an infrastructure failure only if it ended or broke the trial,
+    i.e. a main call came back 4xx and no main call after it succeeded. A 4xx that OpenCode retried and recovered
+    from (a later main call returned 200), or one on a side call (titles), is not: it is counted by status code
+    as a covariate (``retried``). Returns ``{"breaking": [calls], "retried": {"429": n, ...}}``."""
+    order = sorted(wire_records, key=lambda w: w.get("call_index") or 0)
+    last_ok = max((w.get("call_index") or 0 for w in order
+                   if w.get("call_role") != "side" and w.get("status") == 200), default=-1)
+    breaking, retried = [], {}
+    for call in upstream_4xx(order):
+        if call["call_role"] != "side" and (call["call_index"] or 0) > last_ok:
+            breaking.append(call)
+        else:
+            retried[str(call["status"])] = retried.get(str(call["status"]), 0) + 1
+    return {"breaking": breaking, "retried": retried}
 
 
 def route_repair_counts(wire_records: list[dict]) -> dict:
