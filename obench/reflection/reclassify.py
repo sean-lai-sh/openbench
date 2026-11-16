@@ -86,7 +86,7 @@ def reclassify(run_dir: Path, executor, apply: bool = False, suites_dir: Path | 
         wires = _wires(trial_dir)
         fours = classify_4xx(wires)
         blocked = prompt_blocked(wires)
-        if blocked is not None and row["status"] != "prompt_blocked" and (trial_dir / "cell.json").exists():
+        if blocked is not None and row["status"] != "prompt_blocked":  # needs only wire.jsonl (any head)
             # e.g. pilot-1 Carbon trials that looped on a blocked prompt until the agent timeout
             result = executor.record(spec, run_dir, executor.finish_trial(spec, run_dir))
             new.update({"status": result.status, "passed": None, "prompt_blocked": result.prompt_blocked,

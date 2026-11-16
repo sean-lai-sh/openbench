@@ -533,8 +533,7 @@ class WithRunner(CellCase):
             first = {k: v for k, v in json.loads(wire.read_text().splitlines()[0]).items() if k != "prompt_blocked"}
             wire.write_text("".join(json.dumps(dict(first, call_index=i)) + "\n" for i in (1, 2, 3)))
             (spec_dir / tid / "prompt_blocked.json").unlink()
-            cell = json.loads((spec_dir / tid / "cell.json").read_text())
-            (spec_dir / tid / "cell.json").write_text(json.dumps(dict(cell, timed_out=True)))
+            (spec_dir / tid / "cell.json").unlink()  # 954286aa wrote no cell.json for a timed-out trial
             row = {"schema": rn.TRIAL_SCHEMA, "run_id": "pilot1", "trial_id": tid, "task": "t1", "bench": "b",
                    "bench_commit": "c", "model": "gemini-4-carbon", "vertex_id": "gemini-4-carbon", "trial_index": 0,
                    "patch_id": None, "status": "timeout", "passed": None, "trial_dir": f"trials/gemini-4-carbon/t1/{tid}",
