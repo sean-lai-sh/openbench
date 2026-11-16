@@ -88,6 +88,7 @@ class TrialResult:
     served_models: list = field(default_factory=list)
     thinking_setting: dict | None = None      # the exact thinking setting sent (vertex_models.thinking_sent)
     thinking_tokens_per_step: list | None = None  # usage thinking tokens per trace step (None where not reported)
+    thinking_tokens_status: dict | None = None    # {"reported": n, "unreported": m, ...} over steps
     route_counts: dict | None = None
     retried_4xx: dict | None = None           # {"429": n, ...}: 4xx calls OpenCode recovered from (covariate)
     image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
@@ -369,7 +370,8 @@ class Runner:
                "retried_4xx": result.retried_4xx or {},
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
                "image_matches_pin": (result.image or {}).get("matches_pin"),
-               "thinking_setting": result.thinking_setting, "thinking_tokens_per_step": result.thinking_tokens_per_step, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
+               "thinking_setting": result.thinking_setting, "thinking_tokens_per_step": result.thinking_tokens_per_step,
+               "thinking_tokens_status": result.thinking_tokens_status, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
                "started_at": started, "finished_at": _now(), "error": result.error}
         _append(self.trials_path, row)
 
@@ -406,6 +408,7 @@ class Runner:
                 "spend_usd": round(sum(c for c in costs if c is not None), 6),
                 "spend_complete": all(c is not None for c in costs),
                 "thinking_tokens_total": sum(thinking),
+                "thinking_tokens_status": _sum_counts(t.get("thinking_tokens_status") for t in trials),
                 "thinking_tokens_reported_trials": len(thinking),
                 "thinking_flags": sorted({f for t in trials for f in t.get("thinking_flags") or []}),
                 "wrong_model_trials": sum(1 for t in trials if t.get("wrong_model_served")),
