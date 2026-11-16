@@ -102,31 +102,6 @@ def apply_results(state: dict, results: dict[str, tuple[int, int]], suite: Suite
     return new, swaps
 
 
-def replace_tasks(state: dict, tasks: dict[str, str], suite: Suite, pool: Suite) -> tuple[dict, list[dict]]:
-    """Replace tasks for this model for a reason other than passing (``{task: reason}``, e.g. ``prompt_blocked``),
-    with the same pick rule as a pass swap. A task with no eligible replacement keeps its slot and is
-    reported with ``to: None``; nothing is raised, so one blocked task can't stop a run."""
-    known = {t.id: t for t in (*suite.tasks, *pool.tasks)}
-    new = copy.deepcopy(state)
-    taken = {s["task"] for s in new["slots"]} | {r for s in new["slots"] for r in s["retired"]}
-    swaps = []
-    for slot in new["slots"]:
-        reason = tasks.get(slot["task"])
-        if reason is None:
-            continue
-        old = known[slot["task"]]
-        pick = _replacement(old, pool, taken)
-        entry = {"slot": slot["slot"], "from": old.id, "to": pick.id if pick else None, "from_rate": old.frontier_rate,
-                 "to_rate": pick.frontier_rate if pick else None, "reason": reason}
-        if pick is not None:
-            taken.add(pick.id)
-            slot["retired"].append(old.id)
-            slot["task"] = pick.id
-            new["swaps"].append(entry)
-        swaps.append(entry)
-    return new, swaps
-
-
 def current_tasks(state: dict) -> list[str]:
     return [slot["task"] for slot in state["slots"]]
 

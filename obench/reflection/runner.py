@@ -49,14 +49,10 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # error and timeout: it never counts as a task fail.
 # upstream_4xx: a 4xx ended or broke the trial (no successful main call after it; wire_proxy.classify_4xx).
 # Also infrastructure. A 4xx that OpenCode retried and recovered from is not: it is the retried_4xx covariate.
-# prompt_blocked: the provider refused the prompt itself (Gemini promptFeedback.blockReason). Scored by
-# RunConfig.prompt_blocked_policy, not as an infrastructure retry.
-STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "prompt_blocked")
-# How prompt_blocked trials score (Researcher ruling pending; default "exclude"):
-#   exclude: left out of the pass rate; reported. A cell with nothing but blocked trials is verdict "excluded".
-#   fail:    counted as completed trials that failed.
-#   swap:    like exclude, and the model's blocked task is replaced from the pool (swap.replace_tasks).
-PROMPT_BLOCKED_POLICIES = ("exclude", "fail", "swap")
+# provider_blocked: the provider refused the prompt itself (Gemini promptFeedback.blockReason). Researcher ruling
+# 2026-11-17: neither pass nor fail; excluded from that model's pass rate; reported in its own per-task table
+# (provider_blocked.json); no task swap; blocked cells never go to credit assignment or ideation.
+STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "provider_blocked")
 # Run labels that fix which task population a run may use, so runs with different populations are never pooled.
 # "repo pilot suite": the repo's pilot suite and pool only; tasks imported by obench.taskimport (their task.toml
 # records docker_image_id_at_import) are refused.
@@ -99,7 +95,7 @@ class TrialResult:
     route_counts: dict | None = None
     retried_4xx: dict | None = None           # {"429": n, ...}: 4xx calls OpenCode recovered from (covariate)
     image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran
-    prompt_blocked: dict | None = None        # {blockReason, blockReasonMessage, ...} when status is prompt_blocked          # wire_proxy.route_repair_counts: model_calls, tool_call_turns, route_repairs
+    provider_blocked: dict | None = None      # raw {blockReason, blockReasonMessage, ...} when status is provider_blocked
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
@@ -126,7 +122,7 @@ class RunConfig:
     patch: dict | None = None
     tasks: tuple | None = None           # restrict to these suite tasks (ideation, dry runs)
     suite_label: str | None = None       # SUITE_LABELS key; on every row; a run directory never mixes labels
-    prompt_blocked_policy: str = "exclude"  # PROMPT_BLOCKED_POLICIES; scoring only, recomputed by rebuild_tables
+    workers: int = 1                     # trials in parallel; fixed for the whole run (resume refuses another value)
 
     @classmethod
     def load(cls, path: Path) -> "RunConfig":
@@ -156,8 +152,8 @@ class RunConfig:
             raise RunnerError("max_rounds must be >= 1")
         if (self.patch is None) != (self.patch_id is None):
             raise RunnerError("patch and patch_id go together")
-        if self.prompt_blocked_policy not in PROMPT_BLOCKED_POLICIES:
-            raise RunnerError(f"prompt_blocked_policy must be one of {PROMPT_BLOCKED_POLICIES}")
+        if isinstance(self.workers, bool) or not isinstance(self.workers, int) or self.workers < 1:
+            raise RunnerError(f"workers must be a positive int, got {self.workers!r}")
         if self.suite_label is not None:
             rule = SUITE_LABELS.get(self.suite_label)
             if rule is None:
@@ -237,6 +233,13 @@ def _all_or_none(values) -> bool | None:
     return True if values and all(v is True for v in values) else None
 
 
+def _load() -> list | None:
+    try:
+        return [round(x, 2) for x in os.getloadavg()]
+    except OSError:
+        return None
+
+
 def read_rows(path: Path) -> list[dict]:
     if not Path(path).exists():
         return []
@@ -245,11 +248,14 @@ def read_rows(path: Path) -> list[dict]:
 
 class Runner:
     def __init__(self, config: RunConfig, run_dir: Path, executor: Executor, suites_dir: Path | None = None,
-                 workers: int = 1):
+                 workers: int | None = None):
+        if workers is not None:  # CLI --workers; part of the config, so a resume with another value is refused
+            from dataclasses import replace as _replace
+            config = _replace(config, workers=workers)
         config.validate()
-        if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
-            raise RunnerError(f"workers must be a positive int, got {workers!r}")
-        self.config, self.executor, self.workers = config, executor, workers
+        self.config, self.executor, self.workers = config, executor, config.workers
+        if hasattr(executor, "set_run_context"):  # the executor records it on every cell too
+            executor.set_run_context({"run_id": config.run_id, "workers": config.workers})
         import threading
         self._rows_lock = threading.Lock()
         self.run_dir = Path(run_dir)
@@ -277,11 +283,17 @@ class Runner:
         return list(self.config.tasks) if self.config.tasks else self.suite.ids()
 
     def plan(self, tasks_by_model: dict[str, list[str]]) -> list[TrialSpec]:
+        """Trials interleaved across models (trial index, then slot, then model), so with ``workers > 1`` both
+        models run side by side under the same load rather than one model after the other."""
         specs = []
-        for model in self.config.models:
-            for task in tasks_by_model[model]:
-                tasks_dir, _ = resolve(self.known[task])
-                for index in range(self.config.n_trials):
+        slots = max((len(t) for t in tasks_by_model.values()), default=0)
+        for index in range(self.config.n_trials):
+            for slot in range(slots):
+                for model in self.config.models:
+                    if slot >= len(tasks_by_model[model]):
+                        continue
+                    task = tasks_by_model[model][slot]
+                    tasks_dir, _ = resolve(self.known[task])
                     tid = trial_id(self.config.run_id, task, model, self.config.patch_id, index)
                     specs.append(TrialSpec(
                         run_id=self.config.run_id, trial_id=tid, task=task, tasks_dir=tasks_dir, model=model,
@@ -325,12 +337,12 @@ class Runner:
         previous = self.run_dir / "plan.json"
         if previous.exists():  # resuming: never pool a different population into this directory
             old = json.loads(previous.read_text(encoding="utf-8")).get("config") or {}
-            for key in ("suite", "suite_label", "models", "patch_id", "n_trials"):
+            for key in ("suite", "suite_label", "models", "patch_id", "n_trials", "workers"):
                 was, now = old.get(key), asdict(self.config).get(key)
                 if (list(was) if isinstance(was, (list, tuple)) else was) != (list(now) if isinstance(now, (list, tuple)) else now):
                     raise RunnerError(f"{self.run_dir} was started with {key}={was!r}, not {now!r}: use a new run directory")
         _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff, "code": self.code,
-                                                 "workers": self.workers,
+                                                 "workers": self.workers, "host_cpus": os.cpu_count(),
                                                  "preflight": self.preflight(), "written_at": _now()})
         states = {m: self._swap_state(m) for m in self.config.models}
         done = {r["trial_id"] for r in read_rows(self.trials_path)}
@@ -389,6 +401,8 @@ class Runner:
         trial_dir = self.run_dir / spec.trial_dir
         trial_dir.mkdir(parents=True, exist_ok=True)
         started = _now()
+        import time as _time
+        t0, load_start = _time.monotonic(), _load()
         try:
             result = self.executor.run_trial(spec, self.run_dir)
         except Exception as exc:  # an executor crash is a trial error, never a silent skip
@@ -408,7 +422,9 @@ class Runner:
                "wrong_model_served": wrong, "route_counts": result.route_counts,
                "suite_label": self.config.suite_label, "code_commit": self.code["commit"],
                "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
-               "retried_4xx": result.retried_4xx or {}, "prompt_blocked": result.prompt_blocked,
+               "retried_4xx": result.retried_4xx or {}, "provider_blocked": result.provider_blocked,
+               "workers": self.workers, "wall_seconds": round(_time.monotonic() - t0, 1),
+               "host_load": {"start": load_start, "end": _load(), "cpus": os.cpu_count()},
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
                "image_matches_pin": (result.image or {}).get("matches_pin"),
                "thinking_setting": result.thinking_setting, "thinking_tokens_per_step": result.thinking_tokens_per_step,
@@ -426,16 +442,14 @@ class Runner:
             groups.setdefault((r["task"], r["model"], r["patch_id"]), []).append(r)
         summaries = []
         for (task, model, patch_id), trials in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0], str(kv[0][2]))):
-            policy = self.config.prompt_blocked_policy
-            blocked = [t for t in trials if t["status"] == "prompt_blocked"]
+            blocked = [t for t in trials if t["status"] == "provider_blocked"]
             completed = [t for t in trials if t["status"] == "completed"]
-            if policy == "fail":
-                completed = completed + [dict(t, passed=False) for t in blocked]
             passes = sum(1 for t in completed if t["passed"])
             n = self.config.n_trials
-            needed = n if policy == "fail" else n - len(blocked)   # blocked trials leave the denominator
-            verdict = ("excluded" if blocked and policy != "fail" and not completed and needed <= 0
-                       else "incomplete" if not completed or len(completed) < needed
+            # Blocked trials are neither pass nor fail. A cell with any blocked trial is "excluded" once all its
+            # trials are in (no pass/fail verdict, no swap, never sent to credit assignment or ideation).
+            verdict = ("excluded" if blocked and len(completed) + len(blocked) >= n
+                       else "incomplete" if len(completed) < n
                        else "pass" if swap.passed(passes, len(completed), cutoff) else "fail")
             costs = [t["cost_usd"] for t in trials]
             thinking = [t["thinking_tokens"] for t in trials if isinstance(t.get("thinking_tokens"), int)]
@@ -443,11 +457,11 @@ class Runner:
                 "schema": SUMMARY_SCHEMA, "run_id": self.config.run_id, "task": task, "model": model,
                 "patch_id": patch_id, "planned": n, "trials": len(trials), "completed": len(completed),
                 "passes": passes, "fails": len(completed) - passes,
-                "errors": sum(1 for t in trials if t["status"] not in ("completed", "prompt_blocked")),
+                "errors": sum(1 for t in trials if t["status"] not in ("completed", "provider_blocked")),
                 "route_truncated": sum(1 for t in trials if t["status"] == "route_truncated"),
                 "upstream_4xx": sum(1 for t in trials if t["status"] == "upstream_4xx"),
-                "prompt_blocked": len(blocked), "prompt_blocked_policy": policy,
-                "prompt_block_reasons": sorted({str((t.get("prompt_blocked") or {}).get("blockReason")) for t in blocked}),
+                "provider_blocked": len(blocked),
+                "workers": sorted({t.get("workers") for t in trials if t.get("workers") is not None}),
                 "retried_4xx": _sum_counts(t.get("retried_4xx") for t in trials),
                 "image_ids": sorted({str(t.get("image_id")) for t in trials}),
                 "image_matches_pin": _all_or_none(t.get("image_matches_pin") for t in trials),
@@ -484,13 +498,39 @@ class Runner:
                 "fail": sorted(s["task"] for s in mine if s["verdict"] == "fail"),
                 "incomplete": sorted(s["task"] for s in mine if s["verdict"] == "incomplete"),
                 "excluded": sorted(s["task"] for s in mine if s["verdict"] == "excluded"),
-                "prompt_blocked": sorted(s["task"] for s in mine if s.get("prompt_blocked")),
+                "provider_blocked": sorted(s["task"] for s in mine if s.get("provider_blocked")),
                 "current_suite": swap.current_tasks(self._swap_state(model)),
                 # tasks that ran an image other than the pinned one (--use-image-tag): label, never mix silently
                 "image_matches_pin_false": sorted(s["task"] for s in mine if s.get("image_matches_pin") is False),
             }
         _write_json(self.run_dir / "verdicts.json", verdicts)
+        self.write_provider_blocked()
         return verdicts
+
+    def write_provider_blocked(self) -> dict:
+        """The per-task table of provider-blocked trials, per model: how many, out of how many, and the raw
+        blockReason / blockReasonMessage values (``provider_blocked.json``)."""
+        table: dict = {}
+        rows = read_rows(self.trials_path)
+        for r in rows:
+            if r["status"] != "provider_blocked":
+                continue
+            cell = table.setdefault(r["model"], {}).setdefault(r["task"], {
+                "trials_blocked": 0, "trials": sum(1 for x in rows if x["model"] == r["model"] and x["task"] == r["task"]
+                                                   and x["patch_id"] == r["patch_id"]),
+                "block_reasons": {}, "block_reason_messages": [], "inferred": 0})
+            info = r.get("provider_blocked") or {}
+            cell["trials_blocked"] += 1
+            reason = str(info.get("blockReason"))
+            cell["block_reasons"][reason] = cell["block_reasons"].get(reason, 0) + 1
+            if info.get("blockReasonMessage") and info["blockReasonMessage"] not in cell["block_reason_messages"]:
+                cell["block_reason_messages"].append(info["blockReasonMessage"])
+            cell["inferred"] += bool(info.get("inferred"))
+        doc = {"run_id": self.config.run_id, "suite_label": self.config.suite_label,
+               "rule": "neither pass nor fail; excluded from the model's pass rate; no swap; never sent to credit "
+                       "assignment or ideation", "models": table}
+        _write_json(self.run_dir / "provider_blocked.json", doc)
+        return doc
 
     # ---------------------------------------------------------------- swaps
 
@@ -513,12 +553,6 @@ class Runner:
                    if s["model"] == model and s["patch_id"] is None and s["verdict"] in ("pass", "fail")
                    and s["task"] in current}
         new, swaps = swap.apply_results(state, results, self.suite, self.pool, cutoff)
-        if self.config.prompt_blocked_policy == "swap":
-            blocked = {s["task"]: "prompt_blocked" for s in summaries
-                       if s["model"] == model and s["patch_id"] is None and s["verdict"] == "excluded"
-                       and s["task"] in set(swap.current_tasks(new))}
-            new, replaced = swap.replace_tasks(new, blocked, self.suite, self.pool)
-            swaps = swaps + [r for r in replaced if r["to"]]
         self._swap_path(model).parent.mkdir(parents=True, exist_ok=True)
         _write_json(self._swap_path(model), new)
         return new, swaps
