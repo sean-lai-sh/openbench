@@ -225,26 +225,40 @@ class Tables(Base):
         self.assertEqual((table["trials_blocked"], table["trials"], table["block_reasons"], table["block_reason_messages"]),
                          (3, 3, {"SAFETY": 3}, ["m"]))
 
-    def test_model_refused_is_set_aside_and_harness_aborts_are_infra(self):
+    def test_set_aside_trials_leave_the_denominator_with_an_all_fail_check(self):
         class Mixed(rn.FixtureExecutor):
             def run_trial(self, spec, run_dir):
                 if spec.task == "extract-elf":
                     return rn.TrialResult(status="model_refused", passed=None, checker_exit=1,
-                                          model_refused={"stop_reason": "refusal", "stop_details": {"category": "bio"}})
+                                          model_refused={"stop_reason": "refusal", "step": 4, "call_index": 4,
+                                                         "stop_details": {"category": "bio"}})
                 if spec.trial_index == 0:
-                    return rn.TrialResult(status="harness_aborted", passed=None,
-                                          harness_abort={"last_finish": "tool-calls", "permission_rejected": ["external_directory"]})
+                    return rn.TrialResult(status="provider_blocked", passed=None, provider_blocked={"blockReason": "SAFETY"})
                 return super().run_trial(spec, run_dir)
-        self.run_with(Mixed({}), models=[OPUS], max_rounds=1)
+        self.run_with(Mixed({("sanitize-git-repo", OPUS): 3}), models=[OPUS], max_rounds=1)
         s = {r["task"]: r for r in rn.read_rows(self.dir / "summary.jsonl")}
-        self.assertEqual((s["extract-elf"]["verdict"], s["extract-elf"]["model_refused"], s["extract-elf"]["errors"]),
-                         ("model_refused", 3, 0))
-        self.assertEqual((s["sanitize-git-repo"]["verdict"], s["sanitize-git-repo"]["harness_aborted"],
-                          s["sanitize-git-repo"]["errors"]), ("incomplete", 1, 1))
+        sgr, elf = s["sanitize-git-repo"], s["extract-elf"]
+        # 1 blocked + 2 completed passes: pass over the 2 completed; the all-fail check counts the block as a fail
+        self.assertEqual((sgr["verdict"], sgr["pass_rate"], sgr["errors"], sgr["set_aside"]), ("pass", 1.0, 0, 1))
+        self.assertEqual((sgr["verdict_all_fail"], sgr["pass_rate_all_fail"]), ("fail", 0.6667))
+        self.assertEqual((elf["verdict"], elf["model_refused"], elf["verdict_all_fail"]), ("excluded", 3, "fail"))
+        table = json.loads((self.dir / "set_aside.json").read_text())["models"][OPUS]
+        self.assertEqual((table["extract-elf"]["model_refused"], table["extract-elf"]["refusals"][0]["step"]), (3, 4))
+        self.assertEqual(table["sanitize-git-repo"]["provider_blocked"], 1)
         v = json.loads((self.dir / "verdicts.json").read_text())["models"][OPUS]
-        self.assertEqual(v["model_refused"], ["extract-elf"])
-        row = [r for r in rn.read_rows(self.dir / "trials.jsonl") if r["task"] == "extract-elf"][0]
-        self.assertEqual((row["model_refused"]["stop_details"], row["checker_exit"]), ({"category": "bio"}, 1))
+        self.assertEqual((v["excluded"], v["model_refused"], v["provider_blocked"]),
+                         (["extract-elf"], ["extract-elf"], ["sanitize-git-repo"]))
+
+    def test_agent_exit_pending_tool_is_infra(self):
+        class Exits(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.trial_index == 0:
+                    return rn.TrialResult(status="agent_exit_pending_tool", passed=None,
+                                          agent_exit={"last_finish": "tool-calls", "permission_rejected": []})
+                return super().run_trial(spec, run_dir)
+        self.run_with(Exits({}), models=[OPUS], tasks=["extract-elf"], max_rounds=1)
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        self.assertEqual((s["verdict"], s["agent_exit_pending_tool"], s["errors"]), ("incomplete", 1, 1))
 
     def test_workers_are_fixed_recorded_and_models_interleave(self):
         runner = rn.Runner(config(models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1), self.dir,
