@@ -554,6 +554,9 @@ class CellExecutor:
                                      + (f" (auto-rejected {', '.join(p['permission'] for p in abort['permission_rejected'])})"
                                         if abort["permission_rejected"] else "")
                                      + (" (upstream stream reset)" if abort["stream_errors"] else ""))
+        if last_finish in ("tool-calls", "tool_calls", "tool_use"):  # OpenCode crashed mid-turn: infrastructure
+            return TrialResult(status="error", passed=None, **done,
+                               error=f"opencode exited {code} with a tool call pending")
         truncated = route_truncated(wires)
         if truncated is not None:
             (trial_dir / "route_truncated.json").write_text(json.dumps(truncated, sort_keys=True) + "\n")

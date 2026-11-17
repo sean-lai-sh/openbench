@@ -505,6 +505,13 @@ class Trial(CellCase):
         self.assertEqual(result.agent_exit["permission_rejected"], [{"permission": "external_directory", "patterns": "/tmp/*"}])
         self.assertIn("auto-rejected external_directory", result.error)
 
+        class Crashes(Aborting):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                Aborting.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return 1, False
+        result = self.executor(Crashes()).run_trial(self.spec(index=48), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("error", None))  # non-zero exit: a harness crash, not a fail
+
     def test_refusal_is_model_refused_with_stop_details(self):
         from obench.tests.test_reflection_vertex import sse
         refusal = sse({"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},
