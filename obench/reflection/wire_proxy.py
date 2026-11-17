@@ -22,6 +22,7 @@ summary calls); every agent step carries tools. stdlib only.
 
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import time
@@ -196,6 +197,20 @@ def provider_blocked(wire_records: list[dict]) -> dict | None:
     return None
 
 
+def model_refused(wire_records: list[dict]) -> dict | None:
+    """The model declined (Anthropic ``stop_reason: "refusal"``, with ``stop_details`` when sent). A trial with
+    such a main call is ``model_refused``: kept apart from pass/fail and from infrastructure statuses."""
+    main = sorted((w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200),
+                  key=lambda w: w.get("call_index") or 0)
+    refused = [w for w in main if "refusal" in ((w.get("response_summary") or {}).get("finish_reasons") or [])]
+    if not refused:
+        return None
+    first = refused[0]
+    return {"stop_reason": "refusal", "stop_details": (first.get("response_summary") or {}).get("stop_details"),
+            "call_index": first.get("call_index"), "calls_refused": len(refused),
+            "last_call_refused": main[-1] is refused[-1]}
+
+
 STOP_REASONS = ("stop", "end_turn", "STOP")
 
 
@@ -292,6 +307,8 @@ def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
                 out["reasoning_chars"] += len(delta.get("thinking") or "")
             elif kind == "message_delta" and (ev.get("delta") or {}).get("stop_reason"):
                 out["finish_reasons"].append(ev["delta"]["stop_reason"])
+                if (ev.get("delta") or {}).get("stop_details"):
+                    out["stop_details"] = ev["delta"]["stop_details"]
             elif "content" in ev and "stop_reason" in ev:  # non-streamed message
                 for block in ev.get("content") or []:
                     if block.get("type") == "tool_use":
@@ -300,6 +317,8 @@ def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
                     out["reasoning_chars"] += len(block.get("thinking") or "")
                 if ev.get("stop_reason"):
                     out["finish_reasons"].append(ev["stop_reason"])
+                if ev.get("stop_details"):
+                    out["stop_details"] = ev["stop_details"]
         else:
             for cand in ev.get("candidates") or []:
                 for part in (cand.get("content") or {}).get("parts") or []:
@@ -331,6 +350,7 @@ class WireProxy:
         # Gemini blocked the prompt: tell the executor (it stops the agent) and refuse later calls without
         # sending them, so OpenCode can't loop on an empty answer.
         self.on_provider_blocked, self.provider_blocked = on_provider_blocked, None
+        self.client_resets: list[str] = []  # client-side socket resets outside a call (counted per trial)
         self.upstream_host, self.opener = upstream_host, opener
         self._lock, self._index = threading.Lock(), 0
         self.wire_path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,6 +364,14 @@ class WireProxy:
 
             def do_POST(self):  # noqa: N802
                 proxy.handle(self)
+
+            def handle(self):
+                # A client that goes away (OpenCode exiting with a request in flight) resets the socket; that is
+                # recorded on the call when it happens mid-response, and is not a proxy crash.
+                try:
+                    super().handle()
+                except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError) as exc:
+                    proxy.client_resets.append(f"{type(exc).__name__}: {exc}")
 
         self.server = ThreadingHTTPServer((host, port), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -437,7 +465,10 @@ class WireProxy:
             content_type = response.headers.get("Content-Type", content_type)
             if model.repair_text_tool_calls and status == 200:
                 # Buffer the whole response, rebuild a tool call the route left as text, then send it.
-                raw_all = response.read()
+                try:
+                    raw_all, stream_error = response.read(), None
+                except (OSError, http.client.HTTPException) as exc:  # reset/incomplete upstream body
+                    raw_all, stream_error = getattr(exc, "partial", b"") or b"", f"{type(exc).__name__}: {exc}"
                 sent_bytes, repair = repair_text_tool_calls(raw_all, upstream_stream, sent)
                 usage, served = parse_response(model, raw_all, upstream_stream)
                 if stream and not upstream_stream:
@@ -455,7 +486,7 @@ class WireProxy:
                              extra={"response_summary": summary, "client_disconnected": not client["ok"],
                                     "response_bytes": len(raw_all), "route_repair": repair,
                                     "upstream_response_summary": response_summary(model, raw_all, upstream_stream),
-                                    "upstream_stream": upstream_stream,
+                                    "upstream_stream": upstream_stream, "stream_error": stream_error,
                                     "upstream_raw": self._save_raw(index, raw_all, upstream_stream)})
                 send(b"0\r\n\r\n")
                 return
@@ -467,8 +498,19 @@ class WireProxy:
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 client["ok"] = False
                 handler.close_connection = True
+            stream_error = None
             while True:
-                piece = response.read1(65536) if hasattr(response, "read1") else response.read(65536)
+                try:
+                    piece = response.read1(65536) if hasattr(response, "read1") else response.read(65536)
+                except (OSError, http.client.HTTPException) as exc:
+                    # Vertex reset the stream mid-response. Record it on the call; tell an Anthropic client with
+                    # an SSE error event (so the SDK raises instead of ending the turn quietly); then end.
+                    stream_error = f"{type(exc).__name__}: {exc}"
+                    if model.wire == "anthropic" and status == 200:
+                        event = {"type": "error", "error": {"type": "api_error", "message": "upstream stream reset"}}
+                        data = b"event: error\ndata: " + json.dumps(event).encode() + b"\n\n"
+                        send(f"{len(data):X}\r\n".encode() + data + b"\r\n")
+                    break
                 if not piece:
                     break
                 chunks.append(piece)
@@ -480,6 +522,7 @@ class WireProxy:
             extra = {"response_summary": response_summary(model, raw_all, upstream_stream) if status == 200 else None,
                      "provider_blocked": blocked,
                      "client_disconnected": not client["ok"], "response_bytes": len(raw_all),
+                     "stream_error": stream_error,
                      "usage_events": usage_events(model, raw_all, upstream_stream) if status == 200 else None}
             if model.repair_text_tool_calls:  # gpt-oss error bodies too: what the route sent, byte for byte
                 extra.update({"route_repair": None, "upstream_response_summary": None, "upstream_stream": upstream_stream,
