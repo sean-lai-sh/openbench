@@ -44,6 +44,13 @@ blockReason and blockReasonMessage kept): neither pass nor fail, excluded from
 the model's pass rate, never swapped, never sent to credit assignment or
 ideation (Researcher ruling 2026-11-17).
 
+Otherwise, any refusal or safety stop in the trial (Anthropic ``stop_reason:
+"refusal"``, Gemini ``finishReason: SAFETY``) makes it ``model_refused``, recorded
+with the step it happened on; it is set aside the same way, and the checker
+still runs. OpenCode exiting 0 with a tool call pending is
+``agent_exit_pending_tool`` (``agent_exit.json``): infrastructure, never a task
+fail.
+
 Each ``cell.json`` also records the run's fixed ``workers`` value, the agent's
 wall time and the host load average before and after, so contention-driven
 timeouts are visible.
@@ -491,17 +498,20 @@ class CellExecutor:
             return TrialResult(status="provider_blocked", passed=None, provider_blocked=blocked, **common,
                                error=f"provider blocked: {blocked.get('blockReason')}"
                                      + (" (inferred from empty responses)" if blocked.get("inferred") else ""))
-        if fours["breaking"]:  # a 4xx ended or broke the trial: infrastructure, never a task fail
+        # Researcher ruling 2026-11-17: each trial classified on its own - blocked (last call) first, otherwise any
+        # refusal / SAFETY stop makes it model_refused, before the infrastructure outcomes. The checker still runs.
+        refused = model_refused(wires)
+        if fours["breaking"] and refused is None:  # a 4xx ended or broke the trial: infrastructure, never a task fail
             (trial_dir / "upstream_4xx.json").write_text(json.dumps(fours, sort_keys=True) + "\n")
             return TrialResult(status="upstream_4xx", passed=None, **common,
                                error="upstream 4xx: " + ", ".join(f"call {c['call_index']} -> {c['status']}"
                                                                   for c in fours["breaking"]))
         (trial_dir / "upstream_4xx.json").unlink(missing_ok=True)
-        if timed_out:
+        if timed_out and refused is None:
             return TrialResult(status="timeout", passed=None, **common,
                                error=f"agent timed out after {cell.get('agent_timeout') or task['agent_timeout']}s")
         checker_exit, checker_mode, checker_out = self._check(task, workspace) if run_checker else (None, None, "")
-        if checker_exit is not None and (checker_exit in (125, 126, 127)
+        if refused is None and checker_exit is not None and (checker_exit in (125, 126, 127)
                                          or re.search(r"command not found|exec: .*: not found", checker_out or "")):
             # the checker itself could not run (missing interpreter or tool in the image, docker failure): infra
             return TrialResult(status="checker_error", passed=None, checker_exit=checker_exit, **common,
@@ -514,6 +524,8 @@ class CellExecutor:
                                      count_thinking_tokens=vm.THINKING_TOKENS_FROM_TEXT.get(model.key))
             tr.write_trace(trial_dir / "trace.jsonl", records)
         except tr.TraceError as exc:
+            if refused is not None:
+                return self._refused(trial_dir, refused, [], dict(common, checker_exit=checker_exit))
             return TrialResult(status="error", passed=None, checker_exit=checker_exit, **common, error=f"trace_error: {exc}")
         thinking = [r["usage"]["thinking_tokens"] for r in records if isinstance(r["usage"]["thinking_tokens"], int)]
         per_step = [r["usage"]["thinking_tokens"] if isinstance(r["usage"]["thinking_tokens"], int) else None for r in records]
@@ -522,14 +534,11 @@ class CellExecutor:
         done = dict(common, checker_exit=checker_exit, steps=len(records), thinking_tokens=sum(thinking) if thinking else None,
                     thinking_tokens_status={k: statuses.count(k) for k in sorted(set(statuses))},
                     thinking_flags=flags, thinking_tokens_per_step=per_step, trace=rel(trial_dir / "trace.jsonl"))
-        refused = model_refused(wires)
-        if refused is not None and refused["last_call_refused"]:  # the model declined; kept apart (Researcher's call)
-            (trial_dir / "model_refused.json").write_text(json.dumps(refused, sort_keys=True) + "\n")
-            return TrialResult(status="model_refused", passed=None, model_refused=refused, **done,
-                               error=f"model refused: {refused.get('stop_details')}")
+        if refused is not None:
+            return self._refused(trial_dir, refused, records, done)
         last_finish = records[-1].get("finish_reason") if records else None
-        if last_finish in ("tool-calls", "tool_calls", "tool_use"):
-            # OpenCode ended the run with a tool call pending: harness, not the model. Usually `opencode run`
+        if last_finish in ("tool-calls", "tool_calls", "tool_use") and code in (0, None):
+            # OpenCode exited 0 with a tool call pending: infrastructure, never a task fail. Usually `opencode run`
             # auto-rejecting a permission request; also an upstream stream reset mid-response.
             stderr = (trial_dir / "opencode-stderr.txt").read_text(encoding="utf-8", errors="replace") \
                 if (trial_dir / "opencode-stderr.txt").exists() else ""
@@ -539,9 +548,9 @@ class CellExecutor:
                      "stream_errors": [{"call_index": w.get("call_index"), "error": w["stream_error"]}
                                        for w in wires if w.get("stream_error")],
                      "opencode_exit": code}
-            (trial_dir / "harness_abort.json").write_text(json.dumps(abort, sort_keys=True) + "\n")
-            return TrialResult(status="harness_aborted", passed=None, harness_abort=abort, **done,
-                               error="harness aborted: OpenCode ended with a tool call pending"
+            (trial_dir / "agent_exit.json").write_text(json.dumps(abort, sort_keys=True) + "\n")
+            return TrialResult(status="agent_exit_pending_tool", passed=None, agent_exit=abort, **done,
+                               error="OpenCode exited 0 with a tool call pending"
                                      + (f" (auto-rejected {', '.join(p['permission'] for p in abort['permission_rejected'])})"
                                         if abort["permission_rejected"] else "")
                                      + (" (upstream stream reset)" if abort["stream_errors"] else ""))
@@ -553,6 +562,16 @@ class CellExecutor:
                                      f"{truncated['finish_reasons']} with no tool call and no text")
         return TrialResult(status="completed", passed=checker_exit == 0 if checker_exit is not None else None, **done,
                            error=None if code in (0, None) else f"opencode exited {code}")
+
+    @staticmethod
+    def _refused(trial_dir: Path, refused: dict, records: list[dict], fields: dict) -> TrialResult:
+        """``model_refused``, with the trace step each refused call became (``step``; None without a trace)."""
+        steps = {(r.get("request") or {}).get("call_index"): r.get("step") for r in records}
+        refusals = [dict(x, step=steps.get(x["call_index"])) for x in refused["refusals"]]
+        info = dict(refused, refusals=refusals, step=refusals[0]["step"])
+        (trial_dir / "model_refused.json").write_text(json.dumps(info, sort_keys=True) + "\n")
+        return TrialResult(status="model_refused", passed=None, model_refused=info, **fields,
+                           error=f"model refused ({info['stop_reason']}) at step {info['step']}")
 
     def _check(self, task: dict, workspace: Path) -> tuple[int, str, str]:
         """Run the task's checker; ``(exit, mode, output)``. Agent-written code never runs on the host:

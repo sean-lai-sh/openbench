@@ -490,7 +490,7 @@ class Trial(CellCase):
         # everything else is exactly the smoke's OpenCode config (same provider, model, options)
         self.assertEqual({k: v for k, v in cfg.items() if k != "permission"}, vm.opencode_config(vm.resolve(OPUS), proxy_base))
 
-    def test_pending_tool_call_at_exit_is_harness_aborted(self):
+    def test_exit_0_with_a_pending_tool_call_is_agent_exit_pending_tool(self):
         class Aborting(FakeTrialDocker):
             def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
                 code, t = FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
@@ -501,8 +501,8 @@ class Trial(CellCase):
                     Path(stderr_path).write_text("! permission requested: external_directory (/tmp/*); auto-rejecting\n")
                 return 0, t
         result = self.executor(Aborting()).run_trial(self.spec(index=45), self.tmp / "run")
-        self.assertEqual((result.status, result.passed), ("harness_aborted", None))
-        self.assertEqual(result.harness_abort["permission_rejected"], [{"permission": "external_directory", "patterns": "/tmp/*"}])
+        self.assertEqual((result.status, result.passed), ("agent_exit_pending_tool", None))
+        self.assertEqual(result.agent_exit["permission_rejected"], [{"permission": "external_directory", "patterns": "/tmp/*"}])
         self.assertIn("auto-rejected external_directory", result.error)
 
     def test_refusal_is_model_refused_with_stop_details(self):
@@ -520,6 +520,23 @@ class Trial(CellCase):
         result = self.executor(FakeTrialDocker(write_output=False)).run_trial(self.spec(index=46), self.tmp / "run")
         self.assertEqual((result.status, result.passed, result.checker_exit), ("model_refused", None, 1))
         self.assertEqual(result.model_refused["stop_details"], {"category": "bio"})
+        self.assertEqual((result.model_refused["call_index"], result.model_refused["step"]), (2, 2))  # the step it happened on
+
+    def test_refusal_partway_sets_the_trial_aside_even_if_it_finishes(self):
+        from obench.tests.test_reflection_vertex import sse
+        refusal = sse({"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},
+                      {"type": "message_delta", "delta": {"stop_reason": "refusal"}, "usage": {"output_tokens": 2}},
+                      {"type": "message_stop"})
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            from obench.tests.test_reflection_vertex import default_reply
+            return (200, "text/event-stream", refusal) if len(calls) == 1 else default_reply(path)
+        self.vertex.reply = reply
+        result = self.executor(FakeTrialDocker()).run_trial(self.spec(index=47), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("model_refused", None, 0))
+        self.assertEqual((result.model_refused["step"], result.model_refused["last_call_refused"]), (1, False))
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
