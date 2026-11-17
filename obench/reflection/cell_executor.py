@@ -4,20 +4,30 @@ One trial = one container of the task's own image (``task.toml``
 ``docker_image``), running the pinned OpenCode against a per-trial recording
 proxy, then the task's checker on the result:
 
-1. Copy the task workspace into ``<trial_dir>/workspace`` (``obench.workspace``).
+1. Seed ``<trial_dir>/workspace`` the way ``obench run --exec docker`` does: the task
+   image's WORKDIR contents (``docker cp``), then the task's own ``workspace/`` on top,
+   then ``.openbench-image-hydrated`` (``seed_workspace``). The bind mount then shows
+   the agent the image's full WORKDIR. Tasks on the generic default image keep their
+   own workspace only.
 2. Start a ``WireProxy`` for this trial (with the ideation patch, if any). It
    is bound to the Docker bridge gateway so the container can reach it, and
    writes ``<trial_dir>/wire.jsonl``.
 3. ``docker run`` the task image:
    - the workspace mounted at the task's WORKDIR;
-   - the pinned OpenCode tree mounted read-only at its own path;
+   - only the pinned OpenCode binary's directory, read-only at /opt/opencode/<sha>
+     (a wrapper build still needs its source tree; ``cell.json`` says which);
+   - OpenCode permissions that ``opencode run`` would otherwise auto-reject
+     (``AGENT_PERMISSIONS``);
    - ``OPENCODE_CONFIG_CONTENT`` limited to this model's route;
    - ``opencode run --format json --thinking --model ...``.
 
    stdout is the event stream (``opencode-events.jsonl``). On timeout the
    container is killed.
 4. Run the task's ``checker.sh`` on the workspace (``BENCH_TASK_IMAGE`` set,
-   checker timeout from ``task.toml``). Exit 0 means passed.
+   checker timeout from ``task.toml``). Exit 0 means passed. Agent-written code
+   never runs on the host: a checker that ``docker run``s the task image itself
+   runs as is; every other checker runs whole inside the task image (``_check``).
+   A checker that cannot run at all is ``checker_error``.
 5. Build ``trace.jsonl`` (``trace.build_trace``) from the events and the wire
    records. Return the cost (sum of the wire records), thinking tokens
    (usage), flags and served models.
@@ -91,7 +101,8 @@ from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec, code_commit
-from obench.reflection.wire_proxy import WireProxy, classify_4xx, provider_blocked, route_repair_counts, route_truncated
+from obench.reflection.wire_proxy import (WireProxy, classify_4xx, model_refused, provider_blocked, route_repair_counts,
+                                          route_truncated)
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
                    "aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com")
@@ -107,6 +118,16 @@ def _load() -> list | None:
         return [round(x, 2) for x in os.getloadavg()]
     except OSError:
         return None
+
+
+# `opencode run` auto-rejects every permission request; the default agent asks for paths outside the project
+# (external_directory: /tmp, /usr, ...), for a third identical tool call (doom_loop) and for reading *.env. A rejected
+# permission ends the run with the tool call pending. In a disposable container these are allowed (the last matching
+# rule wins at the pin, so these override the defaults; no tool is added or removed, so tool definitions sent to the
+# model are unchanged).
+AGENT_PERMISSIONS = {"external_directory": "allow", "doom_loop": "allow", "read": "allow"}
+OPENCODE_IN_CONTAINER = "/opt/opencode"   # the pinned standalone binary's directory, mounted read-only
+PERMISSION_LINE = re.compile(r"permission requested: (\S+) \(([^)]*)\); auto-rejecting")
 
 
 class CellError(RuntimeError):
@@ -146,15 +167,39 @@ class TrialDocker:
             raise CellError(f"task image {ref} is not on this host: {out.stderr.strip()}")
         return out.stdout.strip()
 
+    def hydrate(self, image: str, workdir: str, dest: Path) -> None:
+        """Copy the image's WORKDIR contents into ``dest`` (what the agent would see without a mount)."""
+        from obench.run import hydrate_image_workdir
+        try:
+            hydrate_image_workdir(image, workdir, str(dest))
+        except RuntimeError as exc:
+            raise CellError(str(exc)) from exc
+
+    def run_checker(self, args: list[str], timeout: int) -> tuple[int, str]:
+        """``docker run`` a checker inside the task image; ``(exit, output)``. Killed on timeout (exit 124)."""
+        name = args[args.index("--name") + 1]
+        try:
+            proc = subprocess.run(["docker", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                  timeout=timeout, stdin=subprocess.DEVNULL)
+            return proc.returncode, proc.stdout or ""
+        except subprocess.TimeoutExpired as exc:
+            subprocess.run(["docker", "kill", name], capture_output=True, timeout=60)
+            return 124, (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        finally:
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=60)
+
     def kill(self, name: str) -> None:
         subprocess.run(["docker", "kill", name], capture_output=True, timeout=60)
 
-    def run_agent(self, args: list[str], stdout_path: Path, timeout: int) -> tuple[int | None, bool]:
-        """``(exit code, timed_out)``. stdout goes to ``stdout_path``."""
+    def run_agent(self, args: list[str], stdout_path: Path, timeout: int,
+                  stderr_path: Path | None = None) -> tuple[int | None, bool]:
+        """``(exit code, timed_out)``. stdout goes to ``stdout_path``, stderr (OpenCode's warnings, e.g.
+        auto-rejected permissions) to ``stderr_path``."""
         name = args[args.index("--name") + 1]
-        with stdout_path.open("w", encoding="utf-8") as out:
+        with stdout_path.open("w", encoding="utf-8") as out, \
+                (stderr_path.open("w", encoding="utf-8") if stderr_path else open(os.devnull, "w")) as err:
             try:
-                proc = subprocess.run(["docker", *args], stdout=out, stderr=subprocess.DEVNULL, timeout=timeout,
+                proc = subprocess.run(["docker", *args], stdout=out, stderr=err, timeout=timeout,
                                       stdin=subprocess.DEVNULL)
                 return proc.returncode, False
             except subprocess.TimeoutExpired:
@@ -186,7 +231,10 @@ class CellExecutor:
         import threading
         self._record_lock = threading.Lock()  # trials of one cell may finish together (runner --workers)
         self.run_context: dict = {}
-        # The cache root (…/opencode-src) is mounted at its own path: wrapper builds exec absolute paths in it.
+        # A standalone build (compile / build.ts) needs only its own bin/<sha>/ directory, mounted read-only at a
+        # neutral path, so the host's source tree and worktrees are not visible in the container. Wrapper builds
+        # (bun-run / monorepo) exec absolute paths in the cache root and still need it (recorded in cell.json).
+        self.standalone = (self.pin.get("build_stamp") or {}).get("kind") in ("compile", "build.ts")
         self.mount_root = self.opencode.parents[2]
 
     def set_run_context(self, context: dict) -> None:
@@ -258,15 +306,30 @@ class CellExecutor:
         name = f"obench-reflect-{spec.trial_id}"
         args = ["run", "--rm", "--name", name, "--platform", self.platform,
                 "--network", OFFLINE_NETWORK if network == "offline" else "bridge",
-                "-v", f"{workspace}:{task['workdir']}", "-v", f"{self.mount_root}:{self.mount_root}:ro",
+                "-v", f"{workspace}:{task['workdir']}", "-v", self.opencode_mount(),
                 "-w", task["workdir"], "-e", "HOME=/tmp/opencode-home",
-                "-e", f"OPENCODE_CONFIG_CONTENT={vm.opencode_config_env(model, proxy_base)}",
+                "-e", f"OPENCODE_CONFIG_CONTENT={self.opencode_config(model, proxy_base)}",
                 "-e", "OPENCODE_DISABLE_AUTOUPDATE=1"]
         if network == "offline":
             args += ["-e", "OPENCODE_DISABLE_MODELS_FETCH=1"]
         for host in SINKHOLED_HOSTS:
             args += ["--add-host", f"{host}:0.0.0.0"]
-        return args + [task["image"], *oc.run_command(self.opencode, instruction, vm.opencode_model_arg(model))]
+        return args + [task["image"], *oc.run_command(self.opencode_in_container(), instruction, vm.opencode_model_arg(model))]
+
+    def opencode_mount(self) -> str:
+        if self.standalone:
+            return f"{self.opencode.parent}:{OPENCODE_IN_CONTAINER}/{self.pin['sha']}:ro"
+        return f"{self.mount_root}:{self.mount_root}:ro"
+
+    def opencode_in_container(self) -> Path:
+        if self.standalone:
+            return Path(OPENCODE_IN_CONTAINER) / self.pin["sha"] / self.opencode.name
+        return self.opencode
+
+    @staticmethod
+    def opencode_config(model: vm.VertexModel, proxy_base: str) -> str:
+        return json.dumps(dict(vm.opencode_config(model, proxy_base), permission=dict(AGENT_PERMISSIONS)),
+                          sort_keys=True)
 
     def image_record(self, task: dict) -> dict:
         """What actually runs: the ref, its local image id, the pin, and whether the pin was honoured
@@ -276,6 +339,35 @@ class CellExecutor:
         matches = False if pin else (True if pinned else None)
         return {"ref": task["image"], "id": pin["used_id"] if pin else self.docker.image_id(task["image"]),
                 "pinned": pinned, "matches_pin": matches}
+
+    def seed_workspace(self, task: dict, workspace: Path) -> dict:
+        """The agent starts from the task image's WORKDIR, as ``obench run --exec docker`` stages it: the image's
+        WORKDIR contents, then the task's own ``workspace/`` on top, then ``.openbench-image-hydrated`` so
+        checkers don't hydrate again (tb-mid checkers re-copy the image over the workspace without it). The
+        bind mount then shows the agent the full ``/app`` (query-optimize's database, corewars' ``warriors/``,
+        sanitize-git-repo's ``dclm``). Tasks on the generic default image keep their own workspace only."""
+        from obench.workspace import materialize_workspace
+        if task["image_source"] == "default_image":
+            materialize_workspace(str(task["dir"]), str(workspace))
+            return {"hydrated_from": None}
+        self.docker.hydrate(task["image"], task["workdir"], workspace)
+        import tempfile
+        staged = Path(tempfile.mkdtemp(prefix="obench_task_overlay_", dir=str(workspace.parent)))
+        try:
+            materialize_workspace(str(task["dir"]), str(staged))
+            for item in staged.iterdir():
+                if item.name == ".gitkeep":
+                    continue
+                dest = workspace / item.name
+                if item.is_dir() and not item.is_symlink():
+                    shutil.copytree(item, dest, dirs_exist_ok=True, symlinks=True)
+                else:
+                    shutil.copy2(item, dest, follow_symlinks=False)
+        finally:
+            shutil.rmtree(staged, ignore_errors=True)
+        (workspace / ".openbench-image-hydrated").write_text(task["image"] + "\n", encoding="utf-8")
+        files = sum(len(f) for _, _, f in os.walk(workspace))
+        return {"hydrated_from": task["image"], "workdir": task["workdir"], "files": files}
 
     def run_trial(self, spec: TrialSpec, run_dir: Path) -> TrialResult:
         from obench.workspace import materialize_workspace
@@ -290,7 +382,7 @@ class CellExecutor:
         if workspace.exists():
             shutil.rmtree(workspace)
         workspace.mkdir(parents=True)
-        materialize_workspace(str(task["dir"]), str(workspace))
+        seed = self.seed_workspace(task, workspace)
         instruction = (task["dir"] / "instruction.md").read_text(encoding="utf-8")
         wire_path, events_path = trial_dir / "wire.jsonl", trial_dir / "opencode-events.jsonl"
         wire_path.unlink(missing_ok=True)
@@ -305,7 +397,8 @@ class CellExecutor:
         load_before, t0 = _load(), _time.monotonic()
         try:
             args = self.docker_args(spec, task, workspace, model, proxy.base_url, instruction, network)
-            code, timed_out = self.docker.run_agent(args, events_path, task["agent_timeout"])
+            code, timed_out = self.docker.run_agent(args, events_path, task["agent_timeout"],
+                                                    stderr_path=trial_dir / "opencode-stderr.txt")
         finally:
             proxy.close()
         agent_seconds, load_after = round(_time.monotonic() - t0, 1), _load()
@@ -318,6 +411,8 @@ class CellExecutor:
             "network_unflagged": task["solution_needs_network"] is None,
             "opencode_sha": self.pin["sha"], "code": self.code,
             "workers": self.run_context.get("workers"), "agent_seconds": agent_seconds,
+            "workspace_seed": seed, "opencode_mount": "standalone" if self.standalone else "source_tree",
+            "agent_permissions": AGENT_PERMISSIONS,
             "host_load": {"before": load_before, "after": load_after, "cpus": os.cpu_count()}}, sort_keys=True) + "\n")
         return self.record(spec, run_dir, self.finish_trial(spec, run_dir, task))
 
@@ -405,7 +500,12 @@ class CellExecutor:
         if timed_out:
             return TrialResult(status="timeout", passed=None, **common,
                                error=f"agent timed out after {cell.get('agent_timeout') or task['agent_timeout']}s")
-        checker_exit = self._check(task, workspace) if run_checker else None
+        checker_exit, checker_mode, checker_out = self._check(task, workspace) if run_checker else (None, None, "")
+        if checker_exit is not None and (checker_exit in (125, 126, 127)
+                                         or re.search(r"command not found|exec: .*: not found", checker_out or "")):
+            # the checker itself could not run (missing interpreter or tool in the image, docker failure): infra
+            return TrialResult(status="checker_error", passed=None, checker_exit=checker_exit, **common,
+                               error=f"checker could not run ({checker_mode}, exit {checker_exit})")
         try:
             events = tr.parse_events(events_path.read_text(encoding="utf-8").splitlines())
             records = tr.build_trace(events, wires, run={"run_id": spec.run_id, "trial_id": spec.trial_id,
@@ -422,6 +522,29 @@ class CellExecutor:
         done = dict(common, checker_exit=checker_exit, steps=len(records), thinking_tokens=sum(thinking) if thinking else None,
                     thinking_tokens_status={k: statuses.count(k) for k in sorted(set(statuses))},
                     thinking_flags=flags, thinking_tokens_per_step=per_step, trace=rel(trial_dir / "trace.jsonl"))
+        refused = model_refused(wires)
+        if refused is not None and refused["last_call_refused"]:  # the model declined; kept apart (Researcher's call)
+            (trial_dir / "model_refused.json").write_text(json.dumps(refused, sort_keys=True) + "\n")
+            return TrialResult(status="model_refused", passed=None, model_refused=refused, **done,
+                               error=f"model refused: {refused.get('stop_details')}")
+        last_finish = records[-1].get("finish_reason") if records else None
+        if last_finish in ("tool-calls", "tool_calls", "tool_use"):
+            # OpenCode ended the run with a tool call pending: harness, not the model. Usually `opencode run`
+            # auto-rejecting a permission request; also an upstream stream reset mid-response.
+            stderr = (trial_dir / "opencode-stderr.txt").read_text(encoding="utf-8", errors="replace") \
+                if (trial_dir / "opencode-stderr.txt").exists() else ""
+            abort = {"last_finish": last_finish, "pending_tools": [c.get("name") for c in records[-1].get("tool_calls") or []],
+                     "permission_rejected": [{"permission": m.group(1), "patterns": m.group(2)}
+                                             for m in PERMISSION_LINE.finditer(stderr)],
+                     "stream_errors": [{"call_index": w.get("call_index"), "error": w["stream_error"]}
+                                       for w in wires if w.get("stream_error")],
+                     "opencode_exit": code}
+            (trial_dir / "harness_abort.json").write_text(json.dumps(abort, sort_keys=True) + "\n")
+            return TrialResult(status="harness_aborted", passed=None, harness_abort=abort, **done,
+                               error="harness aborted: OpenCode ended with a tool call pending"
+                                     + (f" (auto-rejected {', '.join(p['permission'] for p in abort['permission_rejected'])})"
+                                        if abort["permission_rejected"] else "")
+                                     + (" (upstream stream reset)" if abort["stream_errors"] else ""))
         truncated = route_truncated(wires)
         if truncated is not None:
             (trial_dir / "route_truncated.json").write_text(json.dumps(truncated, sort_keys=True) + "\n")
@@ -431,16 +554,37 @@ class CellExecutor:
         return TrialResult(status="completed", passed=checker_exit == 0 if checker_exit is not None else None, **done,
                            error=None if code in (0, None) else f"opencode exited {code}")
 
-    def _check(self, task: dict, workspace: Path) -> int:
+    def _check(self, task: dict, workspace: Path) -> tuple[int, str, str]:
+        """Run the task's checker; ``(exit, mode, output)``. Agent-written code never runs on the host:
+
+        - ``self_containerized``: the checker itself ``docker run``s the task image on the workspace (TB2 and
+          tb-mid imports); only its wrapper (reading the reward file) runs on the host.
+        - ``in_task_container``: every other checker (the host-native openbench-tb-hard checkers, which run the
+          agent's code, e.g. model-extraction's ``steal.py`` and filter-js's ``filter.py``) runs whole inside the
+          task image, with the workspace at its WORKDIR and the task directory read-only at /openbench-task.
+        """
         from obench.checker_timeout import checker_timeout_s
 
-        env = dict(os.environ, TASK_DIR=str(task["dir"]), BENCH_TASK_IMAGE=str(task["image"]))
-        env.pop("OPENBENCH_SOLUTION_OVERLAY", None)
-        try:
-            proc = self.checker_runner(["bash", str(task["dir"] / "checker.sh")], cwd=str(workspace), env=env,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                       timeout=checker_timeout_s(task["dir"].name, str(task["dir"])))
-        except subprocess.TimeoutExpired:
-            return 124
-        (workspace.parent / "checker-output.txt").write_text(proc.stdout or "", encoding="utf-8")
-        return proc.returncode
+        script = (task["dir"] / "checker.sh").read_text(encoding="utf-8", errors="replace")
+        timeout = checker_timeout_s(task["dir"].name, str(task["dir"]))
+        if re.search(r"\bdocker\s+(run|create)\b", script):
+            mode = "self_containerized"
+            env = dict(os.environ, TASK_DIR=str(task["dir"]), BENCH_TASK_IMAGE=str(task["image"]))
+            env.pop("OPENBENCH_SOLUTION_OVERLAY", None)
+            try:
+                proc = self.checker_runner(["bash", str(task["dir"] / "checker.sh")], cwd=str(workspace), env=env,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+                code, out = proc.returncode, proc.stdout or ""
+            except subprocess.TimeoutExpired:
+                code, out = 124, ""
+        else:
+            mode = "in_task_container"
+            args = ["run", "--rm", "--name", f"obench-check-{workspace.parent.name}", "--platform", self.platform,
+                    "--network", "bridge",  # verifier dependencies (uv / pytest installs), as Harbor verifiers expect
+                    "-v", f"{workspace}:{task['workdir']}", "-v", f"{task['dir']}:/openbench-task:ro",
+                    "-e", "TASK_DIR=/openbench-task", "-e", f"BENCH_TASK_IMAGE={task['image']}",
+                    "-w", task["workdir"], task["image"], "bash", "/openbench-task/checker.sh"]
+            code, out = self.docker.run_checker(args, timeout)
+        (workspace.parent / "checker-output.txt").write_text(out, encoding="utf-8")
+        (workspace.parent / "checker-mode.txt").write_text(mode + "\n", encoding="utf-8")
+        return code, mode, out

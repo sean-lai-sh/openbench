@@ -24,6 +24,7 @@ from obench.hardsuite import config as hs_config
 from obench.reflection import cell_executor as ce
 from obench.reflection import opencode as oc
 from obench.reflection import runner as rn
+from obench.reflection import vertex_models as vm
 from obench.reflection.patches import PATCH_SCHEMA
 from obench.tests.test_reflection_vertex import FakeVertex, default_reply
 
@@ -42,6 +43,25 @@ class FakeTrialDocker:
     def kill(self, name):
         self.killed = getattr(self, "killed", []) + [name]
 
+    image_files = {"data/oewn.sqlite": "db"}   # what the task image ships in its WORKDIR
+
+    def hydrate(self, image, workdir, dest):
+        self.hydrated = getattr(self, "hydrated", []) + [(image, workdir)]
+        for rel, text in self.image_files.items():
+            Path(dest, rel).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest, rel).write_text(text)
+
+    def run_checker(self, args, timeout):
+        """Plays `docker run <image> bash /openbench-task/checker.sh`: maps the two mounts back to host paths."""
+        import subprocess as sp
+        self.checker_calls = getattr(self, "checker_calls", []) + [args]
+        mounts = {args[i + 1].split(":")[1]: args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v"}
+        task_dir = mounts["/openbench-task"]
+        workspace = next(h for c, h in mounts.items() if c != "/openbench-task")
+        proc = sp.run(["bash", str(Path(task_dir) / "checker.sh")], cwd=workspace, env=dict(os.environ, TASK_DIR=task_dir),
+                      stdout=sp.PIPE, stderr=sp.STDOUT, text=True, timeout=timeout)
+        return proc.returncode, proc.stdout
+
     def bridge_gateway(self):
         self.gateways = getattr(self, "gateways", []) + ["bridge"]
         return "127.0.0.1"
@@ -53,7 +73,7 @@ class FakeTrialDocker:
     def image_id(self, ref):
         return self.image_ids.get(ref, "sha256:" + "0" * 64)
 
-    def run_agent(self, args, stdout_path, timeout):
+    def run_agent(self, args, stdout_path, timeout, stderr_path=None):
         self.calls.append(args)
         env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
         cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
@@ -175,8 +195,8 @@ class Trial(CellCase):
         self.assertEqual((result.status, result.passed), ("timeout", None))
 
         class Lossy(FakeTrialDocker):
-            def run_agent(self, args, stdout_path, timeout):
-                code, t = super().run_agent(args, stdout_path, timeout)
+            def run_agent(self, args, stdout_path, timeout, stderr_path=None):
+                code, t = super().run_agent(args, stdout_path, timeout, stderr_path)
                 lines = Path(stdout_path).read_text().splitlines()
                 Path(stdout_path).write_text("\n".join(lines[:3]) + "\n")  # one step lost from the stream
                 return code, t
@@ -277,14 +297,14 @@ class Trial(CellCase):
         self.vertex.reply = reply
 
         class Retrying(FakeTrialDocker):  # the 429 is followed by a successful retry, then the next step
-            def run_agent(self, args, stdout_path, timeout):
+            def run_agent(self, args, stdout_path, timeout, stderr_path=None):
                 self.steps = 2
-                code, t = super().run_agent(args, stdout_path, timeout)
+                code, t = super().run_agent(args, stdout_path, timeout, stderr_path)
                 return code, t
         docker = Retrying()
         orig = docker.run_agent
 
-        def run_agent(args, stdout_path, timeout):
+        def run_agent(args, stdout_path, timeout, stderr_path=None):
             env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
             base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
             body = {"model": OPUS, "stream": True, "max_tokens": 10, "tools": TOOLS, "messages": [{"role": "user", "content": "go"}]}
@@ -295,7 +315,7 @@ class Trial(CellCase):
                                            timeout=10).read()
                 except urllib.error.HTTPError:
                     pass
-            return orig(args, stdout_path, timeout)
+            return orig(args, stdout_path, timeout, stderr_path)
         docker.run_agent = run_agent
         result = self.executor(docker).run_trial(self.spec(index=31), self.tmp / "run")
         self.assertEqual(result.retried_4xx, {"429": 1})
@@ -316,7 +336,7 @@ class Trial(CellCase):
         self.vertex.reply = lambda path: (200, "application/json", docs.pop(0) if docs else GptOssRepair().doc("done", content="Done."))
 
         class OssDocker(FakeTrialDocker):
-            def run_agent(inner, args, stdout_path, timeout):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
                 env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
                 base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
                 events = []
@@ -352,7 +372,7 @@ class Trial(CellCase):
         self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + ProviderBlocked.BLOCKED + b"\n\n")
 
         class Looping(FakeTrialDocker):  # OpenCode retrying an empty answer every few seconds
-            def run_agent(inner, args, stdout_path, timeout):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
                 inner.calls.append(args)
                 env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
                 base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
@@ -385,6 +405,93 @@ class Trial(CellCase):
         self.assertEqual(json.loads((trial_dir / "provider_blocked.json").read_text())["blockReason"], "SAFETY")
         counters = json.loads((trial_dir.parent / "cell_counters.json").read_text())
         self.assertEqual(counters["status"], {"provider_blocked": 1})
+
+    def test_workspace_is_seeded_from_the_image_then_the_task(self):
+        docker = FakeTrialDocker()
+        (self.tasks / "t1" / "workspace" / "data").mkdir()
+        (self.tasks / "t1" / "workspace" / "data" / "oewn.sqlite").write_text("task copy wins")
+        result = self.executor(docker).run_trial(self.spec(index=40), self.tmp / "run")
+        ws = self.tmp / "run" / self.spec(index=40).trial_dir / "workspace"
+        self.assertEqual(docker.hydrated, [("task-img:pinned", "/app")])
+        self.assertEqual((ws / "seed.txt").read_text(), "seed\n")                   # from the task's workspace/
+        self.assertEqual((ws / "data" / "oewn.sqlite").read_text(), "task copy wins")  # task overlays the image
+        self.assertEqual((ws / ".openbench-image-hydrated").read_text(), "task-img:pinned\n")  # checkers won't re-hydrate
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        self.assertEqual(cell["workspace_seed"]["hydrated_from"], "task-img:pinned")
+
+    def test_checkers_run_agent_code_only_inside_containers(self):
+        docker = FakeTrialDocker()
+        result = self.executor(docker).run_trial(self.spec(index=41), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("completed", True))
+        (call,) = docker.checker_calls  # host-native checker: run whole inside the task image
+        self.assertEqual(call[call.index("-w") + 1], "/app")
+        self.assertIn("task-img:pinned", call)
+        self.assertEqual(call[-2:], ["bash", "/openbench-task/checker.sh"])
+        self.assertTrue(any(a.endswith(":/openbench-task:ro") for a in call))
+        trial_dir = self.tmp / "run" / self.spec(index=41).trial_dir
+        self.assertEqual((trial_dir / "checker-mode.txt").read_text().strip(), "in_task_container")
+        # a checker that containerizes itself keeps its own docker runs (its wrapper only reads the reward file)
+        make_task(self.tasks, "selfc")
+        (self.tasks / "selfc" / "checker.sh").write_text('#!/bin/bash\n: docker run --rm "$IMAGE" true\ntest -f out.txt\n')
+        docker = FakeTrialDocker()
+        result = self.executor(docker).run_trial(self.spec(task="selfc", index=42), self.tmp / "run")
+        self.assertFalse(getattr(docker, "checker_calls", []))
+        self.assertEqual(result.status, "completed")
+
+    def test_checker_that_cannot_run_is_checker_error(self):
+        (self.tasks / "t1" / "checker.sh").write_text("#!/bin/bash\nnosuchinterpreter3 check.py\n")
+        result = self.executor().run_trial(self.spec(index=43), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("checker_error", None, 127))
+
+    def test_opencode_mount_shows_only_the_pinned_binary_and_permissions_are_allowed(self):
+        docker = FakeTrialDocker()
+        ex = self.executor(docker)
+        ex.standalone = True
+        ex.run_trial(self.spec(index=44), self.tmp / "run")
+        args = docker.calls[0]
+        mounts = [args[i + 1] for i, a in enumerate(args) if a == "-v"]
+        sha = oc.load_pin()["sha"]
+        self.assertIn(f"{self.binary.parent}:/opt/opencode/{sha}:ro", mounts)
+        self.assertFalse(any("opencode-src:" in m and m.endswith("opencode-src:ro") for m in mounts))
+        self.assertIn(f"/opt/opencode/{sha}/opencode", args)
+        env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+        cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(cfg["permission"], {"external_directory": "allow", "doom_loop": "allow", "read": "allow"})
+        base = next(iter(cfg["provider"].values()))["options"]["baseURL"]
+        proxy_base = base[:base.index("/m/")]
+        # everything else is exactly the smoke's OpenCode config (same provider, model, options)
+        self.assertEqual({k: v for k, v in cfg.items() if k != "permission"}, vm.opencode_config(vm.resolve(OPUS), proxy_base))
+
+    def test_pending_tool_call_at_exit_is_harness_aborted(self):
+        class Aborting(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                code, t = FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                lines = [json.loads(l) for l in Path(stdout_path).read_text().splitlines()]
+                lines[-1]["part"]["reason"] = "tool-calls"   # the last step asked for a tool, then OpenCode exited
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in lines))
+                if stderr_path:
+                    Path(stderr_path).write_text("! permission requested: external_directory (/tmp/*); auto-rejecting\n")
+                return 0, t
+        result = self.executor(Aborting()).run_trial(self.spec(index=45), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("harness_aborted", None))
+        self.assertEqual(result.harness_abort["permission_rejected"], [{"permission": "external_directory", "patterns": "/tmp/*"}])
+        self.assertIn("auto-rejected external_directory", result.error)
+
+    def test_refusal_is_model_refused_with_stop_details(self):
+        from obench.tests.test_reflection_vertex import sse
+        refusal = sse({"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},
+                      {"type": "message_delta", "delta": {"stop_reason": "refusal", "stop_details": {"category": "bio"}},
+                       "usage": {"output_tokens": 2}}, {"type": "message_stop"})
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            from obench.tests.test_reflection_vertex import default_reply
+            return (200, "text/event-stream", refusal) if len(calls) == 2 else default_reply(path)
+        self.vertex.reply = reply
+        result = self.executor(FakeTrialDocker(write_output=False)).run_trial(self.spec(index=46), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("model_refused", None, 1))
+        self.assertEqual(result.model_refused["stop_details"], {"category": "bio"})
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
@@ -468,7 +575,7 @@ class WithRunner(CellCase):
         self.vertex.reply = reply
 
         class RetryFirst(FakeTrialDocker):
-            def run_agent(inner, args, stdout_path, timeout):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
                 if len(calls) == 0:
                     env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
                     base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
@@ -478,7 +585,7 @@ class WithRunner(CellCase):
                                                method="POST", headers={"Content-Type": "application/json"}), timeout=10)
                     except urllib.error.HTTPError:
                         pass
-                return FakeTrialDocker.run_agent(inner, args, stdout_path, timeout)
+                return FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
         run_dir = self.tmp / "run"
         with mock_patch.dict("obench.hardsuite.suite.SOURCES",
                              {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
