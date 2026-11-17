@@ -180,16 +180,20 @@ def prompt_feedback(model: vm.VertexModel, raw: bytes, stream: bool) -> dict | N
 def provider_blocked(wire_records: list[dict]) -> dict | None:
     """The provider blocked the trial's prompt (Gemini ``promptFeedback.blockReason``; status ``provider_blocked``):
     neither pass nor fail, nor route_truncated / upstream_4xx / timeout. The raw blockReason and
-    blockReasonMessage are kept. Records written before this field
-    existed (2026-11-17) are recognised when every answered main call came back empty (no candidates: no finish
-    reason, text, thinking or tool call); that is marked ``inferred``."""
+    blockReasonMessage are kept. Legacy records, written before the field existed (2026-11-17) and so without a
+    ``provider_blocked`` key, are recognised when every answered main call came back empty (no candidates: no
+    finish reason, text, thinking or tool call); that is marked ``inferred``. A current record (key present, null:
+    no blockReason) with empty replies is never inferred as blocked; that trial is ``route_truncated``."""
     for w in sorted(wire_records, key=lambda w: w.get("call_index") or 0):
         if w.get("provider_blocked"):
             return dict(w["provider_blocked"], call_index=w.get("call_index"),
                         calls_blocked=sum(1 for x in wire_records if x.get("provider_blocked")))
     main = [w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200]
     gemini = [w for w in main if w.get("provider_wire") == "gemini"]
-    if gemini and len(gemini) == len(main) and all(
+    # Legacy records only: a record written since the field existed carries the "provider_blocked" key (null when
+    # Vertex sent no blockReason). Empty replies there are not a block; they end route_truncated (infra).
+    legacy = all("provider_blocked" not in w for w in gemini)
+    if gemini and legacy and len(gemini) == len(main) and all(
             not s.get("finish_reasons") and not s.get("text_chars") and not s.get("reasoning_chars")
             and not s.get("tool_calls") for s in (w.get("response_summary") or {} for w in gemini)):
         return {"blockReason": None, "inferred": True, "call_index": gemini[0].get("call_index"),
@@ -224,7 +228,10 @@ def route_truncated(wire_records: list[dict]) -> dict | None:
     summary = last.get("response_summary") or {}
     finishes = summary.get("finish_reasons") or []
     no_call = not summary.get("tool_calls")
-    empty = any(f in STOP_REASONS for f in finishes) and no_call and not summary.get("text_chars")
+    # Nothing came back: a stop with no text/tool call, or (Gemini) no finish reason at all: a reply with no
+    # candidates and no blockReason.
+    no_candidates = not finishes and last.get("provider_wire") == "gemini"
+    empty = (any(f in STOP_REASONS for f in finishes) or no_candidates) and no_call and not summary.get("text_chars")
     # Harmony markup left in the text with no tool call (unrecovered, or an unknown recipient under "reject"):
     # the turn ended on a call OpenCode never saw.
     leaked = no_call and bool(summary.get("harmony_markers_in_text")) and any(
