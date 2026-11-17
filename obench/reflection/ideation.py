@@ -226,9 +226,10 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
                 if s["task"] == proposal["task"] and s["model"] == proposal["model"] and s["patch_id"] is None]
     if not baseline:
         raise ValueError(f"no baseline summary for {proposal['task']} / {proposal['model']}")
-    if baseline[0].get("provider_blocked") or baseline[0].get("verdict") == "excluded":
-        # Researcher ruling 2026-11-17: provider-blocked cells never go to ideation
-        raise ValueError(f"{proposal['task']} / {proposal['model']} is provider-blocked (excluded); not evaluated")
+    if baseline[0].get("provider_blocked") or baseline[0].get("model_refused") or baseline[0].get("verdict") == "excluded":
+        # Researcher rulings 2026-11-17: provider-blocked and model-refused cells never go to ideation
+        raise ValueError(f"{proposal['task']} / {proposal['model']} is provider-blocked or model-refused (set aside); "
+                         "not evaluated")
     sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd)
     selection = _stage("selection", baseline[0], sel_alt, n_trials)
     candidate = selection["selection_complete"] and selection["selection_beats_baseline"]

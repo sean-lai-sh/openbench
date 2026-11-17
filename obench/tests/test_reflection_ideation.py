@@ -197,6 +197,13 @@ class EndToEnd(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "provider-blocked"):
             idn.evaluate(self.run, proposal, executor)
         self.assertEqual(executor.calls, [])
+        for r in rows:
+            if r["task"] == proposal["task"] and r["model"] == proposal["model"] and r["patch_id"] is None:
+                r.update(provider_blocked=0, model_refused=2, verdict="fail")
+        (self.run / "summary.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        with self.assertRaisesRegex(ValueError, "model-refused"):
+            idn.evaluate(self.run, proposal, executor)
+        self.assertEqual(executor.calls, [])
 
     def test_one_pass_against_zero_is_a_candidate_but_must_confirm(self):
         self.setUp_zero_baseline()
