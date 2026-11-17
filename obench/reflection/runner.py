@@ -52,7 +52,14 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # provider_blocked: the provider refused the prompt itself (Gemini promptFeedback.blockReason). Researcher ruling
 # 2026-11-17: neither pass nor fail; excluded from that model's pass rate; reported in its own per-task table
 # (provider_blocked.json); no task swap; blocked cells never go to credit assignment or ideation.
-STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "provider_blocked")
+# model_refused: the model declined (Anthropic stop_reason "refusal"; stop_details kept). Kept apart from pass,
+# fail and infrastructure; how it counts is the Researcher's call (verdict "model_refused" until then).
+# harness_aborted: OpenCode ended the run with a tool call still pending (e.g. `opencode run` auto-rejected a
+# permission request) - infrastructure. checker_error: the checker could not run (missing interpreter/tool in the
+# task image, docker failure) - infrastructure.
+STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "provider_blocked",
+            "model_refused", "harness_aborted", "checker_error")
+SET_ASIDE = ("provider_blocked", "model_refused")  # neither pass/fail nor infra; not in errors
 # Run labels that fix which task population a run may use, so runs with different populations are never pooled.
 # "repo pilot suite": the repo's pilot suite and pool only; tasks imported by obench.taskimport (their task.toml
 # records docker_image_id_at_import) are refused.
@@ -96,6 +103,8 @@ class TrialResult:
     retried_4xx: dict | None = None           # {"429": n, ...}: 4xx calls OpenCode recovered from (covariate)
     image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran
     provider_blocked: dict | None = None      # raw {blockReason, blockReasonMessage, ...} when status is provider_blocked
+    model_refused: dict | None = None         # {stop_reason, stop_details, call_index, ...} when status is model_refused
+    harness_abort: dict | None = None         # why OpenCode stopped with a tool call pending (harness_aborted)
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
@@ -423,6 +432,7 @@ class Runner:
                "suite_label": self.config.suite_label, "code_commit": self.code["commit"],
                "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
                "retried_4xx": result.retried_4xx or {}, "provider_blocked": result.provider_blocked,
+               "model_refused": result.model_refused, "harness_abort": result.harness_abort,
                "workers": self.workers, "wall_seconds": round(_time.monotonic() - t0, 1),
                "host_load": {"start": load_start, "end": _load(), "cpus": os.cpu_count()},
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
@@ -443,12 +453,16 @@ class Runner:
         summaries = []
         for (task, model, patch_id), trials in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0], str(kv[0][2]))):
             blocked = [t for t in trials if t["status"] == "provider_blocked"]
+            refused = [t for t in trials if t["status"] == "model_refused"]
             completed = [t for t in trials if t["status"] == "completed"]
             passes = sum(1 for t in completed if t["passed"])
             n = self.config.n_trials
             # Blocked trials are neither pass nor fail. A cell with any blocked trial is "excluded" once all its
-            # trials are in (no pass/fail verdict, no swap, never sent to credit assignment or ideation).
-            verdict = ("excluded" if blocked and len(completed) + len(blocked) >= n
+            # trials are in (no pass/fail verdict, no swap, never sent to credit assignment or ideation). Refusals
+            # are set aside the same way under their own verdict, "model_refused", until the Researcher rules.
+            settled = len(completed) + len(blocked) + len(refused) >= n
+            verdict = ("excluded" if blocked and settled
+                       else "model_refused" if refused and settled
                        else "incomplete" if len(completed) < n
                        else "pass" if swap.passed(passes, len(completed), cutoff) else "fail")
             costs = [t["cost_usd"] for t in trials]
@@ -457,10 +471,14 @@ class Runner:
                 "schema": SUMMARY_SCHEMA, "run_id": self.config.run_id, "task": task, "model": model,
                 "patch_id": patch_id, "planned": n, "trials": len(trials), "completed": len(completed),
                 "passes": passes, "fails": len(completed) - passes,
-                "errors": sum(1 for t in trials if t["status"] not in ("completed", "provider_blocked")),
+                "errors": sum(1 for t in trials if t["status"] not in ("completed", *SET_ASIDE)),
                 "route_truncated": sum(1 for t in trials if t["status"] == "route_truncated"),
                 "upstream_4xx": sum(1 for t in trials if t["status"] == "upstream_4xx"),
                 "provider_blocked": len(blocked),
+                "model_refused": len(refused),
+                "model_refused_checker_passes": sum(1 for t in refused if t.get("checker_exit") == 0),
+                "harness_aborted": sum(1 for t in trials if t["status"] == "harness_aborted"),
+                "checker_error": sum(1 for t in trials if t["status"] == "checker_error"),
                 "workers": sorted({t.get("workers") for t in trials if t.get("workers") is not None}),
                 "retried_4xx": _sum_counts(t.get("retried_4xx") for t in trials),
                 "image_ids": sorted({str(t.get("image_id")) for t in trials}),
@@ -498,6 +516,7 @@ class Runner:
                 "fail": sorted(s["task"] for s in mine if s["verdict"] == "fail"),
                 "incomplete": sorted(s["task"] for s in mine if s["verdict"] == "incomplete"),
                 "excluded": sorted(s["task"] for s in mine if s["verdict"] == "excluded"),
+                "model_refused": sorted(s["task"] for s in mine if s["verdict"] == "model_refused"),
                 "provider_blocked": sorted(s["task"] for s in mine if s.get("provider_blocked")),
                 "current_suite": swap.current_tasks(self._swap_state(model)),
                 # tasks that ran an image other than the pinned one (--use-image-tag): label, never mix silently

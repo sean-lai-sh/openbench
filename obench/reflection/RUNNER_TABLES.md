@@ -43,7 +43,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `model`, `vertex_id` | string | The reflection model and its Vertex ID |
 | `trial_index` | int | 0..n_trials-1 |
 | `patch_id` | string\|null | Null for baseline rows |
-| `status` | string | `completed`, `error`, `timeout`, `route_truncated`, `provider_blocked` (the provider refused the prompt itself, e.g. Gemini `promptFeedback.blockReason: SAFETY`: neither pass nor fail, see the summary row), `upstream_4xx` (a main call came back 4xx and no main call after it succeeded: the 4xx ended or broke the trial; `wire_proxy.classify_4xx`). A 4xx that OpenCode retried and recovered from does not change the status; it is counted in `retried_4xx`. An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text. Both it and `upstream_4xx` are infrastructure failures, not task fails. Every status other than `completed` has `passed: null`; all but `provider_blocked` count in `errors`, so the cell stays `incomplete` until it has N completed trials. |
+| `status` | string | `completed`, `error`, `timeout`, `route_truncated`, `harness_aborted` (OpenCode ended the run with a tool call still pending; e.g. `opencode run` auto-rejects permission requests), `checker_error` (the checker itself could not run), `model_refused` (the model declined: Anthropic `stop_reason: "refusal"`; kept apart from pass/fail and infra, see the summary row), `provider_blocked` (the provider refused the prompt itself, e.g. Gemini `promptFeedback.blockReason: SAFETY`: neither pass nor fail, see the summary row), `upstream_4xx` (a main call came back 4xx and no main call after it succeeded: the 4xx ended or broke the trial; `wire_proxy.classify_4xx`). A 4xx that OpenCode retried and recovered from does not change the status; it is counted in `retried_4xx`. An executor crash is recorded as `error`, never skipped. `route_truncated` means the last model call ended with finish reason stop, no tool call and no text. Both it and `upstream_4xx` are infrastructure failures, not task fails. Every status other than `completed` has `passed: null`; all but `provider_blocked` and `model_refused` count in `errors`, so the cell stays `incomplete` until it has N completed trials. |
 | `passed` | bool\|null | Checker verdict; null unless `completed` |
 | `checker_exit`, `steps` | int\|null | |
 | `cost_usd` | number\|null | From the wire records (`vertex_models.cost_usd`) |
@@ -63,6 +63,8 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `trace`, `wire`, `trial_dir` | string\|null | Relative pointers |
 | `started_at`, `finished_at` | string | ISO-8601 UTC |
 | `provider_blocked` | object\|null | Raw `{blockReason, blockReasonMessage, safetyRatings}` plus `call_index`, `calls_blocked` for a `provider_blocked` trial (`inferred: true` when reclassified from records that predate the field) |
+| `model_refused` | object\|null | `{stop_reason, stop_details, call_index, calls_refused, last_call_refused}` for a `model_refused` trial (`checker_exit` is still recorded) |
+| `harness_abort` | object\|null | For `harness_aborted`: `{last_finish, pending_tools, permission_rejected, stream_errors}` |
 | `workers` | int | The run's fixed worker count |
 | `wall_seconds`, `host_load` | number, object | Trial wall time, and `{start, end, cpus}`: the host's 1/5/15-minute load average when the trial started and ended, so contention-driven timeouts are visible |
 | `error` | string\|null | |
@@ -75,6 +77,8 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `planned`, `trials`, `completed`, `passes`, `fails`, `errors` | Counts |
 | `route_truncated`, `upstream_4xx` | How many of `errors` were `route_truncated` / `upstream_4xx` trials |
 | `provider_blocked` | Trials whose prompt the provider blocked (**not** in `errors`). Researcher ruling 2026-11-17: neither pass nor fail and excluded from the model's pass rate. A cell with any blocked trial gets verdict `excluded` once all its trials are in. It is never swapped, never sent to credit assignment (Methods A/B) or ideation, and is listed in `provider_blocked.json` and in `verdicts.json` (`excluded`, `provider_blocked`). |
+| `model_refused`, `model_refused_checker_passes` | Trials where the model declined (**not** in `errors`), and how many of them the checker would still pass. A cell with any refusal gets verdict `model_refused` once all its trials are in (no swap). How refusals count is the Researcher's call; the rows keep everything needed to recount them. |
+| `harness_aborted`, `checker_error` | How many of `errors` were these infrastructure statuses |
 | `workers` | The worker count(s) the group's trials ran under |
 | `retried_4xx` | Sum of the trials' `retried_4xx` by status code |
 | `image_ids`, `image_matches_pin` | Every image id the group ran; `false` if any trial ran an image that doesn't match its pin, `true` if all matched, `null` if no pin. `verdicts.json` lists such tasks per model as `image_matches_pin_false`. |

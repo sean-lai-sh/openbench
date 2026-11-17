@@ -585,6 +585,48 @@ class ProviderBlocked(ProxyCase):
         self.assertIsNone(provider_blocked([answered, *legacy[1:]]))
 
 
+class StreamFailures(ProxyCase):
+    def test_upstream_reset_mid_stream_is_recorded_and_signalled(self):
+        class Resetting:
+            status, headers = 200, {"Content-Type": "text/event-stream"}
+
+            def __init__(self):
+                self.parts = [b'data: {"type": "message_start", "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 5, "output_tokens": 1}}}\n\n']
+
+            def getcode(self):
+                return 200
+
+            def read1(self, n):
+                if self.parts:
+                    return self.parts.pop(0)
+                raise ConnectionResetError(104, "Connection reset by peer")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        self.proxy.opener = lambda request, timeout: Resetting()
+        body = {"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "messages": [{"role": "user", "content": "go"}]}
+        status, payload = self.post("/m/claude-opus-5-5/v1/messages", body)
+        self.assertIn(b"event: error", payload)
+        (rec,) = self.records()
+        self.assertIn("ConnectionResetError", rec["stream_error"])
+        self.assertEqual(rec["response_bytes"] > 0, True)
+
+    def test_refusal_is_recorded_with_stop_details(self):
+        from obench.reflection.wire_proxy import model_refused
+        stream = sse({"type": "message_start", "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 5, "output_tokens": 1}}},
+                     {"type": "message_delta", "delta": {"stop_reason": "refusal", "stop_details": {"type": "refusal", "category": "bio"}},
+                      "usage": {"output_tokens": 3}}, {"type": "message_stop"})
+        self.vertex.reply = lambda path: (200, "text/event-stream", stream)
+        body = {"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "messages": [{"role": "user", "content": "go"}]}
+        self.post("/m/claude-opus-5-5/v1/messages", body)
+        (rec,) = self.records()
+        self.assertEqual(model_refused([rec]), {"stop_reason": "refusal", "stop_details": {"type": "refusal", "category": "bio"},
+                                                "call_index": 1, "calls_refused": 1, "last_call_refused": True})
+
+
 class GptOssDiag(unittest.TestCase):
     def test_runs_every_variant_and_saves_raw_bytes(self):
         import os
