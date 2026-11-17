@@ -395,6 +395,34 @@ class Trial(CellCase):
                             trial_dir=f"trials/gemini-4-carbon/t1/carbon{index}")
         return docker, spec, self.executor(docker).run_trial(spec, self.tmp / "run")
 
+    def test_empty_carbon_reply_without_block_reason_is_route_truncated(self):
+        """Researcher review of 80579940: no candidates and no blockReason is not a provider block."""
+        empty = json.dumps({"usageMetadata": {"promptTokenCount": 50, "totalTokenCount": 50},
+                            "modelVersion": "gemini-4-carbon"}).encode()
+        self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + empty + b"\n\n")
+
+        class OneCall(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                body = {"contents": [{"role": "user", "parts": [{"text": "go"}]}], "tools": [{"functionDeclarations": [{"name": "bash"}]}],
+                        "generationConfig": {"thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True}}}
+                urllib.request.urlopen(urllib.request.Request(base + "/models/gemini-4-carbon:streamGenerateContent?alt=sse",
+                                       data=json.dumps(body).encode(), method="POST",
+                                       headers={"Content-Type": "application/json"}), timeout=10).read()
+                ev = [{"type": "step_start", "timestamp": 1, "sessionID": "s", "part": {"messageID": "m1", "type": "step-start"}},
+                      {"type": "step_finish", "timestamp": 2, "sessionID": "s", "part": {"messageID": "m1", "type": "step-finish",
+                       "reason": "unknown", "cost": 0, "tokens": {"input": 1, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}]
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in ev))
+                return 0, False
+        spec = rn.TrialSpec(run_id="r", trial_id="carbonempty", task="t1", tasks_dir=str(self.tasks), model="gemini-4-carbon",
+                            trial_index=0, patch_id=None, patch=None, trial_dir="trials/gemini-4-carbon/t1/carbonempty")
+        result = self.executor(OneCall(write_output=False)).run_trial(spec, self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.provider_blocked), ("route_truncated", None, None))
+        wire = [json.loads(l) for l in (self.tmp / "run" / result.wire).read_text().splitlines()]
+        self.assertIn("provider_blocked", wire[0])
+        self.assertIsNone(wire[0]["provider_blocked"])
+
     def test_blocked_prompt_ends_the_trial_at_once(self):
         docker, spec, result = self.blocked_carbon_trial(0)
         self.assertEqual((result.status, result.passed), ("provider_blocked", None))
