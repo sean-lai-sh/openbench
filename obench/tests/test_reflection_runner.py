@@ -225,6 +225,27 @@ class Tables(Base):
         self.assertEqual((table["trials_blocked"], table["trials"], table["block_reasons"], table["block_reason_messages"]),
                          (3, 3, {"SAFETY": 3}, ["m"]))
 
+    def test_model_refused_is_set_aside_and_harness_aborts_are_infra(self):
+        class Mixed(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.task == "extract-elf":
+                    return rn.TrialResult(status="model_refused", passed=None, checker_exit=1,
+                                          model_refused={"stop_reason": "refusal", "stop_details": {"category": "bio"}})
+                if spec.trial_index == 0:
+                    return rn.TrialResult(status="harness_aborted", passed=None,
+                                          harness_abort={"last_finish": "tool-calls", "permission_rejected": ["external_directory"]})
+                return super().run_trial(spec, run_dir)
+        self.run_with(Mixed({}), models=[OPUS], max_rounds=1)
+        s = {r["task"]: r for r in rn.read_rows(self.dir / "summary.jsonl")}
+        self.assertEqual((s["extract-elf"]["verdict"], s["extract-elf"]["model_refused"], s["extract-elf"]["errors"]),
+                         ("model_refused", 3, 0))
+        self.assertEqual((s["sanitize-git-repo"]["verdict"], s["sanitize-git-repo"]["harness_aborted"],
+                          s["sanitize-git-repo"]["errors"]), ("incomplete", 1, 1))
+        v = json.loads((self.dir / "verdicts.json").read_text())["models"][OPUS]
+        self.assertEqual(v["model_refused"], ["extract-elf"])
+        row = [r for r in rn.read_rows(self.dir / "trials.jsonl") if r["task"] == "extract-elf"][0]
+        self.assertEqual((row["model_refused"]["stop_details"], row["checker_exit"]), ({"category": "bio"}, 1))
+
     def test_workers_are_fixed_recorded_and_models_interleave(self):
         runner = rn.Runner(config(models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1), self.dir,
                            rn.FixtureExecutor({}), workers=3)
