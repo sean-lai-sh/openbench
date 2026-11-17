@@ -583,6 +583,11 @@ class ProviderBlocked(ProxyCase):
         self.assertEqual(provider_blocked(legacy), {"blockReason": None, "inferred": True, "call_index": 1, "calls_blocked": 3})
         answered = dict(legacy[0], response_summary=dict(empty, finish_reasons=["STOP"], text_chars=5))
         self.assertIsNone(provider_blocked([answered, *legacy[1:]]))
+        # current records carry the key; null means Vertex sent no blockReason: never inferred as a block
+        current = [dict(w, provider_blocked=None) for w in legacy]
+        self.assertIsNone(provider_blocked(current))
+        from obench.reflection.wire_proxy import route_truncated
+        self.assertEqual(route_truncated(current)["kind"], "empty")  # an infra failure, not an exclusion
 
 
 class StreamFailures(ProxyCase):
