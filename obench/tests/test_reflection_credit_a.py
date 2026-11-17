@@ -97,6 +97,9 @@ class MethodA(unittest.TestCase):
                      "status": "provider_blocked", "passed": None, "trace": None})
         (run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in rows))
         self.assertEqual(ca.run_method_a(run), [])  # the whole cell is out, its completed failures too
+        rows[-1]["status"] = "model_refused"
+        (run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in rows))
+        self.assertEqual(ca.run_method_a(run), [])  # a refusal sets the cell aside the same way
 
     def test_documented_fields_match_rows(self):
         import re
