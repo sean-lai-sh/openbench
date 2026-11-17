@@ -628,8 +628,28 @@ class StreamFailures(ProxyCase):
         body = {"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "messages": [{"role": "user", "content": "go"}]}
         self.post("/m/claude-opus-5-5/v1/messages", body)
         (rec,) = self.records()
-        self.assertEqual(model_refused([rec]), {"stop_reason": "refusal", "stop_details": {"type": "refusal", "category": "bio"},
-                                                "call_index": 1, "calls_refused": 1, "last_call_refused": True})
+        got = model_refused([rec])
+        self.assertEqual((got["stop_reason"], got["stop_details"], got["call_index"], got["calls_refused"], got["last_call_refused"]),
+                         ("refusal", {"type": "refusal", "category": "bio"}, 1, 1, True))
+
+    def test_gemini_safety_finish_midway_is_a_refusal(self):
+        from obench.reflection.wire_proxy import model_refused, provider_blocked
+        ok = sse({"candidates": [{"content": {"parts": [{"text": "x"}]}, "finishReason": "STOP"}], "modelVersion": "gemini-4-carbon",
+                  "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 1}})
+        safety = sse({"candidates": [{"finishReason": "SAFETY", "safetyRatings": [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                                                                                   "probability": "HIGH"}]}],
+                      "modelVersion": "gemini-4-carbon", "usageMetadata": {"promptTokenCount": 9}})
+        replies = [ok, safety, ok]
+        self.vertex.reply = lambda path: (200, "text/event-stream", replies.pop(0))
+        path = "/m/gemini-4-carbon/v1beta/models/gemini-4-carbon:streamGenerateContent?alt=sse"
+        body = {"contents": [{"role": "user", "parts": [{"text": "go"}]}], "tools": [{"functionDeclarations": []}]}
+        for _ in range(3):
+            self.post(path, body)
+        recs = self.records()
+        got = model_refused(recs)
+        self.assertEqual((got["stop_reason"], got["call_index"], got["last_call_refused"]), ("SAFETY", 2, False))
+        self.assertEqual(got["safety_ratings"][0]["probability"], "HIGH")
+        self.assertIsNone(provider_blocked(recs))  # a candidate came back: not a blocked prompt
 
 
 class GptOssDiag(unittest.TestCase):
