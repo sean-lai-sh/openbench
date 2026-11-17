@@ -49,16 +49,18 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # error and timeout: it never counts as a task fail.
 # upstream_4xx: a 4xx ended or broke the trial (no successful main call after it; wire_proxy.classify_4xx).
 # Also infrastructure. A 4xx that OpenCode retried and recovered from is not: it is the retried_4xx covariate.
-# provider_blocked: the provider refused the prompt itself (Gemini promptFeedback.blockReason). Researcher ruling
-# 2026-11-17: neither pass nor fail; excluded from that model's pass rate; reported in its own per-task table
-# (provider_blocked.json); no task swap; blocked cells never go to credit assignment or ideation.
-# model_refused: the model declined (Anthropic stop_reason "refusal"; stop_details kept). Kept apart from pass,
-# fail and infrastructure; how it counts is the Researcher's call (verdict "model_refused" until then).
-# harness_aborted: OpenCode ended the run with a tool call still pending (e.g. `opencode run` auto-rejected a
-# permission request) - infrastructure. checker_error: the checker could not run (missing interpreter/tool in the
-# task image, docker failure) - infrastructure.
+# Set-aside statuses (Researcher rulings 2026-11-17), each trial classified on its own:
+#   provider_blocked: the trial's last answered call had Gemini promptFeedback.blockReason.
+#   model_refused: otherwise, any call refused or stopped for safety (Anthropic stop_reason "refusal", Gemini
+#     finishReason SAFETY), recorded with the step it happened on.
+# Both are neither pass nor fail: left out of the pass-rate denominator and the swap rule, reported per task and
+# model (set_aside.json, provider_blocked.json) with a sensitivity check that counts them all as fails, and cells
+# with any of them never go to credit assignment or ideation.
+# agent_exit_pending_tool: OpenCode exited 0 with a tool call still pending (e.g. `opencode run` auto-rejected a
+# permission request) - infrastructure, never a task fail. checker_error: the checker could not run (missing
+# interpreter/tool in the task image, docker failure) - infrastructure.
 STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "provider_blocked",
-            "model_refused", "harness_aborted", "checker_error")
+            "model_refused", "agent_exit_pending_tool", "checker_error")
 SET_ASIDE = ("provider_blocked", "model_refused")  # neither pass/fail nor infra; not in errors
 # Run labels that fix which task population a run may use, so runs with different populations are never pooled.
 # "repo pilot suite": the repo's pilot suite and pool only; tasks imported by obench.taskimport (their task.toml
@@ -103,8 +105,8 @@ class TrialResult:
     retried_4xx: dict | None = None           # {"429": n, ...}: 4xx calls OpenCode recovered from (covariate)
     image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran
     provider_blocked: dict | None = None      # raw {blockReason, blockReasonMessage, ...} when status is provider_blocked
-    model_refused: dict | None = None         # {stop_reason, stop_details, call_index, ...} when status is model_refused
-    harness_abort: dict | None = None         # why OpenCode stopped with a tool call pending (harness_aborted)
+    model_refused: dict | None = None         # {stop_reason, stop_details, call_index, step, refusals, ...}
+    agent_exit: dict | None = None            # agent_exit_pending_tool: {last_finish, pending_tools, permission_rejected, ...}
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
@@ -443,7 +445,7 @@ class Runner:
                "suite_label": self.config.suite_label, "code_commit": self.code["commit"],
                "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
                "retried_4xx": result.retried_4xx or {}, "provider_blocked": result.provider_blocked,
-               "model_refused": result.model_refused, "harness_abort": result.harness_abort,
+               "model_refused": result.model_refused, "agent_exit": result.agent_exit,
                "workers": self.workers, "wall_seconds": round(_time.monotonic() - t0, 1),
                "host_load": {"start": load_start, "end": _load(), "cpus": os.cpu_count()},
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
@@ -468,14 +470,16 @@ class Runner:
             completed = [t for t in trials if t["status"] == "completed"]
             passes = sum(1 for t in completed if t["passed"])
             n = self.config.n_trials
-            # Blocked trials are neither pass nor fail. A cell with any blocked trial is "excluded" once all its
-            # trials are in (no pass/fail verdict, no swap, never sent to credit assignment or ideation). Refusals
-            # are set aside the same way under their own verdict, "model_refused", until the Researcher rules.
-            settled = len(completed) + len(blocked) + len(refused) >= n
-            verdict = ("excluded" if blocked and settled
-                       else "model_refused" if refused and settled
-                       else "incomplete" if len(completed) < n
+            # Set-aside trials (blocked, refused) are neither pass nor fail: the verdict is over the completed trials
+            # only, once every trial is in; a cell with nothing but set-aside trials is "excluded". The sensitivity
+            # verdict counts every set-aside trial as a fail.
+            aside = len(blocked) + len(refused)
+            settled = len(completed) + aside >= n
+            verdict = ("incomplete" if not settled
+                       else "excluded" if not completed
                        else "pass" if swap.passed(passes, len(completed), cutoff) else "fail")
+            verdict_all_fail = ("incomplete" if not settled
+                                else "pass" if swap.passed(passes, len(completed) + aside, cutoff) else "fail")
             costs = [t["cost_usd"] for t in trials]
             thinking = [t["thinking_tokens"] for t in trials if isinstance(t.get("thinking_tokens"), int)]
             summaries.append({
@@ -488,7 +492,10 @@ class Runner:
                 "provider_blocked": len(blocked),
                 "model_refused": len(refused),
                 "model_refused_checker_passes": sum(1 for t in refused if t.get("checker_exit") == 0),
-                "harness_aborted": sum(1 for t in trials if t["status"] == "harness_aborted"),
+                "set_aside": aside,
+                "pass_rate_all_fail": round(passes / (len(completed) + aside), 4) if completed or aside else None,
+                "verdict_all_fail": verdict_all_fail,
+                "agent_exit_pending_tool": sum(1 for t in trials if t["status"] == "agent_exit_pending_tool"),
                 "checker_error": sum(1 for t in trials if t["status"] == "checker_error"),
                 "workers": sorted({t.get("workers") for t in trials if t.get("workers") is not None}),
                 "retried_4xx": _sum_counts(t.get("retried_4xx") for t in trials),
@@ -527,7 +534,9 @@ class Runner:
                 "fail": sorted(s["task"] for s in mine if s["verdict"] == "fail"),
                 "incomplete": sorted(s["task"] for s in mine if s["verdict"] == "incomplete"),
                 "excluded": sorted(s["task"] for s in mine if s["verdict"] == "excluded"),
-                "model_refused": sorted(s["task"] for s in mine if s["verdict"] == "model_refused"),
+                "model_refused": sorted(s["task"] for s in mine if s.get("model_refused")),
+                # sensitivity: every set-aside trial counted as a fail
+                "pass_all_fail": sorted(s["task"] for s in mine if s.get("verdict_all_fail") == "pass"),
                 "provider_blocked": sorted(s["task"] for s in mine if s.get("provider_blocked")),
                 "current_suite": swap.current_tasks(self._swap_state(model)),
                 # tasks that ran an image other than the pinned one (--use-image-tag): label, never mix silently
@@ -535,7 +544,34 @@ class Runner:
             }
         _write_json(self.run_dir / "verdicts.json", verdicts)
         self.write_provider_blocked()
+        self.write_set_aside(summaries)
         return verdicts
+
+    def write_set_aside(self, summaries: list[dict]) -> dict:
+        """Per model and task: blocked and refused counts, the refusals with the step each happened on, and the
+        sensitivity check (pass rate and verdict with every set-aside trial counted as a fail)."""
+        rows = read_rows(self.trials_path)
+        table: dict = {}
+        for s in summaries:
+            if not (s.get("provider_blocked") or s.get("model_refused")):
+                continue
+            refusals = [{"trial_id": r["trial_id"], **{k: (r.get("model_refused") or {}).get(k)
+                                                       for k in ("stop_reason", "step", "call_index", "stop_details")}}
+                        for r in rows if r["status"] == "model_refused" and r["task"] == s["task"]
+                        and r["model"] == s["model"] and r["patch_id"] == s["patch_id"]]
+            table.setdefault(s["model"], {})[s["task"] if s["patch_id"] is None else f"{s['task']}@{s['patch_id']}"] = {
+                "trials": s["trials"], "completed": s["completed"], "passes": s["passes"],
+                "provider_blocked": s["provider_blocked"], "model_refused": s["model_refused"],
+                "pass_rate": s["pass_rate"], "verdict": s["verdict"],
+                "pass_rate_all_fail": s["pass_rate_all_fail"], "verdict_all_fail": s["verdict_all_fail"],
+                "refusals": refusals}
+        doc = {"run_id": self.config.run_id, "suite_label": self.config.suite_label,
+               "rule": "provider_blocked (last answered call had promptFeedback.blockReason) and model_refused (any "
+                       "refusal / SAFETY finish): neither pass nor fail; left out of the denominator and the swap "
+                       "rule; cells never sent to credit assignment or ideation. *_all_fail: sensitivity check "
+                       "counting them all as fails.", "models": table}
+        _write_json(self.run_dir / "set_aside.json", doc)
+        return doc
 
     def write_provider_blocked(self) -> dict:
         """The per-task table of provider-blocked trials, per model: how many, out of how many, and the raw

@@ -100,6 +100,7 @@ def failed_trials(run_dir: Path) -> list[dict]:
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     # A cell (task, model, patch) with any provider_blocked trial never goes to credit assignment (Researcher
     # ruling 2026-11-17), not even its completed trials.
-    blocked = {(r["task"], r["model"], r.get("patch_id")) for r in rows if r.get("status") == "provider_blocked"}
+    blocked = {(r["task"], r["model"], r.get("patch_id")) for r in rows
+               if r.get("status") in ("provider_blocked", "model_refused")}  # set-aside cells (rulings 2026-11-17)
     return [r for r in rows if r.get("status") == "completed" and r.get("passed") is False
             and (r["task"], r["model"], r.get("patch_id")) not in blocked]
