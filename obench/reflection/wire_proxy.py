@@ -185,11 +185,13 @@ def provider_blocked(wire_records: list[dict]) -> dict | None:
     ``provider_blocked`` key, are recognised when every answered main call came back empty (no candidates: no
     finish reason, text, thinking or tool call); that is marked ``inferred``. A current record (key present, null:
     no blockReason) with empty replies is never inferred as blocked; that trial is ``route_truncated``."""
-    for w in sorted(wire_records, key=lambda w: w.get("call_index") or 0):
-        if w.get("provider_blocked"):
-            return dict(w["provider_blocked"], call_index=w.get("call_index"),
-                        calls_blocked=sum(1 for x in wire_records if x.get("provider_blocked")))
-    main = [w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200]
+    main = sorted((w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200),
+                  key=lambda w: w.get("call_index") or 0)
+    # Researcher ruling 2026-11-17: classified on the trial's last answered call (later calls are refused by the
+    # proxy without being sent, so a block is always the last answered call).
+    if main and main[-1].get("provider_blocked"):
+        return dict(main[-1]["provider_blocked"], call_index=main[-1].get("call_index"),
+                    calls_blocked=sum(1 for x in wire_records if x.get("provider_blocked")))
     gemini = [w for w in main if w.get("provider_wire") == "gemini"]
     # Legacy records only: a record written since the field existed carries the "provider_blocked" key (null when
     # Vertex sent no blockReason). Empty replies there are not a block; they end route_truncated (infra).
@@ -202,18 +204,27 @@ def provider_blocked(wire_records: list[dict]) -> dict | None:
     return None
 
 
+REFUSAL_FINISHES = {"anthropic": ("refusal",), "gemini": ("SAFETY",), "openai_chat": ("content_filter",)}
+
+
 def model_refused(wire_records: list[dict]) -> dict | None:
-    """The model declined (Anthropic ``stop_reason: "refusal"``, with ``stop_details`` when sent). A trial with
-    such a main call is ``model_refused``: kept apart from pass/fail and from infrastructure statuses."""
+    """The model's output was refused or stopped for safety at any point of the trial: Anthropic
+    ``stop_reason: "refusal"`` (with ``stop_details``), or a Gemini candidate with ``finishReason: SAFETY``
+    (with its ``safetyRatings``). Researcher ruling 2026-11-17: ``model_refused`` is set aside like
+    ``provider_blocked`` (neither pass nor fail). Returns the first refusal and every refused call."""
     main = sorted((w for w in wire_records if w.get("call_role") != "side" and w.get("status") == 200),
                   key=lambda w: w.get("call_index") or 0)
-    refused = [w for w in main if "refusal" in ((w.get("response_summary") or {}).get("finish_reasons") or [])]
+    refused = []
+    for w in main:
+        summary = w.get("response_summary") or {}
+        hits = [f for f in summary.get("finish_reasons") or [] if f in REFUSAL_FINISHES.get(w.get("provider_wire"), ())]
+        if hits:
+            refused.append({"call_index": w.get("call_index"), "stop_reason": hits[0],
+                            "stop_details": summary.get("stop_details"), "safety_ratings": summary.get("safety_ratings")})
     if not refused:
         return None
-    first = refused[0]
-    return {"stop_reason": "refusal", "stop_details": (first.get("response_summary") or {}).get("stop_details"),
-            "call_index": first.get("call_index"), "calls_refused": len(refused),
-            "last_call_refused": main[-1] is refused[-1]}
+    return dict(refused[0], calls_refused=len(refused), refusals=refused,
+                last_call_refused=refused[-1]["call_index"] == main[-1].get("call_index"))
 
 
 STOP_REASONS = ("stop", "end_turn", "STOP")
@@ -338,6 +349,8 @@ def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
                         out["text_chars"] += len(part.get("text") or "")
                 if cand.get("finishReason"):
                     out["finish_reasons"].append(cand["finishReason"])
+                    if cand["finishReason"] == "SAFETY" and cand.get("safetyRatings"):
+                        out["safety_ratings"] = cand["safetyRatings"]
     if model.wire == "openai_chat":
         out["tool_calls"] = len(tool_ids)
         text = "".join(text_parts)
