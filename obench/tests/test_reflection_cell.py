@@ -66,6 +66,16 @@ class FakeTrialDocker:
                       stdout=sp.PIPE, stderr=sp.STDOUT, text=True, timeout=timeout)
         return proc.returncode, proc.stdout
 
+    metadata_open = False     # what the isolation probe finds (the real VM before the DOCKER-USER rule: True)
+
+    def agent_gateway(self):
+        self.gateways = getattr(self, "gateways", []) + ["agent"]
+        return "127.0.0.1"
+
+    def probe(self, network, image, targets):
+        self.probes = getattr(self, "probes", []) + [(network, image)]
+        return {f"{h}:{p}": (self.metadata_open if h == "169.254.169.254" else True) for h, p in targets}
+
     def bridge_gateway(self):
         self.gateways = getattr(self, "gateways", []) + ["bridge"]
         return "127.0.0.1"
@@ -196,7 +206,7 @@ class Trial(CellCase):
         result = self.executor(FakeTrialDocker(write_output=False)).run_trial(self.spec(index=1), self.tmp / "run")
         self.assertEqual((result.status, result.passed, result.checker_exit), ("completed", False, 1))
         result = self.executor(FakeTrialDocker(timeout=True)).run_trial(self.spec(index=2), self.tmp / "run")
-        self.assertEqual((result.status, result.passed), ("timeout", None))
+        self.assertEqual((result.status, result.passed, result.cost_usd, result.cost_unpriced_calls), ("timeout", None, 0.0, 0))
 
         class Lossy(FakeTrialDocker):
             def run_agent(self, args, stdout_path, timeout, stderr_path=None):
@@ -205,8 +215,10 @@ class Trial(CellCase):
                 Path(stdout_path).write_text("\n".join(lines[:3]) + "\n")  # one step lost from the stream
                 return code, t
         result = self.executor(Lossy()).run_trial(self.spec(index=3), self.tmp / "run")
-        self.assertEqual(result.status, "error")
-        self.assertIn("trace_error: step_call_mismatch", result.error)
+        # the checker ran: its verdict stands; the accounting problem is a warning, not an error
+        self.assertEqual((result.status, result.passed, result.checker_exit, result.trace), ("completed", True, 0, None))
+        self.assertIn("step_call_mismatch", result.trace_warning)
+        self.assertTrue((self.tmp / "run" / self.spec(index=3).trial_dir / "trace_warning.txt").is_file())
 
     def test_empty_stop_is_route_truncated_not_a_fail(self):
         from obench.tests.test_reflection_vertex import sse
@@ -235,8 +247,9 @@ class Trial(CellCase):
     def test_agent_network_follows_solution_needs_network(self):
         make_task(self.tasks, "online", needs_network=True)
         make_task(self.tasks, "offline", needs_network=False)
-        cases = [("online", {}, "bridge", "bridge"), ("offline", {}, "offline", ce.OFFLINE_NETWORK),
-                 ("t1", {}, "bridge", "bridge"), ("t1", {"unflagged_network": "offline"}, "offline", ce.OFFLINE_NETWORK)]
+        # "bridge" mode runs on the dedicated agent network (no metadata server), never docker's default bridge
+        cases = [("online", {}, "bridge", ce.AGENT_NETWORK), ("offline", {}, "offline", ce.OFFLINE_NETWORK),
+                 ("t1", {}, "bridge", ce.AGENT_NETWORK), ("t1", {"unflagged_network": "offline"}, "offline", ce.OFFLINE_NETWORK)]
         for i, (task, kw, network, docker_net) in enumerate(cases):
             with self.subTest(task=task, **kw):
                 docker = FakeTrialDocker()
@@ -244,7 +257,8 @@ class Trial(CellCase):
                 self.assertEqual(result.status, "completed")
                 args = docker.calls[0]
                 self.assertEqual(args[args.index("--network") + 1], docker_net)
-                self.assertEqual(docker.gateways, [network])   # the proxy binds on that network's gateway
+                # after the isolation preflight (both networks), the proxy binds on the trial network's gateway
+                self.assertEqual(docker.gateways, ["agent", "offline", "agent" if network == "bridge" else "offline"])
                 self.assertEqual("OPENCODE_DISABLE_MODELS_FETCH=1" in args, network == "offline")
                 cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
                 self.assertEqual((cell["agent_network"], cell["network_unflagged"]), (network, task == "t1"))
@@ -571,6 +585,55 @@ class Trial(CellCase):
         result = self.executor(FakeTrialDocker()).run_trial(self.spec(index=47), self.tmp / "run")
         self.assertEqual((result.status, result.passed, result.checker_exit), ("model_refused", None, 0))
         self.assertEqual((result.model_refused["step"], result.model_refused["last_call_refused"]), (1, False))
+
+    def test_metadata_server_reachable_fails_closed(self):
+        docker = FakeTrialDocker()
+        docker.metadata_open = True   # the 2026-11-17 smoke: no DOCKER-USER rule yet
+        with self.assertRaisesRegex(ce.CellError, "isolation preflight failed.*obench.reflection.isolation --apply"):
+            self.executor(docker).run_trial(self.spec(index=60), self.tmp / "run")
+        self.assertEqual((docker.calls, self.vertex.seen), ([], []))  # no agent container, no model call
+
+    def test_isolation_is_probed_once_and_recorded_per_trial(self):
+        docker = FakeTrialDocker()
+        ex = self.executor(docker)
+        for i in (61, 62):
+            result = ex.run_trial(self.spec(index=i), self.tmp / "run")
+        self.assertEqual([n for n, _ in docker.probes], [ce.AGENT_NETWORK, ce.OFFLINE_NETWORK])  # once per executor
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        iso = cell["isolation"]
+        self.assertTrue(iso["ok"])
+        self.assertEqual(iso["networks"][ce.AGENT_NETWORK], {"metadata_reachable": False, "proxy_reachable": True})
+        self.assertIn("DOCKER-USER -i obench-agent0 -d 169.254.169.254/32 -j DROP", iso["metadata_rule"])
+        args = docker.calls[0]
+        self.assertEqual(args[args.index("--network") + 1], ce.AGENT_NETWORK)
+        (check,) = [c for c in docker.checker_calls[:1]]
+        self.assertEqual(check[check.index("--network") + 1], ce.AGENT_NETWORK)  # in-container checkers too
+
+    def test_isolation_rule_is_added_once(self):
+        import subprocess as sp
+        from obench.reflection import isolation as iso
+        calls, present = [], {"v": False}
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            if "-C" in cmd:
+                return sp.CompletedProcess(cmd, 0 if present["v"] else 1, "", "")
+            present["v"] = True
+            return sp.CompletedProcess(cmd, 0, "", "")
+        self.assertEqual(iso.apply_rule(runner), "added")
+        self.assertEqual(iso.apply_rule(runner), "present")
+        self.assertEqual(calls[1], ["sudo", "-n", "iptables", "-I", "DOCKER-USER", "-i", "obench-agent0",
+                                    "-d", "169.254.169.254/32", "-j", "DROP"])
+
+    def test_timeout_keeps_the_cost_of_priced_calls(self):
+        class OneCallThenTimeout(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                inner.steps = 1
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return None, True
+        result = self.executor(OneCallThenTimeout()).run_trial(self.spec(index=63), self.tmp / "run")
+        self.assertEqual((result.status, result.cost_unpriced_calls), ("timeout", 0))
+        self.assertGreater(result.cost_usd, 0)
 
     def test_image_resolution_order(self):
         make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)

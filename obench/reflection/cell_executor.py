@@ -72,11 +72,19 @@ A trace that can't be built makes the trial ``error``. The runner counts it,
 the group's verdict becomes ``incomplete``, and missing traces never pass
 silently.
 
+Isolation: no trial container may reach the GCE metadata server. Agents and
+in-container checkers run on the dedicated bridge ``openbench-agent``
+(interface ``obench-agent0``), never Docker's default bridge; one DOCKER-USER
+rule drops its traffic to 169.254.169.254 (``obench.reflection.isolation``).
+Before the first trial, a probe container must find the metadata server
+unreachable and the proxy reachable, or the executor refuses to run
+(``isolation_preflight``; recorded as ``isolation`` in every cell.json).
+
 Network (parity with import validation): it follows ``task.toml``
 ``solution_needs_network``, which the importer sets by running the reference
 ``solve.sh`` offline first.
 
-- ``true``: Docker's default ``bridge``, with internet, the same access the
+- ``true``: the agent bridge ``openbench-agent``, with internet (no metadata server), the same access the
   reference solution needed.
 - ``false``: the internal network ``openbench-agent-offline``
   (``docker network create --internal``). There is no route out; the
@@ -100,6 +108,7 @@ import re
 import shutil
 import subprocess
 import tomllib
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -118,6 +127,13 @@ DEFAULT_ESTIMATES_USD = {"gemini-4-carbon": 1.50, "claude-opus-5-5": 2.00, "gpt-
 
 
 OFFLINE_NETWORK = "openbench-agent-offline"
+# Agents and in-container checkers that may use the internet run on this bridge, never on docker's default one.
+# Its interface has a fixed name so one DOCKER-USER rule can drop the GCE metadata server for it (the host's own
+# metadata access, which the proxy's ADC token uses, is untouched: DOCKER-USER only sees forwarded traffic).
+AGENT_NETWORK = "openbench-agent"
+AGENT_BRIDGE_IF = "obench-agent0"
+METADATA_IP = "169.254.169.254"
+METADATA_RULE = ["DOCKER-USER", "-i", AGENT_BRIDGE_IF, "-d", f"{METADATA_IP}/32", "-j", "DROP"]
 
 
 def _load() -> list | None:
@@ -151,6 +167,33 @@ class TrialDocker:
         if out.returncode != 0 or not out.stdout.strip():
             raise CellError(f"cannot read the docker bridge gateway: {out.stderr.strip()}")
         return out.stdout.strip()
+
+    def agent_gateway(self, name: str = AGENT_NETWORK) -> str:
+        """Gateway of the agent bridge (created on first use, interface ``obench-agent0``). The proxy binds here."""
+        inspect = ["docker", "network", "inspect", name, "--format",
+                   '{{.Internal}} {{index .Options "com.docker.network.bridge.name"}} {{(index .IPAM.Config 0).Gateway}}']
+        out = subprocess.run(inspect, capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            subprocess.run(["docker", "network", "create", "--driver", "bridge",
+                            "-o", f"com.docker.network.bridge.name={AGENT_BRIDGE_IF}", name],
+                           capture_output=True, text=True, timeout=60)
+            out = subprocess.run(inspect, capture_output=True, text=True, timeout=30)
+        parts = out.stdout.split()
+        if out.returncode != 0 or len(parts) != 3 or parts[0] != "false" or parts[1] != AGENT_BRIDGE_IF:
+            raise CellError(f"network {name} is missing or not a bridge on {AGENT_BRIDGE_IF}: {out.stdout.strip()} "
+                            f"{out.stderr.strip()}")
+        return parts[2]
+
+    def probe(self, network: str, image: str, targets: list[tuple[str, int]]) -> dict[str, bool]:
+        """From a throwaway container on ``network``: can it open a TCP connection to each ``(host, port)``?"""
+        checks = "; ".join(f'(timeout 4 bash -c "</dev/tcp/{h}/{p}") >/dev/null 2>&1 && echo "{h}:{p} open" '
+                           f'|| echo "{h}:{p} closed"' for h, p in targets)
+        out = subprocess.run(["docker", "run", "--rm", "--network", network, "--entrypoint", "bash", image, "-c", checks],
+                             capture_output=True, text=True, timeout=120)
+        if out.returncode != 0:
+            raise CellError(f"isolation probe could not run on {network} with {image}: {out.stderr.strip()[:300]}")
+        found = dict(line.rsplit(" ", 1) for line in out.stdout.splitlines() if line.strip())
+        return {f"{h}:{p}": found.get(f"{h}:{p}") == "open" for h, p in targets}
 
     def offline_gateway(self, name: str = OFFLINE_NETWORK) -> str:
         """Gateway of the internal (no route out) network, created on first use. The proxy binds here."""
@@ -226,6 +269,7 @@ class CellExecutor:
     docker: TrialDocker = field(default_factory=TrialDocker)
     platform: str = "linux/amd64"
     default_image: str | None = "h1-env:1027-strace"   # tasks with no image of their own (e.g. openbench-tb-hard)
+    probe_image: str | None = None       # image for the isolation probe (needs bash); default: default_image
     proxy_host: str | None = None        # default: the gateway of the trial's network
     use_image_tag: bool = False          # task.toml digest ref missing locally -> run docker_image_tag (recorded)
     unflagged_network: str = "bridge"    # tasks with no solution_needs_network: "bridge" (as before) or "offline"
@@ -239,11 +283,48 @@ class CellExecutor:
         import threading
         self._record_lock = threading.Lock()  # trials of one cell may finish together (runner --workers)
         self.run_context: dict = {}
+        self._isolation, self._isolation_lock = None, threading.Lock()
         # A standalone build (compile / build.ts) needs only its own bin/<sha>/ directory, mounted read-only at a
         # neutral path, so the host's source tree and worktrees are not visible in the container. Wrapper builds
         # (bun-run / monorepo) exec absolute paths in the cache root and still need it (recorded in cell.json).
         self.standalone = (self.pin.get("build_stamp") or {}).get("kind") in ("compile", "build.ts")
         self.mount_root = self.opencode.parents[2]
+
+    def isolation_preflight(self) -> dict:
+        """Fail closed unless a container on the agent network can NOT reach the GCE metadata server and CAN
+        reach the host proxy's address. Probed once per executor (before the first trial; the runner's --cell
+        preflight calls it before any spend) and recorded on every trial's cell.json."""
+        with self._isolation_lock:
+            if self._isolation is not None:
+                return self._isolation
+            import socket
+            image = self.probe_image or self.default_image
+            if not image:
+                raise CellError("no probe image for the isolation preflight (set default_image or probe_image)")
+            result = {"agent_network": AGENT_NETWORK, "bridge_interface": AGENT_BRIDGE_IF, "probe_image": image,
+                      "metadata_rule": "iptables -I " + " ".join(METADATA_RULE), "networks": {}}
+            for network, gateway in ((AGENT_NETWORK, self.docker.agent_gateway()),
+                                     (OFFLINE_NETWORK, self.docker.offline_gateway())):
+                listener = socket.socket()
+                try:
+                    listener.bind((self.proxy_host or gateway, 0))
+                    listener.listen(8)
+                    port = listener.getsockname()[1]
+                    seen = self.docker.probe(network, image, [(METADATA_IP, 80), (self.proxy_host or gateway, port)])
+                finally:
+                    listener.close()
+                result["networks"][network] = {"metadata_reachable": seen[f"{METADATA_IP}:80"],
+                                               "proxy_reachable": seen[f"{self.proxy_host or gateway}:{port}"]}
+            # metadata must be unreachable on both; the proxy must be reachable on the agent network (the offline
+            # network's proxy reachability is checked when a trial actually needs it)
+            bad = {n: r for n, r in result["networks"].items()
+                   if r["metadata_reachable"] or (n == AGENT_NETWORK and not r["proxy_reachable"])}
+            result.update(ok=not bad, checked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            if bad:
+                raise CellError(f"isolation preflight failed: {bad}. Run `python3 -m obench.reflection.isolation "
+                                f"--apply` (adds: iptables -I {' '.join(METADATA_RULE)}) and retry.")
+            self._isolation = result
+            return result
 
     def set_run_context(self, context: dict) -> None:
         """Set by the runner: ``{run_id, workers}``, recorded on every trial's cell.json."""
@@ -313,7 +394,7 @@ class CellExecutor:
                     instruction: str, network: str = "bridge") -> list[str]:
         name = f"obench-reflect-{spec.trial_id}"
         args = ["run", "--rm", "--name", name, "--platform", self.platform,
-                "--network", OFFLINE_NETWORK if network == "offline" else "bridge",
+                "--network", OFFLINE_NETWORK if network == "offline" else AGENT_NETWORK,
                 "-v", f"{workspace}:{task['workdir']}", "-v", self.opencode_mount(),
                 "-w", task["workdir"], "-e", "HOME=/tmp/opencode-home",
                 "-e", f"OPENCODE_CONFIG_CONTENT={self.opencode_config(model, proxy_base)}",
@@ -357,7 +438,8 @@ class CellExecutor:
         from obench.workspace import materialize_workspace
         if task["image_source"] == "default_image":
             materialize_workspace(str(task["dir"]), str(workspace))
-            return {"hydrated_from": None}
+            return {"hydrated_from": None, "workdir": task["workdir"],
+                    "files": sum(len(f) for _, _, f in os.walk(workspace))}
         self.docker.hydrate(task["image"], task["workdir"], workspace)
         import tempfile
         staged = Path(tempfile.mkdtemp(prefix="obench_task_overlay_", dir=str(workspace.parent)))
@@ -395,7 +477,10 @@ class CellExecutor:
         wire_path, events_path = trial_dir / "wire.jsonl", trial_dir / "opencode-events.jsonl"
         wire_path.unlink(missing_ok=True)
         network = self.agent_network(task)
-        host = self.proxy_host or (self.docker.offline_gateway() if network == "offline" else self.docker.bridge_gateway())
+        isolation = self.isolation_preflight()
+        if network == "offline" and not isolation["networks"][OFFLINE_NETWORK]["proxy_reachable"]:
+            raise CellError(f"{OFFLINE_NETWORK}: the proxy is not reachable from the internal network on this host")
+        host = self.proxy_host or (self.docker.offline_gateway() if network == "offline" else self.docker.agent_gateway())
         # A blocked prompt (Gemini promptFeedback.blockReason) ends the trial at once: the proxy refuses OpenCode's
         # retries and the container is stopped, instead of looping until the agent timeout.
         proxy = WireProxy(self.project, wire_path, self.token, host=host, upstream_host=self.upstream_host,
@@ -420,7 +505,7 @@ class CellExecutor:
             "opencode_sha": self.pin["sha"], "code": self.code,
             "workers": self.run_context.get("workers"), "agent_seconds": agent_seconds,
             "workspace_seed": seed, "opencode_mount": "standalone" if self.standalone else "source_tree",
-            "agent_permissions": AGENT_PERMISSIONS,
+            "agent_permissions": AGENT_PERMISSIONS, "isolation": isolation,
             "host_load": {"before": load_before, "after": load_after, "cpus": os.cpu_count()}}, sort_keys=True) + "\n")
         return self.record(spec, run_dir, self.finish_trial(spec, run_dir, task))
 
@@ -487,13 +572,15 @@ class CellExecutor:
         sent = {json.dumps(tr.thinking_setting(w["provider_wire"], w["request"]), sort_keys=True)
                 for w in wires if isinstance(w.get("request"), dict) and w.get("provider_wire")}
         thinking_setting = {"configured": model.thinking_sent(), "sent": [json.loads(x) for x in sorted(sent)]}
-        costs = [w.get("cost_usd") for w in wires]
-        cost = round(sum(c for c in costs if c is not None), 6) if costs and all(c is not None for c in costs) else (
-            None if costs else 0.0)
+        # Calls with a cost are summed even when some have none (e.g. the call a timeout cut off before usage
+        # arrived); the unpriced ones are counted, so the total is a known lower bound rather than missing.
+        costs = [w.get("cost_usd") for w in wires if w.get("status") == 200 or w.get("cost_usd") is not None]
+        cost = round(sum(c for c in costs if c is not None), 6)
+        unpriced = sum(1 for c in costs if c is None)
         fours = classify_4xx(wires)
         blocked = provider_blocked(wires)
         common = dict(cost_usd=cost, served_models=served, route_counts=counts, thinking_setting=thinking_setting,
-                      retried_4xx=fours["retried"], image=image, wire=rel(wire_path))
+                      retried_4xx=fours["retried"], image=image, wire=rel(wire_path), cost_unpriced_calls=unpriced)
         if blocked is not None:  # the provider refused the prompt: neither pass nor fail
             (trial_dir / "provider_blocked.json").write_text(json.dumps(blocked, sort_keys=True) + "\n")
             return TrialResult(status="provider_blocked", passed=None, provider_blocked=blocked, **common,
@@ -528,7 +615,14 @@ class CellExecutor:
         except tr.TraceError as exc:
             if refused is not None:
                 return self._refused(trial_dir, refused, [], dict(common, checker_exit=checker_exit))
-            return TrialResult(status="error", passed=None, checker_exit=checker_exit, **common, error=f"trace_error: {exc}")
+            if checker_exit is None:
+                return TrialResult(status="error", passed=None, **common, error=f"trace_error: {exc}")
+            # The checker ran on the agent's workspace: its verdict stands. The step/call accounting problem is
+            # recorded as a warning (no trace is written for this trial).
+            warning = f"{exc.code}: {exc}" if getattr(exc, "code", None) else str(exc)
+            (trial_dir / "trace_warning.txt").write_text(warning + "\n", encoding="utf-8")
+            return TrialResult(status="completed", passed=checker_exit == 0, checker_exit=checker_exit, **common,
+                               trace_warning=warning, error=None if code in (0, None) else f"opencode exited {code}")
         thinking = [r["usage"]["thinking_tokens"] for r in records if isinstance(r["usage"]["thinking_tokens"], int)]
         per_step = [r["usage"]["thinking_tokens"] if isinstance(r["usage"]["thinking_tokens"], int) else None for r in records]
         flags = sorted({r["thinking"]["flag"] for r in records if r["thinking"].get("flag")})
@@ -607,7 +701,7 @@ class CellExecutor:
         else:
             mode = "in_task_container"
             args = ["run", "--rm", "--name", f"obench-check-{workspace.parent.name}", "--platform", self.platform,
-                    "--network", "bridge",  # verifier dependencies (uv / pytest installs), as Harbor verifiers expect
+                    "--network", AGENT_NETWORK,  # verifier deps (uv / pytest installs); no metadata server
                     "-v", f"{workspace}:{task['workdir']}", "-v", f"{task['dir']}:/openbench-task:ro",
                     "-e", "TASK_DIR=/openbench-task", "-e", f"BENCH_TASK_IMAGE={task['image']}",
                     "-w", task["workdir"], task["image"],

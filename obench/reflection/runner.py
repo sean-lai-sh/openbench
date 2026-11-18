@@ -722,6 +722,12 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             print(json.dumps({"missing_images": missing}, indent=2))
             return 4
+        from obench.reflection.cell_executor import CellError
+        try:  # no container may reach the GCE metadata server; the proxy must be reachable (cell.json: isolation)
+            executor.isolation_preflight()
+        except CellError as exc:
+            print(json.dumps({"isolation_preflight_failed": str(exc)}, indent=2))
+            return 5
     if args.preflight:
         print(json.dumps(runner.preflight(), indent=2))
         return 0
