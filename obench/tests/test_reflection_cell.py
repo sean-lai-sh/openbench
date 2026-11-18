@@ -72,9 +72,12 @@ class FakeTrialDocker:
         self.gateways = getattr(self, "gateways", []) + ["agent"]
         return "127.0.0.1"
 
-    def probe(self, network, image, targets):
+    def probe(self, network, image, targets, run_args=None):
         self.probes = getattr(self, "probes", []) + [(network, image)]
-        return {f"{h}:{p}": (self.metadata_open if h == "169.254.169.254" else True) for h, p in targets}
+        self.probe_args = run_args
+        self.probe_targets = targets
+        meta = ("169.254.169.254", "metadata.google.internal")
+        return {f"{h}:{p}": (self.metadata_open if h in meta else True) for h, p in targets}
 
     def bridge_gateway(self):
         self.gateways = getattr(self, "gateways", []) + ["bridge"]
@@ -593,6 +596,15 @@ class Trial(CellCase):
             self.executor(docker).run_trial(self.spec(index=60), self.tmp / "run")
         self.assertEqual((docker.calls, self.vertex.seen), ([], []))  # no agent container, no model call
 
+    def test_metadata_hostname_alone_reachable_also_fails_closed(self):
+        class HostnameOpen(FakeTrialDocker):
+            def probe(inner, network, image, targets, run_args=None):
+                seen = FakeTrialDocker.probe(inner, network, image, targets, run_args)
+                seen["metadata.google.internal:80"] = True
+                return seen
+        with self.assertRaisesRegex(ce.CellError, "metadata.google.internal:80': True"):
+            self.executor(HostnameOpen()).run_trial(self.spec(index=64), self.tmp / "run")
+
     def test_isolation_is_probed_once_and_recorded_per_trial(self):
         docker = FakeTrialDocker()
         ex = self.executor(docker)
@@ -602,7 +614,13 @@ class Trial(CellCase):
         cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
         iso = cell["isolation"]
         self.assertTrue(iso["ok"])
-        self.assertEqual(iso["networks"][ce.AGENT_NETWORK], {"metadata_reachable": False, "proxy_reachable": True})
+        self.assertEqual(iso["networks"][ce.AGENT_NETWORK],
+                         {"metadata_reachable": False, "proxy_reachable": True,
+                          "metadata_targets": {"169.254.169.254:80": False, "metadata.google.internal:80": False}})
+        # the probe runs with the trial containers' own settings, against both metadata targets
+        self.assertIn("api.anthropic.com:0.0.0.0", docker.probe_args)
+        self.assertEqual(docker.probe_args[:2], ["--platform", "linux/amd64"])
+        self.assertEqual(docker.probe_targets[:2], [("169.254.169.254", 80), ("metadata.google.internal", 80)])
         self.assertIn("DOCKER-USER -i obench-agent0 -d 169.254.169.254/32 -j DROP", iso["metadata_rule"])
         args = docker.calls[0]
         self.assertEqual(args[args.index("--network") + 1], ce.AGENT_NETWORK)
@@ -683,6 +701,9 @@ class WithRunner(CellCase):
         self.assertTrue(all(r["thinking_tokens"] == 240 and r["served_models"] == [OPUS] for r in rows))
         summary = rn.read_rows(self.tmp / "run" / "summary.jsonl")[0]
         self.assertEqual((summary["passes"], summary["verdict"]), (2, "pass"))
+        plan = json.loads((self.tmp / "run" / "plan.json").read_text())
+        self.assertTrue(plan["isolation"]["ok"])  # the live probe, recorded before any trial ran
+        self.assertFalse(plan["isolation"]["networks"][ce.AGENT_NETWORK]["metadata_reachable"])
         counters = json.loads((self.tmp / "run" / "trials" / OPUS / "t1" / "cell_counters.json").read_text())
         self.assertEqual((counters["trials"], counters["status"]), (2, {"completed": 2}))  # both recorded under the lock
         self.assertEqual(counters["workers"], [2])

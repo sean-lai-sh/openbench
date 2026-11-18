@@ -76,9 +76,12 @@ Isolation: no trial container may reach the GCE metadata server. Agents and
 in-container checkers run on the dedicated bridge ``openbench-agent``
 (interface ``obench-agent0``), never Docker's default bridge; one DOCKER-USER
 rule drops its traffic to 169.254.169.254 (``obench.reflection.isolation``).
-Before the first trial, a probe container must find the metadata server
-unreachable and the proxy reachable, or the executor refuses to run
-(``isolation_preflight``; recorded as ``isolation`` in every cell.json).
+Before the first trial, a live probe - a container on each trial network,
+started with the trial containers' own platform and --add-host settings -
+must fail to connect to 169.254.169.254:80 and metadata.google.internal:80
+(3 s timeout each) and must reach the proxy's address; otherwise the executor
+refuses to run (``isolation_preflight``; recorded as ``isolation`` in plan.json
+and every cell.json).
 
 Network (parity with import validation): it follows ``task.toml``
 ``solution_needs_network``, which the importer sets by running the reference
@@ -133,6 +136,7 @@ OFFLINE_NETWORK = "openbench-agent-offline"
 AGENT_NETWORK = "openbench-agent"
 AGENT_BRIDGE_IF = "obench-agent0"
 METADATA_IP = "169.254.169.254"
+METADATA_TARGETS = [(METADATA_IP, 80), ("metadata.google.internal", 80)]  # both must fail to connect
 METADATA_RULE = ["DOCKER-USER", "-i", AGENT_BRIDGE_IF, "-d", f"{METADATA_IP}/32", "-j", "DROP"]
 
 
@@ -184,11 +188,15 @@ class TrialDocker:
                             f"{out.stderr.strip()}")
         return parts[2]
 
-    def probe(self, network: str, image: str, targets: list[tuple[str, int]]) -> dict[str, bool]:
-        """From a throwaway container on ``network``: can it open a TCP connection to each ``(host, port)``?"""
-        checks = "; ".join(f'(timeout 4 bash -c "</dev/tcp/{h}/{p}") >/dev/null 2>&1 && echo "{h}:{p} open" '
+    def probe(self, network: str, image: str, targets: list[tuple[str, int]],
+              run_args: list[str] | None = None) -> dict[str, bool]:
+        """Live probe: a throwaway container on ``network``, started with the trial containers' own ``run_args``
+        (platform, --add-host entries), tries a TCP connection to each ``(host, port)`` with a 3 s timeout.
+        Returns ``{"host:port": connected}``."""
+        checks = "; ".join(f'(timeout 3 bash -c "</dev/tcp/{h}/{p}") >/dev/null 2>&1 && echo "{h}:{p} open" '
                            f'|| echo "{h}:{p} closed"' for h, p in targets)
-        out = subprocess.run(["docker", "run", "--rm", "--network", network, "--entrypoint", "bash", image, "-c", checks],
+        out = subprocess.run(["docker", "run", "--rm", "--network", network, *(run_args or []),
+                              "--entrypoint", "bash", image, "-c", checks],
                              capture_output=True, text=True, timeout=120)
         if out.returncode != 0:
             raise CellError(f"isolation probe could not run on {network} with {image}: {out.stderr.strip()[:300]}")
@@ -303,6 +311,11 @@ class CellExecutor:
                 raise CellError("no probe image for the isolation preflight (set default_image or probe_image)")
             result = {"agent_network": AGENT_NETWORK, "bridge_interface": AGENT_BRIDGE_IF, "probe_image": image,
                       "metadata_rule": "iptables -I " + " ".join(METADATA_RULE), "networks": {}}
+            # the trial containers' own settings: platform and the provider-host sinkholes
+            run_args = ["--platform", self.platform]
+            for host in SINKHOLED_HOSTS:
+                run_args += ["--add-host", f"{host}:0.0.0.0"]
+            result["probe_run_args"] = run_args
             for network, gateway in ((AGENT_NETWORK, self.docker.agent_gateway()),
                                      (OFFLINE_NETWORK, self.docker.offline_gateway())):
                 listener = socket.socket()
@@ -310,11 +323,14 @@ class CellExecutor:
                     listener.bind((self.proxy_host or gateway, 0))
                     listener.listen(8)
                     port = listener.getsockname()[1]
-                    seen = self.docker.probe(network, image, [(METADATA_IP, 80), (self.proxy_host or gateway, port)])
+                    proxy_target = f"{self.proxy_host or gateway}:{port}"
+                    seen = self.docker.probe(network, image, [*METADATA_TARGETS, (self.proxy_host or gateway, port)],
+                                             run_args)
                 finally:
                     listener.close()
-                result["networks"][network] = {"metadata_reachable": seen[f"{METADATA_IP}:80"],
-                                               "proxy_reachable": seen[f"{self.proxy_host or gateway}:{port}"]}
+                metadata = {t: seen[t] for t in (f"{h}:{p}" for h, p in METADATA_TARGETS)}
+                result["networks"][network] = {"metadata_reachable": any(metadata.values()), "metadata_targets": metadata,
+                                               "proxy_reachable": seen[proxy_target]}
             # metadata must be unreachable on both; the proxy must be reachable on the agent network (the offline
             # network's proxy reachability is checked when a trial actually needs it)
             bad = {n: r for n, r in result["networks"].items()
