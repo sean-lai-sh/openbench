@@ -1,0 +1,170 @@
+Description: fixing problems in two-parameter fprintf and sprintf calls.
+Author: Andrius Merkys <merkys@debian.org>
+--- a/src/asm.c
++++ b/src/asm.c
+@@ -656,7 +656,7 @@
+   macputs(str);
+ #else
+   if (!inCdb)
+-    fprintf(stderr, str);
++    fprintf(stderr, "%s", str);
+ #if defined DOSALLGRAPHX
+   else {
+     if (displayMode == TEXT)
+@@ -682,7 +682,7 @@
+     xWin_puts(str);
+ #else                                /* no display */
+   else
+-    fprintf(stderr, str);
++    fprintf(stderr, "%s", str);
+ #endif                                /* XWINGRAPHX */
+ #endif                                /* LINUXGRAPHX */
+ #endif                                /* DOSGRXGRAPHX */
+@@ -827,7 +827,7 @@
+ #ifdef __MAC__
+     textout(notEnoughMemErr);
+ #else
+-    fprintf(stderr, notEnoughMemErr);
++    fprintf(stderr, "%s", notEnoughMemErr);
+ #endif
+     Exit(MEMERR);
+     break;
+@@ -910,7 +910,7 @@
+   }
+ 
+   if (ierr >= ERRMAX) {
+-    sprintf(outs, tooManyMsgErr);
++    sprintf(outs, "%s", tooManyMsgErr);
+ #ifndef VMS
+     textout(outs);
+ #else
+@@ -2341,7 +2341,7 @@
+         textout(outs);
+       }
+     if (errnum + warnum) {
+-      sprintf(outs, "\n");
++      sprintf(outs, "%s", "\n");
+       textout(outs);
+     }
+   } else
+--- a/src/cdb.c
++++ b/src/cdb.c
+@@ -2507,7 +2507,7 @@
+       fprintf(outp, nameByAuthorScores, warrior[idxV[i]].name, warrior[idxV[i]].authorName,
+               scrV[idxV[i]]);
+       if (warriors > 2) {
+-        fprintf(outp, resultsAre);
++        fprintf(outp, "%s", resultsAre);
+         for (j = 0; j < warriors; ++j) {
+           fprintf(outp, " %d", warrior[idxV[i]].score[j]);
+         }
+@@ -2582,7 +2582,7 @@
+       fprintf(outp, nameByAuthorScores, warrior[idxV[i]].name, warrior[idxV[i]].authorName,
+               scrV[idxV[i]]);
+       if (warriors > 2) {
+-        fprintf(outp, resultsAre);
++        fprintf(outp, "%s", resultsAre);
+         for (j = 0; j < warriors; ++j) {
+           fprintf(outp, " %d", warrior[idxV[i]].score[j]);
+         }
+@@ -2599,7 +2599,7 @@
+     fprintf(outp, nameByAuthorScores, warrior[idxV[i]].name, warrior[idxV[i]].authorName,
+             scrV[idxV[i]]);
+     if (warriors > 2) {
+-      fprintf(outp, resultsAre);
++      fprintf(outp, "%s", resultsAre);
+       for (j = 0; j < warriors; ++j) {
+         fprintf(outp, " %d", warrior[idxV[i]].score[j]);
+       }
+--- a/src/clparse.c
++++ b/src/clparse.c
+@@ -293,7 +293,7 @@
+               if (next_input(filep, inputs)) {
+                 if (!strcmp(inputs, "-")) {
+                   newFile = stdin;
+-                  fprintf(stderr, readingStdin);
++                  fprintf(stderr, "%s", readingStdin);
+                 } else {
+                   if ((newFile = fopen(inputs, "r")) == NULL) {
+                     code = FILENAME;        /* command file not found */
+@@ -434,11 +434,11 @@
+     errout(outs);
+     break;
+   case MEMORY:
+-    sprintf(outs, outOfMemory);
++    sprintf(outs, "%s", outOfMemory);
+     errout(outs);
+     break;
+   case FILENAME:
+-    sprintf(outs, cannotOpenParameterFile);
++    sprintf(outs, "%s", cannotOpenParameterFile);
+     errout(outs);
+     break;
+   }
+--- a/src/gtdisp.c
++++ b/src/gtdisp.c
+@@ -134,7 +134,7 @@
+       !(Screen[DEF_PAGE] = (short *) malloc(screenSize * sizeof(short))) ||
+       !(Screen[CORE_PAGE] = (short *) malloc(screenSize * sizeof(short))) ||
+       !(Screen[CDB_PAGE] = (short *) malloc(screenSize * sizeof(short)))) {
+-    fprintf(stderr, cannotAllocateScreenBuffers);
++    fprintf(stderr, "%s", cannotAllocateScreenBuffers);
+     Exit(MEMERR);
+   }
+   for (idx = 0; idx < screenSize; idx++) {
+--- a/src/lnxdisp.c
++++ b/src/lnxdisp.c
+@@ -1110,16 +1110,16 @@
+     xsize = 640;
+     ysize = 480;
+     if (!vga_hasmode(gMode)) {
+-      fprintf(stderr, tryingNext);
++      fprintf(stderr, "%s", tryingNext);
+       gMode = G320x200x256;
+       xsize = 320;
+       ysize = 200;
+       if (!vga_hasmode(gMode)) {
+-	fprintf(stderr, noModes);
++	fprintf(stderr, "%s", noModes);
+ 	exit(1);
+       }
+     }
+-    fprintf(stderr, "\n");
++    fprintf(stderr, "%s", "\n");
+   }
+   tionew = tio_orig;
+   tionew.c_lflag &= ~(ICANON | ECHO);
+--- a/src/pmars.c
++++ b/src/pmars.c
+@@ -195,9 +195,9 @@
+ 	if (warrior[i].pSpaceIndex == PIN_APPEARED) {
+ 	  fprintf(STDOUT, "       PIN     %6ld\n", warrior[i].pSpaceIDNumber);
+ 	}
+-	fprintf(STDOUT,"       END\n");
++	fprintf(STDOUT, "%s", "       END\n");
+       } else {
+-	fprintf(STDOUT, "\n");
++	fprintf(STDOUT, "%s", "\n");
+       }
+     }
+ #ifdef PSPACE                        /* set up pSpace */
+@@ -313,7 +313,7 @@
+ #endif
+ #if defined(LINUXGRAPHX)
+   if (vga_init() == -1) {
+-    fprintf(stderr, cantInitSvga);
++    fprintf(stderr, "%s", cantInitSvga);
+     exit(1);
+   }
+   if ((console_fd = open("/dev/console", O_RDONLY)) == -1) {
+--- a/src/xwindisp.c
++++ b/src/xwindisp.c
+@@ -253,7 +253,7 @@
+ my_err(s)
+   char   *s;
+ {
+-  fprintf(stderr, s);
++  fprintf(stderr, "%s", s);
+   Exit(1);
+ }
+ 

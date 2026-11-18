@@ -1,0 +1,72 @@
+Reading package lists...
+E: Could not open lock file /var/lib/apt/lists/lock - open (13: Permission denied)
+E: Unable to lock directory /var/lib/apt/lists/
+W: Problem unlinking the file /var/cache/apt/pkgcache.bin - RemoveCaches (13: Permission denied)
+W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13: Permission denied)
+E: Could not open lock file /var/lib/dpkg/lock-frontend - open (13: Permission denied)
+E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), are you root?
+downloading uv 0.9.5 x86_64-unknown-linux-gnu
+no checksums to verify
+installing to <HOME>/.local/bin
+  uv
+  uvx
+everything's installed!
+============================= test session starts ==============================
+platform linux -- Python 3.13.9, pytest-8.4.1, pluggy-1.7.0
+rootdir: /tmp/obench-harbor-tests.psaVJp
+plugins: json-ctrf-0.3.5
+collected 1 item
+
+../../../../../../../../../tmp/obench-harbor-tests.psaVJp/test_outputs.py F [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_stolen_matrix_matches __________________________
+
+    def test_stolen_matrix_matches():
+        # Check if the stolen_A1.npy file exists
+        os.popen("python3 <HOME>/pilot-2/run/trials/claude-opus-5-5/model-extraction-relu-logits/42f21826dba82ae3/workspace/steal.py").read()
+        stolen_path = Path("<HOME>/pilot-2/run/trials/claude-opus-5-5/model-extraction-relu-logits/42f21826dba82ae3/workspace/stolen_A1.npy")
+        assert stolen_path.exists(), f"File {stolen_path} does not exist"
+    
+        # Load the original and stolen matrices
+        np.random.seed(5)
+        a = np.random.randn(30, 10) * 0.3  # Weight matrix from input to hidden layer
+        b = np.load("<HOME>/pilot-2/run/trials/claude-opus-5-5/model-extraction-relu-logits/42f21826dba82ae3/workspace/stolen_A1.npy")
+    
+        # Check if each row of the original matrix can be matched to a row in the stolen
+        # matrix
+        # within a scaled tolerance
+        all_matched = True
+        failures = []
+    
+        for i, original_row in enumerate(a):
+            row_matched = False
+            for stolen_row in b:
+                # Check if the stolen row matches the original row up to a scaling factor
+                ratio_diff = np.abs(
+                    stolen_row / original_row - np.mean(stolen_row / original_row)
+                )
+                if np.all(ratio_diff < 1e-4):
+                    row_matched = True
+                    break
+    
+            if not row_matched:
+                all_matched = False
+                failures.append(i)
+    
+>       assert all_matched, f"Failed to match rows: {failures}"
+E       AssertionError: Failed to match rows: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+E       assert False
+
+/tmp/obench-harbor-tests.psaVJp/test_outputs.py:76: AssertionError
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "<HOME>/pilot-2/run/trials/claude-opus-5-5/model-extraction-relu-logits/42f21826dba82ae3/workspace/steal.py", line 155, in <module>
+    np.save("/app/stolen_A1.npy", A1_stolen)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<HOME>/.cache/uv/archive-v0/N4HD6BccEBYtAyaL81BqW/lib/python3.13/site-packages/numpy/lib/_npyio_impl.py", line 580, in save
+    file_ctx = open(file, "wb")
+FileNotFoundError: [Errno 2] No such file or directory: '/app/stolen_A1.npy'
+=========================== short test summary info ============================
+FAILED ../../../../../../../../../tmp/obench-harbor-tests.psaVJp/test_outputs.py::test_stolen_matrix_matches
+========================= 1 failed in 66.15s (0:01:06) =========================
