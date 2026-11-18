@@ -576,6 +576,9 @@ class WireProxy:
             "requested_model": model.vertex_id, "upstream_model": served,
             "request": sent, "response_usage": usage, "status": status,
             "route": model.key, "thinking_enforced": enforced, "cost_usd": None, "cost_basis": None,
+            # when the call finished (response fully read): the timeout ruling asks whether any model call
+            # finished in the last minutes before the agent cap
+            "ended_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         }
         if error:
             record["error"] = error
