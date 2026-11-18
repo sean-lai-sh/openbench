@@ -363,7 +363,12 @@ class Runner:
                 was, now = old.get(key), asdict(self.config).get(key)
                 if (list(was) if isinstance(was, (list, tuple)) else was) != (list(now) if isinstance(now, (list, tuple)) else now):
                     raise RunnerError(f"{self.run_dir} was started with {key}={was!r}, not {now!r}: use a new run directory")
+        # Executors that run containers must prove isolation with a live probe before any trial; a failure raises
+        # here, so the run never starts. The probe result is recorded in plan.json (and on every cell.json).
+        probe = getattr(self.executor, "isolation_preflight", None)
+        isolation = probe() if probe is not None else None
         _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff, "code": self.code,
+                                                 "isolation": isolation,
                                                  "workers": self.workers, "host_cpus": os.cpu_count(),
                                                  "preflight": self.preflight(), "written_at": _now()})
         states = {m: self._swap_state(m) for m in self.config.models}
