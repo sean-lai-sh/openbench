@@ -69,6 +69,8 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `agent_exit` | object\|null | For `agent_exit_pending_tool`: `{last_finish, pending_tools, permission_rejected, stream_errors, opencode_exit}` |
 | `workers` | int | The run's fixed worker count |
 | `wall_seconds`, `host_load` | number, object | Trial wall time, and `{start, end, cpus}`: the host's 1/5/15-minute load average when the trial started and ended, so contention-driven timeouts are visible |
+| `trace_warning` | string\|null | The trace could not be built (e.g. `step_call_mismatch: 11 OpenCode steps but 10 main wire calls`). The checker's verdict stands; `trace` is null. |
+| `cost_unpriced_calls` | int | Calls with no cost (e.g. cut off by a timeout before usage arrived). `cost_usd` sums the priced calls, so it is a lower bound when this is > 0. |
 | `error` | string\|null | |
 
 ## Summary row (`openbench.reflection.summary/v1`)
@@ -93,7 +95,8 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `trials_without_route_counts` | Trials with no wire counts (crashes), left out of the sums |
 | `pass_rate` | `passes / completed` |
 | `cutoff`, `verdict` | `pass` iff `completed == planned` and `passes / completed >= cutoff` (exact; 27/30 at 0.90). `incomplete` when fewer than `planned` trials completed. |
-| `spend_usd`, `spend_complete` | Sum of trial costs. `spend_complete` is false if any trial had no cost. |
+| `spend_usd`, `spend_complete` | Sum of trial costs. `spend_complete` is false if any trial had no cost or unpriced calls. |
+| `trace_warnings` | Trials whose trace could not be built but whose checker verdict stands |
 | `thinking_tokens_total`, `thinking_tokens_reported_trials` | Usage thinking tokens summed over trials that reported them |
 | `thinking_tokens_status` | Steps by thinking-count status, summed over the group's trials. Any `unreported` means `thinking_tokens_total` is a lower bound, not a measurement of zero. |
 | `thinking_flags`, `wrong_model_trials` | Carried up from the trial rows |
