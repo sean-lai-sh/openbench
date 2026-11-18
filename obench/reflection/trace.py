@@ -37,6 +37,11 @@ TRACE_SCHEMA = "openbench.reflection.step/v1"
 WIRE_SCHEMA = "openbench.reflection.wire/v1"
 WIRES = ("anthropic", "openai_chat", "gemini")
 THINKING_KINDS = ("full", "summary", "redacted", "omitted", "none")
+# thinking.flag: typed notes on how the reported thinking tokens relate to the returned text.
+THINKING_FLAGS = (
+    "reported_zero_text_present",   # usage reports 0 thinking tokens but thinking text came back
+    "reported_absent_text_present", # usage has no thinking-token field at all, but thinking text came back (gpt-oss on Vertex)
+)
 ERROR_CODES = (
     "events_malformed",     # the OpenCode stream is not a sequence of steps
     "wire_malformed",       # a wire record is not a wire/v1 object
@@ -217,6 +222,10 @@ def usage_from_response(wire: str, usage: Any, step: int) -> dict:
                               if fields["cache_read"] else None),
         "cache_write_tokens": (_count(usage, fields["cache_write"], required=False, step=step, label="cache write")
                                if fields["cache_write"] else None),
+        # Explicit, so an unreported count is never read as "0 thinking". anthropic and openai_chat output counts
+        # include thinking (max_tokens caps both); Gemini's candidatesTokenCount excludes thoughtsTokenCount.
+        "thinking_tokens_status": "reported" if thinking is not None else "unreported",
+        "output_tokens_include_thinking": wire in ("anthropic", "openai_chat"),
         "raw": usage,
     }
 
@@ -324,9 +333,13 @@ def _tool_calls(step: dict, recovered: list[dict]) -> list[dict]:
     return calls
 
 
-def _thinking(step: dict, wire: str, setting: dict, thinking_tokens: int | None) -> dict:
+def _thinking(step: dict, wire: str, setting: dict, thinking_tokens: int | None,
+              count_tokens: Callable[[str], tuple[int | None, str]] | None = None) -> dict:
     """What the model returned as thinking, with a kind so analysis can tell
-    full thinking from summaries, redactions and nothing at all."""
+    full thinking from summaries, redactions and nothing at all. ``chars`` is
+    the text's length; ``flag`` marks reported-zero-with-text. ``tokens_counted``
+    is our own count of the text (``count_tokens``), recorded beside the usage
+    value and never in place of it."""
     parts = step["reasoning"]
     text = "\n\n".join(p.get("text", "") for p in parts if isinstance(p.get("text"), str) and p.get("text").strip())
     metadata = [p.get("metadata") for p in parts if p.get("metadata")]
@@ -344,8 +357,12 @@ def _thinking(step: dict, wire: str, setting: dict, thinking_tokens: int | None)
             "summary", "Claude 4+ returns summarized thinking unless display=full")
     else:
         kind, rule = "full", "OpenAI-chat reasoning content is the model's own reasoning text"
+    flag = (("reported_zero_text_present" if thinking_tokens == 0 else
+             "reported_absent_text_present" if thinking_tokens is None else None) if text else None)
+    counted, counted_by = (count_tokens(text) if count_tokens and text else (None, None))
     return {"kind": kind, "text": text, "parts": len(parts), "source": "opencode.reasoning", "rule": rule,
-            "metadata": metadata}
+            "metadata": metadata, "chars": len(text), "flag": flag,
+            "tokens_counted": counted, "tokens_counted_by": counted_by}
 
 
 def _iso(ms: Any) -> str | None:
@@ -364,14 +381,20 @@ def _check_wire(record: Any, index: int) -> dict:
 
 def build_trace(events: list[dict], wire_records: list[dict], *, run: dict | None = None,
                 cost_fn: Callable[[dict], tuple[float | None, str]] | None = None,
-                require_explicit_thinking: bool = True) -> list[dict]:
+                require_explicit_thinking: bool = True,
+                count_thinking_tokens: Callable[[str], tuple[int | None, str]] | None = None) -> list[dict]:
     """One ``step/v1`` record per OpenCode step. ``cost_fn(record)`` returns
     ``(usd, source)`` to replace OpenCode's per-step cost (the runner's
-    ledger-priced cost hook)."""
+    ledger-priced cost hook). ``count_thinking_tokens(text)`` returns
+    ``(count, label)`` for ``thinking.tokens_counted`` (our own count, e.g.
+    o200k_harmony for gpt-oss); it never touches ``usage.thinking_tokens``."""
     pin = load_pin()
     steps = opencode_steps(events)
     wires = [_check_wire(r, i) for i, r in enumerate(wire_records, 1)]
-    main = sorted((w for w in wires if w.get("call_role", "main") != "side"), key=lambda w: w.get("call_index", 0))
+    # A main call that failed (4xx/5xx) produced no OpenCode step: OpenCode's client retried it. Only answered
+    # calls pair with steps; failed ones stay in wire.jsonl (classify_4xx / retried_4xx).
+    main = sorted((w for w in wires if w.get("call_role", "main") != "side" and w.get("status", 200) == 200),
+                  key=lambda w: w.get("call_index", 0))
     if len(main) != len(steps):
         raise TraceError("step_call_mismatch",
                          f"{len(steps)} OpenCode steps but {len(main)} main wire calls")
@@ -401,12 +424,14 @@ def build_trace(events: list[dict], wire_records: list[dict], *, run: dict | Non
                         "sent_at": wire.get("ts")},
             "tool_calls": _tool_calls(step, tool_calls_from_next_request(kind, following)),
             "assistant_text": "\n\n".join(p.get("text", "") for p in step["texts"] if p.get("text")),
-            "thinking": _thinking(step, kind, setting, usage["thinking_tokens"]),
+            "thinking": _thinking(step, kind, setting, usage["thinking_tokens"], count_thinking_tokens),
             "usage": usage,
             "cost": {"usd": finish.get("cost"), "source": "opencode.step_finish" if "cost" in finish else None},
             "finish_reason": finish.get("reason"),
             "opencode_tokens": finish.get("tokens"),
         }
+        if record["thinking"].get("flag") == "reported_zero_text_present":
+            usage["thinking_tokens_status"] = "reported_zero_text_present"  # contradicts the text: don't read as 0
         if cost_fn is not None:
             usd, source = cost_fn(record)
             record["cost"] = {"usd": usd, "source": source}
