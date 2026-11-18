@@ -45,6 +45,7 @@ from pathlib import Path
 from obench.hardsuite.suite import resolve
 from obench.reflection import trace as tr
 from obench.reflection.runner import RunConfig, Runner, TrialSpec, code_commit, read_rows
+from obench.reflection.cell_executor import wire_cost
 from obench.reflection.wire_proxy import classify_4xx, provider_blocked
 
 FINAL_REASONS = ("stop", "end_turn", "length", "max_tokens")
@@ -127,6 +128,12 @@ def reclassify(run_dir: Path, executor, apply: bool = False, suites_dir: Path | 
             image = executor.image_record(t)
         new.update({"retried_4xx": fours["retried"], "image_ref": image["ref"], "image_id": image["id"],
                     "image_matches_pin": image["matches_pin"]})
+        if new.get("cost_usd") is None and wires:
+            # rows from before 2026-11-17 (e.g. pilot timeouts) had cost null whenever one call was unpriced: the
+            # cost is recomputed from wire.jsonl so it counts toward spend
+            new["cost_usd"], new["cost_unpriced_calls"] = wire_cost(wires)
+            changes.append({"trial_id": row["trial_id"], "task": row["task"], "model": row["model"],
+                            "from": row["status"], "to": new["status"], "cost_usd": new["cost_usd"]})
         out.append(new)
     report = {"run": str(run_dir), "trials": len(rows), "changed": changes, "applied": apply}
     if apply:

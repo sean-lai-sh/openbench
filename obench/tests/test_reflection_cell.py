@@ -679,6 +679,13 @@ class Trial(CellCase):
         self.assertFalse(result.timeout_detail["still_working"])
         self.assertGreater(result.timeout_detail["last_call_ended_before_cap_s"], 300)
 
+    def test_wire_cost_sums_priced_calls_and_counts_the_cut_off_one(self):
+        wires = [{"status": 200, "cost_usd": 0.12}, {"status": 200, "cost_usd": 0.30},
+                 {"status": 200, "cost_usd": None},     # the call the timeout killed before usage arrived
+                 {"status": 429, "cost_usd": None},     # an error answer: no cost, not counted as unpriced
+                 {"status": None, "cost_usd": None}]    # refused without being sent
+        self.assertEqual(ce.wire_cost(wires), (0.42, 1))  # 640f6751 reported null here (Carbon corewars)
+
     def test_timeout_keeps_the_cost_of_priced_calls(self):
         class OneCallThenTimeout(FakeTrialDocker):
             def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
@@ -861,6 +868,60 @@ class WithRunner(CellCase):
                          ("provider_blocked", True, 3))
         summary = rn.read_rows(run_dir / "summary.jsonl")[0]
         self.assertEqual((summary["verdict"], summary["provider_blocked"], summary["errors"]), ("excluded", 1, 0))
+
+
+    def timeout_run(self, run_dir, **config):
+        """A mini suite where every trial makes priced model calls and then hits the cap (an infra timeout)."""
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+        suites = self.tmp / "suites"
+        suites.mkdir(exist_ok=True)
+        task = '[[task]]\nid = "{id}"\nsource = "openbench-tb-hard"\nfrontier_rate = {r}\ndomain = "d"\nwhy = "w"\n'
+        (suites / "mini.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini"\npool = "mini-pool"\n'
+                                          + task.format(id="t1", r=0.5))
+        (suites / "mini-pool.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini-pool"\n'
+                                               + task.format(id="t2", r=0.1))
+
+        class TimesOut(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return None, True
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            make_task(self.tasks, "t2")
+            cfg = rn.RunConfig.from_dict({"run_id": "to", "suite": "mini", "models": [OPUS], "n_trials": 5,
+                                          "max_rounds": 1, **config})
+            status = rn.Runner(cfg, run_dir, self.executor(TimesOut()), suites_dir=suites).run()
+        return status, rn.read_rows(run_dir / "trials.jsonl"), suites
+
+    def test_timeout_cost_counts_toward_the_alert_stops(self):
+        run_dir = self.tmp / "alert"
+        status, rows, _ = self.timeout_run(run_dir, alert_thresholds_usd=[0.000001])
+        self.assertEqual(status["state"], "alert")                      # stopped after the first timed-out trial
+        self.assertEqual([(r["status"], r["timed_out"]) for r in rows], [("timeout", True)])
+        self.assertGreater(rows[0]["cost_usd"], 0)                      # priced from wire.jsonl
+        self.assertEqual(status["spent_usd"], rows[0]["cost_usd"])
+
+    def test_timeout_cost_counts_toward_the_spend_cap(self):
+        run_dir = self.tmp / "cap"
+        # the first trial fits (0 + the $2 Opus estimate); the second would pass the cap once the timeout's cost counts
+        status, rows, _ = self.timeout_run(run_dir, spend_cap_usd=2.000001)
+        self.assertEqual((status["state"], len(rows)), ("capped", 1))
+        self.assertTrue(rows[0]["timed_out"] and rows[0]["cost_usd"] > 0)
+
+    def test_null_costs_from_old_rows_are_recomputed_from_the_wire(self):
+        from obench.reflection import reclassify as rc
+        run_dir = self.tmp / "old"
+        status, rows, suites = self.timeout_run(run_dir, alert_thresholds_usd=[1000.0], n_trials=1)
+        priced = rows[0]["cost_usd"]
+        (run_dir / "trials.jsonl").write_text(json.dumps(dict(rows[0], cost_usd=None)) + "\n")  # as 640f6751 wrote it
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            rc.reclassify(run_dir, self.executor(), apply=True, suites_dir=suites)
+        fixed = rn.read_rows(run_dir / "trials.jsonl")[0]
+        self.assertEqual((fixed["cost_usd"], fixed["cost_unpriced_calls"]), (priced, 0))
+        self.assertEqual(rn.read_rows(run_dir / "summary.jsonl")[0]["spend_usd"], priced)
 
 
 if __name__ == "__main__":

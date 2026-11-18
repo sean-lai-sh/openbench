@@ -166,6 +166,15 @@ CHECKER_LAUNCHED = "__openbench_checker_launched__"  # printed in the checker co
 PERMISSION_LINE = re.compile(r"permission requested: (\S+) \(([^)]*)\); auto-rejecting")
 
 
+def wire_cost(wires: list[dict]) -> tuple[float, int]:
+    """``(cost_usd, unpriced_calls)`` from a trial's wire records, for every outcome including timeouts. Calls
+    with a cost are summed even when some have none (e.g. the call a timeout cut off before usage arrived); the
+    unpriced answered calls are counted, so the total is a known lower bound rather than missing. It is what the
+    runner adds to spend, so it counts toward the cap and the alert stops."""
+    costs = [w.get("cost_usd") for w in wires if w.get("status") == 200 or w.get("cost_usd") is not None]
+    return round(sum(c for c in costs if c is not None), 6), sum(1 for c in costs if c is None)
+
+
 class CellError(RuntimeError):
     pass
 
@@ -612,11 +621,7 @@ class CellExecutor:
         sent = {json.dumps(tr.thinking_setting(w["provider_wire"], w["request"]), sort_keys=True)
                 for w in wires if isinstance(w.get("request"), dict) and w.get("provider_wire")}
         thinking_setting = {"configured": model.thinking_sent(), "sent": [json.loads(x) for x in sorted(sent)]}
-        # Calls with a cost are summed even when some have none (e.g. the call a timeout cut off before usage
-        # arrived); the unpriced ones are counted, so the total is a known lower bound rather than missing.
-        costs = [w.get("cost_usd") for w in wires if w.get("status") == 200 or w.get("cost_usd") is not None]
-        cost = round(sum(c for c in costs if c is not None), 6)
-        unpriced = sum(1 for c in costs if c is None)
+        cost, unpriced = wire_cost(wires)
         fours = classify_4xx(wires)
         blocked = provider_blocked(wires)
         common = dict(cost_usd=cost, served_models=served, route_counts=counts, thinking_setting=thinking_setting,
