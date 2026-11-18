@@ -27,7 +27,7 @@ proxy, then the task's checker on the result:
    checker timeout from ``task.toml``). Exit 0 means passed. Agent-written code
    never runs on the host: a checker that ``docker run``s the task image itself
    runs as is; every other checker runs whole inside the task image (``_check``).
-   A checker that cannot run at all is ``checker_error``.
+   ``checker_error`` only when the checker container itself fails to launch.
 5. Build ``trace.jsonl`` (``trace.build_trace``) from the events and the wire
    records. Return the cost (sum of the wire records), thinking tokens
    (usage), flags and served models.
@@ -134,6 +134,7 @@ def _load() -> list | None:
 # model are unchanged).
 AGENT_PERMISSIONS = {"external_directory": "allow", "doom_loop": "allow", "read": "allow"}
 OPENCODE_IN_CONTAINER = "/opt/opencode"   # the pinned standalone binary's directory, mounted read-only
+CHECKER_LAUNCHED = "__openbench_checker_launched__"  # printed in the checker container before checker.sh runs
 PERMISSION_LINE = re.compile(r"permission requested: (\S+) \(([^)]*)\); auto-rejecting")
 
 
@@ -511,9 +512,10 @@ class CellExecutor:
             return TrialResult(status="timeout", passed=None, **common,
                                error=f"agent timed out after {cell.get('agent_timeout') or task['agent_timeout']}s")
         checker_exit, checker_mode, checker_out = self._check(task, workspace) if run_checker else (None, None, "")
-        if refused is None and checker_exit is not None and (checker_exit in (125, 126, 127)
-                                         or re.search(r"command not found|exec: .*: not found", checker_out or "")):
-            # the checker itself could not run (missing interpreter or tool in the image, docker failure): infra
+        if refused is None and checker_mode == "container_not_launched" and checker_exit in (125, 126, 127):
+            # Only a launch failure of the checker container itself (docker error 125, bash not invocable 126 / not
+            # found 127, before the launch marker was printed) is checker_error. A command missing inside the task's
+            # own checker or the agent's code is a real fail and stays in the denominator.
             return TrialResult(status="checker_error", passed=None, checker_exit=checker_exit, **common,
                                error=f"checker could not run ({checker_mode}, exit {checker_exit})")
         try:
@@ -584,6 +586,9 @@ class CellExecutor:
         - ``in_task_container``: every other checker (the host-native openbench-tb-hard checkers, which run the
           agent's code, e.g. model-extraction's ``steal.py`` and filter-js's ``filter.py``) runs whole inside the
           task image, with the workspace at its WORKDIR and the task directory read-only at /openbench-task.
+          The container first prints a launch marker; if it never appears, the mode is
+          ``container_not_launched`` and exit 125/126/127 is ``checker_error``. Any exit after launch (including
+          127 from a command missing in the agent's code) is the checker's verdict.
         """
         from obench.checker_timeout import checker_timeout_s
 
@@ -605,8 +610,14 @@ class CellExecutor:
                     "--network", "bridge",  # verifier dependencies (uv / pytest installs), as Harbor verifiers expect
                     "-v", f"{workspace}:{task['workdir']}", "-v", f"{task['dir']}:/openbench-task:ro",
                     "-e", "TASK_DIR=/openbench-task", "-e", f"BENCH_TASK_IMAGE={task['image']}",
-                    "-w", task["workdir"], task["image"], "bash", "/openbench-task/checker.sh"]
+                    "-w", task["workdir"], task["image"],
+                    "bash", "-c", f"echo {CHECKER_LAUNCHED}; exec bash /openbench-task/checker.sh"]
             code, out = self.docker.run_checker(args, timeout)
+            if CHECKER_LAUNCHED in out:
+                out = out.replace(CHECKER_LAUNCHED + "\n", "", 1)
+            else:
+                mode = "container_not_launched"
+                out = f"[openbench] checker container did not launch (exit {code})\n" + out
         (workspace.parent / "checker-output.txt").write_text(out, encoding="utf-8")
         (workspace.parent / "checker-mode.txt").write_text(mode + "\n", encoding="utf-8")
         return code, mode, out

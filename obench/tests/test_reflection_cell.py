@@ -58,7 +58,11 @@ class FakeTrialDocker:
         mounts = {args[i + 1].split(":")[1]: args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v"}
         task_dir = mounts["/openbench-task"]
         workspace = next(h for c, h in mounts.items() if c != "/openbench-task")
-        proc = sp.run(["bash", str(Path(task_dir) / "checker.sh")], cwd=workspace, env=dict(os.environ, TASK_DIR=task_dir),
+        if getattr(self, "launch_fails", None):  # docker could not start bash in the image: no launch marker
+            return self.launch_fails, 'docker: Error response from daemon: exec: "bash": executable file not found\n'
+        assert args[-3:-1] == ["bash", "-c"]
+        command = args[-1].replace("/openbench-task", task_dir)
+        proc = sp.run(["bash", "-c", command], cwd=workspace, env=dict(os.environ, TASK_DIR=task_dir),
                       stdout=sp.PIPE, stderr=sp.STDOUT, text=True, timeout=timeout)
         return proc.returncode, proc.stdout
 
@@ -454,7 +458,8 @@ class Trial(CellCase):
         (call,) = docker.checker_calls  # host-native checker: run whole inside the task image
         self.assertEqual(call[call.index("-w") + 1], "/app")
         self.assertIn("task-img:pinned", call)
-        self.assertEqual(call[-2:], ["bash", "/openbench-task/checker.sh"])
+        self.assertEqual(call[-3:-1], ["bash", "-c"])
+        self.assertIn("exec bash /openbench-task/checker.sh", call[-1])
         self.assertTrue(any(a.endswith(":/openbench-task:ro") for a in call))
         trial_dir = self.tmp / "run" / self.spec(index=41).trial_dir
         self.assertEqual((trial_dir / "checker-mode.txt").read_text().strip(), "in_task_container")
@@ -466,10 +471,32 @@ class Trial(CellCase):
         self.assertFalse(getattr(docker, "checker_calls", []))
         self.assertEqual(result.status, "completed")
 
-    def test_checker_that_cannot_run_is_checker_error(self):
-        (self.tasks / "t1" / "checker.sh").write_text("#!/bin/bash\nnosuchinterpreter3 check.py\n")
-        result = self.executor().run_trial(self.spec(index=43), self.tmp / "run")
-        self.assertEqual((result.status, result.passed, result.checker_exit), ("checker_error", None, 127))
+    def test_missing_command_in_the_agents_code_is_a_real_fail(self):
+        """The checker runs the agent's script, which calls a command the image lacks: exit 127 from inside the
+        launched checker is a fail and stays in the denominator (not checker_error)."""
+        (self.tasks / "t1" / "checker.sh").write_text("#!/bin/bash\nbash ./run.sh\n")
+
+        class WritesScript(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                code, t = FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                workspace = next(args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v")
+                Path(workspace, "run.sh").write_text("nosuchtool_from_the_agent --solve\n")
+                return code, t
+        result = self.executor(WritesScript()).run_trial(self.spec(index=43), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("completed", False, 127))
+        out = (self.tmp / "run" / self.spec(index=43).trial_dir / "checker-output.txt").read_text()
+        self.assertIn("nosuchtool_from_the_agent", out)
+        self.assertNotIn("__openbench_checker_launched__", out)
+
+    def test_only_a_checker_container_launch_failure_is_checker_error(self):
+        for exit_code in (125, 126, 127):
+            with self.subTest(exit_code=exit_code):
+                docker = FakeTrialDocker()
+                docker.launch_fails = exit_code
+                result = self.executor(docker).run_trial(self.spec(index=50 + exit_code), self.tmp / "run")
+                self.assertEqual((result.status, result.passed, result.checker_exit), ("checker_error", None, exit_code))
+                trial_dir = self.tmp / "run" / self.spec(index=50 + exit_code).trial_dir
+                self.assertEqual((trial_dir / "checker-mode.txt").read_text().strip(), "container_not_launched")
 
     def test_opencode_mount_shows_only_the_pinned_binary_and_permissions_are_allowed(self):
         docker = FakeTrialDocker()
