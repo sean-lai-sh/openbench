@@ -260,6 +260,23 @@ class Tables(Base):
         s = rn.read_rows(self.dir / "summary.jsonl")[0]
         self.assertEqual((s["verdict"], s["agent_exit_pending_tool"], s["errors"]), ("incomplete", 1, 1))
 
+    def test_isolation_probe_gates_the_run_and_is_recorded(self):
+        class Probed(rn.FixtureExecutor):
+            result = {"ok": True, "networks": {"openbench-agent": {"metadata_reachable": False}}}
+
+            def isolation_preflight(self):
+                if not self.result["ok"]:
+                    raise RuntimeError("isolation preflight failed: metadata reachable")
+                return self.result
+        runner, _ = self.run_with(Probed({}), models=[OPUS], tasks=["extract-elf"], max_rounds=1)
+        self.assertEqual(json.loads((self.dir / "plan.json").read_text())["isolation"]["ok"], True)
+        bad = Probed({})
+        bad.result = {"ok": False}
+        d = Path(tempfile.mkdtemp())
+        with self.assertRaisesRegex(RuntimeError, "metadata reachable"):
+            rn.Runner(config(models=[OPUS], tasks=["extract-elf"], max_rounds=1), d, bad).run()
+        self.assertEqual((bad.calls, (d / "trials.jsonl").exists()), ([], False))  # nothing ran
+
     def test_workers_are_fixed_recorded_and_models_interleave(self):
         runner = rn.Runner(config(models=[CARBON, OPUS], tasks=["extract-elf"], max_rounds=1), self.dir,
                            rn.FixtureExecutor({}), workers=3)
