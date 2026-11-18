@@ -56,6 +56,9 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # Both are neither pass nor fail: left out of the pass-rate denominator and the swap rule, reported per task and
 # model (set_aside.json, provider_blocked.json) with a sensitivity check that counts them all as fails, and cells
 # with any of them never go to credit assignment or ideation.
+# Timeouts (Researcher ruling 2026-11-17): a trial that hits its cap while the agent is still working (a model call
+# finished in the last 5 minutes before the cap) is a task FAIL: status completed, passed False, timed_out True,
+# in the denominator. Only a cap with no model call finishing in those 5 minutes is "timeout" (infrastructure).
 # agent_exit_pending_tool: OpenCode exited 0 with a tool call still pending (e.g. `opencode run` auto-rejected a
 # permission request) - infrastructure, never a task fail. checker_error: the checker could not run (missing
 # interpreter/tool in the task image, docker failure) - infrastructure.
@@ -108,6 +111,8 @@ class TrialResult:
     model_refused: dict | None = None         # {stop_reason, stop_details, call_index, step, refusals, ...}
     agent_exit: dict | None = None            # agent_exit_pending_tool: {last_finish, pending_tools, permission_rejected, ...}
     trace_warning: str | None = None          # the trace could not be built (e.g. step_call_mismatch); verdict kept
+    timed_out: bool = False                   # the agent hit its cap (task.toml agent_timeout_s, else 1800 s)
+    timeout_detail: dict | None = None        # {cap_seconds, last_call_ended_before_cap_s, still_working}
     cost_unpriced_calls: int = 0              # calls with no cost (e.g. killed mid-response); cost_usd sums the rest
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
@@ -454,6 +459,7 @@ class Runner:
                "retried_4xx": result.retried_4xx or {}, "provider_blocked": result.provider_blocked,
                "model_refused": result.model_refused, "agent_exit": result.agent_exit,
                "trace_warning": result.trace_warning, "cost_unpriced_calls": result.cost_unpriced_calls,
+               "timed_out": result.timed_out, "timeout_detail": result.timeout_detail,
                "workers": self.workers, "wall_seconds": round(_time.monotonic() - t0, 1),
                "host_load": {"start": load_start, "end": _load(), "cpus": os.cpu_count()},
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
@@ -516,6 +522,8 @@ class Runner:
                 "spend_usd": round(sum(c for c in costs if c is not None), 6),
                 "spend_complete": all(c is not None for c in costs) and not any(t.get("cost_unpriced_calls") for t in trials),
                 "trace_warnings": sum(1 for t in trials if t.get("trace_warning")),
+                "timed_out": sum(1 for t in trials if t.get("timed_out")),
+                "timeout_fails": sum(1 for t in trials if t.get("timed_out") and t["status"] == "completed"),
                 "thinking_tokens_total": sum(thinking),
                 "thinking_tokens_status": _sum_counts(t.get("thinking_tokens_status") for t in trials),
                 "thinking_tokens_reported_trials": len(thinking),
