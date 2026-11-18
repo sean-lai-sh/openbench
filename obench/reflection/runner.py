@@ -107,6 +107,8 @@ class TrialResult:
     provider_blocked: dict | None = None      # raw {blockReason, blockReasonMessage, ...} when status is provider_blocked
     model_refused: dict | None = None         # {stop_reason, stop_details, call_index, step, refusals, ...}
     agent_exit: dict | None = None            # agent_exit_pending_tool: {last_finish, pending_tools, permission_rejected, ...}
+    trace_warning: str | None = None          # the trace could not be built (e.g. step_call_mismatch); verdict kept
+    cost_unpriced_calls: int = 0              # calls with no cost (e.g. killed mid-response); cost_usd sums the rest
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
@@ -446,6 +448,7 @@ class Runner:
                "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
                "retried_4xx": result.retried_4xx or {}, "provider_blocked": result.provider_blocked,
                "model_refused": result.model_refused, "agent_exit": result.agent_exit,
+               "trace_warning": result.trace_warning, "cost_unpriced_calls": result.cost_unpriced_calls,
                "workers": self.workers, "wall_seconds": round(_time.monotonic() - t0, 1),
                "host_load": {"start": load_start, "end": _load(), "cpus": os.cpu_count()},
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
@@ -506,7 +509,8 @@ class Runner:
                 "pass_rate": round(passes / len(completed), 4) if completed else None,
                 "cutoff": cutoff, "verdict": verdict,
                 "spend_usd": round(sum(c for c in costs if c is not None), 6),
-                "spend_complete": all(c is not None for c in costs),
+                "spend_complete": all(c is not None for c in costs) and not any(t.get("cost_unpriced_calls") for t in trials),
+                "trace_warnings": sum(1 for t in trials if t.get("trace_warning")),
                 "thinking_tokens_total": sum(thinking),
                 "thinking_tokens_status": _sum_counts(t.get("thinking_tokens_status") for t in trials),
                 "thinking_tokens_reported_trials": len(thinking),
