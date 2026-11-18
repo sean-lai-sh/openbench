@@ -1,0 +1,928 @@
+"""Containerized trial executor (obench/reflection/cell_executor.py) against a fake docker.
+
+FakeTrialDocker plays the container: it reads the OpenCode config it was
+given, calls the per-trial recording proxy over HTTP (which forwards to a fake
+Vertex), prints OpenCode's JSON event stream, and writes into the mounted
+workspace. The proxy, wire records, trace and checker run for real."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import stat
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from unittest.mock import patch as mock_patch
+
+from obench.hardsuite import config as hs_config
+from obench.reflection import cell_executor as ce
+from obench.reflection import opencode as oc
+from obench.reflection import runner as rn
+from obench.reflection import vertex_models as vm
+from obench.reflection.patches import PATCH_SCHEMA
+from obench.tests.test_reflection_vertex import FakeVertex, default_reply
+
+OPUS = "claude-opus-5-5"
+TOOLS = [{"name": "bash", "description": "run", "input_schema": {"type": "object", "properties": {"command": {}}}}]
+
+
+class FakeTrialDocker:
+    def __init__(self, steps=2, write_output=True, timeout=False, image_ids=None, absent=()):
+        self.steps, self.write_output, self.timeout = steps, write_output, timeout
+        self.image_ids, self.calls, self.absent = image_ids or {}, [], set(absent)
+
+    def has_image(self, ref):
+        return ref not in self.absent
+
+    def kill(self, name):
+        self.killed = getattr(self, "killed", []) + [name]
+
+    image_files = {"data/oewn.sqlite": "db"}   # what the task image ships in its WORKDIR
+
+    def hydrate(self, image, workdir, dest):
+        self.hydrated = getattr(self, "hydrated", []) + [(image, workdir)]
+        for rel, text in self.image_files.items():
+            Path(dest, rel).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest, rel).write_text(text)
+
+    def run_checker(self, args, timeout):
+        """Plays `docker run <image> bash /openbench-task/checker.sh`: maps the two mounts back to host paths."""
+        import subprocess as sp
+        self.checker_calls = getattr(self, "checker_calls", []) + [args]
+        mounts = {args[i + 1].split(":")[1]: args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v"}
+        task_dir = mounts["/openbench-task"]
+        workspace = next(h for c, h in mounts.items() if c != "/openbench-task")
+        if getattr(self, "launch_fails", None):  # docker could not start bash in the image: no launch marker
+            return self.launch_fails, 'docker: Error response from daemon: exec: "bash": executable file not found\n'
+        assert args[-3:-1] == ["bash", "-c"]
+        command = args[-1].replace("/openbench-task", task_dir)
+        proc = sp.run(["bash", "-c", command], cwd=workspace, env=dict(os.environ, TASK_DIR=task_dir),
+                      stdout=sp.PIPE, stderr=sp.STDOUT, text=True, timeout=timeout)
+        return proc.returncode, proc.stdout
+
+    metadata_open = False     # what the isolation probe finds (the real VM before the DOCKER-USER rule: True)
+
+    def agent_gateway(self):
+        self.gateways = getattr(self, "gateways", []) + ["agent"]
+        return "127.0.0.1"
+
+    def probe(self, network, image, targets, run_args=None):
+        self.probes = getattr(self, "probes", []) + [(network, image)]
+        self.probe_arg_sets = getattr(self, "probe_arg_sets", []) + [run_args]
+        self.probe_args = self.probe_arg_sets[0]
+        self.probe_targets = targets
+        meta = ("169.254.169.254", "metadata.google.internal")
+        return {f"{h}:{p}": (self.metadata_open if h in meta else True) for h, p in targets}
+
+    def bridge_gateway(self):
+        self.gateways = getattr(self, "gateways", []) + ["bridge"]
+        return "127.0.0.1"
+
+    def offline_gateway(self):
+        self.gateways = getattr(self, "gateways", []) + ["offline"]
+        return "127.0.0.1"
+
+    def image_id(self, ref):
+        return self.image_ids.get(ref, "sha256:" + "0" * 64)
+
+    def run_agent(self, args, stdout_path, timeout, stderr_path=None):
+        self.calls.append(args)
+        env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+        cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        base = next(iter(cfg["provider"].values()))["options"]["baseURL"]
+        workspace = next(args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v")
+        if self.timeout:
+            return None, True
+        events = []
+        for n in range(1, self.steps + 1):
+            body = {"model": OPUS, "stream": True, "max_tokens": 1000, "tools": TOOLS,
+                    "system": [{"type": "text", "text": "You are OpenCode."}],
+                    "messages": [{"role": "user", "content": "go"}]}
+            req = urllib.request.Request(base + "/messages", data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", "x-api-key": "openbench-proxy"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp.read()
+            except urllib.error.HTTPError:
+                pass  # OpenCode sees the error; the wire record keeps the status
+            msg = f"m{n}"
+            events += [{"type": "step_start", "timestamp": n * 10, "sessionID": "s", "part": {"messageID": msg, "type": "step-start"}},
+                       {"type": "text", "timestamp": n * 10 + 1, "sessionID": "s",
+                        "part": {"messageID": msg, "type": "text", "text": f"step {n}", "time": {"start": 1, "end": 2}}},
+                       {"type": "step_finish", "timestamp": n * 10 + 2, "sessionID": "s",
+                        "part": {"messageID": msg, "type": "step-finish", "reason": "stop" if n == self.steps else "tool-calls",
+                                 "cost": 0.0, "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}]
+        if self.write_output:
+            Path(workspace, "out.txt").write_text("done\n")
+        Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in events))
+        return 0, False
+
+
+def make_task(root, name="t1", toml=True, checker_image=None, needs_network=None):
+    d = Path(root) / name
+    (d / "workspace").mkdir(parents=True)
+    (d / "workspace" / "seed.txt").write_text("seed\n")
+    (d / "solution").mkdir()
+    (d / "instruction.md").write_text("Create out.txt in /app.\n")
+    head = f'IMAGE="${{BENCH_TASK_IMAGE:-{checker_image}}}"\nWORKDIR="/work"\n' if checker_image else ""
+    (d / "checker.sh").write_text(f"#!/bin/bash\n{head}test -f out.txt && echo 'SCORE: 1.0' && exit 0\necho 'SCORE: 0'; exit 1\n")
+    if toml:
+        flag = "" if needs_network is None else f"solution_needs_network = {str(needs_network).lower()}\n"
+        (d / "task.toml").write_text('docker_image = "task-img:pinned"\ndocker_workdir = "/app"\nagent_timeout_s = 600\n' + flag)
+    return d
+
+
+class CellCase(unittest.TestCase):
+    def setUp(self):
+        self.vertex = ThreadingHTTPServer(("127.0.0.1", 0), FakeVertex)
+        self.vertex.seen, self.vertex.reply = [], default_reply
+        threading.Thread(target=self.vertex.serve_forever, daemon=True).start()
+        self.addCleanup(self.vertex.server_close)
+        self.addCleanup(self.vertex.shutdown)
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        pin = oc.load_pin()
+        binary = self.tmp / "opencode-src" / "bin" / pin["sha"] / "opencode"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\necho openbench\n")
+        binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+        (binary.parent / "build-stamp.json").write_text('{"kind": "compile"}')
+        self.binary = binary
+        self.tasks = self.tmp / "tasks"
+        make_task(self.tasks)
+        host, port = self.vertex.server_address
+        self.upstream = f"http://{host}:{port}"
+
+    def executor(self, docker=None, **kw):
+        return ce.CellExecutor(self.binary, "proj", lambda: "tok", docker=docker or FakeTrialDocker(),
+                               upstream_host=self.upstream, **kw)
+
+    def spec(self, task="t1", patch=None, patch_id=None, index=0):
+        tid = rn.trial_id("r", task, OPUS, patch_id, index)
+        return rn.TrialSpec(run_id="r", trial_id=tid, task=task, tasks_dir=str(self.tasks), model=OPUS, trial_index=index,
+                            patch_id=patch_id, patch=patch, trial_dir=f"trials/{OPUS}/{task}/{tid}")
+
+
+class Trial(CellCase):
+    def test_full_trial_in_the_task_image(self):
+        docker = FakeTrialDocker()
+        run_dir = self.tmp / "run"
+        result = self.executor(docker).run_trial(self.spec(), run_dir)
+        self.assertEqual((result.status, result.passed, result.checker_exit, result.steps), ("completed", True, 0, 2))
+        self.assertEqual(result.served_models, [OPUS])
+        self.assertEqual(result.route_counts["model_calls"], 2)
+        self.assertEqual(result.route_counts["route_repairs"], 0)  # Opus is never rewritten
+        self.assertEqual(result.thinking_tokens, 240)  # 120 per call, from response usage
+        self.assertEqual(result.thinking_tokens_per_step, [120, 120])
+        opus_sent = {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "high"}}
+        self.assertEqual(result.thinking_setting["configured"], opus_sent)
+        self.assertEqual(result.thinking_setting["sent"], [{"explicit": True, "field": "thinking", "effort": "high",
+                                                            "value": opus_sent["thinking"]}])
+        self.assertGreater(result.cost_usd, 0)
+        self.assertTrue((run_dir / result.trace).is_file())
+        self.assertFalse(result.trace.startswith("/"))
+        args = docker.calls[0]
+        self.assertIn("task-img:pinned", args)
+        self.assertTrue(any(a.endswith(":/app") for a in args))
+        self.assertTrue(any(a.endswith(":ro") and "opencode-src" in a for a in args))
+        self.assertIn("--thinking", args)
+        self.assertIn("api.anthropic.com:0.0.0.0", args)
+        self.assertEqual(args[args.index("--model") + 1], "vertex-claude-opus-5-5/claude-opus-5-5")
+        cell = json.loads((run_dir / result.trace).with_name("cell.json").read_text())
+        self.assertEqual((cell["image"], cell["image_source"]), ("task-img:pinned", "task.toml"))
+        self.assertEqual(self.vertex.seen[0]["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
+
+    def test_ideation_patch_reaches_the_model_request(self):
+        patch = {"schema": PATCH_SCHEMA, "ops": [{"op": "system_append", "text": "Always run the tests."}]}
+        result = self.executor().run_trial(self.spec(patch=patch, patch_id="p1"), self.tmp / "run")
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(self.vertex.seen[0]["body"]["system"][-1]["text"], "Always run the tests.")
+        wire = [json.loads(l) for l in (self.tmp / "run" / result.wire).read_text().splitlines()]
+        self.assertEqual({w["patch_id"] for w in wire}, {"p1"})
+
+    def test_checker_failure_timeout_and_missing_trace(self):
+        result = self.executor(FakeTrialDocker(write_output=False)).run_trial(self.spec(index=1), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("completed", False, 1))
+        result = self.executor(FakeTrialDocker(timeout=True)).run_trial(self.spec(index=2), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.cost_usd, result.cost_unpriced_calls), ("timeout", None, 0.0, 0))
+
+        class Lossy(FakeTrialDocker):
+            def run_agent(self, args, stdout_path, timeout, stderr_path=None):
+                code, t = super().run_agent(args, stdout_path, timeout, stderr_path)
+                lines = Path(stdout_path).read_text().splitlines()
+                Path(stdout_path).write_text("\n".join(lines[:3]) + "\n")  # one step lost from the stream
+                return code, t
+        result = self.executor(Lossy()).run_trial(self.spec(index=3), self.tmp / "run")
+        # the checker ran: its verdict stands; the accounting problem is a warning, not an error
+        self.assertEqual((result.status, result.passed, result.checker_exit, result.trace), ("completed", True, 0, None))
+        self.assertIn("step_call_mismatch", result.trace_warning)
+        self.assertTrue((self.tmp / "run" / self.spec(index=3).trial_dir / "trace_warning.txt").is_file())
+
+    def test_empty_stop_is_route_truncated_not_a_fail(self):
+        from obench.tests.test_reflection_vertex import sse
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            stop = "end_turn" if len(calls) == 2 else "tool_use"
+            body = [{"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},
+                    {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}]
+            if stop == "tool_use":
+                body.append({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "bash", "id": "t"}})
+            body += [{"type": "message_delta", "delta": {"stop_reason": stop},
+                      "usage": {"output_tokens": 30, "output_tokens_details": {"thinking_tokens": 10}}},
+                     {"type": "message_stop"}]
+            return 200, "text/event-stream", sse(*body)
+        self.vertex.reply = reply
+        run_dir = self.tmp / "run"
+        result = self.executor(FakeTrialDocker(write_output=False)).run_trial(self.spec(index=4), run_dir)
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("route_truncated", None, 1))
+        self.assertIn("route_truncated", result.error)
+        self.assertTrue((run_dir / result.trace).is_file())
+        detail = json.loads((run_dir / result.trace).with_name("route_truncated.json").read_text())
+        self.assertEqual(detail["finish_reasons"], ["end_turn"])
+
+    def test_agent_network_follows_solution_needs_network(self):
+        make_task(self.tasks, "online", needs_network=True)
+        make_task(self.tasks, "offline", needs_network=False)
+        # "bridge" mode runs on the dedicated agent network (no metadata server), never docker's default bridge
+        cases = [("online", {}, "bridge", ce.AGENT_NETWORK), ("offline", {}, "offline", ce.OFFLINE_NETWORK),
+                 ("t1", {}, "bridge", ce.AGENT_NETWORK), ("t1", {"unflagged_network": "offline"}, "offline", ce.OFFLINE_NETWORK)]
+        for i, (task, kw, network, docker_net) in enumerate(cases):
+            with self.subTest(task=task, **kw):
+                docker = FakeTrialDocker()
+                result = self.executor(docker, **kw).run_trial(self.spec(task=task, index=10 + i), self.tmp / "run")
+                self.assertEqual(result.status, "completed")
+                args = docker.calls[0]
+                self.assertEqual(args[args.index("--network") + 1], docker_net)
+                # after the isolation preflight (both networks), the proxy binds on the trial network's gateway
+                self.assertEqual(docker.gateways, ["agent", "offline", "agent" if network == "bridge" else "offline"])
+                self.assertEqual("OPENCODE_DISABLE_MODELS_FETCH=1" in args, network == "offline")
+                cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+                self.assertEqual((cell["agent_network"], cell["network_unflagged"]), (network, task == "t1"))
+
+    def test_missing_digest_image_fails_before_any_call_or_runs_the_tag_when_allowed(self):
+        digest = "openbench-tb2-x@sha256:" + "d" * 64
+        make_task(self.tasks, "mid")
+        (self.tasks / "mid" / "task.toml").write_text(
+            f'docker_image = "{digest}"\ndocker_image_tag = "openbench-tb2-x:pinned"\ndocker_workdir = "/app"\n')
+        docker = FakeTrialDocker(absent={digest})
+        with self.assertRaisesRegex(ce.CellError, "--use-image-tag"):
+            self.executor(docker).run_trial(self.spec(task="mid", index=20), self.tmp / "run")
+        self.assertEqual((docker.calls, self.vertex.seen), ([], []))
+        self.assertEqual(set(self.executor(docker).missing_images([(str(self.tasks), "mid"), (str(self.tasks), "t1")])),
+                         {"mid"})
+        docker = FakeTrialDocker(absent={digest}, image_ids={"openbench-tb2-x:pinned": "sha256:" + "e" * 64})
+        result = self.executor(docker, use_image_tag=True).run_trial(self.spec(task="mid", index=21), self.tmp / "run")
+        self.assertEqual(result.status, "completed")
+        self.assertIn("openbench-tb2-x:pinned", docker.calls[0])
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        self.assertEqual(cell["image_pin"], {"pinned": digest, "used": "openbench-tb2-x:pinned",
+                                             "used_id": "sha256:" + "e" * 64, "match": False})
+        self.assertEqual(result.image, {"ref": "openbench-tb2-x:pinned", "id": "sha256:" + "e" * 64, "pinned": digest,
+                                        "matches_pin": False})
+        self.assertEqual(cell["image_record"], result.image)
+        with self.assertRaisesRegex(ce.CellError, "not on this host either"):
+            self.executor(FakeTrialDocker(absent={digest, "openbench-tb2-x:pinned"}), use_image_tag=True).run_trial(
+                self.spec(task="mid", index=22), self.tmp / "run")
+
+    def test_4xx_is_an_infra_failure(self):
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            if len(calls) == 2:
+                return 429, "application/json", b'{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}'
+            from obench.tests.test_reflection_vertex import default_reply
+            return default_reply(path)
+        self.vertex.reply = reply
+        result = self.executor().run_trial(self.spec(index=30), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("upstream_4xx", None))
+        self.assertIn("-> 429", result.error)
+        self.assertEqual(result.thinking_setting["configured"]["output_config"], {"effort": "high"})
+
+    def test_retried_4xx_is_a_covariate_not_a_failure(self):
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            if len(calls) == 1:
+                return 429, "application/json", b'{"error": {"code": 429}}'
+            from obench.tests.test_reflection_vertex import default_reply
+            return default_reply(path)
+        self.vertex.reply = reply
+
+        class Retrying(FakeTrialDocker):  # the 429 is followed by a successful retry, then the next step
+            def run_agent(self, args, stdout_path, timeout, stderr_path=None):
+                self.steps = 2
+                code, t = super().run_agent(args, stdout_path, timeout, stderr_path)
+                return code, t
+        docker = Retrying()
+        orig = docker.run_agent
+
+        def run_agent(args, stdout_path, timeout, stderr_path=None):
+            env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+            base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+            body = {"model": OPUS, "stream": True, "max_tokens": 10, "tools": TOOLS, "messages": [{"role": "user", "content": "go"}]}
+            for _ in range(1):  # call 1 -> 429; OpenCode retries and both steps then succeed
+                try:
+                    urllib.request.urlopen(urllib.request.Request(base + "/messages", data=json.dumps(body).encode(),
+                                                                  method="POST", headers={"Content-Type": "application/json"}),
+                                           timeout=10).read()
+                except urllib.error.HTTPError:
+                    pass
+            return orig(args, stdout_path, timeout, stderr_path)
+        docker.run_agent = run_agent
+        result = self.executor(docker).run_trial(self.spec(index=31), self.tmp / "run")
+        self.assertEqual(result.retried_4xx, {"429": 1})
+        self.assertEqual((result.status, result.passed, result.steps), ("completed", True, 2))
+        trial_dir = self.tmp / "run" / self.spec(index=31).trial_dir
+        cell = json.loads((trial_dir / "cell.json").read_text())
+        self.assertEqual((cell["retried_4xx"], cell["status"]), ({"429": 1}, "completed"))
+        self.assertRegex(cell["code"]["commit"], r"^[0-9a-f]{40}$")
+        self.assertEqual(cell["thinking_tokens_status"], {"reported": 2})
+        counters = json.loads((trial_dir.parent / "cell_counters.json").read_text())
+        self.assertEqual((counters["retried_4xx"], counters["status"]["completed"]), ({"429": 1}, 1))
+
+    def test_gpt_oss_rebuilt_calls_are_logged_per_cell(self):
+        from obench.tests.test_reflection_vertex import GptOssRepair
+        leak = '<|start|>assistant<|channel|>commentary to=repo_browser.print_tree code<|message|>{"path": "", "depth": 3}<|call|>'
+        docs = [GptOssRepair().doc("Explore.", content=leak, finish="tool_calls"),
+                GptOssRepair().doc('Read it.{"filePath": "/app/out.txt"}')]
+        self.vertex.reply = lambda path: (200, "application/json", docs.pop(0) if docs else GptOssRepair().doc("done", content="Done."))
+
+        class OssDocker(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                events = []
+                for n in (1, 2):
+                    body = {"model": "gpt-oss-120b-maas", "stream": True, "tools": GptOssRepair.TOOLS,
+                            "messages": [{"role": "user", "content": "go"}]}
+                    urllib.request.urlopen(urllib.request.Request(base + "/chat/completions", data=json.dumps(body).encode(),
+                                           method="POST", headers={"Content-Type": "application/json"}), timeout=10).read()
+                    events += [{"type": "step_start", "timestamp": n * 10, "sessionID": "s", "part": {"messageID": f"m{n}", "type": "step-start"}},
+                               {"type": "reasoning", "timestamp": n * 10 + 1, "sessionID": "s",
+                                "part": {"messageID": f"m{n}", "type": "reasoning", "text": "think", "time": {"start": 1, "end": 2}}},
+                               {"type": "step_finish", "timestamp": n * 10 + 2, "sessionID": "s",
+                                "part": {"messageID": f"m{n}", "type": "step-finish", "reason": "tool-calls", "cost": 0.0,
+                                         "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}]
+                workspace = next(args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v")
+                Path(workspace, "out.txt").write_text("done\n")
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in events))
+                return 0, False
+        spec = rn.TrialSpec(run_id="r", trial_id="oss0", task="t1", tasks_dir=str(self.tasks), model="gpt-oss-120b",
+                            trial_index=0, patch_id=None, patch=None, trial_dir="trials/gpt-oss-120b/t1/oss0")
+        result = self.executor(OssDocker()).run_trial(spec, self.tmp / "run")
+        self.assertEqual(result.route_counts["unknown_recipient_calls"], 1)
+        cell_dir = self.tmp / "run" / "trials" / "gpt-oss-120b" / "t1"
+        log = [json.loads(l) for l in (cell_dir / "route_repairs.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["trial_id"], r["tool"], r["known_tool"]) for r in log],
+                         [("oss0", "repo_browser.print_tree", False), ("oss0", "read", True)])
+        self.assertEqual(json.loads(log[0]["arguments"]), {"path": "", "depth": 3})
+        counters = json.loads((cell_dir / "cell_counters.json").read_text())
+        self.assertEqual((counters["route_repairs"], counters["model_errors"]), (2, {"unknown_tool": 1}))
+
+    def blocked_carbon_trial(self, index):
+        from obench.tests.test_reflection_vertex import ProviderBlocked
+        self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + ProviderBlocked.BLOCKED + b"\n\n")
+
+        class Looping(FakeTrialDocker):  # OpenCode retrying an empty answer every few seconds
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                inner.calls.append(args)
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                body = {"contents": [{"role": "user", "parts": [{"text": "design primers"}]}],
+                        "tools": [{"functionDeclarations": [{"name": "bash"}]}]}
+                for attempt in range(50):
+                    try:
+                        urllib.request.urlopen(urllib.request.Request(
+                            base + "/models/gemini-4-carbon:streamGenerateContent?alt=sse", data=json.dumps(body).encode(),
+                            method="POST", headers={"Content-Type": "application/json"}), timeout=10).read()
+                    except urllib.error.HTTPError:
+                        break  # refused by the proxy; the real container is being killed at this point
+                    if getattr(inner, "killed", None):
+                        break
+                Path(stdout_path).write_text("")
+                return 137, False
+        docker = Looping()
+        spec = rn.TrialSpec(run_id="r", trial_id=f"carbon{index}", task="t1", tasks_dir=str(self.tasks),
+                            model="gemini-4-carbon", trial_index=index, patch_id=None, patch=None,
+                            trial_dir=f"trials/gemini-4-carbon/t1/carbon{index}")
+        return docker, spec, self.executor(docker).run_trial(spec, self.tmp / "run")
+
+    def test_empty_carbon_reply_without_block_reason_is_route_truncated(self):
+        """Researcher review of 80579940: no candidates and no blockReason is not a provider block."""
+        empty = json.dumps({"usageMetadata": {"promptTokenCount": 50, "totalTokenCount": 50},
+                            "modelVersion": "gemini-4-carbon"}).encode()
+        self.vertex.reply = lambda path: (200, "text/event-stream", b"data: " + empty + b"\n\n")
+
+        class OneCall(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                body = {"contents": [{"role": "user", "parts": [{"text": "go"}]}], "tools": [{"functionDeclarations": [{"name": "bash"}]}],
+                        "generationConfig": {"thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True}}}
+                urllib.request.urlopen(urllib.request.Request(base + "/models/gemini-4-carbon:streamGenerateContent?alt=sse",
+                                       data=json.dumps(body).encode(), method="POST",
+                                       headers={"Content-Type": "application/json"}), timeout=10).read()
+                ev = [{"type": "step_start", "timestamp": 1, "sessionID": "s", "part": {"messageID": "m1", "type": "step-start"}},
+                      {"type": "step_finish", "timestamp": 2, "sessionID": "s", "part": {"messageID": "m1", "type": "step-finish",
+                       "reason": "unknown", "cost": 0, "tokens": {"input": 1, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}]
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in ev))
+                return 0, False
+        spec = rn.TrialSpec(run_id="r", trial_id="carbonempty", task="t1", tasks_dir=str(self.tasks), model="gemini-4-carbon",
+                            trial_index=0, patch_id=None, patch=None, trial_dir="trials/gemini-4-carbon/t1/carbonempty")
+        result = self.executor(OneCall(write_output=False)).run_trial(spec, self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.provider_blocked), ("route_truncated", None, None))
+        wire = [json.loads(l) for l in (self.tmp / "run" / result.wire).read_text().splitlines()]
+        self.assertIn("provider_blocked", wire[0])
+        self.assertIsNone(wire[0]["provider_blocked"])
+
+    def test_blocked_prompt_ends_the_trial_at_once(self):
+        docker, spec, result = self.blocked_carbon_trial(0)
+        self.assertEqual((result.status, result.passed), ("provider_blocked", None))
+        self.assertEqual((result.provider_blocked["blockReason"], result.provider_blocked["calls_blocked"]), ("SAFETY", 1))
+        self.assertEqual(docker.killed, [f"obench-reflect-{spec.trial_id}"])
+        self.assertEqual(len(self.vertex.seen), 1)  # never looped upstream
+        trial_dir = self.tmp / "run" / spec.trial_dir
+        self.assertEqual(json.loads((trial_dir / "provider_blocked.json").read_text())["blockReason"], "SAFETY")
+        counters = json.loads((trial_dir.parent / "cell_counters.json").read_text())
+        self.assertEqual(counters["status"], {"provider_blocked": 1})
+
+    def test_workspace_is_seeded_from_the_image_then_the_task(self):
+        docker = FakeTrialDocker()
+        (self.tasks / "t1" / "workspace" / "data").mkdir()
+        (self.tasks / "t1" / "workspace" / "data" / "oewn.sqlite").write_text("task copy wins")
+        result = self.executor(docker).run_trial(self.spec(index=40), self.tmp / "run")
+        ws = self.tmp / "run" / self.spec(index=40).trial_dir / "workspace"
+        self.assertEqual(docker.hydrated, [("task-img:pinned", "/app")])
+        self.assertEqual((ws / "seed.txt").read_text(), "seed\n")                   # from the task's workspace/
+        self.assertEqual((ws / "data" / "oewn.sqlite").read_text(), "task copy wins")  # task overlays the image
+        self.assertEqual((ws / ".openbench-image-hydrated").read_text(), "task-img:pinned\n")  # checkers won't re-hydrate
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        self.assertEqual(cell["workspace_seed"]["hydrated_from"], "task-img:pinned")
+
+    def test_checkers_run_agent_code_only_inside_containers(self):
+        docker = FakeTrialDocker()
+        result = self.executor(docker).run_trial(self.spec(index=41), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("completed", True))
+        (call,) = docker.checker_calls  # host-native checker: run whole inside the task image
+        self.assertEqual(call[call.index("-w") + 1], "/app")
+        self.assertIn("task-img:pinned", call)
+        self.assertEqual(call[-3:-1], ["bash", "-c"])
+        self.assertIn("exec bash /openbench-task/checker.sh", call[-1])
+        self.assertTrue(any(a.endswith(":/openbench-task:ro") for a in call))
+        trial_dir = self.tmp / "run" / self.spec(index=41).trial_dir
+        self.assertEqual((trial_dir / "checker-mode.txt").read_text().strip(), "in_task_container")
+        # a checker that containerizes itself keeps its own docker runs (its wrapper only reads the reward file)
+        make_task(self.tasks, "selfc")
+        (self.tasks / "selfc" / "checker.sh").write_text('#!/bin/bash\n: docker run --rm --network none "$IMAGE" true\ntest -f out.txt\n')
+        docker = FakeTrialDocker()
+        result = self.executor(docker).run_trial(self.spec(task="selfc", index=42), self.tmp / "run")
+        self.assertFalse(getattr(docker, "checker_calls", []))
+        self.assertEqual(result.status, "completed")
+
+    def test_self_containerized_checker_must_grade_without_network(self):
+        make_task(self.tasks, "netchk")
+        (self.tasks / "netchk" / "checker.sh").write_text('#!/bin/bash\ndocker run --rm \\\n  "$IMAGE" bash /tests/test.sh\n')
+        with self.assertRaisesRegex(ce.CellError, "network access"):
+            self.executor().run_trial(self.spec(task="netchk", index=65), self.tmp / "run")
+
+    def test_missing_command_in_the_agents_code_is_a_real_fail(self):
+        """The checker runs the agent's script, which calls a command the image lacks: exit 127 from inside the
+        launched checker is a fail and stays in the denominator (not checker_error)."""
+        (self.tasks / "t1" / "checker.sh").write_text("#!/bin/bash\nbash ./run.sh\n")
+
+        class WritesScript(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                code, t = FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                workspace = next(args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v")
+                Path(workspace, "run.sh").write_text("nosuchtool_from_the_agent --solve\n")
+                return code, t
+        result = self.executor(WritesScript()).run_trial(self.spec(index=43), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("completed", False, 127))
+        out = (self.tmp / "run" / self.spec(index=43).trial_dir / "checker-output.txt").read_text()
+        self.assertIn("nosuchtool_from_the_agent", out)
+        self.assertNotIn("__openbench_checker_launched__", out)
+
+    def test_only_a_checker_container_launch_failure_is_checker_error(self):
+        for exit_code in (125, 126, 127):
+            with self.subTest(exit_code=exit_code):
+                docker = FakeTrialDocker()
+                docker.launch_fails = exit_code
+                result = self.executor(docker).run_trial(self.spec(index=50 + exit_code), self.tmp / "run")
+                self.assertEqual((result.status, result.passed, result.checker_exit), ("checker_error", None, exit_code))
+                trial_dir = self.tmp / "run" / self.spec(index=50 + exit_code).trial_dir
+                self.assertEqual((trial_dir / "checker-mode.txt").read_text().strip(), "container_not_launched")
+
+    def test_opencode_mount_shows_only_the_pinned_binary_and_permissions_are_allowed(self):
+        docker = FakeTrialDocker()
+        ex = self.executor(docker)
+        ex.standalone = True
+        ex.run_trial(self.spec(index=44), self.tmp / "run")
+        args = docker.calls[0]
+        mounts = [args[i + 1] for i, a in enumerate(args) if a == "-v"]
+        sha = oc.load_pin()["sha"]
+        self.assertIn(f"{self.binary.parent}:/opt/opencode/{sha}:ro", mounts)
+        self.assertFalse(any("opencode-src:" in m and m.endswith("opencode-src:ro") for m in mounts))
+        self.assertIn(f"/opt/opencode/{sha}/opencode", args)
+        env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+        cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(cfg["permission"], {"external_directory": "allow", "doom_loop": "allow", "read": "allow"})
+        base = next(iter(cfg["provider"].values()))["options"]["baseURL"]
+        proxy_base = base[:base.index("/m/")]
+        # everything else is exactly the smoke's OpenCode config (same provider, model, options)
+        self.assertEqual({k: v for k, v in cfg.items() if k != "permission"}, vm.opencode_config(vm.resolve(OPUS), proxy_base))
+
+    def test_exit_0_with_a_pending_tool_call_is_agent_exit_pending_tool(self):
+        class Aborting(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                code, t = FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                lines = [json.loads(l) for l in Path(stdout_path).read_text().splitlines()]
+                lines[-1]["part"]["reason"] = "tool-calls"   # the last step asked for a tool, then OpenCode exited
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in lines))
+                if stderr_path:
+                    Path(stderr_path).write_text("! permission requested: external_directory (/tmp/*); auto-rejecting\n")
+                return 0, t
+        result = self.executor(Aborting()).run_trial(self.spec(index=45), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("agent_exit_pending_tool", None))
+        self.assertEqual(result.agent_exit["permission_rejected"], [{"permission": "external_directory", "patterns": "/tmp/*"}])
+        self.assertIn("auto-rejected external_directory", result.error)
+
+        class Crashes(Aborting):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                Aborting.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return 1, False
+        result = self.executor(Crashes()).run_trial(self.spec(index=48), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("error", None))  # non-zero exit: a harness crash, not a fail
+
+    def test_refusal_is_model_refused_with_stop_details(self):
+        from obench.tests.test_reflection_vertex import sse
+        refusal = sse({"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},
+                      {"type": "message_delta", "delta": {"stop_reason": "refusal", "stop_details": {"category": "bio"}},
+                       "usage": {"output_tokens": 2}}, {"type": "message_stop"})
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            from obench.tests.test_reflection_vertex import default_reply
+            return (200, "text/event-stream", refusal) if len(calls) == 2 else default_reply(path)
+        self.vertex.reply = reply
+        result = self.executor(FakeTrialDocker(write_output=False)).run_trial(self.spec(index=46), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("model_refused", None, 1))
+        self.assertEqual(result.model_refused["stop_details"], {"category": "bio"})
+        self.assertEqual((result.model_refused["call_index"], result.model_refused["step"]), (2, 2))  # the step it happened on
+
+    def test_refusal_partway_sets_the_trial_aside_even_if_it_finishes(self):
+        from obench.tests.test_reflection_vertex import sse
+        refusal = sse({"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},
+                      {"type": "message_delta", "delta": {"stop_reason": "refusal"}, "usage": {"output_tokens": 2}},
+                      {"type": "message_stop"})
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            from obench.tests.test_reflection_vertex import default_reply
+            return (200, "text/event-stream", refusal) if len(calls) == 1 else default_reply(path)
+        self.vertex.reply = reply
+        result = self.executor(FakeTrialDocker()).run_trial(self.spec(index=47), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.checker_exit), ("model_refused", None, 0))
+        self.assertEqual((result.model_refused["step"], result.model_refused["last_call_refused"]), (1, False))
+
+    def test_metadata_server_reachable_fails_closed(self):
+        docker = FakeTrialDocker()
+        docker.metadata_open = True   # the 2026-11-17 smoke: no DOCKER-USER rule yet
+        with self.assertRaisesRegex(ce.CellError, "isolation preflight failed.*obench.reflection.isolation --apply"):
+            self.executor(docker).run_trial(self.spec(index=60), self.tmp / "run")
+        self.assertEqual((docker.calls, self.vertex.seen), ([], []))  # no agent container, no model call
+
+    def test_metadata_hostname_alone_reachable_also_fails_closed(self):
+        class HostnameOpen(FakeTrialDocker):
+            def probe(inner, network, image, targets, run_args=None):
+                seen = FakeTrialDocker.probe(inner, network, image, targets, run_args)
+                seen["metadata.google.internal:80"] = True
+                return seen
+        with self.assertRaisesRegex(ce.CellError, "metadata.google.internal:80': True"):
+            self.executor(HostnameOpen()).run_trial(self.spec(index=64), self.tmp / "run")
+
+    def test_isolation_is_probed_once_and_recorded_per_trial(self):
+        docker = FakeTrialDocker()
+        ex = self.executor(docker)
+        for i in (61, 62):
+            result = ex.run_trial(self.spec(index=i), self.tmp / "run")
+        # once per executor: the agent container (both networks), an in-container checker, a grading container
+        self.assertEqual([n for n, _ in docker.probes], [ce.AGENT_NETWORK, ce.OFFLINE_NETWORK, ce.AGENT_NETWORK, "none"])
+        self.assertEqual(docker.probe_arg_sets[2], ["--platform", "linux/amd64", "-w", "/app"])  # as _check starts it
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        iso = cell["isolation"]
+        self.assertTrue(iso["ok"])
+        blocked = {"169.254.169.254:80": False, "metadata.google.internal:80": False}
+        self.assertEqual({r: (p["metadata_reachable"], p["metadata_targets"]) for r, p in iso["probes"].items()},
+                         {r: (False, blocked) for r in ("agent", "agent_offline", "checker", "checker_self_containerized")})
+        self.assertTrue(iso["probes"]["agent"]["proxy_reachable"])
+        # the probe runs with the trial containers' own settings, against both metadata targets
+        self.assertIn("api.anthropic.com:0.0.0.0", docker.probe_args)
+        self.assertEqual(docker.probe_args[:2], ["--platform", "linux/amd64"])
+        self.assertEqual(docker.probe_targets[:2], [("169.254.169.254", 80), ("metadata.google.internal", 80)])
+        self.assertIn("DOCKER-USER -i obench-agent0 -d 169.254.169.254/32 -j DROP", iso["metadata_rule"])
+        args = docker.calls[0]
+        self.assertEqual(args[args.index("--network") + 1], ce.AGENT_NETWORK)
+        (check,) = [c for c in docker.checker_calls[:1]]
+        self.assertEqual(check[check.index("--network") + 1], ce.AGENT_NETWORK)  # in-container checkers too
+
+    def test_isolation_rule_is_added_once(self):
+        import subprocess as sp
+        from obench.reflection import isolation as iso
+        calls, present = [], {"v": False}
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            if "-C" in cmd:
+                return sp.CompletedProcess(cmd, 0 if present["v"] else 1, "", "")
+            present["v"] = True
+            return sp.CompletedProcess(cmd, 0, "", "")
+        self.assertEqual(iso.apply_rule(runner), "added")
+        self.assertEqual(iso.apply_rule(runner), "present")
+        self.assertEqual(calls[1], ["sudo", "-n", "iptables", "-I", "DOCKER-USER", "-i", "obench-agent0",
+                                    "-d", "169.254.169.254/32", "-j", "DROP"])
+
+    def test_timeout_while_still_working_is_a_task_fail(self):
+        class Capped(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)  # 2 calls, just now
+                return None, True
+        make_task(self.tasks, "short")
+        (self.tasks / "short" / "task.toml").write_text('docker_image = "task-img:pinned"\ndocker_workdir = "/app"\n'
+                                                        'agent_timeout_s = 200\n')  # calls ended < 5 min before the cap
+        result = self.executor(Capped()).run_trial(self.spec(task="short", index=66), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.timed_out, result.checker_exit), ("completed", False, True, 0))
+        self.assertTrue(result.timeout_detail["still_working"])
+        self.assertEqual(result.timeout_detail["cap_seconds"], 200)
+        self.assertIsNotNone(result.trace)  # traced like any fail, so it can go to credit assignment
+        self.assertGreater(result.cost_usd, 0)
+
+    def test_timeout_with_no_call_in_the_last_five_minutes_is_infra(self):
+        class Capped(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return None, True
+        # the task's cap is 600 s and the calls ended right at the start: ~600 s of silence before the cap
+        result = self.executor(Capped()).run_trial(self.spec(index=67), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.timed_out), ("timeout", None, True))
+        self.assertFalse(result.timeout_detail["still_working"])
+        self.assertGreater(result.timeout_detail["last_call_ended_before_cap_s"], 300)
+
+    def test_wire_cost_sums_priced_calls_and_counts_the_cut_off_one(self):
+        wires = [{"status": 200, "cost_usd": 0.12}, {"status": 200, "cost_usd": 0.30},
+                 {"status": 200, "cost_usd": None},     # the call the timeout killed before usage arrived
+                 {"status": 429, "cost_usd": None},     # an error answer: no cost, not counted as unpriced
+                 {"status": None, "cost_usd": None}]    # refused without being sent
+        self.assertEqual(ce.wire_cost(wires), (0.42, 1))  # 640f6751 reported null here (Carbon corewars)
+
+    def test_timeout_keeps_the_cost_of_priced_calls(self):
+        class OneCallThenTimeout(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                inner.steps = 1
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return None, True
+        result = self.executor(OneCallThenTimeout()).run_trial(self.spec(index=63), self.tmp / "run")
+        self.assertEqual((result.status, result.cost_unpriced_calls), ("timeout", 0))
+        self.assertGreater(result.cost_usd, 0)
+
+    def test_image_resolution_order(self):
+        make_task(self.tasks, "from-checker", toml=False, checker_image="openbench-tb2-x@sha256:" + "1" * 64)
+        make_task(self.tasks, "bare", toml=False)
+        ex = self.executor()
+        t = ex._task(self.spec("from-checker"))
+        self.assertEqual((t["image"], t["image_source"], t["workdir"]),
+                         ("openbench-tb2-x@sha256:" + "1" * 64, "checker.sh", "/work"))
+        t = ex._task(self.spec("bare"))
+        self.assertEqual((t["image"], t["image_source"]), ("h1-env:1027-strace", "default_image"))
+        with self.assertRaises(ce.CellError):
+            self.executor(default_image=None)._task(self.spec("bare"))
+        real = Path(__file__).resolve().parents[2] / "tasks-imported" / "terminal-bench-2"
+        if (real / "extract-elf" / "checker.sh").is_file():
+            spec = rn.TrialSpec("r", "x", "extract-elf", str(real), OPUS, 0, None, None, "t")
+            self.assertEqual(ex._task(spec)["image"], "openbench-tb2-extract-elf:pinned")
+
+    def test_pinned_image_id_is_checked(self):
+        (self.tasks / "t1" / "task.toml").write_text('docker_image = "task-img:pinned"\ndocker_image_id = "sha256:abc"\n')
+        with self.assertRaises(ce.CellError):
+            self.executor(FakeTrialDocker(image_ids={"task-img:pinned": "sha256:other"})).run_trial(self.spec(), self.tmp / "r")
+
+
+class WithRunner(CellCase):
+    def test_runner_drives_the_cell_executor(self):
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+        suites = self.tmp / "suites"
+        suites.mkdir()
+        task = '[[task]]\nid = "{id}"\nsource = "openbench-tb-hard"\nfrontier_rate = {r}\ndomain = "d"\nwhy = "w"\n'
+        (suites / "mini.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini"\npool = "mini-pool"\n'
+                                          + task.format(id="t1", r=0.5))
+        (suites / "mini-pool.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini-pool"\n'
+                                               + task.format(id="t2", r=0.1))
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            make_task(self.tasks, "t2")
+            cfg = rn.RunConfig.from_dict({"run_id": "cellrun", "suite": "mini", "models": [OPUS], "n_trials": 2,
+                                          "max_rounds": 1})
+            runner = rn.Runner(cfg, self.tmp / "run", self.executor(), suites_dir=suites, workers=2)  # parallel containers
+            self.assertEqual(runner.preflight()["round_one_usd"], 4.0)  # 2 trials x the provisional $2 Opus estimate
+            status = runner.run()
+        self.assertEqual(status["state"], "done")
+        rows = rn.read_rows(self.tmp / "run" / "trials.jsonl")
+        self.assertEqual([(r["status"], r["passed"]) for r in rows], [("completed", True)] * 2)
+        self.assertTrue(all(r["thinking_tokens"] == 240 and r["served_models"] == [OPUS] for r in rows))
+        summary = rn.read_rows(self.tmp / "run" / "summary.jsonl")[0]
+        self.assertEqual((summary["passes"], summary["verdict"]), (2, "pass"))
+        plan = json.loads((self.tmp / "run" / "plan.json").read_text())
+        self.assertTrue(plan["isolation"]["ok"])  # the live probe, recorded before any trial ran
+        self.assertFalse(plan["isolation"]["probes"]["checker"]["metadata_reachable"])
+        counters = json.loads((self.tmp / "run" / "trials" / OPUS / "t1" / "cell_counters.json").read_text())
+        self.assertEqual((counters["trials"], counters["status"]), (2, {"completed": 2}))  # both recorded under the lock
+        self.assertEqual(counters["workers"], [2])
+        cell = json.loads(next((self.tmp / "run" / "trials" / OPUS / "t1").glob("*/cell.json")).read_text())
+        self.assertEqual(cell["workers"], 2)
+        self.assertGreaterEqual(cell["agent_seconds"], 0)
+        self.assertEqual(set(cell["host_load"]), {"before", "after", "cpus"})
+
+
+    def test_old_upstream_4xx_trials_are_reclassified_offline(self):
+        """Rows written by 954286aa (any 4xx -> upstream_4xx, no cell.json, never graded) become completed when the
+        4xx was retried and recovered; nothing calls the model again."""
+        from obench.reflection import reclassify as rc
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+        suites = self.tmp / "suites"
+        suites.mkdir()
+        task = '[[task]]\nid = "{id}"\nsource = "openbench-tb-hard"\nfrontier_rate = {r}\ndomain = "d"\nwhy = "w"\n'
+        (suites / "mini.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini"\npool = "mini-pool"\n'
+                                          + task.format(id="t1", r=0.5))
+        (suites / "mini-pool.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini-pool"\n'
+                                               + task.format(id="t2", r=0.1))
+        calls = []
+
+        def reply(path):
+            calls.append(path)
+            if len(calls) == 1:   # trial 0: its first call is a 429 that OpenCode retried
+                return 429, "application/json", b'{"error": {"code": 429}}'
+            from obench.tests.test_reflection_vertex import default_reply
+            return default_reply(path)
+        self.vertex.reply = reply
+
+        class RetryFirst(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                if len(calls) == 0:
+                    env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                    base = next(iter(json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"].values()))["options"]["baseURL"]
+                    body = {"model": OPUS, "stream": True, "max_tokens": 10, "tools": TOOLS, "messages": []}
+                    try:
+                        urllib.request.urlopen(urllib.request.Request(base + "/messages", data=json.dumps(body).encode(),
+                                               method="POST", headers={"Content-Type": "application/json"}), timeout=10)
+                    except urllib.error.HTTPError:
+                        pass
+                return FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+        run_dir = self.tmp / "run"
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            make_task(self.tasks, "t2")
+            cfg = rn.RunConfig.from_dict({"run_id": "old", "suite": "mini", "models": [OPUS], "n_trials": 2, "max_rounds": 1})
+            rn.Runner(cfg, run_dir, self.executor(RetryFirst()), suites_dir=suites).run()
+            rows = rn.read_rows(run_dir / "trials.jsonl")
+            self.assertEqual([r["status"] for r in rows], ["completed", "completed"])
+            # make trial 0 look like 954286aa wrote it
+            old = dict(rows[0], status="upstream_4xx", passed=None, checker_exit=None, steps=None, trace=None)
+            for k in ("retried_4xx", "image_ref", "image_id", "image_matches_pin"):
+                old.pop(k)
+            (run_dir / rows[0]["trial_dir"] / "cell.json").unlink()
+            (run_dir / rows[0]["trial_dir"] / "trace.jsonl").unlink()
+            (run_dir / "trials.jsonl").write_text(json.dumps(old) + "\n" + json.dumps(rows[1]) + "\n")
+            rn.Runner(cfg, run_dir, self.executor(), suites_dir=suites).rebuild_tables()
+            self.assertEqual(rn.read_rows(run_dir / "summary.jsonl")[0]["verdict"], "incomplete")
+            seen = len(self.vertex.seen)
+            dry = rc.reclassify(run_dir, self.executor(), suites_dir=suites)
+            self.assertEqual([(c["from"], c["to"], c["passed"]) for c in dry["changed"]], [("upstream_4xx", "completed", True)])
+            self.assertEqual(rn.read_rows(run_dir / "trials.jsonl")[0]["status"], "upstream_4xx")  # dry run wrote nothing
+            rc.reclassify(run_dir, self.executor(), apply=True, suites_dir=suites)
+            self.assertEqual(len(self.vertex.seen), seen)  # no model calls
+        rows = rn.read_rows(run_dir / "trials.jsonl")
+        self.assertEqual([(r["status"], r["passed"]) for r in rows], [("completed", True)] * 2)
+        self.assertEqual((rows[0]["retried_4xx"], rows[0]["reclassified"]["from"]), ({"429": 1}, "upstream_4xx"))
+        self.assertTrue(all(r["image_id"].startswith("sha256:") for r in rows))
+        self.assertEqual(rn.read_rows(run_dir / "summary.jsonl")[0]["verdict"], "pass")
+        self.assertEqual(len(list(run_dir.glob("trials.pre-reclassify-*.jsonl"))), 1)
+
+
+    def test_pilot1_blocked_timeouts_are_reclassified(self):
+        """pilot-1: Carbon looped on blocked prompts until the 30-min timeout. Those rows become provider_blocked
+        offline (inferred from all-empty answers), with no model calls."""
+        from obench.reflection import reclassify as rc
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+        suites = self.tmp / "suites"
+        suites.mkdir()
+        task = '[[task]]\nid = "{id}"\nsource = "openbench-tb-hard"\nfrontier_rate = {r}\ndomain = "d"\nwhy = "w"\n'
+        (suites / "mini.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini"\npool = "mini-pool"\n'
+                                          + task.format(id="t1", r=0.5))
+        (suites / "mini-pool.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini-pool"\n'
+                                               + task.format(id="t2", r=0.1))
+        run_dir = self.tmp / "run"
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            cfg = rn.RunConfig.from_dict({"run_id": "pilot1", "suite": "mini", "models": ["gemini-4-carbon"],
+                                          "n_trials": 1, "max_rounds": 1})
+            Trial.blocked_carbon_trial(self, 0)   # writes the trial dir the way the new code does
+            spec_dir = run_dir / "trials" / "gemini-4-carbon" / "t1"
+            tid = rn.trial_id("pilot1", "t1", "gemini-4-carbon", None, 0)
+            (spec_dir / "carbon0").rename(spec_dir / tid)
+            # make it look like pilot-1 wrote it: no provider_blocked field, the same empty answer 3 times, a timeout
+            wire = spec_dir / tid / "wire.jsonl"
+            first = {k: v for k, v in json.loads(wire.read_text().splitlines()[0]).items() if k != "provider_blocked"}
+            wire.write_text("".join(json.dumps(dict(first, call_index=i)) + "\n" for i in (1, 2, 3)))
+            (spec_dir / tid / "provider_blocked.json").unlink()
+            (spec_dir / tid / "cell.json").unlink()  # 954286aa wrote no cell.json for a timed-out trial
+            row = {"schema": rn.TRIAL_SCHEMA, "run_id": "pilot1", "trial_id": tid, "task": "t1", "bench": "b",
+                   "bench_commit": "c", "model": "gemini-4-carbon", "vertex_id": "gemini-4-carbon", "trial_index": 0,
+                   "patch_id": None, "status": "timeout", "passed": None, "trial_dir": f"trials/gemini-4-carbon/t1/{tid}",
+                   "cost_usd": 0.0}
+            run_dir.mkdir(exist_ok=True)
+            (run_dir / "trials.jsonl").write_text(json.dumps(row) + "\n")
+            (run_dir / "plan.json").write_text(json.dumps({"config": json.loads(json.dumps(rn.asdict(cfg)))}))
+            seen = len(self.vertex.seen)
+            report = rc.reclassify(run_dir, self.executor(), apply=True, suites_dir=suites)
+        self.assertEqual(len(self.vertex.seen), seen)
+        self.assertEqual([(c["from"], c["to"]) for c in report["changed"]], [("timeout", "provider_blocked")])
+        new = rn.read_rows(run_dir / "trials.jsonl")[0]
+        self.assertEqual((new["status"], new["provider_blocked"]["inferred"], new["provider_blocked"]["calls_blocked"]),
+                         ("provider_blocked", True, 3))
+        summary = rn.read_rows(run_dir / "summary.jsonl")[0]
+        self.assertEqual((summary["verdict"], summary["provider_blocked"], summary["errors"]), ("excluded", 1, 0))
+
+
+    def timeout_run(self, run_dir, **config):
+        """A mini suite where every trial makes priced model calls and then hits the cap (an infra timeout)."""
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+        suites = self.tmp / "suites"
+        suites.mkdir(exist_ok=True)
+        task = '[[task]]\nid = "{id}"\nsource = "openbench-tb-hard"\nfrontier_rate = {r}\ndomain = "d"\nwhy = "w"\n'
+        (suites / "mini.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini"\npool = "mini-pool"\n'
+                                          + task.format(id="t1", r=0.5))
+        (suites / "mini-pool.toml").write_text('schema = "openbench.hard-suite/v1"\nname = "mini-pool"\n'
+                                               + task.format(id="t2", r=0.1))
+
+        class TimesOut(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return None, True
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            make_task(self.tasks, "t2")
+            cfg = rn.RunConfig.from_dict({"run_id": "to", "suite": "mini", "models": [OPUS], "n_trials": 5,
+                                          "max_rounds": 1, **config})
+            status = rn.Runner(cfg, run_dir, self.executor(TimesOut()), suites_dir=suites).run()
+        return status, rn.read_rows(run_dir / "trials.jsonl"), suites
+
+    def test_timeout_cost_counts_toward_the_alert_stops(self):
+        run_dir = self.tmp / "alert"
+        status, rows, _ = self.timeout_run(run_dir, alert_thresholds_usd=[0.000001])
+        self.assertEqual(status["state"], "alert")                      # stopped after the first timed-out trial
+        self.assertEqual([(r["status"], r["timed_out"]) for r in rows], [("timeout", True)])
+        self.assertGreater(rows[0]["cost_usd"], 0)                      # priced from wire.jsonl
+        self.assertEqual(status["spent_usd"], rows[0]["cost_usd"])
+
+    def test_timeout_cost_counts_toward_the_spend_cap(self):
+        run_dir = self.tmp / "cap"
+        # the first trial fits (0 + the $2 Opus estimate); the second would pass the cap once the timeout's cost counts
+        status, rows, _ = self.timeout_run(run_dir, spend_cap_usd=2.000001)
+        self.assertEqual((status["state"], len(rows)), ("capped", 1))
+        self.assertTrue(rows[0]["timed_out"] and rows[0]["cost_usd"] > 0)
+
+    def test_null_costs_from_old_rows_are_recomputed_from_the_wire(self):
+        from obench.reflection import reclassify as rc
+        run_dir = self.tmp / "old"
+        status, rows, suites = self.timeout_run(run_dir, alert_thresholds_usd=[1000.0], n_trials=1)
+        priced = rows[0]["cost_usd"]
+        (run_dir / "trials.jsonl").write_text(json.dumps(dict(rows[0], cost_usd=None)) + "\n")  # as 640f6751 wrote it
+        with mock_patch.dict("obench.hardsuite.suite.SOURCES",
+                             {"openbench-tb-hard": dict(rn.load_suite("pilot").tasks[0].bench, tasks_dir=str(self.tasks))}):
+            rc.reclassify(run_dir, self.executor(), apply=True, suites_dir=suites)
+        fixed = rn.read_rows(run_dir / "trials.jsonl")[0]
+        self.assertEqual((fixed["cost_usd"], fixed["cost_unpriced_calls"]), (priced, 0))
+        self.assertEqual(rn.read_rows(run_dir / "summary.jsonl")[0]["spend_usd"], priced)
+
+
+if __name__ == "__main__":
+    unittest.main()
