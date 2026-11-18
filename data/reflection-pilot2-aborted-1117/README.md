@@ -79,7 +79,7 @@ Notes versus the 48-trial figure:
 
 This is a slim archive. Trial workspaces are not committed.
 
-- `run-pilot.sh`, `config.json`, `preflight.json`, `preflight.err`, `pilot.log`
+- `run-pilot.sh`, `config.json`, `preflight.json`, `preflight.err`, `pilot.log`, `summary-at-stop.txt`
 - `run/plan.json`, `run/trials.jsonl`
 - Per-trial `cell.json` (48), `wire.jsonl` (53), `trace.jsonl`, `opencode-events.jsonl`, `checker-output.txt`, and `provider_blocked.json`
 
@@ -87,4 +87,4 @@ Transcripts and traces (`pilot.log`, `wire.jsonl`, `trace.jsonl`, `opencode-even
 
 ## Files not in this commit
 
-**Workspaces stay on the VM** at `~/pilot-2/run` (each trial's `workspace/` directory, including git packs, sqlite files, agent scratch, and the three unreadable root-owned `.ruff_cache` files). They were dropped from this archive because the run is invalid; they would sit in git history without proving the harness bugs. `summary-at-stop.txt` also remains on the VM at `~/pilot-2/`. This commit has no files over 50 MiB.
+**Workspaces stay on the VM** at `~/pilot-2/run` (each trial's `workspace/` directory, including git packs, sqlite files, agent scratch, and the three unreadable root-owned `.ruff_cache` files). They were dropped from this archive because the run is invalid; they would sit in git history without proving the harness bugs. This commit has no files over 50 MiB.
