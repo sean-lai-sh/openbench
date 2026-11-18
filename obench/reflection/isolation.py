@@ -13,6 +13,11 @@ token uses, keeps working. The internal ``openbench-agent-offline`` network has 
     python3 -m obench.reflection.isolation            # create the network, show the rule, probe
     python3 -m obench.reflection.isolation --apply    # also add the rule (sudo -n iptables), then probe
 
+Checkers run agent code too: in-container checkers run on ``openbench-agent`` (covered by the same rule), and
+self-containerized checkers must grade with ``--network none`` (enforced by the executor). The probe checks all
+of them live: an agent container (both networks), an in-container checker, and a ``--network none`` grading
+container must each fail to connect to 169.254.169.254:80 and metadata.google.internal:80.
+
 The rule does not survive a reboot or a Docker restart. That is fine: every ``runner --cell`` run probes first
 and refuses to start (exit 5) if a container can reach the metadata server or can't reach the proxy, and every
 trial's ``cell.json`` records the probe (``isolation``).

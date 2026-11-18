@@ -51,6 +51,14 @@ still runs. OpenCode exiting 0 with a tool call pending is
 ``agent_exit_pending_tool`` (``agent_exit.json``): infrastructure, never a task
 fail.
 
+Timeouts (Researcher ruling 2026-11-17): the cap is the task's agent timeout
+(``task.toml`` ``agent_timeout_s``, else 1800 s, the same for both models). A
+trial that hits it while a model call finished in the last 5 minutes before the
+cap was still working: a task FAIL (``completed``, ``passed: False``,
+``timed_out: True``; checker and trace still run). Otherwise it is ``timeout``
+(infrastructure). A trace/step-accounting problem is only a logged warning
+(``trace_warning``) and never drops the trial.
+
 Each ``cell.json`` also records the run's fixed ``workers`` value, the agent's
 wall time and the host load average before and after, so contention-driven
 timeouts are visible.
@@ -299,9 +307,18 @@ class CellExecutor:
         self.mount_root = self.opencode.parents[2]
 
     def isolation_preflight(self) -> dict:
-        """Fail closed unless a container on the agent network can NOT reach the GCE metadata server and CAN
-        reach the host proxy's address. Probed once per executor (before the first trial; the runner's --cell
-        preflight calls it before any spend) and recorded on every trial's cell.json."""
+        """Fail closed unless live probes show the GCE metadata server unreachable from every kind of container
+        that runs agent code, each started with that container's own settings:
+
+        - ``agent``: the agent container on ``openbench-agent`` (must also reach the host proxy);
+        - ``agent_offline``: the agent container on the internal network;
+        - ``checker``: an in-container checker (``openbench-agent``, as ``_check`` starts it);
+        - ``checker_self_containerized``: the grading container a self-containerized checker starts
+          (``--network none``, which ``_check`` enforces).
+
+        Each tries TCP to 169.254.169.254:80 and metadata.google.internal:80 (3 s timeout); any connection fails
+        the preflight. Probed once per executor (before the first trial; the runner probes before any spend) and
+        recorded in plan.json and every trial's cell.json."""
         with self._isolation_lock:
             if self._isolation is not None:
                 return self._isolation
@@ -309,32 +326,37 @@ class CellExecutor:
             image = self.probe_image or self.default_image
             if not image:
                 raise CellError("no probe image for the isolation preflight (set default_image or probe_image)")
-            result = {"agent_network": AGENT_NETWORK, "bridge_interface": AGENT_BRIDGE_IF, "probe_image": image,
-                      "metadata_rule": "iptables -I " + " ".join(METADATA_RULE), "networks": {}}
-            # the trial containers' own settings: platform and the provider-host sinkholes
-            run_args = ["--platform", self.platform]
+            agent_args = ["--platform", self.platform]
             for host in SINKHOLED_HOSTS:
-                run_args += ["--add-host", f"{host}:0.0.0.0"]
-            result["probe_run_args"] = run_args
-            for network, gateway in ((AGENT_NETWORK, self.docker.agent_gateway()),
-                                     (OFFLINE_NETWORK, self.docker.offline_gateway())):
-                listener = socket.socket()
+                agent_args += ["--add-host", f"{host}:0.0.0.0"]
+            plan = [("agent", AGENT_NETWORK, agent_args, self.docker.agent_gateway()),
+                    ("agent_offline", OFFLINE_NETWORK, agent_args, self.docker.offline_gateway()),
+                    ("checker", AGENT_NETWORK, ["--platform", self.platform, "-w", "/app"], None),
+                    ("checker_self_containerized", "none", ["--platform", self.platform], None)]
+            result = {"agent_network": AGENT_NETWORK, "bridge_interface": AGENT_BRIDGE_IF, "probe_image": image,
+                      "metadata_rule": "iptables -I " + " ".join(METADATA_RULE), "probes": {}}
+            for role, network, run_args, gateway in plan:
+                targets, listener, proxy_target = list(METADATA_TARGETS), None, None
                 try:
-                    listener.bind((self.proxy_host or gateway, 0))
-                    listener.listen(8)
-                    port = listener.getsockname()[1]
-                    proxy_target = f"{self.proxy_host or gateway}:{port}"
-                    seen = self.docker.probe(network, image, [*METADATA_TARGETS, (self.proxy_host or gateway, port)],
-                                             run_args)
+                    if gateway is not None:
+                        listener = socket.socket()
+                        listener.bind((self.proxy_host or gateway, 0))
+                        listener.listen(8)
+                        port = listener.getsockname()[1]
+                        targets.append((self.proxy_host or gateway, port))
+                        proxy_target = f"{self.proxy_host or gateway}:{port}"
+                    seen = self.docker.probe(network, image, targets, run_args)
                 finally:
-                    listener.close()
+                    if listener is not None:
+                        listener.close()
                 metadata = {t: seen[t] for t in (f"{h}:{p}" for h, p in METADATA_TARGETS)}
-                result["networks"][network] = {"metadata_reachable": any(metadata.values()), "metadata_targets": metadata,
-                                               "proxy_reachable": seen[proxy_target]}
-            # metadata must be unreachable on both; the proxy must be reachable on the agent network (the offline
-            # network's proxy reachability is checked when a trial actually needs it)
-            bad = {n: r for n, r in result["networks"].items()
-                   if r["metadata_reachable"] or (n == AGENT_NETWORK and not r["proxy_reachable"])}
+                result["probes"][role] = {"network": network, "run_args": run_args,
+                                          "metadata_reachable": any(metadata.values()), "metadata_targets": metadata,
+                                          "proxy_reachable": seen[proxy_target] if proxy_target else None}
+            # metadata unreachable everywhere; the proxy reachable from the agent (the offline network's proxy
+            # reachability is checked when a trial actually needs it)
+            bad = {r: v for r, v in result["probes"].items()
+                   if v["metadata_reachable"] or (r == "agent" and not v["proxy_reachable"])}
             result.update(ok=not bad, checked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
             if bad:
                 raise CellError(f"isolation preflight failed: {bad}. Run `python3 -m obench.reflection.isolation "
@@ -494,7 +516,7 @@ class CellExecutor:
         wire_path.unlink(missing_ok=True)
         network = self.agent_network(task)
         isolation = self.isolation_preflight()
-        if network == "offline" and not isolation["networks"][OFFLINE_NETWORK]["proxy_reachable"]:
+        if network == "offline" and not isolation["probes"]["agent_offline"]["proxy_reachable"]:
             raise CellError(f"{OFFLINE_NETWORK}: the proxy is not reachable from the internal network on this host")
         host = self.proxy_host or (self.docker.offline_gateway() if network == "offline" else self.docker.agent_gateway())
         # A blocked prompt (Gemini promptFeedback.blockReason) ends the trial at once: the proxy refuses OpenCode's
@@ -504,6 +526,7 @@ class CellExecutor:
                           on_provider_blocked=lambda info: self.docker.kill(f"obench-reflect-{spec.trial_id}"))
         import time as _time
         load_before, t0 = _load(), _time.monotonic()
+        agent_started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         try:
             args = self.docker_args(spec, task, workspace, model, proxy.base_url, instruction, network)
             code, timed_out = self.docker.run_agent(args, events_path, task["agent_timeout"],
@@ -515,6 +538,7 @@ class CellExecutor:
         (trial_dir / "cell.json").write_text(json.dumps({
             "image": task["image"], "image_source": task["image_source"], "image_record": image,
             "workdir": task["workdir"], "opencode_exit": code, "timed_out": timed_out, "agent_timeout": task["agent_timeout"],
+            "agent_started_at": agent_started_at,
             "agent_network": network, "image_pin": task["image_pin"],
             "solution_needs_network": task["solution_needs_network"],
             "network_unflagged": task["solution_needs_network"] is None,
@@ -611,9 +635,17 @@ class CellExecutor:
                                error="upstream 4xx: " + ", ".join(f"call {c['call_index']} -> {c['status']}"
                                                                   for c in fours["breaking"]))
         (trial_dir / "upstream_4xx.json").unlink(missing_ok=True)
+        timeout_detail = None
         if timed_out and refused is None:
-            return TrialResult(status="timeout", passed=None, **common,
-                               error=f"agent timed out after {cell.get('agent_timeout') or task['agent_timeout']}s")
+            timeout_detail = self.timeout_detail(wires, cell.get("agent_started_at"),
+                                                 cell.get("agent_timeout") or task["agent_timeout"])
+            if not timeout_detail["still_working"]:  # no model call finished in the 5 min before the cap: infra
+                return TrialResult(status="timeout", passed=None, timed_out=True, timeout_detail=timeout_detail,
+                                   **common, error=f"agent timed out after {timeout_detail['cap_seconds']}s "
+                                                   "with no model call in the last 5 minutes")
+        # Still working at the cap: a task FAIL (Researcher ruling 2026-11-17). The checker and trace still run
+        # (the checker exit is recorded), but the verdict is fail.
+        working_timeout = timed_out and refused is None
         checker_exit, checker_mode, checker_out = self._check(task, workspace) if run_checker else (None, None, "")
         if refused is None and checker_mode == "container_not_launched" and checker_exit in (125, 126, 127):
             # Only a launch failure of the checker container itself (docker error 125, bash not invocable 126 / not
@@ -631,14 +663,14 @@ class CellExecutor:
         except tr.TraceError as exc:
             if refused is not None:
                 return self._refused(trial_dir, refused, [], dict(common, checker_exit=checker_exit))
-            if checker_exit is None:
-                return TrialResult(status="error", passed=None, **common, error=f"trace_error: {exc}")
-            # The checker ran on the agent's workspace: its verdict stands. The step/call accounting problem is
-            # recorded as a warning (no trace is written for this trial).
+            # A trace/accounting problem (e.g. step_call_mismatch) is a logged warning only, never a status that
+            # drops the trial: the checker's verdict stands (no trace is written for this trial).
             warning = f"{exc.code}: {exc}" if getattr(exc, "code", None) else str(exc)
             (trial_dir / "trace_warning.txt").write_text(warning + "\n", encoding="utf-8")
-            return TrialResult(status="completed", passed=checker_exit == 0, checker_exit=checker_exit, **common,
-                               trace_warning=warning, error=None if code in (0, None) else f"opencode exited {code}")
+            passed = False if working_timeout else (checker_exit == 0 if checker_exit is not None else None)
+            return TrialResult(status="completed", passed=passed, checker_exit=checker_exit, **common,
+                               trace_warning=warning, timed_out=timed_out, timeout_detail=timeout_detail,
+                               error=None if code in (0, None) else f"opencode exited {code}")
         thinking = [r["usage"]["thinking_tokens"] for r in records if isinstance(r["usage"]["thinking_tokens"], int)]
         per_step = [r["usage"]["thinking_tokens"] if isinstance(r["usage"]["thinking_tokens"], int) else None for r in records]
         flags = sorted({r["thinking"]["flag"] for r in records if r["thinking"].get("flag")})
@@ -648,6 +680,9 @@ class CellExecutor:
                     thinking_flags=flags, thinking_tokens_per_step=per_step, trace=rel(trial_dir / "trace.jsonl"))
         if refused is not None:
             return self._refused(trial_dir, refused, records, done)
+        if working_timeout:
+            return TrialResult(status="completed", passed=False, timed_out=True, timeout_detail=timeout_detail, **done,
+                               error=f"agent still working at the {timeout_detail['cap_seconds']}s cap (task fail)")
         last_finish = records[-1].get("finish_reason") if records else None
         if last_finish in ("tool-calls", "tool_calls", "tool_use") and code in (0, None):
             # OpenCode exited 0 with a tool call pending: infrastructure, never a task fail. Usually `opencode run`
@@ -679,6 +714,21 @@ class CellExecutor:
                            error=None if code in (0, None) else f"opencode exited {code}")
 
     @staticmethod
+    def timeout_detail(wires: list[dict], started_at: str | None, cap_seconds: int, window: int = 300) -> dict:
+        """Was the agent still working when it hit the cap? Yes iff a model call (status 200) finished in the
+        ``window`` seconds before the cap. The cap is the task's agent timeout (task.toml, else 1800 s)."""
+        def when(stamp):
+            return datetime.fromisoformat(stamp) if stamp else None
+        ends = [when(w.get("ended_at") or w.get("ts")) for w in wires if w.get("status") == 200]
+        ends = [e for e in ends if e is not None]
+        start = when(started_at) or (min(when(w.get("ts")) for w in wires if w.get("ts")) if wires else None)
+        if start is None or not ends:
+            return {"cap_seconds": cap_seconds, "last_call_ended_before_cap_s": None, "still_working": False}
+        before_cap = round(start.timestamp() + cap_seconds - max(ends).timestamp(), 1)
+        return {"cap_seconds": cap_seconds, "last_call_ended_before_cap_s": before_cap,
+                "still_working": before_cap <= window}
+
+    @staticmethod
     def _refused(trial_dir: Path, refused: dict, records: list[dict], fields: dict) -> TrialResult:
         """``model_refused``, with the trace step each refused call became (``step``; None without a trace)."""
         steps = {(r.get("request") or {}).get("call_index"): r.get("step") for r in records}
@@ -706,6 +756,12 @@ class CellExecutor:
         timeout = checker_timeout_s(task["dir"].name, str(task["dir"]))
         if re.search(r"\bdocker\s+(run|create)\b", script):
             mode = "self_containerized"
+            # Its containers run the agent's code: every `docker run` must be --network none (no metadata server).
+            joined = re.sub(r"\\\n", " ", script)
+            loose = [l.strip()[:120] for l in joined.splitlines()
+                     if re.search(r"\bdocker\s+run\b", l) and not re.search(r"--network[ =]none\b", l)]
+            if loose:
+                raise CellError(f"{task['dir'].name}: checker runs containers with network access: {loose}")
             env = dict(os.environ, TASK_DIR=str(task["dir"]), BENCH_TASK_IMAGE=str(task["image"]))
             env.pop("OPENBENCH_SOLUTION_OVERLAY", None)
             try:

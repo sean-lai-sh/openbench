@@ -74,7 +74,8 @@ class FakeTrialDocker:
 
     def probe(self, network, image, targets, run_args=None):
         self.probes = getattr(self, "probes", []) + [(network, image)]
-        self.probe_args = run_args
+        self.probe_arg_sets = getattr(self, "probe_arg_sets", []) + [run_args]
+        self.probe_args = self.probe_arg_sets[0]
         self.probe_targets = targets
         meta = ("169.254.169.254", "metadata.google.internal")
         return {f"{h}:{p}": (self.metadata_open if h in meta else True) for h, p in targets}
@@ -482,11 +483,17 @@ class Trial(CellCase):
         self.assertEqual((trial_dir / "checker-mode.txt").read_text().strip(), "in_task_container")
         # a checker that containerizes itself keeps its own docker runs (its wrapper only reads the reward file)
         make_task(self.tasks, "selfc")
-        (self.tasks / "selfc" / "checker.sh").write_text('#!/bin/bash\n: docker run --rm "$IMAGE" true\ntest -f out.txt\n')
+        (self.tasks / "selfc" / "checker.sh").write_text('#!/bin/bash\n: docker run --rm --network none "$IMAGE" true\ntest -f out.txt\n')
         docker = FakeTrialDocker()
         result = self.executor(docker).run_trial(self.spec(task="selfc", index=42), self.tmp / "run")
         self.assertFalse(getattr(docker, "checker_calls", []))
         self.assertEqual(result.status, "completed")
+
+    def test_self_containerized_checker_must_grade_without_network(self):
+        make_task(self.tasks, "netchk")
+        (self.tasks / "netchk" / "checker.sh").write_text('#!/bin/bash\ndocker run --rm \\\n  "$IMAGE" bash /tests/test.sh\n')
+        with self.assertRaisesRegex(ce.CellError, "network access"):
+            self.executor().run_trial(self.spec(task="netchk", index=65), self.tmp / "run")
 
     def test_missing_command_in_the_agents_code_is_a_real_fail(self):
         """The checker runs the agent's script, which calls a command the image lacks: exit 127 from inside the
@@ -610,13 +617,16 @@ class Trial(CellCase):
         ex = self.executor(docker)
         for i in (61, 62):
             result = ex.run_trial(self.spec(index=i), self.tmp / "run")
-        self.assertEqual([n for n, _ in docker.probes], [ce.AGENT_NETWORK, ce.OFFLINE_NETWORK])  # once per executor
+        # once per executor: the agent container (both networks), an in-container checker, a grading container
+        self.assertEqual([n for n, _ in docker.probes], [ce.AGENT_NETWORK, ce.OFFLINE_NETWORK, ce.AGENT_NETWORK, "none"])
+        self.assertEqual(docker.probe_arg_sets[2], ["--platform", "linux/amd64", "-w", "/app"])  # as _check starts it
         cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
         iso = cell["isolation"]
         self.assertTrue(iso["ok"])
-        self.assertEqual(iso["networks"][ce.AGENT_NETWORK],
-                         {"metadata_reachable": False, "proxy_reachable": True,
-                          "metadata_targets": {"169.254.169.254:80": False, "metadata.google.internal:80": False}})
+        blocked = {"169.254.169.254:80": False, "metadata.google.internal:80": False}
+        self.assertEqual({r: (p["metadata_reachable"], p["metadata_targets"]) for r, p in iso["probes"].items()},
+                         {r: (False, blocked) for r in ("agent", "agent_offline", "checker", "checker_self_containerized")})
+        self.assertTrue(iso["probes"]["agent"]["proxy_reachable"])
         # the probe runs with the trial containers' own settings, against both metadata targets
         self.assertIn("api.anthropic.com:0.0.0.0", docker.probe_args)
         self.assertEqual(docker.probe_args[:2], ["--platform", "linux/amd64"])
@@ -642,6 +652,32 @@ class Trial(CellCase):
         self.assertEqual(iso.apply_rule(runner), "present")
         self.assertEqual(calls[1], ["sudo", "-n", "iptables", "-I", "DOCKER-USER", "-i", "obench-agent0",
                                     "-d", "169.254.169.254/32", "-j", "DROP"])
+
+    def test_timeout_while_still_working_is_a_task_fail(self):
+        class Capped(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)  # 2 calls, just now
+                return None, True
+        make_task(self.tasks, "short")
+        (self.tasks / "short" / "task.toml").write_text('docker_image = "task-img:pinned"\ndocker_workdir = "/app"\n'
+                                                        'agent_timeout_s = 200\n')  # calls ended < 5 min before the cap
+        result = self.executor(Capped()).run_trial(self.spec(task="short", index=66), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.timed_out, result.checker_exit), ("completed", False, True, 0))
+        self.assertTrue(result.timeout_detail["still_working"])
+        self.assertEqual(result.timeout_detail["cap_seconds"], 200)
+        self.assertIsNotNone(result.trace)  # traced like any fail, so it can go to credit assignment
+        self.assertGreater(result.cost_usd, 0)
+
+    def test_timeout_with_no_call_in_the_last_five_minutes_is_infra(self):
+        class Capped(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                FakeTrialDocker.run_agent(inner, args, stdout_path, timeout, stderr_path)
+                return None, True
+        # the task's cap is 600 s and the calls ended right at the start: ~600 s of silence before the cap
+        result = self.executor(Capped()).run_trial(self.spec(index=67), self.tmp / "run")
+        self.assertEqual((result.status, result.passed, result.timed_out), ("timeout", None, True))
+        self.assertFalse(result.timeout_detail["still_working"])
+        self.assertGreater(result.timeout_detail["last_call_ended_before_cap_s"], 300)
 
     def test_timeout_keeps_the_cost_of_priced_calls(self):
         class OneCallThenTimeout(FakeTrialDocker):
@@ -703,7 +739,7 @@ class WithRunner(CellCase):
         self.assertEqual((summary["passes"], summary["verdict"]), (2, "pass"))
         plan = json.loads((self.tmp / "run" / "plan.json").read_text())
         self.assertTrue(plan["isolation"]["ok"])  # the live probe, recorded before any trial ran
-        self.assertFalse(plan["isolation"]["networks"][ce.AGENT_NETWORK]["metadata_reachable"])
+        self.assertFalse(plan["isolation"]["probes"]["checker"]["metadata_reachable"])
         counters = json.loads((self.tmp / "run" / "trials" / OPUS / "t1" / "cell_counters.json").read_text())
         self.assertEqual((counters["trials"], counters["status"]), (2, {"completed": 2}))  # both recorded under the lock
         self.assertEqual(counters["workers"], [2])
