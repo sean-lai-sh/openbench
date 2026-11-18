@@ -249,6 +249,23 @@ class Tables(Base):
         self.assertEqual((v["excluded"], v["model_refused"], v["provider_blocked"]),
                          (["extract-elf"], ["extract-elf"], ["sanitize-git-repo"]))
 
+    def test_timeout_while_working_is_a_fail_in_the_denominator(self):
+        class Slow(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.trial_index == 0:
+                    return rn.TrialResult(status="completed", passed=False, checker_exit=1, timed_out=True,
+                                          timeout_detail={"cap_seconds": 1800, "still_working": True}, cost_usd=0.5)
+                if spec.trial_index == 1:
+                    return rn.TrialResult(status="timeout", passed=None, timed_out=True,
+                                          timeout_detail={"cap_seconds": 1800, "still_working": False}, cost_usd=0.2)
+                return super().run_trial(spec, run_dir)
+        self.run_with(Slow({("extract-elf", OPUS): 3}), models=[OPUS], tasks=["extract-elf"], max_rounds=1)
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        self.assertEqual((s["completed"], s["fails"], s["errors"], s["timed_out"], s["timeout_fails"]), (2, 1, 1, 2, 1))
+        rows = rn.read_rows(self.dir / "trials.jsonl")
+        self.assertTrue(all("wall_seconds" in r and "host_load" in r for r in rows))
+        self.assertEqual((rows[0]["timed_out"], rows[0]["cost_usd"]), (True, 0.5))
+
     def test_agent_exit_pending_tool_is_infra(self):
         class Exits(rn.FixtureExecutor):
             def run_trial(self, spec, run_dir):
