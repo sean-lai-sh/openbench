@@ -1,0 +1,44 @@
+Credential scan of live Smoke A containers
+Time: 2026-11-18T00:32:46+00:00 (7:32 PM America/New_York)
+Targets (alive during inspect):
+  Carbon: query-optimize trial 8506b5f2840467eb container b0cc9cd2b4a7
+  Opus:   winning-avg-corewars trial 3bf0aec528ed2893 container 3364d9a99a8c
+Shallow env/mount scan also covered other still-running agent containers.
+
+ENV and MOUNTS (the required grep):
+- No GOOGLE_* variables in docker inspect Env or docker exec env.
+- No GOOGLE_APPLICATION_CREDENTIALS, no ANTHROPIC_*, no ADC path.
+- No gcloud config dirs, service-account JSON, access/refresh tokens,
+  or ADC files in Env, mounts, or mounted file contents.
+- Mounts only: the trial workspace -> /app (or /app/dclm for sanitize-git-repo)
+  and the pinned OpenCode binary dir (read-only).
+- No host home, ~/.config, /root, docker.sock, or gcloud paths mounted.
+- Workspace and binary mounts had no sensitive filenames and no credential
+  pattern hits in file contents.
+- The only *.pem paths inside the image were certifi CA bundles
+  (pip/_vendor/certifi/cacert.pem). False positive, not a credential.
+- Env keys were only: PATH, HOSTNAME, HOME, OPENCODE_CONFIG_CONTENT,
+  OPENCODE_DISABLE_AUTOUPDATE (plus image defaults like LANG/PYTHON_* / GPG_KEY
+  on some images; GPG_KEY is the upstream CPython image key id).
+
+OPENCODE stub apiKey (not a cloud credential):
+- OPENCODE_CONFIG_CONTENT includes provider.options.apiKey, length 15,
+  sha256[:16]=deb2c58180567ae2, letters+other, no ya29/sk-/AIza/ghp_/AKIA/PEM prefix.
+- Same value is hardcoded in obench/reflection/vertex_models.py
+  (opencode_config) and used in tests as the proxy x-api-key
+  (obench/tests/test_reflection_cell.py). It is a stub so OpenCode can
+  talk to the host wire proxy. baseURL is http://172.17.0.1:<port>/m/<model>/...
+- This is not a Google/Anthropic/ADC credential. Credentials for Vertex
+  stay on the host proxy (as designed).
+
+SEPARATE NETWORK FINDING (not an env/mount hit, but serious):
+- Agent containers use Docker network_mode=bridge, not an isolated/internal net.
+- TCP connect to 169.254.169.254:80 from all four still-running agent
+  containers returned 0 (reachable). No HTTP request was sent and no token
+  was fetched.
+- iptables had no rule blocking 169.254.169.254 from docker0.
+- If the GCE metadata HTTP API is usable, a trial could obtain the VM
+  service account token. That would violate "credentials exist only in the
+  host proxy." Flag for Researcher: treat as a smoke concern / likely FAIL
+  on the "no real credential reaches any trial container" rule, even though
+  the env/mount grep itself was clean.
