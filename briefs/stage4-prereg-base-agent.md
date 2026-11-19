@@ -95,7 +95,7 @@ Source: Harness comparison sheet 1K69StE2YUIV5kowbjRY9nWJEbCr6o5Eb7HLTuA3bF6A, r
 | 33 | ops | Token usage logging | Infra: proxy ledger | Fixed | Proxy is the source of truth for P2 |
 | 34 | ops | License / source | n/a | Fixed | All MIT/Apache-2.0; all open-source, consistent with constraint |
 
-Summary: 14 swappable slots (rows 1-5, 8, 10-13, 15-17, 21, 22, 25 grouped into modules M1-M3, M5-M11), ~20 fixed or infra. Rows 4 and parts of 1, 3, 5 have "unknown/not measured" cells in the sheet; those must be filled by proxy capture before the corresponding config can be built.
+Summary: 16 swappable rows (1-5, 8, 10-13, 15-17, 21, 22, 25) across 10 swappable modules (M1-M3, M5-M11), out of 13 module interfaces in total (M1-M13). The other 18 rows are fixed or infra; M4, M12 and M13 are fully fixed. Rows 4 and parts of 1, 3, 5 have "unknown/not measured" cells in the sheet; those must be filled by proxy capture before the corresponding config can be built.
 
 ## 3. What this changes vs the current design (in-harness part swaps)
 
