@@ -13,7 +13,8 @@
 | Head | [#265](https://github.com/sean-lai-sh/openbench/pull/265) at `640f675152bbbe31864bf47e14b81293aea249b7` (clean checkout) |
 | Host | `thesis-h1-cpu` (project `nyu-rdg-fy26-js11531-a68d`, zone `us-central1-a`) |
 | Window | 17 Nov 2026, 7:18 PM to 8:18 PM America/New_York |
-| Combined spend | **$23.98** (verified $23.9834 from `trials.jsonl`) |
+| Combined spend (`trials.jsonl`, excludes Carbon corewars) | **$23.98** (verified $23.9834) |
+| Combined spend (corrected, plus corewars `wire.jsonl`) | **$25.21** (verified $25.205949) |
 | OpenCode pin | `ba54cee55e18b47fb70badc84ae2cbac7c83d258` (scrubbed launchers show this hash as `<REDACTED_HEX>`) |
 | VM copy | Read-only; `~/pilot-1` and `~/pilot-2` were not touched. Workspaces were not copied and remain on the VM. |
 
@@ -33,7 +34,7 @@ Opus only, `fixed_tasks: true`, tasks `adaptive-rejection-sampler`, `path-tracin
 
 ## Verified counts (from `trials.jsonl`)
 
-These match the PM report.
+These match the PM report. The Smoke A total and the combined total below **exclude** the Carbon `winning-avg-corewars` timeout cost, which is `cost_usd=null` in `trials.jsonl`. The corrected figures are in the next subsection. `trials.jsonl` itself is unchanged.
 
 | Run | Rows | Spend (USD) |
 |---|---:|---:|
@@ -41,14 +42,25 @@ These match the PM report.
 | Smoke A extra swap (Opus `polyglot-c-py`) | 1 | 0.2161 (reported as $0.22) |
 | Smoke A total | **21** | **19.9703** (reported as $19.97) |
 | Smoke B | **3** | **4.0131** (reported as $4.01) |
-| **Combined** | **24** | **23.9834** (reported as **$23.98**) |
+| **Combined** | **24** | **23.9834** (reported as **$23.98**; excludes Carbon corewars) |
+
+### Carbon corewars timeout cost (from `wire.jsonl`)
+
+Smoke A Carbon `winning-avg-corewars` (`5a584347c1df32b9`) has `cost_usd=null` in `trials.jsonl`. At `640f6751`, `obench/reflection/cell_executor.py` writes a trial total only when every wire call has a cost. Call 11 of 17 has none: the proxy recorded `error: The read operation timed out` with no `response_usage`, at 7:23:58 PM America/New_York (`2026-11-18T00:23:58+00:00`). Later calls 12–17 completed. That call cannot be priced. `trials.jsonl` is left unchanged.
+
+The other 16 calls in `smoke-a/run/trials/gemini-4-carbon/winning-avg-corewars/5a584347c1df32b9/wire.jsonl` already carry `cost_usd` with `cost_basis: ["list_unverified"]`. **Their sum is $1.222532** (reported as **$1.22**): $1.131276 on 13 priced main calls and $0.091256 on 3 side calls, all `gemini-4-carbon`. Each of those 16 figures matches a recomputation from that call's `response_usage` using the Carbon list in `obench/reflection/vertex_models.py` at the same head: $4 / 1M uncached input, $20 / 1M output including thinking, $0.40 / 1M cache read (10% of input, unverified; source quoted there as the global online-prediction SKU, $4/$20). The helper `sum_corewars_timeout_cost.py` writes `smoke-a/corewars-timeout-cost.json`.
+
+- Smoke A in `trials.jsonl`, excluding this corewars cost: **$19.9703** (reported as $19.97) over 21 rows
+- Corrected Smoke A (plus the wire sum): **$21.192880** (reported as **$21.19**)
+- Smoke B unchanged: **$4.0131** (reported as $4.01) over 3 rows
+- Corrected combined: **$25.205949** (reported as **$25.21**)
 
 Every row has `code_commit=640f675152bbbe31864bf47e14b81293aea249b7`. Smoke A rows have `workers=8`; Smoke B rows have `workers=1`. No `retried_4xx` entries.
 
 ### Smoke A results
 
 - **Opus:** of the 8 completed non-refused first-round trials, 4 passed (`model-extraction-relu-logits`, `path-tracing`, `polyglot-rust-c`, `winning-avg-corewars`) and 4 failed. `dna-assembly` was `model_refused` at step 2; `dna-insert` was `model_refused` at step 3. The extra swap `polyglot-c-py` completed as a fail.
-- **Carbon:** 2 passes (`path-tracing`, `polyglot-rust-c`). 4 `provider_blocked` with `blockReason=SAFETY` as expected (`dna-insert`, `dna-assembly`, `extract-elf`, `model-extraction-relu-logits`), in 8.7–13.9 s. 3 hit the 1800 s timeout (`adaptive-rejection-sampler`, `query-optimize`, `winning-avg-corewars`). `sanitize-git-repo` (`2783e98991b0651d`) is recorded as infra `error` (`trace_error: step_call_mismatch: 11 OpenCode steps but 10 main wire calls`) even though the checker ran (`self_containerized`, `checker_exit=1`) and failed 3 tests. That is a real fail being dropped from the denominator. Carbon corewars timeout has `cost_usd=null`.
+- **Carbon:** 2 passes (`path-tracing`, `polyglot-rust-c`). 4 `provider_blocked` with `blockReason=SAFETY` as expected (`dna-insert`, `dna-assembly`, `extract-elf`, `model-extraction-relu-logits`), in 8.7–13.9 s. 3 hit the 1800 s timeout (`adaptive-rejection-sampler`, `query-optimize`, `winning-avg-corewars`). `sanitize-git-repo` (`2783e98991b0651d`) is recorded as infra `error` (`trace_error: step_call_mismatch: 11 OpenCode steps but 10 main wire calls`) even though the checker ran (`self_containerized`, `checker_exit=1`) and failed 3 tests. That is a real fail being dropped from the denominator. Carbon corewars timeout has `cost_usd=null` in `trials.jsonl`; the wire-derived cost is in the subsection above.
 
 ### Smoke B results (Opus, 1 worker)
 
@@ -82,6 +94,7 @@ Every trial saw the image's real `/app` files. Checkers ran `in_task_container` 
 ## What is in this folder
 
 - `README.md`, `REPORT.md` (the PM's smoke report), `MANIFEST-large-files.txt`
+- `sum_corewars_timeout_cost.py` and `smoke-a/corewars-timeout-cost.json` — wire-derived cost for the Carbon corewars timeout (`trials.jsonl` was not edited)
 - `notes/` — credential-scan verdict and redacted notes, early status, analysis text
 - `smoke-a/` and `smoke-b/` — config, launcher, `smoke.log`, `run/plan.json`, `run/trials.jsonl`, summaries, `set_aside.json`, `verdicts.json`, `provider_blocked.json`, swap state (A only), and per-trial `cell.json`, `wire.jsonl`, `trace.jsonl`, `opencode-events.jsonl`, `checker-output.txt`, `checker-mode.txt`, `opencode-stderr.txt`, `provider_blocked.json`, and `model_refused.json`
 
