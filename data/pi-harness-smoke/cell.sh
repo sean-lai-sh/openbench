@@ -83,7 +83,12 @@ if ! node --version; then
 fi
 
 OUT="${1:-/h2/pi-harness-smoke}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
 mkdir -p "$OUT"
+# Extra args (for example --matched-config) are forwarded. The default
+# invocation does not pass them, so the historical smoke stays unchanged.
 cd /ob && /venv/bin/python data/pi-harness-smoke/cell.py --out "$OUT" ${PI_SMOKE_MODELS:+--models "$PI_SMOKE_MODELS"} \
-  > "$OUT/run.log" 2>&1
+  "$@" > "$OUT/run.log" 2>&1
 echo EXIT $? >> "$OUT/run.log"

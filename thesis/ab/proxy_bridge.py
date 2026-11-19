@@ -362,12 +362,35 @@ def reasoning_tokens(usage: dict | None) -> int | None:
     return None
 
 
+def _recorded_thinking_tokens(record: dict, usage: dict) -> int | None:
+    """Server thinking-token count for one ledger row.
+
+    Prefer the ``thinking_tokens`` column the proxy stored from
+    ``usage.output_tokens_details.thinking_tokens``. Fall back to that
+    usage field for a row written before the column existed. Do not read
+    ``reasoning_tokens``; that is a different counter.
+    """
+    if "thinking_tokens" in record:
+        value = record.get("thinking_tokens")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
+    from thesis.ab.vertex_anthropic_proxy import server_thinking_tokens
+
+    return server_thinking_tokens(usage)
+
+
 def proxy_observed_settings(records: list | None) -> list[dict]:
     """Thinking and reasoning the proxy recorded for each request.
 
-    ``thinking_mode`` is the proxy's pin. ``thinking_sent`` is the ``thinking``
-    field it classified on the request. ``reasoning_tokens`` is the provider
-    usage field when one was present.
+    ``thinking_mode`` is the proxy's pin. ``thinking_sent`` is the category
+    classified on the request (``between_tools``, ``adaptive+effort``,
+    ``disabled``, and the older labels). ``thinking_json`` and
+    ``output_config_json`` are the canonical JSON bytes of those objects as
+    sent upstream, or None when the object was absent. ``thinking_tokens``
+    is the server usage count (``output_tokens_details.thinking_tokens``),
+    not the harness ``tokens_reasoning`` column. ``reasoning_tokens`` is the
+    provider reasoning field when one was present.
     """
     observed = []
     for record in records or []:
@@ -376,9 +399,32 @@ def proxy_observed_settings(records: list | None) -> list[dict]:
         if record.get("record_type") not in {None, "request"}:
             continue
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
+        thinking_json = record.get("thinking_json")
+        if not isinstance(thinking_json, str):
+            thinking_json = record.get("upstream_thinking_json")
+        output_config_json = record.get("output_config_json")
+        if not isinstance(output_config_json, str):
+            output_config_json = record.get("upstream_output_config_json")
+        received_thinking = record.get("received_thinking_json")
+        received_output = record.get("received_output_config_json")
         observed.append({
             "thinking_mode": record.get("thinking_mode"),
             "thinking_sent": record.get("thinking_sent"),
+            "thinking_json": thinking_json if isinstance(thinking_json, str) else None,
+            "output_config_json": (
+                output_config_json if isinstance(output_config_json, str) else None
+            ),
+            "upstream_thinking_json": thinking_json if isinstance(thinking_json, str) else None,
+            "upstream_output_config_json": (
+                output_config_json if isinstance(output_config_json, str) else None
+            ),
+            "received_thinking_json": (
+                received_thinking if isinstance(received_thinking, str) else None
+            ),
+            "received_output_config_json": (
+                received_output if isinstance(received_output, str) else None
+            ),
+            "thinking_tokens": _recorded_thinking_tokens(record, usage),
             "reasoning_tokens": reasoning_tokens(usage),
         })
     return observed

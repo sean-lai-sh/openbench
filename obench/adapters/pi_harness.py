@@ -39,6 +39,10 @@ PROVIDER = "anthropic"
 API = "anthropic-messages"
 WIRE_PATH = "/v1/messages"
 CONTEXT_WINDOW = 1_000_000
+# Matched Pi vs OpenCode pair only (OBENCH_MATCHED_CONFIG). Historical
+# comparison cells keep CONTEXT_WINDOW.
+MATCHED_CONTEXT_WINDOW = 200_000
+MATCHED_CONFIG_ENV = "OBENCH_MATCHED_CONFIG"
 MAX_TOKENS = 128_000
 CALL_ROLE_HEADER = "X-OB-Call-Role"
 
@@ -72,6 +76,17 @@ _TRUTHY = {"1", "true", "yes", "on"}
 
 class PinError(Exception):
     pass
+
+
+def matched_config_requested() -> bool:
+    """True for the opt-in matched pair (200K context, thinking level off)."""
+    return os.environ.get(MATCHED_CONFIG_ENV, "").strip().lower() in _TRUTHY
+
+
+def _use_matched(matched: bool | None) -> bool:
+    if matched is None:
+        return matched_config_requested()
+    return bool(matched)
 
 
 def comparison_requested() -> bool:
@@ -217,12 +232,18 @@ export default function obenchCallRole() {{}}
 """
 
 
-def build_command(binary: str, instruction: str, model: str, extension_path: str) -> list[str]:
-    """Headless argv. Shipped thinking, tools, and extensions stay in place."""
-    return [
-        binary,
-        "-p",
-        instruction,
+def build_command(binary: str, instruction: str, model: str, extension_path: str,
+                  *, matched: bool | None = None) -> list[str]:
+    """Headless argv. Shipped thinking, tools, and extensions stay in place.
+
+    The matched pair passes ``--thinking off``. Anything else omits the flag,
+    which is the historical argv.
+    """
+    head = [binary, "-p"]
+    if _use_matched(matched):
+        head.extend(["--thinking", "off"])
+    head.append(instruction)
+    return head + [
         "--mode", "json",
         "--no-approve",
         "-e", extension_path,
@@ -231,8 +252,12 @@ def build_command(binary: str, instruction: str, model: str, extension_path: str
     ]
 
 
-def models_document(cell_base: str, model_id: str) -> str:
-    """``models.json`` body. ``cell_base`` must not end in ``/v1``."""
+def models_document(cell_base: str, model_id: str, *, matched: bool | None = None) -> str:
+    """``models.json`` body. ``cell_base`` must not end in ``/v1``.
+
+    ``contextWindow`` is 1_000_000 unless the matched pair is selected, in
+    which case it is 200_000. The rest of the document is the same.
+    """
     if model_id == "claude-opus-5-5":
         name = "Claude Opus 5.5"
     elif model_id == "claude-sonnet-5-5":
@@ -253,7 +278,9 @@ def models_document(cell_base: str, model_id: str) -> str:
                     "reasoning": True,
                     "input": ["text", "image"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                    "contextWindow": CONTEXT_WINDOW,
+                    "contextWindow": (
+                        MATCHED_CONTEXT_WINDOW if _use_matched(matched) else CONTEXT_WINDOW
+                    ),
                     "maxTokens": MAX_TOKENS,
                     # Same compat the pinned pi-ai catalog ships for the
                     # built-in claude-{opus,sonnet}-5-5. Without
@@ -267,9 +294,11 @@ def models_document(cell_base: str, model_id: str) -> str:
     return json.dumps(document, indent=2) + "\n"
 
 
-def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, pin_file: str) -> dict:
+def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, pin_file: str,
+                     *, matched: bool | None = None) -> dict:
     """Section-4 settings for one cell, before the process is observed."""
-    return {
+    use_matched = _use_matched(matched)
+    settings = {
         "harness": "pi",
         "pin": PIN,
         "pin_brief": PIN_BRIEF,
@@ -289,8 +318,8 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, pi
             "openai_chat_completions": False,
         },
         "thinking": {
-            "level": THINKING_LEVEL,
-            "argv_override": False,
+            "level": "off" if use_matched else THINKING_LEVEL,
+            "argv_override": bool(use_matched),
             "model_reasoning": True,
         },
         "temperature": None,
@@ -321,6 +350,10 @@ def planned_settings(model: str, timeout_s: int, cell_base: str, binary: str, pi
             "fetch wrapper sets X-OB-Call-Role from the system text only"
         ),
     }
+    if use_matched:
+        settings["context_window"] = MATCHED_CONTEXT_WINDOW
+        settings["matched_config"] = True
+    return settings
 
 
 def count_compactions(stdout: str) -> int:
@@ -517,6 +550,7 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
 
     cell_base = cell_proxy_base(rewrite_loopback(proxy), cell_id)
     pi = _pi_module()
+    use_matched = matched_config_requested()
     iso_home = tempfile.mkdtemp(prefix="pi_harness_home_")
     try:
         env = dict(os.environ)
@@ -527,11 +561,13 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         env.pop("PI_CODING_AGENT_SESSION_DIR", None)
         env.pop("PI_PACKAGE_DIR", None)
         with open(os.path.join(agent_dir, "models.json"), "w", encoding="utf-8") as fh:
-            fh.write(models_document(cell_base, model))
+            fh.write(models_document(cell_base, model, matched=use_matched))
         extension_path = os.path.join(iso_home, "obench-call-role.mjs")
         with open(extension_path, "w", encoding="utf-8") as fh:
             fh.write(extension_source())
-        cmd = build_command(binary, instruction, model, extension_path)
+        cmd = build_command(
+            binary, instruction, model, extension_path, matched=use_matched,
+        )
         stdout_text, stderr_text, returncode, stop = pi._run_streaming(
             cmd, workdir, timeout_s, env,
         )
@@ -550,7 +586,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
         if not tail:
             tail = combined[-2000:]
         totals, totals_error = _observe_totals(ledger_dir, cell_id)
-        settings = planned_settings(model, timeout_s, cell_base, binary, pin_file)
+        settings = planned_settings(
+            model, timeout_s, cell_base, binary, pin_file, matched=use_matched,
+        )
         settings["compactions_fired"] = count_compactions(stdout_text)
         settings["turns"] = turns
         settings["proxy_totals"] = totals
@@ -567,7 +605,9 @@ def run(instruction: str, workdir: str, model: str, timeout_s: int) -> dict:
             "tokens": tokens,
             "turns": turns,
             "cmd": cmd,
-            "model_context_window": CONTEXT_WINDOW,
+            "model_context_window": (
+                MATCHED_CONTEXT_WINDOW if use_matched else CONTEXT_WINDOW
+            ),
             "model_max_tokens": MAX_TOKENS,
             "harness_settings": settings,
             **token_usage,
