@@ -4,6 +4,22 @@ Read this first. It captures what this project is trying to become, so any agent
 or contributor picks up the strategic context, not just the mechanics in
 `README.md` / `WRITEUP.md`.
 
+## Verification
+
+Prove thesis A/B and step-8 changes with the `verify-openbench` skill before
+opening a PR. The same `SKILL.md` and `features/` tree is in both places and
+the two copies must stay identical:
+
+- `.cursor/skills/verify-openbench/`
+- `.claude/skills/verify-openbench/`
+
+## Repo rules
+
+- Never commit to `main`. One branch per task, then a pull request. Do not merge it yourself.
+- Tests and stub runs do not call a model. They need no live model API key and they do not contact `api.anthropic.com`.
+- `results/` is data only. The directory is gitignored; commit a data drop with `git add -f`. Do not put source edits there.
+- A file larger than 50MB is not committed. List it in a `MANIFEST` beside the data (`bytes`, `sha256`, path).
+
 ## Local execution context
 
 Before changing benchmark execution or starting a run, read `agents.env` when
