@@ -20,6 +20,7 @@ from obench.provider_ua import loaded_anthropic_from_ua
 from thesis.ab.responses_api import (
     ResponsesError,
     ResponsesStream,
+    _json_bytes,
     responses_body_bytes,
     responses_error_bytes,
     responses_to_anthropic,
@@ -447,6 +448,47 @@ def translate_body(path: str, body: bytes) -> tuple[str, bytes]:
         kind = "raw"
         data.pop("stream", None)
     return kind, json.dumps(data).encode("utf-8")
+
+
+STRIP_BETA_SEGMENT = "strip-beta"
+
+
+def split_strip_beta(route: str) -> tuple[str, list[str]]:
+    """Take an optional ``/strip-beta/<beta>[,<beta>...]`` segment off the
+    front of a cell route (after ``/c/<cell_id>``). Returns the remaining
+    route and the betas this request asks the proxy to drop from
+    ``anthropic-beta``. A harness adapter opts in through its provider base
+    URL (Hermes: AD1-hermes-beta), so the strip applies to that path only."""
+    path, sep, query = route.partition("?")
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2 or parts[0] != STRIP_BETA_SEGMENT:
+        return route, []
+    betas = [urllib.parse.unquote(b).strip() for b in parts[1].split(",")]
+    rest = "/" + "/".join(parts[2:])
+    return rest + (sep + query if sep else ""), [b for b in betas if b]
+
+
+def strip_requested_betas(beta_header: str | None, betas: list[str]) -> tuple[str | None, list[str]]:
+    """Drop ``betas`` from the forwarded ``anthropic-beta`` value. Returns the
+    new value (``None`` stays ``None``; an emptied header is ``""``, which is
+    not forwarded) and the betas actually removed, in header order."""
+    if not beta_header or not betas:
+        return beta_header, []
+    drop = set(betas)
+    parts = [p.strip() for p in beta_header.split(",") if p.strip()]
+    removed = [p for p in parts if p in drop]
+    return ",".join(p for p in parts if p not in drop), removed
+
+
+def thinking_type(data) -> str | None:
+    """The raw ``thinking.type`` the request carried, or None when it sent no
+    ``thinking`` object. ``classify_thinking`` folds ``disabled`` and
+    ``between_tools`` into ``none``; this keeps them visible."""
+    thinking = data.get("thinking") if isinstance(data, dict) else None
+    if not isinstance(thinking, dict):
+        return None
+    kind = thinking.get("type")
+    return kind if isinstance(kind, str) and kind else "unknown"
 
 
 def split_cell_path(path: str) -> tuple[str | None, str]:
@@ -913,6 +955,48 @@ def write_responses_capture(directory: Path | None, cell_id: str | None, index: 
     return str(path.relative_to(Path(directory)))
 
 
+CAPTURE_REQUESTS_ENV = "OBENCH_VERTEX_CAPTURE_REQUESTS"
+
+
+def capture_requests_enabled() -> bool:
+    """Opt-in raw-body capture for every cell request (any route)."""
+    return os.environ.get(CAPTURE_REQUESTS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def request_capture_path(directory: Path, cell_id: str, index: int) -> Path:
+    """Raw request body exactly as the harness sent it, before any proxy edit."""
+    return Path(directory) / f"{_cell_file_stem(cell_id)}.requests" / f"{index:04d}.request.json"
+
+
+def write_request_capture(directory: Path | None, cell_id: str | None, index: int, raw: bytes) -> str:
+    if directory is None or not cell_id:
+        return ""
+    path = request_capture_path(directory, cell_id, index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return str(path.relative_to(Path(directory)))
+
+
+def prompt_bytes(body) -> tuple[int, int]:
+    """(system text bytes, tools JSON bytes) of an Anthropic Messages body.
+
+    System text is every system string/text block joined with a blank line;
+    tools are canonical JSON with ``cache_control`` removed. Same measure as
+    the Responses translation uses (``responses_api``).
+    """
+    if not isinstance(body, dict):
+        return 0, 0
+    system = body.get("system")
+    if isinstance(system, str):
+        parts = [system]
+    elif isinstance(system, list):
+        parts = [b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"]
+    else:
+        parts = []
+    text = "\n\n".join(p for p in parts if p)
+    return len(text.encode("utf-8")), _json_bytes(body.get("tools") or [])
+
+
 def cache_miss_headers_path(directory: Path, cell_id: str) -> Path:
     return Path(directory) / f"{_cell_file_stem(cell_id)}.cache-miss-headers.jsonl"
 
@@ -1000,6 +1084,10 @@ def _append_ledger(
         row["error"] = error[:500]
     if isinstance(identity, dict):
         row["cc_identity_stripped"] = identity
+        if isinstance(identity.get("beta_stripped"), dict):
+            row["beta_stripped"] = identity["beta_stripped"]
+        if isinstance(identity.get("thinking_type"), str):
+            row["thinking_type"] = identity["thinking_type"]
     row["thinking_mode"] = thinking_mode if thinking_mode in _THINKING_MODES else "default"
     row["thinking_sent"] = thinking_sent if thinking_sent in _THINKING_SENT else "none"
     if isinstance(upstream_model, str) and upstream_model:
@@ -1362,6 +1450,28 @@ def _request_max_tokens(data: dict):
     return None
 
 
+def _structured_output_schema(data: dict):
+    """The JSON schema a request asks the reply to follow: Anthropic
+    ``output_config.format`` or OpenAI ``response_format.json_schema``."""
+    output_config = data.get("output_config")
+    fmt = output_config.get("format") if isinstance(output_config, dict) else None
+    if isinstance(fmt, dict) and fmt.get("type") == "json_schema" and isinstance(fmt.get("schema"), dict):
+        return fmt["schema"]
+    response_format = data.get("response_format")
+    json_schema = response_format.get("json_schema") if isinstance(response_format, dict) else None
+    if isinstance(json_schema, dict) and isinstance(json_schema.get("schema"), dict):
+        return json_schema["schema"]
+    return None
+
+
+def _is_title_schema(data: dict) -> bool:
+    """A reply schema whose only property is ``title`` (Hermes's title call:
+    ``agent/title_generator.py`` ``_TITLE_RESPONSE_FORMAT``)."""
+    schema = _structured_output_schema(data)
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    return isinstance(properties, dict) and set(properties) == {"title"}
+
+
 def _role(role: str, reason: str, detail: str | None = None) -> dict:
     out = {"call_role": role, "call_role_reason": reason}
     if detail:
@@ -1397,7 +1507,10 @@ def classify_call_role(data, header: str | None) -> dict:
     tools, ``max_tokens`` at most ``SHORT_CALL_MAX_TOKENS``, and a matching
     system prompt. Memory and helper prompts are tagged when the wording is
     specific. A short call with no tools and no matching prompt is ``side``
-    with reason ``heuristic:short-no-tools``. Everything else is ``main``.
+    with reason ``heuristic:short-no-tools``. A tool-less call whose reply
+    schema has ``title`` as its only property is ``side`` / ``title``
+    (``heuristic:title-schema``) at any ``max_tokens``. Everything else is
+    ``main``.
     """
     parsed = parse_call_role_header(header)
     if parsed is not None:
@@ -1414,6 +1527,8 @@ def classify_call_role(data, header: str | None) -> dict:
         and not isinstance(max_tokens, bool)
         and max_tokens <= SHORT_CALL_MAX_TOKENS
     )
+    if not tools and _is_title_schema(data):
+        return _role("side", "heuristic:title-schema", "title")
     if not tools and _MEMORY_RE.search(system):
         return _role("side", "heuristic:memory", "memory")
     if not tools and _HELPER_RE.search(system):
@@ -2028,6 +2143,7 @@ class Proxy:
         self._fault_lock = threading.Lock()
         self._message_index: dict[str, int] = {}
         self._responses_index: dict[str, int] = {}
+        self._capture_index: dict[str, int] = {}
         self._reached: set[str] = set()
         self._bridge = None
 
@@ -2036,6 +2152,13 @@ class Proxy:
         with self._fault_lock:
             index = self._message_index.get(cell_id, 0) + 1
             self._message_index[cell_id] = index
+            return index
+
+    def note_capture(self, cell_id: str) -> int:
+        """1-based index of a captured request for this cell."""
+        with self._fault_lock:
+            index = self._capture_index.get(cell_id, 0) + 1
+            self._capture_index[cell_id] = index
             return index
 
     def note_responses(self, cell_id: str) -> int:
@@ -2157,6 +2280,9 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
             cell, route = split_cell_path(self.path)
             if cell:
                 holder["proxy"].note_reached(cell)
+                route, strip_betas = split_strip_beta(route)
+            else:
+                strip_betas = []
             route, query_removed = strip_beta_query(route)
             removed = list(query_removed)
             if _chat_route(route):
@@ -2170,6 +2296,16 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                 parsed = json.loads(raw.decode("utf-8")) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
+            capture = None
+            if (presentation == "anthropic" and capture_requests_enabled()
+                    and ledger is not None and cell):
+                raw_system, raw_tools = prompt_bytes(parsed)
+                capture = {
+                    "raw_request_file": write_request_capture(
+                        ledger, cell, holder["proxy"].note_capture(cell), raw),
+                    "raw_system_bytes": raw_system,
+                    "raw_tools_bytes": raw_tools,
+                }
             raw_requested = parsed.get("model") if isinstance(parsed, dict) else None
             requested_model = raw_requested.strip() if isinstance(raw_requested, str) else None
             upstream_model = resolve_upstream_model(
@@ -2237,10 +2373,26 @@ def start_proxy(project: str, *, model: str = MODEL_ID, location: str = LOCATION
                     parts.append(BLOCK_BINDING_BETA)
                 beta_header = ",".join(parts)
             identity = cc_identity_record(removed)
+            if strip_betas:
+                # Ledger: row["beta_stripped"] (and cc_identity_stripped.beta_stripped):
+                # the betas the route asked to drop and the ones this request carried.
+                beta_header, beta_removed = strip_requested_betas(beta_header, strip_betas)
+                identity["beta_stripped"] = {"requested": list(strip_betas), "removed": beta_removed}
+            raw_thinking_type = thinking_type(parsed)
+            if raw_thinking_type is not None:
+                # Ledger: row["thinking_type"]: thinking.type as sent, even when
+                # thinking_sent folds it into "none" (disabled, between_tools).
+                identity["thinking_type"] = raw_thinking_type
             if responses_ctx is not None:
                 # Ledger: row["cc_identity_stripped"]["responses"] records what
                 # the Responses translation dropped or added for this request.
                 identity["responses"] = responses_ctx.record()
+            if capture is not None:
+                # Ledger: row["cc_identity_stripped"]["capture"]: the raw body
+                # file and raw vs forwarded system/tool bytes (5% check).
+                forwarded_system, forwarded_tools = prompt_bytes(parsed)
+                identity["capture"] = {**capture, "system_bytes": forwarded_system,
+                                       "tools_bytes": forwarded_tools}
             if binding:
                 identity["thinking_block_binding"] = binding
             if sampling_removed:
