@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a56bf19b001Nupgre4jWcGAWE",
+  "sessionID": "ses_e5a940f1bffeCLrP0qQm2b5jOV",
+  "role": "user",
+  "time": {
+    "created": 1793776677275
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy` that matches A1 up to permuting and rescaling the rows, and it takes about 5 seconds.\n\n**How it works** (it only calls `forward()`):\n1. **Find where neurons switch on or off.** Along 30 random lines through the input space, it repeatedly halves intervals to find the points where the output's slope changes. Each such point is where one hidden neuron turns on or off. It then pins down the exact location by intersecting the two straight pieces on either side.\n2. **Read off a row of A1.** At each of those points it estimates the gradient just before and just after. Since the network is piecewise linear, the difference is `A2[i] * A1[i]`, which is one row of A1 up to a scale factor.\n3. **Group the results.** It normalises these directions and groups near-identical ones, giving one row per neuron. All 20 hidden neurons were found.\n4. **Fix the sign of each row.** It works out each neuron's bias from where the switch happens, fits the output layer by least squares, then checks all 2^20 sign combinations to explain the leftover linear term. So the rows should come out with the correct sign, not just correct up to ±.\n\n**Check:** to confirm the result I compared it with the real `A1` in `forward.py`; the script itself never reads it. All 20 rows matched distinct true neurons with the correct sign. The lowest cosine similarity was 0.99999999999999 and the largest error after rescaling was about 2e-8.\n\nMy first version only found 13 of the 20 neurons. The test for \"is this interval still bending\" used a fixed tolerance, and as the intervals got smaller, neurons with small effects fell below it and were skipped. Stopping the halving earlier and solving for the switch point exactly fixed this.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

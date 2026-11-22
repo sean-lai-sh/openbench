@@ -1,0 +1,17 @@
+I've written `re.json`: 3,931 [regex, replacement] pairs, about 420 KB, so well under both limits. On your example it produces exactly the string you gave, in the same order. It also passes the provided `check.py` (all 18 positions from Morphy's Opera Game), and matched python-chess on about 2,000 random-game positions plus 15 hand-written edge cases, with no failures.
+
+It's slow: through `check.py` it takes about 2 seconds per position (34 seconds for the Opera Game test). Python's `re` only caches 512 compiled patterns, so with 3,931 rules nearly every one is recompiled on each call. Precompiled, the same rules take about 0.25 seconds per position. If the grader has a tight time limit, this could matter; the fix would be merging rules to cut the count.
+
+**How it works** (built by `gen.py`):
+1. **Read the FEN:** the board is expanded to a fixed 72-character line: the 64 squares, then the castling rights as four fixed slots (`K`, `Q`, `k`, `q` or `-`), then the en-passant square (or `--`).
+2. **List candidate moves:** there is one rule for each piece, start square and target square, for queen, rook, bishop, knight and king moves, and for pawn pushes, double pushes, captures, en-passant and queen promotion. Each rule only matches the first line and checks that the piece is there, the path is clear and the target is empty or a black piece. When it matches, it adds a new line with the resulting position. The same rule also removes castling rights when the king or a rook leaves its home square or a black rook is captured on a8/h8, and sets the en-passant square.
+3. **Castling:** the king and rook must be on their squares with the squares between them empty, and the king can't be in check or pass through an attacked square (e1 and f1, or e1 and d1). The square it lands on is checked in the next step.
+4. **Remove illegal moves:** after the original line is dropped, 64 rules (one per king square) delete any position where the white king is attacked by a black knight, pawn, king or sliding piece with a clear line. This also covers pins and illegal en-passant captures.
+5. **Write the output:** each line is turned back into a FEN with `b` to move and placeholder ` 0 0` move counters, and the lines are joined with `\n`.
+
+**En-passant square:** after a double pawn push, the output shows the en-passant square only if a black pawn is next to the pushed pawn. python-chess shows it only if the capture is fully legal, so in rare pinned cases the two differ. `check.py` accepts that difference, since it also allows `-` in python-chess's version.
+
+Files are in the working directory:
+- `re.json`
+- `gen.py`, which regenerates it
+- `test.py`, the random tester against python-chess

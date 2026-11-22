@@ -1,0 +1,18 @@
+I wrote `steal.py`. Running it recovers all 20 hidden neurons, and every stolen row matches a true row of A1 with cosine similarity 1.0000000000, sign included. The result is saved to `stolen_A1.npy` as a 20×10 matrix with each row scaled to length 1. I only read the real `A1` from `forward.py` afterwards to check the answer; the script itself learns everything by calling `forward()`.
+
+**How it works:**
+1. **Finding the neuron boundaries:** Each neuron switches on or off along a flat boundary in the input space, which shows up as a "kink" in the output. The script draws random lines through the input space and halves the search interval repeatedly to find where the output stops being a straight line along each line. It pins down each kink exactly by intersecting the straight pieces on either side.
+2. **Reading off the row direction:** At each kink, it estimates the gradient on both sides using finite differences. The difference between them is ±a2ᵢ·A1ᵢ, which gives the direction of row i.
+   - It throws out a kink if two step sizes give different answers, or if the change in slope along the line disagrees with that difference. This removed the false or merged kinks that first produced 67 rows instead of 20.
+   - It merges duplicates by checking for the same normal direction and the same boundary location.
+   - It stops after 60 lines in a row find nothing new.
+3. **Fixing the sign of each row:** This step is necessary because "up to scaling" can't safely include flipping a row's sign: ReLU(z) and ReLU(−z) are different functions.
+   - The direction of the slope change along the line gives the sign of a2ᵢ.
+   - Which side of each boundary is the active one is not visible locally, because ReLU(z) = z + ReLU(−z). Choosing the wrong side only shifts the overall gradient by a constant vector.
+   - The script measures that constant at random points. It then searches all 2ⁿ on/off combinations in two halves to find the one that fits, which takes about 1M combinations for n = 20.
+
+**Limitations:**
+- The exact search only runs for up to 24 neurons. Above that, the script falls back to a rounded least-squares guess, which is less reliable.
+- Any neuron whose boundary is never crossed in the sampled region (random lines of half-length 20 in 10 dimensions) would be missed.
+
+A type checker flags one line where a variable starts as `None`. It is always set before use when there are up to 24 neurons, so it doesn't cause an error.

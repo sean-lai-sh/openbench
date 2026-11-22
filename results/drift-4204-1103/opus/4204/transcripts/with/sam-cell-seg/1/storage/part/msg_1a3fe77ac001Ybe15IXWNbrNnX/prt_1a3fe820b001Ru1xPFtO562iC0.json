@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a3fe820b001Ru1xPFtO562iC0",
+  "sessionID": "ses_e5c0b6c56ffeonifOmlWYr9UiE",
+  "messageID": "msg_1a3fe77ac001Ybe15IXWNbrNnX",
+  "type": "tool",
+  "callID": "toolu_vrtx_013ruXxDxKqDvQbYvB5Tu7JP",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-slysgh5x/bench_opencode_sam-cell-seg_jxadshei && . .venv/bin/activate && python - <<'EOF'\nimport pandas as pd, numpy as np, cv2\nim=cv2.imread('demo_rgb.png'); H,W=im.shape[:2]\ndef load(p):\n    d=pd.read_csv(p,index_col=0); out=[]\n    for _,r in d.iterrows():\n        xs=np.array(list(map(float,r.coords_x.split(','))));ys=np.array(list(map(float,r.coords_y.split(','))))\n        out.append(np.stack([xs,ys],1).astype(np.int32))\n    return d,out\nd0,p0=load('demo_metadata.csv'); d1,p1=load('test_out/demo_metadata.csv')\ncnt=np.zeros((H,W),int); bad=0\nfor i,p in enumerate(p1):\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[p],1); cnt+=m\n    n,_=cv2.connectedComponents(m)\n    if n!=2: bad+=1\n    if len(set(map(tuple,p)))<=4: print('rect-like',i)\n    assert d1.xmin.iloc[i]==p[:,0].min() and d1.ymax.iloc[i]==p[:,1].max()\nprint('overlap px',(cnt>1).sum(),'noncontig',bad, 'types',d1.type.unique())\nprint('other cols equal', d0.drop(columns=['type','xmin','xmax','ymin','ymax','coords_x','coords_y']).equals(d1.drop(columns=['type','xmin','xmax','ymin','ymax','coords_x','coords_y'])))\ntry:\n    from shapely.geometry import Polygon\nexcept ImportError: pass\na=im.copy(); b=im.copy()\nfor p,t in zip(p0,d0.type): cv2.polylines(a,[p],True,(0,255,0) if t=='polyline' else (0,0,255),1)\nfor p in p1: cv2.polylines(b,[p],True,(0,255,255),1)\nbig=cv2.resize(np.hstack([a,b]),None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST)\ncv2.imwrite('test_out/viz.png',big)\nEOF",
+      "description": "Validate output and visualize"
+    },
+    "output": "overlap px 0 noncontig 0 types <StringArray>\n['polyline']\nLength: 1, dtype: str\nother cols equal True\n",
+    "title": "cd /tmp/obench-cell-slysgh5x/bench_opencode_sam-cell-seg_jxadshei && . .venv/bin/activate && python - <<'EOF'\nimport pandas as pd, numpy as np, cv2\nim=cv2.imread('demo_rgb.png'); H,W=im.shape[:2]\ndef load(p):\n    d=pd.read_csv(p,index_col=0); out=[]\n    for _,r in d.iterrows():\n        xs=np.array(list(map(float,r.coords_x.split(','))));ys=np.array(list(map(float,r.coords_y.split(','))))\n        out.append(np.stack([xs,ys],1).astype(np.int32))\n    return d,out\nd0,p0=load('demo_metadata.csv'); d1,p1=load('test_out/demo_metadata.csv')\ncnt=np.zeros((H,W),int); bad=0\nfor i,p in enumerate(p1):\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[p],1); cnt+=m\n    n,_=cv2.connectedComponents(m)\n    if n!=2: bad+=1\n    if len(set(map(tuple,p)))<=4: print('rect-like',i)\n    assert d1.xmin.iloc[i]==p[:,0].min() and d1.ymax.iloc[i]==p[:,1].max()\nprint('overlap px',(cnt>1).sum(),'noncontig',bad, 'types',d1.type.unique())\nprint('other cols equal', d0.drop(columns=['type','xmin','xmax','ymin','ymax','coords_x','coords_y']).equals(d1.drop(columns=['type','xmin','xmax','ymin','ymax','coords_x','coords_y'])))\ntry:\n    from shapely.geometry import Polygon\nexcept ImportError: pass\na=im.copy(); b=im.copy()\nfor p,t in zip(p0,d0.type): cv2.polylines(a,[p],True,(0,255,0) if t=='polyline' else (0,0,255),1)\nfor p in p1: cv2.polylines(b,[p],True,(0,255,255),1)\nbig=cv2.resize(np.hstack([a,b]),None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST)\ncv2.imwrite('test_out/viz.png',big)\nEOF",
+    "metadata": {
+      "output": "overlap px 0 noncontig 0 types <StringArray>\n['polyline']\nLength: 1, dtype: str\nother cols equal True\n",
+      "exit": 0,
+      "description": "Validate output and visualize"
+    },
+    "time": {
+      "start": 1793752734169,
+      "end": 1793752735027
+    }
+  }
+}

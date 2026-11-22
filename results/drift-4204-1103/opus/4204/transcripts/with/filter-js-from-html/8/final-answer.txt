@@ -1,0 +1,23 @@
+I've created `filter.py`. Run it as `python3 filter.py file.html`; it removes JavaScript from the file and saves the result in place.
+
+**Testing:** I checked about 45 known XSS tricks, and in each case the dangerous part was removed. A clean sample page with tables, headers, comments, inline CSS, forms, an inline SVG drawing and non-English characters came back byte-for-byte unchanged. Running it on 20,000 random inputs caused no crashes, and running it twice never changed the result further. I haven't loaded any output in a real browser to confirm that no script runs.
+
+**How it works:** the script reads the HTML the same way a browser does. Anything that isn't dangerous is copied over exactly, so spacing, quoting, character codes like `&amp;`, comments and line endings stay the same. It leaves the file alone if nothing needs removing.
+
+**What it removes:**
+- **Script blocks:** `<script>` elements with their contents, and stray `</script>` tags.
+- **Plugin tags:** `<object>`, `<embed>` and `<applet>` tags (whatever is inside them is kept).
+- **Event handlers:** any attribute starting with `on` (such as `onclick` or `onerror`), plus `srcdoc`.
+- **Script links:** any attribute containing `javascript:`, `vbscript:` and similar, even when disguised with character codes, tabs, newlines or hidden characters (for example `jav&#x09;ascript:` or `&colon;`).
+- **Embedded `data:` content:** inline `data:` content in links and sources, except ordinary images (PNG, GIF, JPEG and similar).
+- **Dangerous CSS:** `style` attributes or `<style>` blocks that use `expression(`, `-moz-binding`, `behavior:` or script links, even when disguised with CSS comments or escapes.
+- **SVG tricks:** animations that rewrite links or event handlers (`attributeName="href"` or `attributeName="on…"`).
+- **Old browser tricks:** CDATA sections, old Internet Explorer conditional comments, refresh tags that redirect to a script, and UTF-7 encoding tricks.
+- **Hidden markup:** some HTML tricks look harmless to one reader but run script when a browser reads them in a different context. Where text inside `<title>`, `<textarea>`, `<style>` and similar tags could be read that way, the filter rewrites or empties it.
+
+**Where it removes more than strictly needed:**
+- Any attribute value containing a script scheme is dropped, even a harmless one like `title="javascript: basics"`.
+- Attribute values that contain markup with handlers or scripts (like `title="<img onerror=…>"`) are dropped.
+- Self-closing slashes can be lost when an attribute is removed: `<path onclick=x/>` becomes `<path>`, which can change the structure inside SVG.
+- `<iframe>` tags with safe addresses are kept, so a page can still embed external sites.
+- All `<object>` and `<embed>` tags are dropped, even harmless ones, along with SVG images given as `data:` links.

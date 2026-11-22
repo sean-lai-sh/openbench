@@ -1,0 +1,24 @@
+I've created `filter.py`. It takes the HTML file path as `argv[1]` and rewrites the file in place with the JavaScript removed. Everything else is copied through byte-for-byte: whitespace, CRLF line endings, invalid bytes, tables, comments and the doctype all stay as they were.
+
+I tested it on about 30 inputs: a normal page with headers, a table, styles, links and comments, plus a set of known XSS tricks. The normal page came out identical, and every attack payload was removed (one case is a deliberate exception, explained below). Running it on an actual file kept CRLF line endings and a non-UTF-8 byte intact. I haven't tested it in a real browser.
+
+**How it works:** the script reads through the file the same way a browser does to find tags, attributes and comments, and cuts out only the dangerous pieces. It then runs again on its own output until nothing more changes, so a removal can't join leftover pieces into a new attack.
+
+**What gets removed:**
+- **Script elements:** `<script>` tags along with their contents, and stray `</script>` closing tags.
+- **Plugin tags:** the `<object>`, `<embed>` and `<applet>` tags themselves. Whatever is between them is kept, because it's the normal fallback HTML.
+- **Event handlers:** any attribute starting with `on` (`onclick`, `onerror`, `onload`, …) and `srcdoc`.
+- **Script links:** any attribute value starting with `javascript:`, `vbscript:` and similar, including disguised versions (encoded characters, hidden tabs or spaces, upper/lower case mixing).
+- **`data:` links:** removed from link and source attributes, except for images (`data:image/...`).
+- **Inline styles:** a `style` attribute is removed if it contains `expression(`, `javascript:`, `-moz-binding`, `behavior:`, `@import`, or a `url(data:text...)`. This also catches CSS escape tricks.
+- **SVG animation tricks:** `values`/`to`/`from` values containing `javascript:`, and animations whose `attributeName` targets an event handler.
+- **Meta redirects:** the `content` of a `<meta>` refresh that points at a script link.
+
+**Hiding places:** comments and the contents of tags like `<style>`, `<noscript>`, `<textarea>`, `<title>` and `<iframe>` are also checked as if they were normal HTML. Browsers sometimes read them that way, especially inside SVG/MathML, which is a known way to slip attacks past filters. If such a block contains something dangerous, the comment is dropped or the block's contents are cleaned. Harmless contents, such as `<textarea>if a<b then</textarea>`, are left alone.
+
+**Things to know:**
+- An attribute is removed whole, so legitimate links like `href="javascript:void(0)"` go too. `<object>`, `<embed>` and `<applet>` tags are always removed, even when harmless.
+- An `<iframe>` pointing at an ordinary external site is kept; only script links, `data:` links and `srcdoc` are removed from it. If you want iframes removed entirely, that's a one-line change.
+- `<img/src=x/onerror=alert(1)>` is deliberately left unchanged. Browsers read all of `x/onerror=alert(1)` as the image address, so it never runs as code.
+
+I deleted the scratch test files afterwards, so `filter.py` is the only new file in the directory.

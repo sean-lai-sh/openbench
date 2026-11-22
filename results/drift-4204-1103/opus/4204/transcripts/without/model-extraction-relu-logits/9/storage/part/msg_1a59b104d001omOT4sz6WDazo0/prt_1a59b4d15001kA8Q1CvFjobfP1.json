@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a59b4d15001kA8Q1CvFjobfP1",
+  "sessionID": "ses_e5a6504dfffe6Kg9Jf58l23VGA",
+  "messageID": "msg_1a59b104d001omOT4sz6WDazo0",
+  "type": "tool",
+  "callID": "toolu_vrtx_01GrPNPjLtPqAYxKtanu6Gce",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-f3kycyq5/bench_opencode_model-extraction-relu-logits_8efgi7vf/steal.py",
+      "content": "import os\nimport numpy as np\nfrom forward import forward\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nDIM = 10\nrng = np.random.default_rng(1234)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, out, depth=0):\n    \"\"\"Find t-values of kinks of g(t)=f(x0+t d) in [lo, hi].\"\"\"\n    g = lambda t: f(x0 + t * d)\n    eps = 1e-7 * (hi - lo) + 1e-9\n    glo, ghi = g(lo), g(hi)\n    slo = (g(lo + eps) - glo) / eps\n    shi = (ghi - g(hi - eps)) / eps\n    if abs(slo - shi) < 1e-9 * max(1.0, abs(slo), abs(shi)):\n        # check linearity at midpoint\n        mid = 0.5 * (lo + hi)\n        if abs(g(mid) - 0.5 * (glo + ghi)) < 1e-10:\n            return\n    if hi - lo < 1e-7 or depth > 60:\n        return\n    # try single-kink hypothesis: intersect the two end lines\n    if abs(slo - shi) > 1e-12:\n        tk = (ghi - glo + slo * lo - shi * hi) / (slo - shi)\n        if lo < tk < hi:\n            pred = glo + slo * (tk - lo)\n            if abs(g(tk) - pred) < 1e-10:\n                # verify: left half linear with slope slo, right half with shi\n                ml, mr = 0.5 * (lo + tk), 0.5 * (tk + hi)\n                if (abs(g(ml) - (glo + slo * (ml - lo))) < 1e-10 and\n                        abs(g(mr) - (ghi - shi * (hi - mr))) < 1e-10):\n                    out.append(tk)\n                    return\n    mid = 0.5 * (lo + hi)\n    find_kinks(x0, d, lo, mid, out, depth + 1)\n    find_kinks(x0, d, mid, hi, out, depth + 1)\n\n\ndef grad(x, h=1e-5):\n    fx = f(x)\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - fx) / h\n    return gr\n\n\ndef row_at_kink(x0, d, t):\n    delta = 1e-4\n    gp = grad(x0 + (t + delta) * d)\n    gm = grad(x0 + (t - delta) * d)\n    diff = gp - gm\n    n = np.linalg.norm(diff)\n    if n < 1e-8:\n        return None\n    return diff / n\n\n\ndef canon(v):\n    i = np.argmax(np.abs(v))\n    return v * np.sign(v[i])\n\n\nrows = []\ncounts = []\nno_new = 0\nfor it in range(400):\n    x0 = rng.normal(size=DIM) * 0.5\n    d = rng.normal(size=DIM)\n    d /= np.linalg.norm(d)\n    kinks = []\n    find_kinks(x0, d, -20.0, 20.0, kinks)\n    new = False\n    for t in kinks:\n        r = row_at_kink(x0, d, t)\n        if r is None:\n            continue\n        r = canon(r)\n        for k, ex in enumerate(rows):\n            if abs(np.dot(ex, r)) > 0.9999:\n                counts[k] += 1\n                break\n        else:\n            rows.append(r)\n            counts.append(1)\n            new = True\n    no_new = 0 if new else no_new + 1\n    if it >= 30 and no_new >= 30:\n        break\n\n# keep rows seen more than once (robustness against spurious detections)\nA = np.array([r for r, c in zip(rows, counts) if c >= 2])\nprint(\"Recovered hidden neurons:\", A.shape[0])\nprint(A)\nnp.save(os.path.join(HERE, \"stolen_A1.npy\"), A)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-f3kycyq5/bench_opencode_model-extraction-relu-logits_8efgi7vf/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-f3kycyq5/bench_opencode_model-extraction-relu-logits_8efgi7vf/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793779791744,
+      "end": 1793779799151
+    }
+  }
+}

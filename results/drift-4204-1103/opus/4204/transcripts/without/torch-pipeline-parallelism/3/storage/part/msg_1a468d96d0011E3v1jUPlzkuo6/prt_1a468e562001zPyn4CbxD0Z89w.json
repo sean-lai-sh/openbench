@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a468e562001zPyn4CbxD0Z89w",
+  "sessionID": "ses_e5b9841beffeu9aGzBf31N9NlP",
+  "messageID": "msg_1a468d96d0011E3v1jUPlzkuo6",
+  "type": "tool",
+  "callID": "toolu_vrtx_012G179edKot7HMTbKYrnn5i",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "mkdir -p _t && cat > _t/test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp, torch.nn.functional as F\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\ndef run(rank, ws):\n    os.environ.update(MASTER_ADDR=\"127.0.0.1\", MASTER_PORT=str(29511+ws))\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5, num_attention_heads=4, num_key_value_heads=2)\n    m = LlamaForCausalLM(cfg); ref = LlamaForCausalLM(cfg); ref.load_state_dict(m.state_dict())\n    ids = torch.randint(0,128,(4,16)); tg = torch.randint(0,128,(4,16))\n    inp = list(ids.chunk(2)); tgt = list(tg.chunk(2))\n    loss = train_step_pipeline_afab(m, inp, tgt, torch.device(\"cpu\"), torch.float32)\n    for i, t in zip(inp, tgt):\n        lg = ref(input_ids=i).logits\n        (F.cross_entropy(lg.reshape(-1,128), t.reshape(-1))/2).backward()\n    md = 0; cnt = 0\n    for (n,p),(_,q) in zip(m.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            cnt += 1; md = max(md, (p.grad-q.grad).abs().max().item())\n    print(ws, rank, \"loss\", loss, \"params with grad\", cnt, \"maxdiff\", md)\n    dist.destroy_process_group()\nif __name__ == \"__main__\":\n    for ws in (1,2): mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython _t/test.py 2>&1 | grep -v Warning",
+      "description": "Test vs reference model",
+      "timeout": 300000
+    },
+    "output": "1 0 loss 4.847475051879883 params with grad 48 maxdiff 0\n2 1 loss 4.847475051879883 params with grad 20 maxdiff 0\n2 0 loss None params with grad 28 maxdiff 0\n",
+    "title": "mkdir -p _t && cat > _t/test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp, torch.nn.functional as F\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\ndef run(rank, ws):\n    os.environ.update(MASTER_ADDR=\"127.0.0.1\", MASTER_PORT=str(29511+ws))\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5, num_attention_heads=4, num_key_value_heads=2)\n    m = LlamaForCausalLM(cfg); ref = LlamaForCausalLM(cfg); ref.load_state_dict(m.state_dict())\n    ids = torch.randint(0,128,(4,16)); tg = torch.randint(0,128,(4,16))\n    inp = list(ids.chunk(2)); tgt = list(tg.chunk(2))\n    loss = train_step_pipeline_afab(m, inp, tgt, torch.device(\"cpu\"), torch.float32)\n    for i, t in zip(inp, tgt):\n        lg = ref(input_ids=i).logits\n        (F.cross_entropy(lg.reshape(-1,128), t.reshape(-1))/2).backward()\n    md = 0; cnt = 0\n    for (n,p),(_,q) in zip(m.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            cnt += 1; md = max(md, (p.grad-q.grad).abs().max().item())\n    print(ws, rank, \"loss\", loss, \"params with grad\", cnt, \"maxdiff\", md)\n    dist.destroy_process_group()\nif __name__ == \"__main__\":\n    for ws in (1,2): mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython _t/test.py 2>&1 | grep -v Warning",
+    "metadata": {
+      "output": "1 0 loss 4.847475051879883 params with grad 48 maxdiff 0\n2 1 loss 4.847475051879883 params with grad 20 maxdiff 0\n2 0 loss None params with grad 28 maxdiff 0\n",
+      "exit": 0,
+      "description": "Test vs reference model"
+    },
+    "time": {
+      "start": 1793759706230,
+      "end": 1793759773984
+    }
+  }
+}

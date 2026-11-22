@@ -1,0 +1,22 @@
+I've created `filter.py`. Run it as `python3 filter.py file.html` and it edits the file in place, using only Python's standard library.
+
+**Testing:** I ran 37 attack examples through it and checked what changed. I also loaded each one in headless Chromium, before and after filtering, with `alert`/`confirm`/`prompt` replaced so I could see if script ran. 12 of them ran script in the original. After filtering, none did. The other 25 need a click or similar (for example `href="javascript:..."`), so the browser check doesn't cover them. For those, the output shows the dangerous part was removed. A clean sample page came back byte-for-byte identical, including line endings and UTF-8 text.
+
+**How it works:**
+- It never rebuilds the HTML. It reads the file the same way a browser does to find tags and attributes, then cuts out only the dangerous text. Everything else, including whitespace, comments, the doctype and attribute quoting, stays exactly as it was.
+- It runs repeatedly until nothing changes. This stops tricks where removing one piece joins the leftovers into a new script tag, like `<scr<script>x</script>ipt>`.
+
+**What it removes:**
+- `<script>` elements and their contents, including inside SVG.
+- `<object>`, `<embed>` and `<applet>` tags. Any fallback content between them is kept.
+- Every `on*` event-handler attribute, plus `srcdoc`.
+- Any attribute whose value contains a `javascript:`, `vbscript:` or similar link, or a `data:` link that isn't a normal image (PNG, GIF, JPEG and so on). This still catches disguised versions, such as encoded characters (`&#106;`, `&colon;`), hidden tabs or control characters, and links inside lists like `values="0;javascript:..."`.
+- `style` attributes and `<style>` blocks that contain script-capable CSS, such as `expression(` or `url(javascript:...)`. A whole `<style>` block is removed if it contains any of these.
+- SVG animation tags that change event handlers or links.
+
+**Tricky cases:** Text inside `<style>`, `<title>`, `<textarea>`, `<noscript>` and `<iframe>` is plain text in normal HTML, but inside SVG or MathML it is read as markup. The filter checks that text both ways, so tricks like `<svg><style><img title="</style>" onerror=...>` are caught.
+
+**Side effects to know about:**
+- On a clean page, the only possible changes are null bytes being removed, or a stray `<` being dropped inside a `<style>`, `<title>` or `<textarea>` when it starts something that never closes there.
+- An SVG `<![CDATA[...]]>` section that contains `>` has its opening `<` removed.
+- An attribute that merely mentions a script link, like `title="javascript: tips"`, is removed too.

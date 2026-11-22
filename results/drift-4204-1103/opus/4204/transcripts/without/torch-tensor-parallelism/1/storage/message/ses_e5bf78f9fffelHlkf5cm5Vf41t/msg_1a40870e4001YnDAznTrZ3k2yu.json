@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a40870e4001YnDAznTrZ3k2yu",
+  "sessionID": "ses_e5bf78f9fffelHlkf5cm5Vf41t",
+  "role": "user",
+  "time": {
+    "created": 1793753379044
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with both classes. I ran a test with 1, 2 and 4 processes on CPU, comparing each class against a plain `torch.nn.Linear` with the same weight, and all three passed. Outputs, weight and bias gradients, and input gradients all matched the reference.\n\n**Shared setup**\n- `master_weight` uses the standard `nn.Linear` layout, `(out_features, in_features)`. A wrong shape fails an assertion.\n- Each rank copies its own slice of `master_weight`.\n- The split dimension must divide evenly by world_size, or construction fails with an error.\n- Bias, when used, starts at zero.\n- If `torch.distributed` hasn't been initialised, both classes run as a single process (world_size 1).\n\n**`ColumnParallelLinear`**\n- **Weight:** each rank holds `master_weight[r*chunk:(r+1)*chunk, :]`, a block of output rows.\n- **Bias:** split the same way as the output dimension, so each rank holds `out_features / world_size` values.\n- **Forward:** each rank computes its local output, then the pieces are gathered across ranks and joined along the last dimension.\n- **Backward:** each rank takes its own slice of the output gradient. The input gradient is summed across ranks, so the full input gets the correct gradient.\n\n**`RowParallelLinear`**\n- **Weight:** each rank holds `master_weight[:, r*chunk:(r+1)*chunk]`, a block of input columns.\n- **Bias:** the full bias is kept on every rank.\n- **Input:** the layer accepts either the full input, which it splits into the rank's slice, or an input that is already split. It decides by checking the size of the last dimension.\n- **Forward:** each rank computes a partial output, the partials are summed across ranks, and then the full bias is added.\n- **Backward:** the output gradient passes through unchanged. If the layer split the input itself, the input gradient is gathered back to full size.\n\nThe test script was a temporary file (`/tmp/tp_test.py`) and is not part of the deliverable.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

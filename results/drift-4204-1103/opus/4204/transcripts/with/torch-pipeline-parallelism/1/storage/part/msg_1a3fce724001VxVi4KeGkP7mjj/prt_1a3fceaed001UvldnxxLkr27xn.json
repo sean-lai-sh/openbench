@@ -1,0 +1,21 @@
+{
+  "id": "prt_1a3fceaed001UvldnxxLkr27xn",
+  "sessionID": "ses_e5c045cbeffesh099acs5hoa2p",
+  "messageID": "msg_1a3fce724001VxVi4KeGkP7mjj",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Xc5Gvc9ZBspwk3q4pwe2rp",
+  "tool": "bash",
+  "state": {
+    "status": "error",
+    "input": {
+      "command": "mkdir -p /tmp/pptest && cat > /tmp/pptest/t.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, \"/tmp/obench-cell-xstgk7i3/bench_opencode_torch-pipeline-parallelism_me5edh82\")\nfrom pipeline_parallel import train_step_pipeline_afab\nfrom transformers import LlamaConfig, LlamaForCausalLM\nimport torch.nn.functional as F\n\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=\"29533\"\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=100, hidden_size=32, intermediate_size=64, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2)\n    model = LlamaForCausalLM(cfg).float()\n    ref = LlamaForCausalLM(cfg).float(); ref.load_state_dict(model.state_dict())\n    g = torch.Generator().manual_seed(1)\n    inputs=[torch.randint(0,100,(2,8),generator=g) for _ in range(3)]\n    targets=[torch.randint(0,100,(2,8),generator=g) for _ in range(3)]\n    loss = train_step_pipeline_afab(model, inputs, targets, torch.device(\"cpu\"), torch.float32)\n    tot=0\n    for x,y in zip(inputs,targets):\n        l = F.cross_entropy(ref(x).logits.reshape(-1,100), y.reshape(-1))/3; l.backward(); tot+=l.item()\n    maxd=0; n=0\n    for (nm,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            n+=1; maxd=max(maxd,(p.grad-q.grad).abs().max().item())\n    print(rank, ws, \"loss\", loss, tot, \"params w/grad\", n, \"maxdiff\", maxd)\n    dist.destroy_process_group()\n\nfor ws in (1,2):\n    mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\n/tmp/tvenv/bin/python /tmp/pptest/t.py 2>&1 | grep -v Warning",
+      "description": "Test pipeline vs reference",
+      "timeout": 300000
+    },
+    "error": "Error: This command references paths outside of /tmp/obench-cell-xstgk7i3/bench_opencode_torch-pipeline-parallelism_me5edh82 so it is not allowed to be executed.",
+    "time": {
+      "start": 1793752630037,
+      "end": 1793752630044
+    }
+  }
+}

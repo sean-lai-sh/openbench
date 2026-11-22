@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a5e60b28001jSe225Qg47lLRL",
+  "sessionID": "ses_e5a1af85effejxYLRrAYEdVrFZ",
+  "messageID": "msg_1a5e60429001uiUwksxYG9kkQq",
+  "type": "tool",
+  "callID": "toolu_vrtx_01ECeFnViyy7LFYMUdPzjwgt",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-dy4t1v5b/bench_opencode_torch-pipeline-parallelism_q6mlna1x && mkdir -p .t && cat > .t/test_pp.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nimport torch.nn.functional as F\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\n\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(29511+ws)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)\n    model = LlamaForCausalLM(cfg); ref = LlamaForCausalLM(cfg); ref.load_state_dict(model.state_dict())\n    g = torch.Generator().manual_seed(1)\n    ins = [torch.randint(0,128,(2,16),generator=g) for _ in range(4)]\n    tg = [torch.randint(0,128,(2,16),generator=g) for _ in range(4)]\n    loss = train_step_pipeline_afab(model, ins, tg, torch.device(\"cpu\"), torch.float32)\n    rl = 0\n    for i,t in zip(ins,tg):\n        l = F.cross_entropy(ref(i).logits.reshape(-1,128), t.reshape(-1))/4; l.backward(); rl += l.item()\n    if rank==ws-1: print(\"loss\", loss, rl)\n    mx=0; n=0\n    for (k,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            n+=1; mx=max(mx,(p.grad-q.grad).abs().max().item())\n    print(rank, \"params with grad\", n, \"maxdiff\", mx)\n    dist.destroy_process_group()\n\nif __name__==\"__main__\":\n    for ws in (1,2):\n        mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython .t/test_pp.py 2>&1 | grep -v Warn | tail -20",
+      "description": "Run pipeline correctness test",
+      "timeout": 300000
+    },
+    "output": "loss 4.874671220779419 4.874671220779419\n0 params with grad 48 maxdiff 0\nloss 4.874671220779419 4.874671220779419\n1 params with grad 20 maxdiff 0\n0 params with grad 28 maxdiff 0\n",
+    "title": "cd /tmp/obench-cell-dy4t1v5b/bench_opencode_torch-pipeline-parallelism_q6mlna1x && mkdir -p .t && cat > .t/test_pp.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nimport torch.nn.functional as F\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\n\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(29511+ws)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)\n    model = LlamaForCausalLM(cfg); ref = LlamaForCausalLM(cfg); ref.load_state_dict(model.state_dict())\n    g = torch.Generator().manual_seed(1)\n    ins = [torch.randint(0,128,(2,16),generator=g) for _ in range(4)]\n    tg = [torch.randint(0,128,(2,16),generator=g) for _ in range(4)]\n    loss = train_step_pipeline_afab(model, ins, tg, torch.device(\"cpu\"), torch.float32)\n    rl = 0\n    for i,t in zip(ins,tg):\n        l = F.cross_entropy(ref(i).logits.reshape(-1,128), t.reshape(-1))/4; l.backward(); rl += l.item()\n    if rank==ws-1: print(\"loss\", loss, rl)\n    mx=0; n=0\n    for (k,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            n+=1; mx=max(mx,(p.grad-q.grad).abs().max().item())\n    print(rank, \"params with grad\", n, \"maxdiff\", mx)\n    dist.destroy_process_group()\n\nif __name__==\"__main__\":\n    for ws in (1,2):\n        mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython .t/test_pp.py 2>&1 | grep -v Warn | tail -20",
+    "metadata": {
+      "output": "loss 4.874671220779419 4.874671220779419\n0 params with grad 48 maxdiff 0\nloss 4.874671220779419 4.874671220779419\n1 params with grad 20 maxdiff 0\n0 params with grad 28 maxdiff 0\n",
+      "exit": 0,
+      "description": "Run pipeline correctness test"
+    },
+    "time": {
+      "start": 1793784685891,
+      "end": 1793784733085
+    }
+  }
+}

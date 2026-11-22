@@ -1,0 +1,13 @@
+I wrote `steal.py` and ran it. It saved a 20×10 matrix to `stolen_A1.npy`.
+
+**Result:** It found 20 hidden neurons. To check the answer, I compared it afterwards against the real `A1` in `forward.py`; the script itself never reads the weights and only calls `forward()`. Every stolen row is a positive multiple of exactly one true row, so even the signs are right. The ratio between a stolen row and its true row is the same in every entry to within about 1e-7, and each true neuron is matched once.
+
+**How it works:**
+1. **Finding the kinks:** The script picks random lines `p + t·d` through input space. Along each one, the output is piecewise linear, so it splits the line in half repeatedly until the corners are tiny, then pins each corner exactly by intersecting the straight pieces on either side. Each corner is a point where one hidden neuron switches on or off.
+2. **Reading off a row:** At each corner, the jump in gradient from one side to the other is `a2_i · A1_i`. That gives row `i` up to scale. The gradients are estimated by small finite differences, which are exact enough because the function is linear between corners.
+3. **Filtering out bad readings:** A reading is thrown away if it changes when measured at two different step sizes, which means another neuron's boundary is nearby. A new row is only accepted if crossing the same boundary at other random points gives the same jump. A direction must also be seen at least twice. Before I added these checks, the script was reporting extra, false neurons.
+4. **Getting the sign right:** Points on the boundary only fix each row up to ±. Flipping a row's sign changes the network by a fixed linear term. The script compares the measured gradient with the gradient its current sign choices predict, then tries every combination of flips (2²⁰ here) to find the one that makes the leftover term zero.
+
+It stops once 60 lines in a row turn up no new neuron, so it doesn't need to know the hidden layer size in advance. Rows are saved scaled to unit length. If there were more than 24 neurons, the sign step switches to an approximate least-squares fit and the signs could be less reliable.
+
+Run it with `python steal.py`.

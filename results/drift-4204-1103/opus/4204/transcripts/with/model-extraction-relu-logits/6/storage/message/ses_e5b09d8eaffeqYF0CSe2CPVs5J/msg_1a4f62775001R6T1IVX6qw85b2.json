@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a4f62775001R6T1IVX6qw85b2",
+  "sessionID": "ses_e5b09d8eaffeqYF0CSe2CPVs5J",
+  "role": "user",
+  "time": {
+    "created": 1793768957813
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`, ran it, and checked its output against the real `A1`. It recovers all 20 hidden neurons. Each recovered row lines up with a true row of `A1` to a cosine similarity of about 0.99999999999999, and it runs in about a second.\n\n**How it works:**\n1. **Find the kinks.** Along a random line `x0 + t·d`, the output changes in straight-line pieces, and the slope jumps at points where a neuron switches on or off. A recursive bisection finds those points: if the slopes at the two ends of an interval differ, it guesses where the two tangent lines cross, confirms there's a single kink there, and otherwise splits the interval in half.\n2. **Read off the row.** At each kink, it measures the gradient just before and just after, using central finite differences. The difference between them is `A2_i · A1_i`, which is row `i` of `A1` times an unknown constant.\n3. **Remove duplicates and stop.** Each row is normalised to unit length with a fixed sign, and rows that repeat (up to sign) are dropped. The script tries new random lines until 10 in a row turn up no new neurons. It assumes no hidden size; it reached 20 by itself.\n\nThe result is saved to `stolen_A1.npy` with shape (20, 10).\n\n**Limits:**\n- **Scaling can be negative.** Each row comes out as a multiple of the true row, but that multiple can be negative, so a row may be flipped relative to the real one. A check that allows \"permuting and scaling\" by any non-zero factor will pass. If you need the true signs as well, that would take extra work.\n- **The check used the real weights.** `steal.py` itself only calls `forward()`. The script I used to verify the result read `forward.A1` directly; that check isn't part of `steal.py`.\n- **Dead neurons can't be found.** A neuron that never switches on or off along the lines tried (within `t ∈ [-200, 200]`) has no effect on the output, so it can't be recovered. That didn't happen with this network.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

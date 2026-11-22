@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a595c83d001OrPWx0YZ0ZREf6",
+  "sessionID": "ses_e5a6a381dffedgQiS9FrjjnjPD",
+  "role": "user",
+  "time": {
+    "created": 1793779419197
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I created `filter.py`. Running `python3 filter.py file.html` cleans the file in place, and the only change it makes is deleting dangerous parts.\n\n**How I tested it:**\n- **Clean page:** a page with a doctype, title, CSS, comments, a table, links, an inline image, inline styles, a textarea and a `<pre>` block came out byte-for-byte unchanged.\n- **Attacks:** all 30 attack samples I tried came out without the dangerous part. They covered encoding tricks, the classic ways of hiding a tag inside a comment or `<noscript>`, attacks through SVG and MathML, CSS `expression()`, and unclosed `<script>` tags.\n- **Command line:** one run on a real file confirmed that Windows line endings (CRLF) are kept.\n\nI haven't tested it in a real browser or against a public list of attack strings.\n\n**What it removes:**\n- `<script>` elements with everything inside them. An unclosed `<script>` removes the rest of the file, because a browser would treat it all as script.\n- The `<object>`, `<embed>` and `<applet>` tags themselves; the content between them is kept.\n- Event-handler attributes (`on*`, like `onclick`) and `srcdoc`.\n- Attribute values containing `javascript:`, `vbscript:`, `livescript:` or `mocha:`. Hidden encodings are decoded first, so tricks like `jav&#x09;ascript:` are caught. This covers `href`, `src`, `action`, `formaction`, `xlink:href`, SVG animation values and meta-refresh redirects.\n- `data:` links, unless they're ordinary images (png, gif, jpeg, webp and so on).\n- Inline styles and `<style>` blocks that try to run code (`expression(`, `-moz-binding`, `behavior:`, `url(javascript:...)`), including when they're disguised with CSS escapes or comments.\n- Comments that hide markup, such as old Internet Explorer `<!--[if IE]><script>` blocks.\n\n**How it works:** the script reads the raw text the same way a browser does, so it sees the same tags a browser would. Text a browser wouldn't treat as tags (comments, attribute values, `<title>`/`<noscript>` contents) is also checked, so tags can't be smuggled through it. Because it only ever deletes text, I run it repeatedly until nothing changes. That stops leftover pieces like `<scr<script>ipt>` from joining back into a working tag. The file is read and written as raw bytes, so encoding and whitespace are kept exactly.\n\n**Trade-offs:**\n- It removes some things a browser would actually treat as harmless, such as `<img/src=x/onerror=...>` (where `onerror` is really part of the `src` value) and nonsense tag names containing `<`.\n- `<iframe>` elements are kept, with dangerous attributes stripped. An iframe pointing to an outside page can't run script on this page, but it does still load that page.\n- Plain-text attributes like `title`, `alt` and `class` aren't checked for `javascript:`, so text such as `title=\"javascript: tutorial\"` survives. A browser never treats those attributes as code.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

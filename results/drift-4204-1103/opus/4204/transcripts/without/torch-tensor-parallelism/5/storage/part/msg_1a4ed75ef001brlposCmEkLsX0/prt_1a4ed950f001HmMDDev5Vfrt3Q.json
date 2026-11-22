@@ -1,0 +1,11 @@
+{
+  "id": "prt_1a4ed950f001HmMDDev5Vfrt3Q",
+  "sessionID": "ses_e5b13bbfeffexngRKneCrRGLrK",
+  "messageID": "msg_1a4ed75ef001brlposCmEkLsX0",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I tested them on 1, 2 and 4 processes against a plain `nn.Linear` using the same weight. Outputs, input gradients, and each rank's weight and bias gradients all matched.\n\n**Weight layout.** I assumed `master_weight` uses the standard `nn.Linear` shape, `(out_features, in_features)`. The constructor checks this and raises an error if the shape is different. \"Split by columns\" here means the Megatron-style convention: the output dimension is split.\n\n**`ColumnParallelLinear`**\n- Each rank gets the rows `master_weight[rank*k:(rank+1)*k, :]`, where `k = out_features / world_size`.\n- The bias is split the same way, giving each rank `k` zeros.\n- The forward pass computes the local output and then joins all ranks' outputs along the last dimension with `all_gather`.\n- In the backward pass, each rank keeps only its own slice of the output gradient. The input gradient is summed across ranks with `all_reduce`.\n\n**`RowParallelLinear`**\n- Each rank gets the columns `master_weight[:, rank*k:(rank+1)*k]`, where `k = in_features / world_size`.\n- The bias is the full `out_features` zeros on every rank.\n- The forward pass computes a partial output, sums it across ranks with `all_reduce`, then adds the bias once after the sum.\n- If the input arrives at full width, the layer cuts out this rank's slice itself, and the backward pass collects the full input gradient. If the input is already split, it's used as is. I added this because your spec didn't say which form the tests will pass in.\n\n**Other behaviour**\n- `out_features` (column) and `in_features` (row) must divide evenly by `world_size`, or the constructor raises an error.\n- If `torch.distributed` hasn't been initialized, both classes run as a single process with world size 1.\n\nThe test script is at `/tmp/tp_test.py`. It uses the `gloo` backend on CPU only, so I haven't tried GPUs or `nccl`.",
+  "time": {
+    "start": 1793768396600,
+    "end": 1793768396600
+  }
+}

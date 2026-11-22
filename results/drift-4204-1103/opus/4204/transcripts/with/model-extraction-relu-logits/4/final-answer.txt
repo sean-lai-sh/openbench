@@ -1,0 +1,10 @@
+I've written `steal.py`. When run, it recovers a 20×10 matrix and saves it to `stolen_A1.npy`. I checked it against the real `A1` in `forward.py`, and each recovered row matches exactly one true row with cosine similarity of at least 0.99999999999999. So it equals `A1` up to reordering the neurons and rescaling each row.
+
+That check is the only place the true weights were read. `steal.py` itself only calls `forward()`.
+
+How it works:
+1. **Find the kinks:** it walks along 60 random lines through input space. Each kink is a point where one hidden neuron switches on or off. It narrows the kinks down by repeatedly splitting segments, then pins each one exactly by intersecting the straight pieces on either side.
+2. **Compare gradients:** at each kink it estimates the full 10-dimensional gradient just before and just after the switch. The change between the two is `A2[i] * A1[i]`, which is row `i` of `A1` times a constant.
+3. **Remove duplicates:** each recovered row is scaled to length 1 and its sign is fixed. Rows pointing the same way are then grouped (cosine above 0.999). The run found 1115 kinks, which grouped into 20 distinct rows, so the hidden layer has 20 neurons.
+
+The rows in the saved file have length 1 and an arbitrary sign. It can't recover the true scale or sign of each row, but your spec allows any scaling.

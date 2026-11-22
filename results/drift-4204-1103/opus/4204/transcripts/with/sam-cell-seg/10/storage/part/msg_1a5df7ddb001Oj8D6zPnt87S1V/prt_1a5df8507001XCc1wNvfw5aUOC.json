@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a5df8507001XCc1wNvfw5aUOC",
+  "sessionID": "ses_e5a28690fffeSKtBXBR37qDp9a",
+  "messageID": "msg_1a5df7ddb001Oj8D6zPnt87S1V",
+  "type": "tool",
+  "callID": "toolu_vrtx_01J2GN75djLV6oNKn9J5ZYtF",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-bxx6m3yu/bench_opencode_sam-cell-seg_mun8txyw; python - <<'EOF'\nimport pandas as pd, numpy as np, cv2\na=pd.read_csv('demo_metadata.csv'); b=pd.read_csv('test_out/demo_metadata.csv')\nprint(\"cols same\", a.columns.tolist()==b.columns.tolist(), \"rows\", len(a), len(b))\nprint(\"other cols same\", (a.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])==b.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])).all().all())\nimg=cv2.imread('demo_rgb.png'); H,W=img.shape[:2]\ncnt=np.zeros((H,W),int); rect=0; bad=0; ious=[]\nvis=img.copy()\nfor (_,r),(_,o) in zip(b.iterrows(),a.iterrows()):\n    xs=np.array(list(map(int,r.coords_x.split(','))));ys=np.array(list(map(int,r.coords_y.split(','))))\n    assert xs.min()==r.xmin and xs.max()==r.xmax and ys.min()==r.ymin and ys.max()==r.ymax\n    assert xs.max()<W and ys.max()<H and xs.min()>=0 and ys.min()>=0\n    if len(set(xs))<=2 and len(set(ys))<=2: rect+=1\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[np.stack([xs,ys],1).astype(np.int32)],1)\n    n,_=cv2.connectedComponents(m,connectivity=8)\n    if n!=2: bad+=1\n    cnt+=m\n    ox=np.array(list(map(int,o.coords_x.split(','))));oy=np.array(list(map(int,o.coords_y.split(','))))\n    om=np.zeros((H,W),np.uint8); cv2.fillPoly(om,[np.stack([ox,oy],1).astype(np.int32)],1)\n    ious.append(((m&om).sum()/((m|om).sum()), o.type, m.sum(), om.sum()))\n    cv2.polylines(vis,[np.stack([xs,ys],1).astype(np.int32)],True,(0,255,0),1)\n    cv2.polylines(vis,[np.stack([ox,oy],1).astype(np.int32)],True,(0,0,255),1)\nprint(\"rect\",rect,\"noncontig\",bad,\"overlap px\",(cnt>1).sum())\nfor t in ['polyline','rectangle']:\n    v=[x for x in ious if x[1]==t]; print(t, \"mean IoU w/ orig\", np.mean([x[0] for x in v]).round(3), \"min\", min(x[0] for x in v).round(3))\nbig=cv2.resize(vis,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST); cv2.imwrite('test_out/vis.png',big)\nEOF",
+      "description": "Validate output constraints"
+    },
+    "output": "cols same True rows 48 48\nother cols same True\nrect 0 noncontig 0 overlap px 0\npolyline mean IoU w/ orig 0.776 min 0.638\nrectangle mean IoU w/ orig 0.611 min 0.306\n",
+    "title": "cd /tmp/obench-cell-bxx6m3yu/bench_opencode_sam-cell-seg_mun8txyw; python - <<'EOF'\nimport pandas as pd, numpy as np, cv2\na=pd.read_csv('demo_metadata.csv'); b=pd.read_csv('test_out/demo_metadata.csv')\nprint(\"cols same\", a.columns.tolist()==b.columns.tolist(), \"rows\", len(a), len(b))\nprint(\"other cols same\", (a.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])==b.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])).all().all())\nimg=cv2.imread('demo_rgb.png'); H,W=img.shape[:2]\ncnt=np.zeros((H,W),int); rect=0; bad=0; ious=[]\nvis=img.copy()\nfor (_,r),(_,o) in zip(b.iterrows(),a.iterrows()):\n    xs=np.array(list(map(int,r.coords_x.split(','))));ys=np.array(list(map(int,r.coords_y.split(','))))\n    assert xs.min()==r.xmin and xs.max()==r.xmax and ys.min()==r.ymin and ys.max()==r.ymax\n    assert xs.max()<W and ys.max()<H and xs.min()>=0 and ys.min()>=0\n    if len(set(xs))<=2 and len(set(ys))<=2: rect+=1\n    m=np.zeros((H,W),np.uint8); cv2.fillPoly(m,[np.stack([xs,ys],1).astype(np.int32)],1)\n    n,_=cv2.connectedComponents(m,connectivity=8)\n    if n!=2: bad+=1\n    cnt+=m\n    ox=np.array(list(map(int,o.coords_x.split(','))));oy=np.array(list(map(int,o.coords_y.split(','))))\n    om=np.zeros((H,W),np.uint8); cv2.fillPoly(om,[np.stack([ox,oy],1).astype(np.int32)],1)\n    ious.append(((m&om).sum()/((m|om).sum()), o.type, m.sum(), om.sum()))\n    cv2.polylines(vis,[np.stack([xs,ys],1).astype(np.int32)],True,(0,255,0),1)\n    cv2.polylines(vis,[np.stack([ox,oy],1).astype(np.int32)],True,(0,0,255),1)\nprint(\"rect\",rect,\"noncontig\",bad,\"overlap px\",(cnt>1).sum())\nfor t in ['polyline','rectangle']:\n    v=[x for x in ious if x[1]==t]; print(t, \"mean IoU w/ orig\", np.mean([x[0] for x in v]).round(3), \"min\", min(x[0] for x in v).round(3))\nbig=cv2.resize(vis,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST); cv2.imwrite('test_out/vis.png',big)\nEOF",
+    "metadata": {
+      "output": "cols same True rows 48 48\nother cols same True\nrect 0 noncontig 0 overlap px 0\npolyline mean IoU w/ orig 0.776 min 0.638\nrectangle mean IoU w/ orig 0.611 min 0.306\n",
+      "exit": 0,
+      "description": "Validate output constraints"
+    },
+    "time": {
+      "start": 1793784260072,
+      "end": 1793784262137
+    }
+  }
+}

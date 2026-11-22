@@ -1,0 +1,28 @@
+{
+  "id": "prt_1a5c94769001ExqSuqop6wcMbM",
+  "sessionID": "ses_e5a389e90ffebQGaoMw0QA4CAM",
+  "messageID": "msg_1a5c90fa6001ImusNqTofquf0Z",
+  "type": "tool",
+  "callID": "toolu_vrtx_016VzSMeAk8zKYPGVThpR34W",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-3jf7op5c/bench_opencode_model-extraction-relu-logits_sx7ck0_i/steal.py",
+      "content": "\"\"\"Extract A1 (up to row permutation and scaling) from black-box queries to forward().\n\nMethod: along random lines x0 + t*d, the network output is piecewise linear in t,\nwith kinks exactly where some hidden neuron crosses zero. At each kink we\nmeasure the input gradient on both sides; their difference is\nA2[i] * A1[i, :], i.e. the row of A1 for that neuron up to scale. Rows are\nnormalised and de-duplicated (up to sign) across many lines.\n\"\"\"\nimport os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef gradient(x, h):\n    g = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef kinks_on_line(x0, d, T=6.0, N=4000):\n    ts = np.linspace(-T, T, N + 1)\n    dt = ts[1] - ts[0]\n    fs = np.array([f(x0 + t * d) for t in ts])\n    s = np.diff(fs) / dt  # slope on each cell\n    scale = max(1e-12, np.max(np.abs(s)))\n    tol = 1e-7 * scale\n    found = []\n    for k in range(2, len(s) - 1):\n        if abs(s[k] - s[k - 1]) <= tol:\n            continue\n        # kink lies in [ts[k-1], ts[k+1]]; use clean lines from cells k-2 and k+1\n        sl, sr = s[k - 2], s[k + 1]\n        if abs(sl - sr) <= tol:\n            continue\n        # left line through (ts[k-2], fs[k-2]) slope sl; right through (ts[k+1], fs[k+1]) slope sr\n        tl, fl = ts[k - 2], fs[k - 2]\n        tr, fr = ts[k + 1], fs[k + 1]\n        t = (fr - fl + sl * tl - sr * tr) / (sl - sr)\n        if not (ts[k - 1] - 1e-9 <= t <= ts[k + 1] + 1e-9):\n            continue  # likely multiple kinks close together; skip\n        ft = f(x0 + t * d)\n        if abs(ft - (fl + sl * (t - tl))) > 1e-7 * max(1.0, abs(ft)):\n            continue\n        if found and abs(found[-1] - t) < 1e-6:\n            continue\n        found.append(t)\n    return found, dt\n\n\ndef steal(n_lines=40):\n    rows, counts = [], []\n    for _ in range(n_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        ts, dt = kinks_on_line(x0, d)\n        for t in ts:\n            delta = dt / 4\n            xs = x0 + t * d\n            v = gradient(xs + delta * d, delta / 20) - gradient(xs - delta * d, delta / 20)\n            nv = np.linalg.norm(v)\n            if nv < 1e-9:\n                continue\n            v /= nv\n            if v[np.argmax(np.abs(v))] < 0:\n                v = -v\n            for i, r in enumerate(rows):\n                if abs(np.dot(r, v)) > 1 - 1e-5:\n                    rows[i] = r * counts[i] + v\n                    rows[i] /= np.linalg.norm(rows[i])\n                    counts[i] += 1\n                    break\n            else:\n                rows.append(v)\n                counts.append(1)\n    # keep directions seen more than once (robust against spurious detections)\n    keep = [r for r, c in zip(rows, counts) if c >= 2]\n    return np.array(keep)\n\n\nif __name__ == \"__main__\":\n    A1_stolen = steal()\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_stolen)\n    print(\"Recovered A1 shape:\", A1_stolen.shape)\n    np.set_printoptions(precision=5, suppress=True, linewidth=150)\n    print(A1_stolen)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-3jf7op5c/bench_opencode_model-extraction-relu-logits_sx7ck0_i/steal.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-3jf7op5c/bench_opencode_model-extraction-relu-logits_sx7ck0_i/steal.py": []
+      },
+      "filepath": "/tmp/obench-cell-3jf7op5c/bench_opencode_model-extraction-relu-logits_sx7ck0_i/steal.py",
+      "exists": true
+    },
+    "time": {
+      "start": 1793782805469,
+      "end": 1793782808994
+    }
+  }
+}

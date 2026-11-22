@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a3f0f7850012cJPpnkvfyHit3",
+  "sessionID": "ses_e5c0f0893ffeqUfsmDucJ8s8w9",
+  "role": "user",
+  "time": {
+    "created": 1793751840645
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I created `filter.py`. Running `python3 filter.py file.html` strips JavaScript from the file and saves it in place. It uses only the Python standard library.\n\nIn my tests, a clean sample page (doctype, meta, title, CSS, comments, tables, forms, entities, data-image `<img>`, stray `<`/`>`) came out byte-for-byte identical. About 30 common XSS vectors were all removed. I checked the output by eye and with grep; I didn't load the results in a real browser.\n\n**How it works:** the script copies the input through unchanged except for the parts it cuts out. It doesn't rebuild the HTML, so whitespace, quoting, case, entities and line endings stay as they were. It also reads where tags, comments and attribute values begin and end the same way browsers do, so attackers can't hide markup from it. For example, `<img/src=x/onerror=…>` is handled correctly.\n\n**What it removes:**\n- **`<script>` elements**, tag and content, including script tags with a namespace prefix like `svg:script`. It follows the browser's rule for `<!--<script>` inside scripts.\n- **Event-handler attributes**: anything named `on…`.\n- **Script URLs**: any attribute whose value, after decoding entities and removing whitespace and control characters, contains `javascript:`, `vbscript:` and similar. This catches tricks like `jav&#x09;ascript:` and `&colon;`.\n- **`data:` URLs** in link and source attributes, except plain raster images (png, gif, jpeg, webp and similar). Data URLs are also checked in meta `content` and SVG animation values.\n- **`srcdoc`**, **`style` attributes** with `expression()`, `-moz-binding`, `behavior:` or `url(javascript:…)`, **SVG `attributeName=\"on…\"`**, and **UTF-7 charset** settings.\n- **`<style>` elements** with script-capable CSS are removed entirely, so legitimate rules in the same block are lost too.\n- **IE conditional comments**, and comments that contain script.\n\n**Two other safeguards:**\n- Text inside tags whose content isn't parsed as HTML (style, title, textarea, noscript, iframe and similar) is still cleaned as if it were HTML. That's because browsers read it differently inside SVG/MathML, e.g. `<svg><style><img onerror>`.\n- The filter runs repeatedly until nothing changes, so a removal can't join two fragments into a new attack, e.g. `<<script></script>img onerror=…>`.\n\n**Trade-offs:** it leans towards removing too much rather than too little.\n- Harmless text that looks like a script URL, such as `title=\"javascript: tutorial\"`, is removed.\n- A `<script><!--<script>` with no closing `-->` makes everything after it disappear, because browsers treat the rest of the file as script too.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

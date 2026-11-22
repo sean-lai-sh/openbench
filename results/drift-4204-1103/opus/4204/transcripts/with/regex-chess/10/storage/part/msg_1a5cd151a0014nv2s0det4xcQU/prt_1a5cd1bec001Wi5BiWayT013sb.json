@@ -1,0 +1,29 @@
+{
+  "id": "prt_1a5cd1bec001Wi5BiWayT013sb",
+  "sessionID": "ses_e5a361127ffeTto8eEgoTwuzi3",
+  "messageID": "msg_1a5cd151a0014nv2s0det4xcQU",
+  "type": "tool",
+  "callID": "toolu_vrtx_017RsPByYtAkfizmsMSPvzzT",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-zawt5c9u/bench_opencode_regex-chess_l5q2f2fd/gen/test.py",
+      "content": "import json, re, random, sys, time, os\nimport chess\n\nRULES = [(re.compile(p), r) for p, r in json.load(open(os.path.join(os.path.dirname(__file__), \"..\", \"re.json\")))]\n\n\ndef run(fen):\n    for p, r in RULES:\n        fen = p.sub(r, fen)\n    return fen.split(\"\\n\")\n\n\ndef expected(board):\n    out = set()\n    for m in board.legal_moves:\n        if m.promotion and m.promotion != chess.QUEEN:\n            continue\n        b = board.copy()\n        b.push(m)\n        out.add(\" \".join(b.fen().split(\" \")[:-2]))\n    return out\n\n\ndef check(fen):\n    ours = [\" \".join(x.split(\" \")[:-2]) for x in run(fen)]\n    exp = expected(chess.Board(fen))\n    ok = len(ours) == len(exp) and all(x in exp or x.rpartition(\" \")[0] + \" -\" in exp for x in ours)\n    if not ok:\n        print(\"FAIL\", fen)\n        print(\" extra:\", [x for x in ours if not (x in exp or x.rpartition(\" \")[0] + \" -\" in exp)])\n        print(\" missing:\", exp - set(ours))\n    return ok\n\n\nex = \"<REDACTED_B64> w kq - 0 1\"\nprint(\"\\n\".join(run(ex)))\ncheck(ex)\nrandom.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)\nn = fails = 0\nt = time.time()\nfor g in range(300):\n    b = chess.Board()\n    while not b.is_game_over() and b.ply() < 200:\n        if b.turn == chess.WHITE and any(True for _ in b.legal_moves):\n            n += 1\n            if not check(b.fen()):\n                fails += 1\n                if fails > 5:\n                    sys.exit(1)\n        moves = list(b.legal_moves)\n        # bias toward captures/castling/pawn moves for coverage\n        pri = [m for m in moves if b.is_castling(m) or b.is_en_passant(m) or m.promotion]\n        b.push(random.choice(pri) if pri and random.random() < 0.7 else random.choice(moves))\nprint(\"positions\", n, \"fails\", fails, \"time/pos\", (time.time() - t) / max(n, 1))\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-zawt5c9u/bench_opencode_regex-chess_l5q2f2fd/gen/test.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-zawt5c9u/bench_opencode_regex-chess_l5q2f2fd/gen/gen.py": [],
+        "/tmp/obench-cell-zawt5c9u/bench_opencode_regex-chess_l5q2f2fd/gen/test.py": []
+      },
+      "filepath": "/tmp/obench-cell-zawt5c9u/bench_opencode_regex-chess_l5q2f2fd/gen/test.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793783051886,
+      "end": 1793783054530
+    }
+  }
+}

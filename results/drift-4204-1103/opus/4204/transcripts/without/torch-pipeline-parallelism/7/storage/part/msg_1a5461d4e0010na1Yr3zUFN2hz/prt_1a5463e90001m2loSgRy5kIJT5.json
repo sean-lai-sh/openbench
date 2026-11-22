@@ -1,0 +1,11 @@
+{
+  "id": "prt_1a5463e90001m2loSgRy5kIJT5",
+  "sessionID": "ses_e5abc71fbffeaA5Go4lcbVkIjf",
+  "messageID": "msg_1a5461d4e0010na1Yr3zUFN2hz",
+  "type": "text",
+  "text": "I wrote `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it with world sizes 1 and 2 on CPU (gloo backend, a small 5-layer LLaMA, 4 microbatches). In both cases the loss and every parameter gradient exactly matched a plain non-pipelined model doing the same steps. I didn't run your hook-based test or any GPU run.\n\n**How it works:**\n- **Splitting the layers:** each rank gets a contiguous block of decoder layers, as equal as possible, with any leftover layers going to the earliest ranks. With 5 layers and 2 ranks, rank 0 gets 3 and rank 1 gets 2.\n- **Who does what:** rank 0 also runs the token embedding. The last rank also runs the final norm, `lm_head`, and the cross-entropy loss divided by the number of microbatches. Each rank rebuilds the position ids, rotary embeddings and causal mask itself, and calls its layers directly. No hooks are used.\n- **Forward phase:** for each microbatch in turn, a rank receives the hidden states (`[mb, seq, hidden]`) from the previous rank, runs its layers, and sends the result on. Sends and receives use `P2POp` with `batch_isend_irecv`. Everything each rank needs for the backward pass is kept until then.\n- **Backward phase:** the last rank calls `loss.backward()` on each microbatch. Every other rank receives the output gradient and runs `torch.autograd.backward(out, grad)`. Each rank except rank 0 then sends the gradient of its input back to the previous rank.\n- **Device and dtype:** hidden states and gradients are moved to the given `device` and `dtype`. Input IDs are only moved to the device, because the embedding layer needs integer IDs.\n- **Return value:** the last rank returns the summed scaled loss; other ranks return `None`.\n\n**Assumptions:**\n- The receive buffer shapes on ranks other than 0 are worked out from `inputs[i]` (or `targets[i]` if inputs aren't there), so those ranks need the microbatch list too.\n- The function doesn't zero gradients, so they add to whatever is already on the parameters.\n- The model isn't moved to `device`/`dtype`; the caller should already have done that.",
+  "time": {
+    "start": 1793774207165,
+    "end": 1793774207165
+  }
+}

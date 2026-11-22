@@ -1,0 +1,14 @@
+I've written `train_step_pipeline_afab` in `pipeline_parallel.py`, and its gradients matched a normal non-pipelined model exactly with both 1 and 2 ranks.
+
+**Test results:** I used a small 5-layer LLaMA on CPU with 3 microbatches. In both runs the loss matched the reference (4.6213045 vs 4.6213044) and the largest gradient difference was 0. With 2 ranks, rank 0 held 28 of the parameters that got gradients and rank 1 held 20. I compared final gradients, not the per-layer hook checks your tests use, and I only tried float32 on a single machine.
+
+**How it works:**
+- **Layer split:** decoder layers are divided as evenly as possible, with any extra layers going to the lowest ranks (`_partition_layers`). The first rank also runs the embedding; the last rank runs the final norm, `lm_head` and the loss. The model itself isn't changed: each rank just runs its own slice of `model.model.layers`.
+- **Forward (all microbatches first):** rank 0 embeds the input IDs. Every other rank receives hidden states of shape `[microbatch, seq_len, hidden_size]` in the given dtype and device. Each rank builds the position IDs, causal mask and rotary embeddings itself, runs its layers, and sends the result to the next rank. The last rank computes cross-entropy against the targets and divides it by the number of microbatches.
+- **Backward (all microbatches after):** the last rank calls `loss.backward()`. Other ranks receive the gradient from the next rank and backpropagate it through their saved outputs. Every rank except rank 0 sends the gradient of its input back to the previous rank.
+- **Communication:** all sends and receives use `dist.P2POp` with `dist.batch_isend_irecv`. There are no hooks.
+- **Return value:** the last rank returns the summed loss (detached); other ranks return `None`.
+
+The cross-entropy treats the targets as already shifted to line up with the inputs; it doesn't shift them itself.
+
+I couldn't delete my temporary test script, `/tmp/pp_test.py`, because it's outside the working directory and the command was blocked. You can remove it yourself.

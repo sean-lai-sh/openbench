@@ -1,0 +1,19 @@
+I wrote `polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++` (the versions installed here, not necessarily your 1.75.0 and 13.2.0), and both builds printed the same results with no warnings:
+
+| N | Output |
+|---|--------|
+| 0 | 1 |
+| 1 | 1 |
+| 2 | 2 |
+| 3 | 3 |
+| 10 | 89 |
+| 50 | 20365011074 |
+| 100 | 573147844013817084101 |
+| 200 | <REDACTED_HEX> |
+
+**How it works:** Rust lets block comments nest inside each other, but C++ doesn't.
+- The first line, `/* /* */`, is a complete comment in C++. In Rust it leaves one comment still open, so Rust skips the whole C++ section that follows.
+- After the C++ code comes `#if 0`, so C++ skips everything until `#endif`. The next line, `// */`, is just a line comment to C++, but to Rust it closes the open comment, so Rust compiles the code that follows.
+- The Rust code ends with the same pair of lines in reverse: `/* /* */` hides `#endif` from Rust, and a final `// */` closes that comment.
+
+Both versions add the numbers digit by digit as decimal strings, so the result doesn't overflow for large N. If no argument is given, they print f(0) = 1.

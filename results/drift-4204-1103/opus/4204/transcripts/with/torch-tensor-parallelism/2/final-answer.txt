@@ -1,0 +1,19 @@
+I created `parallel_linear.py` with both classes. They passed a check against a regular `nn.Linear` at world sizes 1, 2 and 4 (CPU, gloo backend). The outputs matched, and so did the weight, bias and input gradients, compared to the matching slice of the reference.
+
+**`ColumnParallelLinear`**
+- Each rank keeps its own `out_features / world_size` rows of `master_weight`.
+- The bias is split the same way and starts at zero.
+- In the forward pass, each rank computes its share of the output, then the shares are collected and joined along the last dimension (all_gather). In the backward pass, each rank takes back only its own part of the gradient.
+
+**`RowParallelLinear`**
+- Each rank keeps its own `in_features / world_size` columns of `master_weight`.
+- Every rank holds the full bias, starting at zero.
+- If the input has full width, each rank uses only its own slice of it. The partial outputs are summed across ranks (all_reduce), and the bias is added once after the sum.
+- If the input is already split across ranks, it is used as-is. That case wasn't tested.
+
+**Other details**
+- All communication steps support backpropagation, so the input gradient is also correct on every rank.
+- If `torch.distributed` isn't initialised, the layers act as world size 1.
+- Both layers require the split dimension (`out_features` for column, `in_features` for row) to divide evenly by world size. They also check that `master_weight` has shape `(out_features, in_features)`.
+
+The test script is at `/tmp/t_pl.py`.

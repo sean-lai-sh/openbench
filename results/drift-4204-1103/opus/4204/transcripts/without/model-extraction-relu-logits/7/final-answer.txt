@@ -1,0 +1,12 @@
+I wrote `steal.py`, ran it, and it saved a 20×10 matrix to `stolen_A1.npy`. Every row matches one row of the real `A1` up to scaling, with cosine similarity of at least 0.9999999999999996, and every real row has a match.
+
+To get that score I read the true `A1` from `forward.py` in a separate one-off check. `steal.py` itself only ever calls `forward(x)`.
+
+**How it works:**
+1. **Find the kinks.** It picks 60 random lines through the 10-dimensional input space. Along each line the network's output is made of straight pieces, with a kink wherever one hidden neuron switches on or off. It finds these kinks by repeatedly splitting the line and checking where the output stops being straight. It then pins each kink down by intersecting the straight pieces on either side.
+2. **Read off a row at each kink.** It estimates the output's slope in each input direction (by nudging each input slightly) just before and just after the kink. The difference between the two equals that neuron's row of `A1` times its output weight, so after normalising it's the row up to scale.
+3. **Remove duplicates.** It groups the vectors that point the same way (including opposite signs), averages each group, and drops groups seen only once. That leaves 20 rows, which is the hidden layer size.
+
+The script doesn't assume the hidden layer size; it counts neurons from the distinct directions it finds. Rows are saved at unit length, and their sign is arbitrary.
+
+To run it again: `python steal.py`

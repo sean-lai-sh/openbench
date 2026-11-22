@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a4ecc529001tyU1o5zbh6cXo9",
+  "sessionID": "ses_e5b13bbfeffexngRKneCrRGLrK",
+  "messageID": "msg_1a4ecbc86001KpQmCBegGumvPc",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Enrui5PSZa7YQKXzjS4apM",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-sdmw1qcb/bench_opencode_torch-tensor-parallelism_my33tw9f && cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ['MASTER_ADDR']='127.0.0.1'; os.environ['MASTER_PORT']=str(port)\n    dist.init_process_group('gloo', rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    W = torch.randn(8, 12); x = torch.randn(3, 12, requires_grad=True)\n    for cls in (ColumnParallelLinear, RowParallelLinear):\n        ref = torch.nn.Linear(12, 8); ref.weight.data.copy_(W); ref.bias.data.zero_()\n        m = cls(12, 8, True, W)\n        xr = x.detach().clone().requires_grad_(); xm = x.detach().clone().requires_grad_()\n        yr = ref(xr); ym = m(xm)\n        g = torch.randn_like(yr); yr.backward(g); ym.backward(g)\n        assert torch.allclose(yr, ym, atol=1e-5)\n        assert torch.allclose(xr.grad, xm.grad, atol=1e-5)\n        c = 8//ws; ci = 12//ws\n        if cls is ColumnParallelLinear:\n            assert torch.allclose(ref.weight.grad[rank*c:(rank+1)*c], m.weight.grad, atol=1e-5)\n            assert torch.allclose(ref.bias.grad[rank*c:(rank+1)*c], m.bias.grad, atol=1e-5)\n        else:\n            assert torch.allclose(ref.weight.grad[:, rank*ci:(rank+1)*ci], m.weight.grad, atol=1e-5)\n            assert torch.allclose(ref.bias.grad, m.bias.grad, atol=1e-5)\n    if rank==0: print('ok', ws)\n    dist.destroy_process_group()\nif __name__=='__main__':\n    for i, ws in enumerate((1,2,4)):\n        mp.spawn(run, args=(ws, 29600+i), nprocs=ws)\nEOF\npython /tmp/tp_test.py",
+      "description": "Test parallel linear layers",
+      "timeout": 300000
+    },
+    "output": "ok 1\nok 2\nok 4\n",
+    "title": "cd /tmp/obench-cell-sdmw1qcb/bench_opencode_torch-tensor-parallelism_my33tw9f && cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ['MASTER_ADDR']='127.0.0.1'; os.environ['MASTER_PORT']=str(port)\n    dist.init_process_group('gloo', rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    W = torch.randn(8, 12); x = torch.randn(3, 12, requires_grad=True)\n    for cls in (ColumnParallelLinear, RowParallelLinear):\n        ref = torch.nn.Linear(12, 8); ref.weight.data.copy_(W); ref.bias.data.zero_()\n        m = cls(12, 8, True, W)\n        xr = x.detach().clone().requires_grad_(); xm = x.detach().clone().requires_grad_()\n        yr = ref(xr); ym = m(xm)\n        g = torch.randn_like(yr); yr.backward(g); ym.backward(g)\n        assert torch.allclose(yr, ym, atol=1e-5)\n        assert torch.allclose(xr.grad, xm.grad, atol=1e-5)\n        c = 8//ws; ci = 12//ws\n        if cls is ColumnParallelLinear:\n            assert torch.allclose(ref.weight.grad[rank*c:(rank+1)*c], m.weight.grad, atol=1e-5)\n            assert torch.allclose(ref.bias.grad[rank*c:(rank+1)*c], m.bias.grad, atol=1e-5)\n        else:\n            assert torch.allclose(ref.weight.grad[:, rank*ci:(rank+1)*ci], m.weight.grad, atol=1e-5)\n            assert torch.allclose(ref.bias.grad, m.bias.grad, atol=1e-5)\n    if rank==0: print('ok', ws)\n    dist.destroy_process_group()\nif __name__=='__main__':\n    for i, ws in enumerate((1,2,4)):\n        mp.spawn(run, args=(ws, 29600+i), nprocs=ws)\nEOF\npython /tmp/tp_test.py",
+    "metadata": {
+      "output": "ok 1\nok 2\nok 4\n",
+      "exit": 0,
+      "description": "Test parallel linear layers"
+    },
+    "time": {
+      "start": 1793768349569,
+      "end": 1793768388004
+    }
+  }
+}

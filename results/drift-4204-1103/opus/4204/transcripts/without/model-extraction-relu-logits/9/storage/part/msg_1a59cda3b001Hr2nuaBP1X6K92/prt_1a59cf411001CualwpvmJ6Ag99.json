@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a59cf411001CualwpvmJ6Ag99",
+  "sessionID": "ses_e5a6504dfffe6Kg9Jf58l23VGA",
+  "messageID": "msg_1a59cda3b001Hr2nuaBP1X6K92",
+  "type": "tool",
+  "callID": "toolu_vrtx_012ctdNmC3MGBsMTPibkW22W",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-f3kycyq5/bench_opencode_model-extraction-relu-logits_8efgi7vf; python - <<'E'\nimport re\ns=open('steal.py').read()\ns=s.replace('''def grad(x, h=1e-5):\n    fx = f(x)\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - fx) / h\n    return gr''','''def grad(x, h=1e-4):\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr''')\ns=s.replace('''    delta = 1e-4\n    gp = grad(x0 + (t + delta) * d)\n    gm = grad(x0 + (t - delta) * d)\n    diff = gp - gm''','''    # two scales; reject if inconsistent (another kink nearby)\n    diffs = []\n    for delta in (1e-3, 3e-3):\n        gp = grad(x0 + (t + delta) * d)\n        gm = grad(x0 + (t - delta) * d)\n        diffs.append(gp - gm)\n    if np.linalg.norm(diffs[0] - diffs[1]) > 1e-6 * max(1e-12, np.linalg.norm(diffs[0])) + 1e-9:\n        return None\n    diff = diffs[0]''')\ns=s.replace('''        for k, ex in enumerate(rows):\n            if abs(np.dot(ex, r)) > 0.9999:\n                counts[k] += 1\n                break''','''        for k, ex in enumerate(rows):\n            if abs(np.dot(ex / np.linalg.norm(ex), r)) > 0.999:\n                rows[k] = ex + r * np.sign(np.dot(ex, r))\n                counts[k] += 1\n                break''')\ns=s.replace('''A = np.array([r for r, c in zip(rows, counts) if c >= 2])''','''A = np.array([r / np.linalg.norm(r) for r, c in zip(rows, counts) if c >= 2])''')\nopen('steal.py','w').write(s)\nE\npython steal.py | head -1; python -c \"\nimport numpy as np, forward as F\nA=F.A1/np.linalg.norm(F.A1,axis=1,keepdims=True); S=np.load('stolen_A1.npy')\nC=np.abs(A@S.T); print(S.shape, C.max(1).min(), C.max(0).min())\"",
+      "description": "Improve robustness and re-verify",
+      "timeout": 600000
+    },
+    "output": "Recovered hidden neurons: 23\n(23, 10) 0.9999999999999997 0.9555695227248515\n",
+    "title": "cd /tmp/obench-cell-f3kycyq5/bench_opencode_model-extraction-relu-logits_8efgi7vf; python - <<'E'\nimport re\ns=open('steal.py').read()\ns=s.replace('''def grad(x, h=1e-5):\n    fx = f(x)\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - fx) / h\n    return gr''','''def grad(x, h=1e-4):\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr''')\ns=s.replace('''    delta = 1e-4\n    gp = grad(x0 + (t + delta) * d)\n    gm = grad(x0 + (t - delta) * d)\n    diff = gp - gm''','''    # two scales; reject if inconsistent (another kink nearby)\n    diffs = []\n    for delta in (1e-3, 3e-3):\n        gp = grad(x0 + (t + delta) * d)\n        gm = grad(x0 + (t - delta) * d)\n        diffs.append(gp - gm)\n    if np.linalg.norm(diffs[0] - diffs[1]) > 1e-6 * max(1e-12, np.linalg.norm(diffs[0])) + 1e-9:\n        return None\n    diff = diffs[0]''')\ns=s.replace('''        for k, ex in enumerate(rows):\n            if abs(np.dot(ex, r)) > 0.9999:\n                counts[k] += 1\n                break''','''        for k, ex in enumerate(rows):\n            if abs(np.dot(ex / np.linalg.norm(ex), r)) > 0.999:\n                rows[k] = ex + r * np.sign(np.dot(ex, r))\n                counts[k] += 1\n                break''')\ns=s.replace('''A = np.array([r for r, c in zip(rows, counts) if c >= 2])''','''A = np.array([r / np.linalg.norm(r) for r, c in zip(rows, counts) if c >= 2])''')\nopen('steal.py','w').write(s)\nE\npython steal.py | head -1; python -c \"\nimport numpy as np, forward as F\nA=F.A1/np.linalg.norm(F.A1,axis=1,keepdims=True); S=np.load('stolen_A1.npy')\nC=np.abs(A@S.T); print(S.shape, C.max(1).min(), C.max(0).min())\"",
+    "metadata": {
+      "output": "Recovered hidden neurons: 23\n(23, 10) 0.9999999999999997 0.9555695227248515\n",
+      "exit": 0,
+      "description": "Improve robustness and re-verify"
+    },
+    "time": {
+      "start": 1793779895948,
+      "end": 1793779938462
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a3f12e0b0012Hswe8HCe7M6lO",
+  "sessionID": "ses_e5c0efc4affeQNnGF4jfti1gF3",
+  "messageID": "msg_1a3f10e7f0012NfSELGlPRvG0U",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Xy1AAan8KMqcaSYP7bk7FC",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-nnsk19gn/bench_opencode_model-extraction-relu-logits_mn3vfnfk/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\nqueries = 0\n\n\ndef f(x):\n    global queries\n    queries += 1\n    return forward(x)\n\n\ndef find_kinks(x0, d, lo, hi, flo, fhi, depth=0, out=None):\n    \"\"\"Find t where f(x0 + t d) has a kink, by recursive bisection.\"\"\"\n    if out is None:\n        out = []\n    mid = 0.5 * (lo + hi)\n    fmid = f(x0 + mid * d)\n    # Linear on [lo, hi]?  Check midpoint and quarter points.\n    if abs(fmid - 0.5 * (flo + fhi)) < 1e-12 * max(1.0, abs(fmid)):\n        q1, q3 = lo + 0.25 * (hi - lo), lo + 0.75 * (hi - lo)\n        f1, f3 = f(x0 + q1 * d), f(x0 + q3 * d)\n        if (abs(f1 - 0.75 * flo - 0.25 * fhi) < 1e-12 * max(1.0, abs(f1)) and\n                abs(f3 - 0.25 * flo - 0.75 * fhi) < 1e-12 * max(1.0, abs(f3))):\n            return out\n    if hi - lo < 1e-6 or depth > 60:\n        # Locate kink precisely by intersecting the two outer linear pieces.\n        h = 1e-8\n        sl = (f(x0 + (lo + h) * d) - flo) / h\n        sr = (fhi - f(x0 + (hi - h) * d)) / h\n        if abs(sl - sr) > 1e-9:\n            t = (fhi - flo + sl * lo - sr * hi) / (sl - sr)\n            if lo - 1e-6 <= t <= hi + 1e-6:\n                out.append(t)\n        return out\n    find_kinks(x0, d, lo, mid, flo, fmid, depth + 1, out)\n    find_kinks(x0, d, mid, hi, fmid, fhi, depth + 1, out)\n    return out\n\n\ndef gradient(x, h=1e-7):\n    g = np.zeros(DIM)\n    fx = f(x)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - fx) / h\n    return g\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\ndef main():\n    rows = []\n    counts = []\n    T = 10.0\n    n_lines = 200\n    for _ in range(n_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        flo, fhi = f(x0 - T * d), f(x0 + T * d)\n        kinks = find_kinks(x0, d, -T, T, flo, fhi)\n        for t in kinks:\n            xc = x0 + t * d\n            eps = 1e-4\n            g1 = gradient(xc - eps * d)\n            g2 = gradient(xc + eps * d)\n            diff = g2 - g1\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = normalize(diff)\n            for j, r in enumerate(rows):\n                if abs(np.dot(r, v)) > 0.9999:\n                    counts[j] += 1\n                    break\n            else:\n                rows.append(v)\n                counts.append(1)\n\n    # Keep rows observed more than once (robustness against numerical junk)\n    A = np.array([r for r, c in zip(rows, counts) if c >= 2])\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A)\n    print(f\"Recovered {A.shape[0]} neurons using {queries} queries\")\n    print(A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-nnsk19gn/bench_opencode_model-extraction-relu-logits_mn3vfnfk/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-nnsk19gn/bench_opencode_model-extraction-relu-logits_mn3vfnfk/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793751865361,
+      "end": 1793751871238
+    }
+  }
+}

@@ -1,0 +1,19 @@
+I've written `re.json`: 3,922 regex/replacement pairs, about 507 KB, well under both limits. It produces the exact three positions you gave for the example input (in a different order, which `check.py` accepts).
+
+**Testing:**
+- **Provided test:** `check.py` passes for all 18 positions from Morphy's Opera Game. I ran a local copy pointed at this file, because `check.py` itself loads `/app/re.json`.
+- **Random games:** about 115,000 random positions with white to move gave 0 mismatches against python-chess. The games were biased towards castling, en passant and promotions.
+
+**Speed:** run exactly as in your snippet, each position takes about 2.5 seconds, so the Opera Game test took about 45 seconds. Nearly all of that is Python compiling the regexes on every run, because its regex cache holds only 512 patterns and the file has 3,922. Once compiled, each position takes about 25 ms.
+
+**How it works:**
+1. **Unpack the position:** the FEN is turned into a 64-character board with `.` for empty squares. Castling rights become four fixed slots (`KQkq`, with `-` for a missing right), and en passant is reduced to just the file letter.
+2. **Generate candidate moves:** each possible move (piece, starting square, target square) has its own regex. If the move is possible on the board, that regex adds the resulting position as a new line. This covers sliding pieces needing a clear path, double pawn pushes, en passant, promotion to queen only, and castling. Castling rights are removed when the king moves, or when a rook moves or is captured on its corner.
+3. **Remove illegal moves:** for each of the 64 squares, one regex deletes any candidate where a white king on that square is attacked. For castling, the king is temporarily placed on every square it passes through (e1, f1 and g1, or c1, d1 and e1). That way the same check rejects castling out of check, through check, or into check, and the king and rook are then put on their real squares.
+4. **Write the output:** each position is converted back to FEN as `... b <castling> <ep> 0 0`, with one position per line.
+
+After any double pawn push, the en passant square is always written, even when no capture is possible; the checker accepts that.
+
+There's one case it can't handle: if white has no legal moves (checkmate or stalemate), the result is `[""]` rather than an empty list. No list of regexes can avoid this, because `"".split("\n")` always returns one item. The test only uses positions where white has a move.
+
+The generator script is `gen/gen.py` (re-run it to rebuild `re.json`), and the random tester is `gen/test.py`.

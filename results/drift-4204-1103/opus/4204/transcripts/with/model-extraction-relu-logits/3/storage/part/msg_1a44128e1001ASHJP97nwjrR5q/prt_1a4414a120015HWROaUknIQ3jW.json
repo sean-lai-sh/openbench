@@ -1,0 +1,26 @@
+{
+  "id": "prt_1a4414a120015HWROaUknIQ3jW",
+  "sessionID": "ses_e5bbee84bffeTG19lW0UklQ6dT",
+  "messageID": "msg_1a44128e1001ASHJP97nwjrR5q",
+  "type": "tool",
+  "callID": "toolu_vrtx_01UwCfFmyuqP2dPzcoHVYn85",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-1eyep988/bench_opencode_model-extraction-relu-logits_0ejf48qt/steal.py",
+      "content": "\"\"\"Extract A1 (up to row permutation and scaling) from a 1-hidden-layer ReLU net\nusing only black-box queries to forward(x).\n\nMethod: along random lines, locate the kinks (critical points where one hidden\nneuron switches on/off). At a kink the gradient of the output jumps by\nA2[i] * A1[i, :], which reveals row i of A1 up to scale. Collect unique rows.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef line_fn(x0, d):\n    return lambda t: f(x0 + t * d)\n\n\ndef slope(g, t, eps=1e-7):\n    return (g(t + eps) - g(t)) / eps\n\n\ndef find_kinks(g, a, b, ga, gb, sa, sb, out, depth=0):\n    \"\"\"Recursively find kink locations of piecewise-linear g on [a, b].\"\"\"\n    tol = 1e-9 * max(1.0, abs(ga), abs(gb))\n    # Linear on [a,b]? same slope at both ends and consistent with endpoints\n    if abs(sa - sb) < 1e-8 and abs(ga + sa * (b - a) - gb) < tol * 10:\n        return\n    if b - a < 1e-3 or depth > 60:\n        # Assume single kink: intersect left line and right line\n        if abs(sa - sb) < 1e-12:\n            return\n        t = (gb - ga + sa * a - sb * b) / (sa - sb)\n        if a - 1e-6 <= t <= b + 1e-6:\n            # verify that the predicted kink value is consistent\n            gt = g(t)\n            pred = ga + sa * (t - a)\n            if abs(gt - pred) < 1e-7 * max(1.0, abs(gt)):\n                out.append(t)\n                return\n        if b - a < 1e-9:\n            return\n    m = 0.5 * (a + b)\n    gm = g(m)\n    sm = slope(g, m)\n    find_kinks(g, a, m, ga, gm, sa, sm, out, depth + 1)\n    find_kinks(g, m, b, gm, gb, sm, sb, out, depth + 1)\n\n\ndef gradient(x, h=1e-6):\n    fx = f(x)\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - fx) / h\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\ndef main():\n    rows = []\n    stale = 0\n    T = 20.0\n    for it in range(200):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        g = line_fn(x0, d)\n        a, b = -T, T\n        kinks = []\n        find_kinks(g, a, b, g(a), g(b), slope(g, a), slope(g, b), kinks)\n        new = 0\n        for t in kinks:\n            p = x0 + t * d\n            delta = 1e-4\n            gp = gradient(p + delta * d)\n            gm = gradient(p - delta * d)\n            diff = gp - gm\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = normalize(diff)\n            if not any(abs(np.dot(v, r)) > 1 - 1e-5 for r in rows):\n                # check it isn't a mixture of two kinks: requires repeated sightings\n                rows.append(v)\n                new += 1\n        stale = stale + 1 if new == 0 else 0\n        if stale >= 10 and it >= 15:\n            break\n\n    # Filter out spurious directions: keep only those seen consistently.\n    A = np.array(rows)\n    np.save(OUT, A)\n    print(f\"Recovered {A.shape[0]} neurons\")\n    print(A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-1eyep988/bench_opencode_model-extraction-relu-logits_0ejf48qt/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-1eyep988/bench_opencode_model-extraction-relu-logits_0ejf48qt/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793757116429,
+      "end": 1793757123971
+    }
+  }
+}

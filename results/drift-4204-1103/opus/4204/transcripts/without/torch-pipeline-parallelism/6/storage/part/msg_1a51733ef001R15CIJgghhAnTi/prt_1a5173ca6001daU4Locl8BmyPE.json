@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a5173ca6001daU4Locl8BmyPE",
+  "sessionID": "ses_e5ae97589ffe0L1f6bLxADu6BG",
+  "messageID": "msg_1a51733ef001R15CIJgghhAnTi",
+  "type": "tool",
+  "callID": "toolu_vrtx_01CAqNSQdmMcRKCrsqX1myZ2",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-dzgup3jx/bench_opencode_torch-pipeline-parallelism_l03awjd8; mkdir -p .t; cat > .t/t.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nimport torch.nn.functional as F\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(29600+ws)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg=LlamaConfig(vocab_size=128,hidden_size=64,intermediate_size=128,num_hidden_layers=5,num_attention_heads=4,num_key_value_heads=2)\n    ref=LlamaForCausalLM(cfg); m=LlamaForCausalLM(cfg); m.load_state_dict(ref.state_dict())\n    ids=torch.randint(0,128,(8,16)); tg=torch.randint(0,128,(8,16))\n    ins=list(ids.chunk(4)); tgs=list(tg.chunk(4))\n    l=train_step_pipeline_afab(m,ins,tgs,torch.device(\"cpu\"),torch.float32)\n    rl=0\n    for a,b in zip(ins,tgs):\n        lo=F.cross_entropy(ref(a).logits.reshape(-1,128),b.reshape(-1))/4; lo.backward(); rl+=lo.item()\n    md=0\n    for (n,p),(_,q) in zip(m.named_parameters(),ref.named_parameters()):\n        if p.grad is not None: md=max(md,(p.grad-q.grad).abs().max().item())\n    print(rank, l, rl, \"maxgraddiff\", md)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for ws in (1,2): mp.spawn(run,args=(ws,),nprocs=ws)\nEOF\npython .t/t.py 2>&1 | tail -5",
+      "description": "Test pipeline against reference",
+      "timeout": 300000
+    },
+    "output": "0 tensor(4.8756) 4.875631809234619 maxgraddiff 0\n1 tensor(4.8756) 4.875631809234619 maxgraddiff 0\n0 None 4.875631809234619 maxgraddiff 0\n",
+    "title": "cd /tmp/obench-cell-dzgup3jx/bench_opencode_torch-pipeline-parallelism_l03awjd8; mkdir -p .t; cat > .t/t.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nimport torch.nn.functional as F\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(29600+ws)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg=LlamaConfig(vocab_size=128,hidden_size=64,intermediate_size=128,num_hidden_layers=5,num_attention_heads=4,num_key_value_heads=2)\n    ref=LlamaForCausalLM(cfg); m=LlamaForCausalLM(cfg); m.load_state_dict(ref.state_dict())\n    ids=torch.randint(0,128,(8,16)); tg=torch.randint(0,128,(8,16))\n    ins=list(ids.chunk(4)); tgs=list(tg.chunk(4))\n    l=train_step_pipeline_afab(m,ins,tgs,torch.device(\"cpu\"),torch.float32)\n    rl=0\n    for a,b in zip(ins,tgs):\n        lo=F.cross_entropy(ref(a).logits.reshape(-1,128),b.reshape(-1))/4; lo.backward(); rl+=lo.item()\n    md=0\n    for (n,p),(_,q) in zip(m.named_parameters(),ref.named_parameters()):\n        if p.grad is not None: md=max(md,(p.grad-q.grad).abs().max().item())\n    print(rank, l, rl, \"maxgraddiff\", md)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for ws in (1,2): mp.spawn(run,args=(ws,),nprocs=ws)\nEOF\npython .t/t.py 2>&1 | tail -5",
+    "metadata": {
+      "output": "0 tensor(4.8756) 4.875631809234619 maxgraddiff 0\n1 tensor(4.8756) 4.875631809234619 maxgraddiff 0\n0 None 4.875631809234619 maxgraddiff 0\n",
+      "exit": 0,
+      "description": "Test pipeline against reference"
+    },
+    "time": {
+      "start": 1793771132150,
+      "end": 1793771154061
+    }
+  }
+}

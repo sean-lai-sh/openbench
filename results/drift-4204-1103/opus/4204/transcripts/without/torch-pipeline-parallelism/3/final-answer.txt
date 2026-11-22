@@ -1,0 +1,15 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it against an unsplit reference copy of a small LLaMA model (5 layers, 2 microbatches) on CPU. With 1 and 2 ranks, the loss and every parameter gradient matched the reference exactly (maximum difference 0). That test called the function directly and didn't use hooks, so I haven't run your test suite's hook-based activation checks.
+
+**How it works:**
+- **Splitting the layers:** each rank gets a contiguous block of decoder layers, as even as possible, with any extra layers going to the earlier ranks. With 5 layers and 2 ranks, that's 3 and 2. Rank 0 also runs the embedding; the last rank also runs the final norm and output head and computes the loss.
+- **Running the stages:** each rank calls its own decoder layers directly and builds the rotary position embeddings and causal mask itself, so only hidden states are sent between ranks.
+- **Forward phase:** all microbatches go forward first. Rank 0 embeds the input IDs, and later ranks receive hidden states from the previous rank and mark them as needing gradients. The last rank computes `cross_entropy(...) / num_microbatches`, and the other ranks send their outputs to the next rank.
+- **Backward phase:** then all microbatches go backward in the same order. The last rank calls `loss.backward()`. Other ranks receive the output gradient from the next rank and backpropagate with it. Every rank except 0 sends the gradient of its received input back to the previous rank.
+- **Communication:** sends and receives use `dist.P2POp` with `batch_isend_irecv`. Before each tensor, a small message carries its shape, so receiving ranks don't need their own copy of the inputs to size their buffers.
+- Hidden states and gradients are moved to the given `device` and `dtype`. Token IDs are only moved to the device, since they need to stay integers.
+
+**Things to know:**
+- The function returns the total loss on the last rank and `None` on the others.
+- It doesn't zero gradients or take an optimizer step; the caller does that.
+- It doesn't move or cast the model itself, so the model needs to be on the right device and dtype before you call it.
+- The loss is computed in float32 even when `dtype` is lower precision.

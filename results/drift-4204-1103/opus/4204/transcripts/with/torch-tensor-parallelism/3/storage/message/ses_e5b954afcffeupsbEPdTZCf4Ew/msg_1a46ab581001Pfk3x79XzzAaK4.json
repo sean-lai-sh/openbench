@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a46ab581001Pfk3x79XzzAaK4",
+  "sessionID": "ses_e5b954afcffeupsbEPdTZCf4Ew",
+  "role": "user",
+  "time": {
+    "created": 1793759819137
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I created `parallel_linear.py` with both classes. I tested them with the gloo backend at world sizes 1, 2 and 4, comparing against a plain `nn.Linear` with the same weight and a zero bias. In every case the outputs, the gradients for each rank's weight and bias slice, and the input gradients matched.\n\nThe weight is assumed to be in `nn.Linear` layout, `(out_features, in_features)`. The code asserts this shape.\n\n**`ColumnParallelLinear`**\n- Each rank keeps its block of `out_features / world_size` rows of `master_weight`. Its bias has the same size and starts at zero.\n- **Forward:** each rank computes its piece of the output, then the pieces are joined along the last dimension with `all_gather`.\n- **Backward:** the output gradient is split back to each rank's piece, and the input gradient is summed across ranks with `all_reduce`.\n\n**`RowParallelLinear`**\n- Each rank keeps its block of `in_features / world_size` columns of `master_weight`. The bias is full size on every rank and starts at zero.\n- **Forward:** if the input has the full `in_features` width, each rank takes its own slice of it. If it's already the per-rank width (for example, coming from a column-parallel layer), it's used as is. Partial outputs are summed with `all_reduce`, and the bias is added once after that.\n- **Backward:** the output gradient passes straight through, and the input-slice gradients are gathered back into the full width.\n\nA few behaviours you might not assume:\n- **Sizes must divide evenly:** `out_features` (column) or `in_features` (row) must be divisible by the world size, or an assertion fails.\n- **Without `torch.distributed` initialised**, both layers run as a single process (world size 1).\n- **Row-parallel input check:** whether to slice the input is decided only by its last dimension. With a world size above 1, an input of the wrong width is used without slicing and only fails later, at the matrix multiply.\n\nThe collectives are wrapped in custom `torch.autograd.Function`s so gradients are correct on every rank.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

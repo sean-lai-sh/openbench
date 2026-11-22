@@ -1,0 +1,20 @@
+I've written `re.json`: 2,442 regex/replacement pairs, about 279 KB, so well under both limits. It passes the provided `check.py` (all 18 positions from the Morphy game) and gives exactly the expected output for your example FEN. I also compared it against python-chess on about 4,600 positions from random games. That run included over 2,900 promotion moves, 95 castling moves and 39 en-passant captures, with no mismatches.
+
+**How it works:**
+1. **Unpack the FEN.** Empty squares become dots, and each rank gets two filler characters at the end (`//`). The fillers stop a move from running off one edge of the board and onto the next rank. Castling rights become four 0/1 flags and the en-passant square becomes a digit, all stored at the start of the line.
+2. **Generate candidate moves.** There is one rule for each piece type, start square and destination. Each rule checks the conditions (right piece on the start square, squares in between empty, destination empty or black) and adds a new line with the board after that move.
+   - Castling rights are cleared when the king moves, when a rook moves off a1 or h1, or when a piece captures on a8 or h8.
+   - A two-square pawn push records its en-passant square.
+   - Pawns promote only to a queen.
+   - En passant uses the en-passant square from the input FEN.
+3. **Remove illegal moves.** A single large regex deletes every line where a white king is attacked.
+   - For castling, I temporarily put kings on all three squares the king passes through. That way, if any of them is attacked, the filter removes the move.
+   - Afterwards the temporary kings are replaced with the real king-and-rook placement.
+4. **Pack back into FEN.** The extra characters are removed, dots become digits again, and each line ends with ` b <castling> <ep> 0 0`.
+
+**Things to know:**
+- **Speed:** each position takes about 0.7 s with the plain `re.sub` loop. Most of that is because Python only caches about 512 compiled patterns, so all 2,442 get recompiled for every position.
+- **En-passant field:** after any two-square push, the output always shows the en-passant square (e.g. `e3`). `check.py` accepts this even when python-chess prints `-`.
+- **Checkmate:** if white has no legal moves, the function returns `[""]` rather than an empty list. That's unavoidable with this setup, and `check.py` would count it as one move.
+
+I left two helper scripts in the directory: `gen.py` builds `re.json`, and `test.py` is the random-game comparison against python-chess.

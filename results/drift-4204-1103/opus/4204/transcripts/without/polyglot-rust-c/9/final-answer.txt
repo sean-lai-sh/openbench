@@ -1,0 +1,12 @@
+I've written `polyglot/main.rs`, and it builds with both rustc and g++. I compiled it both ways and checked N = 0, 1, 2, 3, 10, 50, 100 and 200: the two programs printed the same numbers every time (0→1, 1→1, 2→2, 10→89).
+
+**How it works:**
+- **Rust** ignores a `//` comment ending in a backslash after the end of that line. But to g++, the backslash makes the comment carry on through the next line.
+- I put `// \` in front of a line containing `/*` or `*/`. Rust sees that line and treats it as the start or end of a block comment, but g++ never sees it as anything but comment.
+- **C++'s view:** the C++ code comes first and compiles normally. A `#if 0 … #endif` block then hides the Rust code.
+- **Rust's view:** the C++ code and the `#if 0` line sit inside a block comment, which closes just before `fn main`. Another block comment hides the trailing `#endif`.
+- The Rust section contains no single quotes, so g++ doesn't complain about unclosed character literals inside the `#if 0` block.
+
+Both versions do the addition digit by digit in base 10, so they give exact answers for any N, not just ones that fit in 64 bits. If you run the program with no argument, it treats N as 0.
+
+g++ only warns about the `// \` lines if you add `-Wall`; your command as written compiles without warnings.

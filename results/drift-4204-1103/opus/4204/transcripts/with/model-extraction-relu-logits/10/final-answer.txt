@@ -1,0 +1,10 @@
+I wrote `steal.py` and ran it. It recovered all 20 hidden neurons and saved them as a 20×10 matrix in `stolen_A1.npy`. The extraction itself only calls `forward()`.
+
+**Check:** I compared the result against the real `A1` in `forward.py`, which `steal.py` itself does not read. After scaling each row to unit length, every true row matches exactly one recovered row with |cosine similarity| = 1.0000000000 (to about 1e-16), and every recovered row matches a true row. So the matrix equals `A1` up to reordering the neurons and scaling each row, including flipping its sign.
+
+**How `steal.py` works:**
+1. **Find the kinks:** it takes 40 random lines through the 10-dimensional input space and treats `forward()` as a function of position along each line. That function is piecewise linear, and each bend ("kink") is where one hidden neuron switches on or off. It finds the bends by repeatedly splitting each stretch in half until the pieces are straight, then pins each bend down exactly by intersecting the straight pieces on either side.
+2. **Read off a row:** at each kink it estimates the input gradient just before and just after, using finite differences. The jump between them equals `A2[i] * A1[i,:]`, which is row `i` of `A1` times a constant. It throws away kinks where the gradient isn't steady on both sides, which happens when two kinks are very close together.
+3. **Remove duplicates:** each recovered row is scaled to unit length with its largest entry made positive. Rows within 1e-3 of each other are grouped and averaged, and any row seen only once is dropped. This turned 709 kink detections into 20 unique rows.
+
+The output rows are unit-length and normalised that way, not on the original scale of `A1`.

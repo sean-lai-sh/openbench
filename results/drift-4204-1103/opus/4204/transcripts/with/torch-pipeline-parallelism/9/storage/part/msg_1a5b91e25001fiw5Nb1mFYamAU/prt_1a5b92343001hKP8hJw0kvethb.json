@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a5b92343001hKP8hJw0kvethb",
+  "sessionID": "ses_e5a47c4eeffe2en6XjUFn4hRN6",
+  "messageID": "msg_1a5b91e25001fiw5Nb1mFYamAU",
+  "type": "tool",
+  "callID": "toolu_vrtx_0121Ct9mXnX8ZdMRUpXkrSiD",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-pp27vgso/bench_opencode_torch-pipeline-parallelism_k790l4c4 && mkdir -p .scratch && cat > .scratch/pp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\nimport torch.nn.functional as F\n\ndef make():\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2)\n    return LlamaForCausalLM(cfg).float()\n\ndef run(rank, ws):\n    os.environ.update(MASTER_ADDR=\"127.0.0.1\", MASTER_PORT=str(29510+ws))\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    model = make(); ref = make()\n    torch.manual_seed(1)\n    inputs = [torch.randint(0,128,(2,16)) for _ in range(3)]\n    targets = [torch.randint(0,128,(2,16)) for _ in range(3)]\n    loss = train_step_pipeline_afab(model, inputs, targets, torch.device(\"cpu\"), torch.float32)\n    rl = 0\n    for x,t in zip(inputs,targets):\n        l = F.cross_entropy(ref(x).logits.reshape(-1,128), t.reshape(-1))/3\n        l.backward(); rl += l.item()\n    maxd = 0; n=0\n    for (nm,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            n+=1; maxd = max(maxd,(p.grad-q.grad).abs().max().item())\n    print(f\"ws={ws} rank={rank} loss={loss} ref={rl:.5f} params_with_grad={n} maxdiff={maxd:.2e}\")\n    dist.destroy_process_group()\n\nif __name__ == \"__main__\":\n    for ws in (1,2):\n        mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython .scratch/pp_test.py 2>&1 | grep -v Warning",
+      "description": "Run correctness test for ws=1,2",
+      "timeout": 300000
+    },
+    "output": "ws=1 rank=0 loss=4.886449217796326 ref=4.88645 params_with_grad=48 maxdiff=0.00e+00\nws=2 rank=1 loss=4.886449217796326 ref=4.88645 params_with_grad=20 maxdiff=0.00e+00\nws=2 rank=0 loss=None ref=4.88645 params_with_grad=28 maxdiff=0.00e+00\n",
+    "title": "cd /tmp/obench-cell-pp27vgso/bench_opencode_torch-pipeline-parallelism_k790l4c4 && mkdir -p .scratch && cat > .scratch/pp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\nimport torch.nn.functional as F\n\ndef make():\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2)\n    return LlamaForCausalLM(cfg).float()\n\ndef run(rank, ws):\n    os.environ.update(MASTER_ADDR=\"127.0.0.1\", MASTER_PORT=str(29510+ws))\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    model = make(); ref = make()\n    torch.manual_seed(1)\n    inputs = [torch.randint(0,128,(2,16)) for _ in range(3)]\n    targets = [torch.randint(0,128,(2,16)) for _ in range(3)]\n    loss = train_step_pipeline_afab(model, inputs, targets, torch.device(\"cpu\"), torch.float32)\n    rl = 0\n    for x,t in zip(inputs,targets):\n        l = F.cross_entropy(ref(x).logits.reshape(-1,128), t.reshape(-1))/3\n        l.backward(); rl += l.item()\n    maxd = 0; n=0\n    for (nm,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            n+=1; maxd = max(maxd,(p.grad-q.grad).abs().max().item())\n    print(f\"ws={ws} rank={rank} loss={loss} ref={rl:.5f} params_with_grad={n} maxdiff={maxd:.2e}\")\n    dist.destroy_process_group()\n\nif __name__ == \"__main__\":\n    for ws in (1,2):\n        mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython .scratch/pp_test.py 2>&1 | grep -v Warning",
+    "metadata": {
+      "output": "ws=1 rank=0 loss=4.886449217796326 ref=4.88645 params_with_grad=48 maxdiff=0.00e+00\nws=2 rank=1 loss=4.886449217796326 ref=4.88645 params_with_grad=20 maxdiff=0.00e+00\nws=2 rank=0 loss=None ref=4.88645 params_with_grad=28 maxdiff=0.00e+00\n",
+      "exit": 0,
+      "description": "Run correctness test for ws=1,2"
+    },
+    "time": {
+      "start": 1793781742255,
+      "end": 1793781773465
+    }
+  }
+}

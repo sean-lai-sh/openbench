@@ -1,0 +1,24 @@
+I've written `re.json`: 2,464 regex/replacement pairs, about 368 KB. On the example position it produces exactly the expected string, in the same order.
+
+**Testing:**
+- **`check.py`:** all 18 positions from the Opera Game pass. I ran it on a local copy with the file path changed from `/app/re.json` to the local file.
+- **Random positions:** about 7,500 white-to-move positions from random games, checked against python-chess the same way `check.py` does, with 0 failures. The random games favoured castling, en-passant and promotion moves so those got plenty of coverage.
+- **Hand-made edge cases:** all pass. They cover castling through or out of check, rights lost when a rook is captured, an en-passant capture that exposes the king along the rank, and promotion with and without capture.
+
+**Speed:** about 0.7 s per position when run through plain `re.sub` as in your function, since Python's regex cache is smaller than the rule list and every pattern gets recompiled. With precompiled patterns it's about 0.15 s.
+
+**Known limitation:** if white has no legal moves (checkmate or stalemate), the function returns `[""]` instead of an empty list. That's because `"".split("\n")` always returns one element, so the regexes can't fix it.
+
+**How the rules work, in order:**
+1. **Expand the board:** drop the move counters and the `w`, turn digits into `.`, remove the `/`s, and form the line `@<64 squares> <castling> <ep>`.
+2. **Generate moves:** there's one rule per (piece, from-square, to-square). It checks the squares in between are empty and the target isn't a white piece, then adds a `#` line with the resulting position. Queens share rules with bishops and rooks. The other rules cover:
+   - pawn pushes and double pushes (which set the en-passant square)
+   - captures, with promotion to queen on the last rank
+   - en passant
+   - castling
+3. **Remove moves that leave the king in check:** one rule per king square deletes any line where the king is attacked by a knight, pawn, king or sliding piece.
+   - A castling move is first written with kings on all three squares the king touches (e.g. e1, f1, g1), so this same check covers castling out of or through check. Afterwards those lines are rewritten to the real castled position.
+4. **Update castling rights:** each right is kept only if the king and that rook are still on their starting squares; if none are left it becomes `-`.
+5. **Rebuild the FEN:** put the `/`s back, turn runs of `.` into digits, and add `b` and `0 0`.
+
+The generator is `gen/gen.py` (run it to rebuild `re.json`), the random tester is `gen/test.py`, and the local copy of `check.py` is `gen/check_local.py`.

@@ -1,0 +1,25 @@
+{
+  "id": "prt_1a53fe5f2001R0ZHGa9BohgLSG",
+  "sessionID": "ses_e5ac2a0aeffe5BFzCSlRtZ5gXk",
+  "messageID": "msg_1a53fde57001QpIShCFjsyDkXP",
+  "type": "tool",
+  "callID": "toolu_vrtx_015UG3dv6dY4voxcTBB3LU9T",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-gq7u0n86/bench_opencode_sam-cell-seg_kd_tk4sh/convert_masks.py",
+      "offset": 290,
+      "limit": 70
+    },
+    "output": "<file>\n00291|                 bx0, by0, bx1, by1 = [int(v) for v in boxes[i]]\n00292|             e = ellipse_mask(bx0, by0, bx1, by1, (H, W))\n00293|             e = e & ((label == -1) | m)\n00294|             e = clean_mask(e)\n00295|             label[m] = -1\n00296|             label[e] = i\n00297|             pts = mask_to_polygon(e)\n00298|             if pts is None or is_axis_rectangle(pts):\n00299|                 cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0\n00300|                 pts = np.array([[cx, cy - 1], [cx + 1, cy], [cx, cy + 1], [cx - 1, cy]])\n00301|         return np.round(pts).astype(np.int32)\n00302| \n00303|     def raster(pts):\n00304|         z = np.zeros((H, W), np.uint8)\n00305|         cv2.fillPoly(z, [pts.reshape(-1, 1, 2)], 1)\n00306|         return z.astype(bool)\n00307| \n00308|     polys = [cell_polygon(i) for i in range(n)]\n00309| \n00310|     # ---- guarantee: rasterised polygons do not overlap ----\n00311|     for _ in range(10):\n00312|         rasters = [raster(pp) for pp in polys]\n00313|         count = np.sum(rasters, axis=0)\n00314|         if not (count > 1).any():\n00315|             break\n00316|         claimed = np.zeros((H, W), bool)\n00317|         changed = []\n00318|         for i in range(n):\n00319|             ov = rasters[i] & claimed\n00320|             if ov.any():\n00321|                 m = (label == i) & ~ov\n00322|                 # also drop a 1px ring around the conflict\n00323|                 ring = cv2.dilate(\n00324|                     ov.astype(np.uint8), np.ones((3, 3), np.uint8)\n00325|                 ).astype(bool)\n00326|                 m2 = m & ~ring\n00327|                 m = m2 if m2.sum() >= 4 else m\n00328|                 label[label == i] = -1\n00329|                 label[clean_mask(m)] = i\n00330|                 changed.append(i)\n00331|             claimed |= raster(polys[i]) if i not in changed else False\n00332|             if i in changed:\n00333|                 polys[i] = cell_polygon(i)\n00334|                 claimed |= raster(polys[i])\n00335| \n00336|     out = df.copy()\n00337|     xmins, xmaxs, ymins, ymaxs, cxs, cys = [], [], [], [], [], []\n00338|     for i in range(n):\n00339|         pts = polys[i]\n00340|         px = pts[:, 0].tolist() + [int(pts[0, 0])]\n00341|         py = pts[:, 1].tolist() + [int(pts[0, 1])]\n00342|         xmins.append(int(min(px)))\n00343|         xmaxs.append(int(max(px)))\n00344|         ymins.append(int(min(py)))\n00345|         ymaxs.append(int(max(py)))\n00346|         cxs.append(\",\".join(str(v) for v in px))\n00347|         cys.append(\",\".join(str(v) for v in py))\n00348| \n00349|     out[\"xmin\"], out[\"xmax\"], out[\"ymin\"], out[\"ymax\"] = xmins, xmaxs, ymins, ymaxs\n00350|     out[\"coords_x\"], out[\"coords_y\"] = cxs, cys\n00351|     if \"type\" in out.columns:\n00352|         out[\"type\"] = \"polyline\"\n00353| \n00354|     # ---- save ----\n00355|     if args.output_path.lower().endswith(\".csv\"):\n00356|         out_file = args.output_path\n00357|         d = os.path.dirname(out_file)\n00358|         if d:\n00359|             os.makedirs(d, exist_ok=True)\n00360|     else:\n\n(File has more lines. Use 'offset' parameter to read beyond line 360)\n</file>",
+    "title": "tmp/obench-cell-gq7u0n86/bench_opencode_sam-cell-seg_kd_tk4sh/convert_masks.py",
+    "metadata": {
+      "preview": "                bx0, by0, bx1, by1 = [int(v) for v in boxes[i]]\n            e = ellipse_mask(bx0, by0, bx1, by1, (H, W))\n            e = e & ((label == -1) | m)\n            e = clean_mask(e)\n            label[m] = -1\n            label[e] = i\n            pts = mask_to_polygon(e)\n            if pts is None or is_axis_rectangle(pts):\n                cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0\n                pts = np.array([[cx, cy - 1], [cx + 1, cy], [cx, cy + 1], [cx - 1, cy]])\n        return np.round(pts).astype(np.int32)\n\n    def raster(pts):\n        z = np.zeros((H, W), np.uint8)\n        cv2.fillPoly(z, [pts.reshape(-1, 1, 2)], 1)\n        return z.astype(bool)\n\n    polys = [cell_polygon(i) for i in range(n)]\n\n    # ---- guarantee: rasterised polygons do not overlap ----"
+    },
+    "time": {
+      "start": 1793773791508,
+      "end": 1793773791511
+    }
+  }
+}

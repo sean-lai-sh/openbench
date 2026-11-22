@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a495c3da001gwD8g93MFYyLcj",
+  "sessionID": "ses_e5b6d1589ffeqYfYe1jEWr7Otb",
+  "messageID": "msg_1a495bd46001gAMZ6DXd8UTeqK",
+  "type": "tool",
+  "callID": "toolu_vrtx_01JUeSvMrXtkZncKJU23fhAT",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-3oivsn9t/bench_opencode_sam-cell-seg_s8vg0r3a; mkdir -p scratch; cat > scratch/validate.py <<'EOF'\nimport sys, numpy as np, pandas as pd, cv2\ninp, out, img = sys.argv[1], sys.argv[2], sys.argv[3]\na = pd.read_csv(inp, index_col=0); b = pd.read_csv(out, index_col=0)\nim = cv2.imread(img); H, W = im.shape[:2]\nassert list(a.columns) == list(b.columns) and len(a) == len(b)\nacc = np.zeros((H, W), int); vis = im.copy(); bad = 0\nfor i, r in b.iterrows():\n    xs = np.array(list(map(int, r.coords_x.split(',')))); ys = np.array(list(map(int, r.coords_y.split(','))))\n    assert xs.min()==r.xmin and xs.max()==r.xmax and ys.min()==r.ymin and ys.max()==r.ymax\n    pts = {(x,y) for x,y in zip(xs,ys)}\n    if len(pts) <= 4 and len({p[0] for p in pts})<=2 and len({p[1] for p in pts})<=2: print('RECT', i); bad += 1\n    m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.stack([xs, ys], 1).astype(np.int32)], 1)\n    n, _ = cv2.connectedComponents(m, connectivity=4)\n    if n != 2: print('components', i, n-1); bad += 1\n    acc += m\n    cv2.polylines(vis, [np.stack([xs, ys], 1).astype(np.int32)], True, (0,255,0), 1)\nfor i, r in a.iterrows():\n    xs = np.array(list(map(int, str(r.coords_x).split(',')))); ys = np.array(list(map(int, str(r.coords_y).split(','))))\n    cv2.polylines(vis, [np.stack([xs, ys], 1).astype(np.int32)], True, (255,0,0), 1)\nprint('overlap px (fillPoly):', int((acc > 1).sum()), 'bad:', bad, 'n:', len(b))\ntry:\n    from shapely.geometry import Polygon\n    P = [Polygon(zip(map(int, r.coords_x.split(',')), map(int, r.coords_y.split(',')))) for _, r in b.iterrows()]\n    print('invalid:', sum(not p.is_valid for p in P), 'shapely overlaps:', sum(P[i].intersection(P[j]).area > 0 for i in range(len(P)) for j in range(i+1, len(P))))\nexcept ImportError: pass\ncv2.imwrite('scratch/vis.png', cv2.resize(vis, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST))\nEOF\npip install -q shapely 2>&1 | grep -v -i -E \"notice|warn\"; time python convert_masks.py weights/mobile_sam.pt scratch/out demo_rgb.png demo_metadata.csv && python scratch/validate.py demo_metadata.csv scratch/out/demo_metadata.csv demo_rgb.png && head -4 scratch/out/demo_metadata.csv",
+      "description": "Run script on demo and validate output",
+      "timeout": 600000
+    },
+    "output": "\n/bin/sh: 29: time: not found\n",
+    "title": "cd /tmp/obench-cell-3oivsn9t/bench_opencode_sam-cell-seg_s8vg0r3a; mkdir -p scratch; cat > scratch/validate.py <<'EOF'\nimport sys, numpy as np, pandas as pd, cv2\ninp, out, img = sys.argv[1], sys.argv[2], sys.argv[3]\na = pd.read_csv(inp, index_col=0); b = pd.read_csv(out, index_col=0)\nim = cv2.imread(img); H, W = im.shape[:2]\nassert list(a.columns) == list(b.columns) and len(a) == len(b)\nacc = np.zeros((H, W), int); vis = im.copy(); bad = 0\nfor i, r in b.iterrows():\n    xs = np.array(list(map(int, r.coords_x.split(',')))); ys = np.array(list(map(int, r.coords_y.split(','))))\n    assert xs.min()==r.xmin and xs.max()==r.xmax and ys.min()==r.ymin and ys.max()==r.ymax\n    pts = {(x,y) for x,y in zip(xs,ys)}\n    if len(pts) <= 4 and len({p[0] for p in pts})<=2 and len({p[1] for p in pts})<=2: print('RECT', i); bad += 1\n    m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.stack([xs, ys], 1).astype(np.int32)], 1)\n    n, _ = cv2.connectedComponents(m, connectivity=4)\n    if n != 2: print('components', i, n-1); bad += 1\n    acc += m\n    cv2.polylines(vis, [np.stack([xs, ys], 1).astype(np.int32)], True, (0,255,0), 1)\nfor i, r in a.iterrows():\n    xs = np.array(list(map(int, str(r.coords_x).split(',')))); ys = np.array(list(map(int, str(r.coords_y).split(','))))\n    cv2.polylines(vis, [np.stack([xs, ys], 1).astype(np.int32)], True, (255,0,0), 1)\nprint('overlap px (fillPoly):', int((acc > 1).sum()), 'bad:', bad, 'n:', len(b))\ntry:\n    from shapely.geometry import Polygon\n    P = [Polygon(zip(map(int, r.coords_x.split(',')), map(int, r.coords_y.split(',')))) for _, r in b.iterrows()]\n    print('invalid:', sum(not p.is_valid for p in P), 'shapely overlaps:', sum(P[i].intersection(P[j]).area > 0 for i in range(len(P)) for j in range(i+1, len(P))))\nexcept ImportError: pass\ncv2.imwrite('scratch/vis.png', cv2.resize(vis, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST))\nEOF\npip install -q shapely 2>&1 | grep -v -i -E \"notice|warn\"; time python convert_masks.py weights/mobile_sam.pt scratch/out demo_rgb.png demo_metadata.csv && python scratch/validate.py demo_metadata.csv scratch/out/demo_metadata.csv demo_rgb.png && head -4 scratch/out/demo_metadata.csv",
+    "metadata": {
+      "output": "\n/bin/sh: 29: time: not found\n",
+      "exit": 127,
+      "description": "Run script on demo and validate output"
+    },
+    "time": {
+      "start": 1793762649598,
+      "end": 1793762651290
+    }
+  }
+}

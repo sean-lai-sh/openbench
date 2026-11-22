@@ -1,0 +1,17 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on CPU against a separate copy of the same model run without pipelining, and the gradients matched exactly with 1 and 2 processes. The real test harness and its hook comparisons haven't been run here.
+
+**How it works**
+- **Splitting the layers:** decoder layers are divided as evenly as possible, and any leftover layers go to the lower-numbered ranks. Rank 0 also runs the token embedding; the last rank also runs the final norm and output layer and computes the loss.
+- **Forward pass:** each microbatch runs through this rank's layers in turn. Ranks other than 0 receive hidden states of shape `[mb, seq_len, hidden_size]` from the previous rank, and the input is marked as needing a gradient. The last rank computes `cross_entropy(logits, targets) / num_microbatches`. Every other rank sends its output to the next rank.
+- **Backward pass:** once all forwards are done, the last rank calls backward on each saved loss. Every other rank receives the output gradient from the next rank and calls backward with it. Ranks other than 0 then send the gradient of their input back to the previous rank.
+- **Communication:** each send and receive uses `dist.P2POp` with `batch_isend_irecv`. Hidden states and gradients are moved to the given `device` and `dtype`. Input IDs are only moved to `device`, because converting token IDs to a float type would break the embedding lookup.
+- **No hooks.** Each layer is called directly, with the rotary position encodings and causal mask built the same way the model normally builds them.
+- **Return value:** the last rank returns the summed, already-scaled loss (detached). All other ranks return `None`.
+
+**Test results** (5 layers, 3 microbatches, gloo backend):
+- **1 process:** all 48 parameters got gradients, with a max difference of 0 from the reference.
+- **2 processes:** rank 0 ran 3 layers plus the embedding (28 parameters with gradients). Rank 1 ran 2 layers plus the norm and output layer (20 parameters). Both had a max difference of 0, and the loss matched the reference.
+
+The loss is computed directly against the targets, without shifting them by one position as `LlamaForCausalLM`'s built-in loss does. This assumes the test supplies targets that are already shifted.
+
+I deleted my temporary test script afterwards.

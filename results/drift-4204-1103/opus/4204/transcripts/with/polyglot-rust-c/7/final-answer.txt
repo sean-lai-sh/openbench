@@ -1,0 +1,16 @@
+I wrote `polyglot/main.rs` and tested it with both commands. `rustc` and `g++` print the same numbers for every N I tried:
+
+```
+0: 1   1: 1   2: 2   3: 3   10: 89   50: 20365011074   100: 573147844013817084101
+```
+
+**How it works:**
+- **Line 1, `/* /* */ #if 0`:** Rust allows comments inside comments, so the second `/*` opens another level, the `*/` only closes that one, and the line ends still inside a comment. C++ doesn't nest comments, so for it the comment ends at the first `*/`, and the rest of the line is the directive `#if 0`.
+- **Line 2, `*/`:** this closes Rust's remaining comment. C++ ignores it because it's inside the `#if 0` block.
+- **The Rust part:** `fn main` comes next. C++ skips it because it's still inside `#if 0`.
+- **Hiding the C++ code from Rust:** Rust then starts a raw string with `const CPP: &str = r#"`. Everything after that, including `#endif` and the whole C++ program, is just text inside that string as far as Rust is concerned.
+- **Last line, `/*"#;//*/`:** for C++ this is a comment. For Rust, `"#;` ends the string and `//*/` is a line comment.
+
+Both versions use 128-bit integers, so results are exact up to about N=184. Above that the numbers overflow and are no longer correct.
+
+`g++` shows one harmless warning, `missing terminating " character`. It comes from the opening quote of the raw string, which C++ sees inside the skipped `#if 0` block. The build still succeeds and the output is correct; `rustc` gives no warnings.

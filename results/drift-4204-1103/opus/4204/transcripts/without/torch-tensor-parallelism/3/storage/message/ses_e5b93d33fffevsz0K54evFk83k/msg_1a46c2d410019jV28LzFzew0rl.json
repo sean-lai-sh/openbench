@@ -1,0 +1,18 @@
+{
+  "id": "msg_1a46c2d410019jV28LzFzew0rl",
+  "sessionID": "ses_e5b93d33fffevsz0K54evFk83k",
+  "role": "user",
+  "time": {
+    "created": 1793759915329
+  },
+  "summary": {
+    "title": "Implementing tensor parallel linear layers in PyTorch",
+    "body": "I've written `parallel_linear.py` with both classes. I tested them against a plain `torch.nn.Linear` with world sizes 1, 2 and 4, and the outputs, weight gradients, bias gradients and input gradients all matched.\n\n**How the weights are split.** I assumed `master_weight` has the same shape as `nn.Linear`'s weight, `(out_features, in_features)`; the code stops with an error if it doesn't. Each rank keeps a copy of its own slice, and the bias starts at zero.\n\n| | Weight on each rank | Bias on each rank | Forward pass |\n|---|---|---|---|\n| `ColumnParallelLinear` | Its share of the output rows | Its matching slice, length `out_features / world_size` | Computes its part of the output, then gathers all parts and joins them along the last dimension |\n| `RowParallelLinear` | Its share of the input columns | The full bias, length `out_features` | Computes a partial output from its slice of the input, sums the partials across ranks, then adds the bias once |\n\n**Gradients.** The communication steps are written as custom autograd functions, so the backward pass sends gradients to the right places:\n- In the column version, the input gradient is summed across ranks, and each rank's output gradient is cut back to its own slice.\n- In the row version, the summing step passes gradients straight through. If the layer split the input itself, the input gradient is gathered back to full width.\n\n**Choices to be aware of:**\n- **What input `RowParallelLinear` expects.** It accepts either the full input (last dimension `in_features`), which it splits itself, or an input that's already split (last dimension `in_features / world_size`). It decides by checking the last dimension's size.\n- **Uneven sizes.** `out_features` (column) and `in_features` (row) must divide evenly by the world size, or the constructor raises a `ValueError`.\n- **No process group.** If `torch.distributed` hasn't been initialised, both classes behave as a single process with world size 1.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

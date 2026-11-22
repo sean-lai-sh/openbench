@@ -1,0 +1,16 @@
+I created `parallel_linear.py` with both classes. I tested them against a regular `torch.nn.Linear` with world sizes 1, 2 and 4, running separate processes on the CPU backend (gloo). Outputs and the weight, bias and input gradients all matched the reference.
+
+**Sharding** (`master_weight` has shape `(out_features, in_features)`, as in `nn.Linear`):
+- **`ColumnParallelLinear`**: each rank keeps an equal slice of `master_weight` along the output dimension. The bias is split the same way and starts at zero. In `forward`, each rank computes its slice of the output, then the slices are gathered and joined along the last dimension, so every rank returns the full output.
+- **`RowParallelLinear`**: each rank keeps an equal slice along the input dimension. In `forward`, the partial results are summed across ranks. The full bias (starting at zero) is on every rank and is added once, after the sum.
+
+**Gradients:** I wrote small custom autograd functions so the gradients come out right:
+- Where outputs are gathered, the backward pass hands each rank only its own slice of the gradient.
+- Where results are summed, the gradient passes through unchanged.
+- In `ColumnParallelLinear`, the input's gradient is summed across ranks, so a full, shared input gets the correct full gradient.
+
+**Things to know:**
+- **Divisibility:** `out_features` (column) or `in_features` (row) must divide evenly by the world size; otherwise an assertion fails.
+- **Row-parallel input:** `RowParallelLinear.forward` takes either the full input or an input already split for that rank. It decides by checking whether the last dimension equals `in_features`; if so, it splits the input itself.
+
+The test script is at `/tmp/tp_test.py`, outside the project folder.

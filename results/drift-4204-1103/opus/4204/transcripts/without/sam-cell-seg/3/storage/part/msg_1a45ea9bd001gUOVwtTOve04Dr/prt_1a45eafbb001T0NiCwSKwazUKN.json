@@ -1,0 +1,25 @@
+{
+  "id": "prt_1a45eafbb001T0NiCwSKwazUKN",
+  "sessionID": "ses_e5ba50f32ffeL16QKB1Y4i0iA5",
+  "messageID": "msg_1a45ea9bd001gUOVwtTOve04Dr",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Td41uZfENy78FPvDdaJQqv",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-xoj9mko6/bench_opencode_sam-cell-seg_vcgc0tfv/convert_masks.py",
+      "offset": 250,
+      "limit": 55
+    },
+    "output": "<file>\n00251|     if img is None:\n00252|         raise FileNotFoundError(args.rgb_path)\n00253|     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)\n00254|     H, W = img.shape[:2]\n00255| \n00256|     df = pd.read_csv(args.csv_path)\n00257|     first_col = df.columns[0]\n00258|     has_index_col = first_col == \"\" or str(first_col).startswith(\"Unnamed\")\n00259| \n00260|     model = sam_model_registry[\"vit_t\"](checkpoint=args.weights_path)\n00261|     model.to(device).eval()\n00262|     predictor = SamPredictor(model)\n00263| \n00264|     # ---- prepare cells\n00265|     cells = []\n00266|     for idx, row in df.iterrows():\n00267|         xs, ys = parse_coords(row[\"coords_x\"]), parse_coords(row[\"coords_y\"])\n00268|         n = min(len(xs), len(ys))\n00269|         xs, ys = xs[:n], ys[:n]\n00270|         box = get_box(row, xs, ys, W, H)\n00271|         if not xs:\n00272|             xs = [box[0], box[2], box[2], box[0]]\n00273|             ys = [box[1], box[1], box[3], box[3]]\n00274|         rect = is_rectangle(row, xs, ys)\n00275|         prior = prior_mask(rect, xs, ys, box, H, W)\n00276|         cells.append(dict(idx=idx, xs=xs, ys=ys, box=box, rect=rect, prior=prior))\n00277| \n00278|     # ---- run SAM, tile by tile\n00279|     tiles = make_tiles(H, W)\n00280|     by_tile = {}\n00281|     for k, c in enumerate(cells):\n00282|         by_tile.setdefault(best_tile(tiles, c[\"box\"]), []).append(k)\n00283| \n00284|     N = len(cells)\n00285|     best_logit = np.full((H, W), -np.inf, np.float32)\n00286|     label = np.full((H, W), -1, np.int32)\n00287|     masks = [None] * N\n00288|     pbar = tqdm(total=N, desc=\"MobileSAM\")\n00289|     for t, ks in by_tile.items():\n00290|         ty0, tx0, ty1, tx1 = tiles[t]\n00291|         predictor.set_image(img[ty0:ty1, tx0:tx1])\n00292|         for k in ks:\n00293|             c = cells[k]\n00294|             off = np.array([tx0, ty0, tx0, ty0], np.float32)\n00295|             m, logit = refine_cell(\n00296|                 predictor,\n00297|                 c[\"box\"] - off,\n00298|                 c[\"prior\"][ty0:ty1, tx0:tx1],\n00299|                 c[\"rect\"],\n00300|                 None,\n00301|                 None,\n00302|             )\n00303|             full = np.zeros((H, W), bool)\n00304|             full[ty0:ty1, tx0:tx1] = m\n00305|             if not full.any():\n\n(File has more lines. Use 'offset' parameter to read beyond line 305)\n</file>",
+    "title": "tmp/obench-cell-xoj9mko6/bench_opencode_sam-cell-seg_vcgc0tfv/convert_masks.py",
+    "metadata": {
+      "preview": "    if img is None:\n        raise FileNotFoundError(args.rgb_path)\n    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)\n    H, W = img.shape[:2]\n\n    df = pd.read_csv(args.csv_path)\n    first_col = df.columns[0]\n    has_index_col = first_col == \"\" or str(first_col).startswith(\"Unnamed\")\n\n    model = sam_model_registry[\"vit_t\"](checkpoint=args.weights_path)\n    model.to(device).eval()\n    predictor = SamPredictor(model)\n\n    # ---- prepare cells\n    cells = []\n    for idx, row in df.iterrows():\n        xs, ys = parse_coords(row[\"coords_x\"]), parse_coords(row[\"coords_y\"])\n        n = min(len(xs), len(ys))\n        xs, ys = xs[:n], ys[:n]\n        box = get_box(row, xs, ys, W, H)"
+    },
+    "time": {
+      "start": 1793759032096,
+      "end": 1793759032108
+    }
+  }
+}

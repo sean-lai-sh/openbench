@@ -1,0 +1,11 @@
+I wrote `/tmp/obench-cell-a63kkwjf/bench_opencode_polyglot-rust-c_johw_ph5/polyglot/main.rs`. I compiled it with both `rustc` and `g++ -x c++`. Both programs printed the same numbers for N = 0, 1, 2, 3, 10, 50 and 100 (1, 1, 2, 3, 89, 20365011074, 573147844013817084101).
+
+**How it works:** Rust lets one `/* */` comment sit inside another, but C++ ends a comment at the first `*/`. The file uses that difference:
+
+- **First line, `/* /* */`:** C++ sees a complete comment and goes on to read the C++ code below it. Rust sees two comments opened and only one closed, so it is still inside a comment and skips the C++ code.
+- **Line `// */`:** C++ treats the whole line as a comment. Rust doesn't treat `//` as special inside a comment, so the `*/` closes its last open comment.
+- **`#if 0` … `#endif`:** These hide the Rust `main` from C++. Rust never sees them because each is inside one of its comments, using the same pair of lines again at the end.
+
+Both versions start from f(0) = f(1) = 1 and use 128-bit unsigned integers. C++ has no built-in way to print that type, so the C++ side converts it to text by hand. The largest N that fits is 184. Above that, Rust's debug build stops with an overflow panic, while the C++ version silently wraps around and prints a wrong number.
+
+The Rust code avoids two things so the file stays valid C++: `/*`, which would break the comment structure, and apostrophes, which C++ could mistake for unfinished character literals inside the `#if 0` block. Keep that in mind if you edit it.

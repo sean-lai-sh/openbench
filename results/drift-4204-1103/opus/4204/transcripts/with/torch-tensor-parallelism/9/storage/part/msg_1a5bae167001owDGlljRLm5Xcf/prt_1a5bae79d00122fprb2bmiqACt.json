@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a5bae79d00122fprb2bmiqACt",
+  "sessionID": "ses_e5a458be4ffenmMBK0R44jaOj4",
+  "messageID": "msg_1a5bae167001owDGlljRLm5Xcf",
+  "type": "tool",
+  "callID": "toolu_vrtx_01H9dj1ZheMmECbqDzXfud8w",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-sphid_yb/bench_opencode_torch-tensor-parallelism_z_f9hkdd && cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(port)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    I,O=8,16\n    W=torch.randn(O,I); x=torch.randn(3,5,I,requires_grad=True)\n    ref=torch.nn.Linear(I,O); ref.weight.data.copy_(W); ref.bias.data.zero_()\n    y=ref(x); y.sum().backward()\n    for cls in (ColumnParallelLinear, RowParallelLinear):\n        m=cls(I,O,True,W); x2=x.detach().clone().requires_grad_()\n        out=m(x2); out.sum().backward()\n        assert torch.allclose(out,y,atol=1e-5), cls\n        assert torch.allclose(x2.grad,x.grad,atol=1e-5), cls\n        if cls is ColumnParallelLinear:\n            s=O//ws; sl=slice(rank*s,(rank+1)*s)\n            assert torch.allclose(m.weight.grad, ref.weight.grad[sl]); assert torch.allclose(m.bias.grad, ref.bias.grad[sl])\n        else:\n            s=I//ws; sl=slice(rank*s,(rank+1)*s)\n            assert torch.allclose(m.weight.grad, ref.weight.grad[:,sl]); assert torch.allclose(m.bias.grad, ref.bias.grad)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for i,ws in enumerate((1,2,4)):\n        mp.spawn(run,args=(ws,29600+i),nprocs=ws); print(\"ok\",ws)\nEOF\npython /tmp/tp_test.py",
+      "description": "Run distributed correctness test",
+      "timeout": 300000
+    },
+    "output": "ok 1\nok 2\nok 4\n",
+    "title": "cd /tmp/obench-cell-sphid_yb/bench_opencode_torch-tensor-parallelism_z_f9hkdd && cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(port)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    I,O=8,16\n    W=torch.randn(O,I); x=torch.randn(3,5,I,requires_grad=True)\n    ref=torch.nn.Linear(I,O); ref.weight.data.copy_(W); ref.bias.data.zero_()\n    y=ref(x); y.sum().backward()\n    for cls in (ColumnParallelLinear, RowParallelLinear):\n        m=cls(I,O,True,W); x2=x.detach().clone().requires_grad_()\n        out=m(x2); out.sum().backward()\n        assert torch.allclose(out,y,atol=1e-5), cls\n        assert torch.allclose(x2.grad,x.grad,atol=1e-5), cls\n        if cls is ColumnParallelLinear:\n            s=O//ws; sl=slice(rank*s,(rank+1)*s)\n            assert torch.allclose(m.weight.grad, ref.weight.grad[sl]); assert torch.allclose(m.bias.grad, ref.bias.grad[sl])\n        else:\n            s=I//ws; sl=slice(rank*s,(rank+1)*s)\n            assert torch.allclose(m.weight.grad, ref.weight.grad[:,sl]); assert torch.allclose(m.bias.grad, ref.bias.grad)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for i,ws in enumerate((1,2,4)):\n        mp.spawn(run,args=(ws,29600+i),nprocs=ws); print(\"ok\",ws)\nEOF\npython /tmp/tp_test.py",
+    "metadata": {
+      "output": "ok 1\nok 2\nok 4\n",
+      "exit": 0,
+      "description": "Run distributed correctness test"
+    },
+    "time": {
+      "start": 1793781857939,
+      "end": 1793781866645
+    }
+  }
+}

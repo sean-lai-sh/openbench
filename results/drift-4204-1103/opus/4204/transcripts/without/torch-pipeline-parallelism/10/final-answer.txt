@@ -1,0 +1,18 @@
+I've written `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on a small 5-layer LLaMA (CPU, gloo backend) against a normal single-process run of the same model. With 1 and 2 processes, the loss was identical (4.8747) and the gradients matched the reference exactly (max difference 0). I deleted that test script afterwards, so it isn't in the folder.
+
+**How it works:**
+- **Splitting the layers:** each rank gets a consecutive block of decoder layers, and if they don't divide evenly the earlier ranks take one extra. With 5 layers on 2 ranks, rank 0 runs 3 and rank 1 runs 2. Rank 0 also runs the embedding, and the last rank runs the final norm and `lm_head`.
+- **Forward, all microbatches first:**
+  - Rank 0 embeds the token IDs (moved to `device`).
+  - Every other rank receives hidden states of shape `[mb, seq, hidden]` into a `dtype` buffer on `device`. It marks them as needing gradients and runs its layers.
+  - All ranks except the last send their output to the next rank using `dist.P2POp` with `batch_isend_irecv`.
+  - The last rank computes `cross_entropy(logits, targets) / num_microbatches` and keeps the losses.
+- **Backward, all microbatches after:**
+  - The last rank calls backward on each saved loss.
+  - The other ranks receive the gradient for their output and pass it into `torch.autograd.backward`.
+  - Every rank except rank 0 sends the gradient of its input back to the previous rank, in `dtype` on `device`.
+- **Hooks:** the code uses no hooks. It calls the model's own modules (`embed_tokens`, `layers[i]`, `norm`, `lm_head`), so hooks the test registers on them still fire.
+
+Two behaviours you might not expect:
+- **Return value:** the last rank returns the total scaled loss as a float, and other ranks return `None`.
+- **Optimizer:** the function only computes gradients and doesn't run an optimizer step.
