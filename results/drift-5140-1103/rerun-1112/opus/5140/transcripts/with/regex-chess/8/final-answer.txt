@@ -1,0 +1,27 @@
+I've written `re.json`: 2,404 [regex, replacement] pairs, about 294 KB, well under both limits. It passes every test I ran with no failures:
+- **Your example position** gives exactly the three FENs you expected.
+- **`check.py`** (with its `/app/re.json` path changed to point here) passes all 18 positions from Morphy's Opera Game.
+- **16 hand-made positions** covering castling (including castling out of, through or into check), lost castling rights, en-passant (including one where the capture is illegal because it exposes the king along the rank), and promotion with and without capture.
+- **About 650 positions** from random games, compared move-for-move against the `python-chess` library using the same rules as `check.py`.
+
+The main cost is speed: each position takes about 0.7 seconds. That's mostly Python recompiling the regexes, because there are more of them than its regex cache holds. If your grader has a tight time limit, this could be a problem.
+
+**How the rules work, in order:**
+1. **Set-up:** expand the board into 64 characters, one per square with `.` for empty, then keep only the castling and en-passant fields.
+2. **Generate moves:** each rule is tied to the start of the string, so it only reads the original line. If its piece can make its move (the move is possible, ignoring check), it adds a new line with the resulting position. There are rules for:
+   - rooks, bishops and queens (queens share the rook and bishop rules), with the squares in between required to be empty
+   - knights and the king
+   - pawn pushes and captures, with promotion to queen on the last rank
+   - double pawn pushes, which set the en-passant square
+   - en-passant captures, only when the input's en-passant field matches
+   - castling, only when that castling right is still listed
+3. **Remove the original line.**
+4. **Remove illegal moves:** one large regex deletes any line where the white king is attacked by a rook or queen along a line, a bishop or queen along a diagonal, a knight, a pawn or the black king. For castling, the king's start square and the square it passes through are temporarily marked so they get the same check.
+5. **Update castling rights:** a right is dropped when the white or black king or the matching rook is no longer on its starting square. This also covers rooks that get captured.
+6. **Rebuild the FEN:** put back the slashes and digits, then add `b`, the castling field (`-` if empty) and the en-passant field, followed by ` 0 0`.
+
+**Two behaviours you might notice:**
+- After a double pawn push I always write the en-passant square, even when black has no pawn that can capture. `check.py` accepts this because it also tries the position with that field set to `-`. Always writing `-` instead would fail whenever a capture is possible.
+- If white has no legal moves (checkmate or stalemate), the output is an empty string. `split("\n")` then returns `[""]`, a list with one item rather than none, so that case can't come out right with this function. White-to-move positions from real games shouldn't hit it.
+
+The script that builds `re.json` is at `/tmp/gen/gen.py`, outside the project folder, and my test scripts are in the same folder.

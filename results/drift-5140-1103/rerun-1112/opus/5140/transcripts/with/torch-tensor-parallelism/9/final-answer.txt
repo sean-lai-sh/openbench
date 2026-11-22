@@ -1,0 +1,21 @@
+I created `parallel_linear.py` with both classes. I tested it with the gloo backend at world sizes 1, 2 and 4, comparing against a plain `nn.Linear` with the same weights and zero bias. Outputs, weight gradients, bias gradients and input gradients all matched.
+
+**`ColumnParallelLinear`**
+- The weight has shape `(out_features, in_features)`, like `nn.Linear`. It is split along the output dimension, so each rank keeps rows `[r*out/ws, (r+1)*out/ws)` of `master_weight`.
+- The bias is split the same way and starts at zero.
+- Each rank computes its slice of the output, then the slices are joined along the last dimension with `all_gather`.
+- During backprop, each rank's output gradient is cut back to its own slice. The input gradient is summed across ranks with `all_reduce`, so it equals the full gradient.
+
+**`RowParallelLinear`**
+- The weight is split along the input dimension, so each rank keeps columns `[r*in/ws, (r+1)*in/ws)`.
+- The bias stays full size on every rank and starts at zero.
+- Each rank computes a partial output from its slice of the input. The partial outputs are summed with `all_reduce`, and the bias is added once, after the sum.
+- During backprop, the input gradient is reassembled with `all_gather`.
+
+**Things to know:**
+- **Input to `RowParallelLinear`:** it accepts either the full input or input that is already split. It splits only when the last dimension equals `in_features`, so a full input and a pre-split one are handled automatically.
+- **Divisibility:** `out_features` (column) and `in_features` (row) must divide evenly by the world size; otherwise construction fails an `assert`.
+- **Running without distributed:** if `torch.distributed` hasn't been initialised, both classes act as a single rank (world size 1, rank 0).
+- **Editor warnings:** the type checker flags the `backward` methods with signature warnings. That's the standard way to write custom autograd functions and doesn't affect running the code.
+
+The test script is at `/tmp/tp_test.py`, outside your project folder.

@@ -1,0 +1,16 @@
+I wrote `train_step_pipeline_afab` in `pipeline_parallel.py`. In a small local test it matched a normal (non-pipelined) LLaMA model exactly at both `world_size=1` and `world_size=2`: same loss (4.61706) and gradients with a max difference of 0.
+
+**How the work is split:**
+- **Layers:** each rank gets a contiguous block of decoder layers of roughly equal size. If they don't divide evenly, the extra layers go to the lower ranks. With 5 layers on 2 ranks, rank 0 runs 3 and rank 1 runs 2.
+- **Rank 0** also runs the token embedding.
+- **The last rank** also runs the final norm and `lm_head`, then computes `cross_entropy(logits, targets) / num_microbatches`.
+- **Each stage** works out its own position IDs, rotary embeddings and causal mask, then calls the decoder layer modules directly, as `LlamaModel.forward` does. Calling the actual modules means the test's hooks still see every layer's activations. The implementation itself uses no hooks.
+
+**Schedule (all-forward, then all-backward):**
+1. **Forward:** for every microbatch, each rank receives hidden states `[mb, seq, hidden]` from the previous rank, runs its layers, and sends the result on. The received tensor is marked as needing gradients, and the inputs and outputs are kept for the backward pass.
+2. **Backward:** for every microbatch, the last rank calls `loss.backward()`. Other ranks receive the output gradient and backpropagate it. Every rank except rank 0 then sends the gradient of its input to the previous rank.
+- All sends and receives use `dist.P2POp` with `batch_isend_irecv`. Inputs, hidden states and gradients are moved to the given `device` and `dtype`.
+
+The function returns the summed, scaled loss on the last rank and `None` on the others.
+
+My test used a tiny randomly initialised model on CPU with float32 and the gloo backend, comparing gradients directly rather than through the hooks your test uses. I've deleted the test script.

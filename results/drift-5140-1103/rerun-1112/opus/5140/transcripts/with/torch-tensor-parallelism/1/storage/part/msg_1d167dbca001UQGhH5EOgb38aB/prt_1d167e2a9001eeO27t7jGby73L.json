@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d167e2a9001eeO27t7jGby73L",
+  "sessionID": "ses_e2e988cedffeG9eIhVk9RWXT2J",
+  "messageID": "msg_1d167dbca001UQGhH5EOgb38aB",
+  "type": "tool",
+  "callID": "toolu_vrtx_01B9cWoHsMZtW6Y2ynSazwWz",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, \"/tmp/obench-cell-c51_ouun/bench_opencode_torch-tensor-parallelism_clv9puw5\")\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\n\ndef run(rank, ws, port):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(port)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    I, O, B = 8, 12, 3\n    W = torch.randn(O, I); x = torch.randn(B, I)\n    for cls in (ColumnParallelLinear, RowParallelLinear):\n        ref = torch.nn.Linear(I, O); ref.weight.data.copy_(W); ref.bias.data.zero_()\n        m = cls(I, O, True, W)\n        xr = x.clone().requires_grad_(); xm = x.clone().requires_grad_()\n        yr = ref(xr); ym = m(xm)\n        assert torch.allclose(yr, ym, atol=1e-5), cls\n        (yr**2).sum().backward(); (ym**2).sum().backward()\n        if cls is ColumnParallelLinear:\n            n = O//ws; s = slice(rank*n,(rank+1)*n)\n            assert torch.allclose(m.weight.grad, ref.weight.grad[s], atol=1e-5)\n            assert torch.allclose(m.bias.grad, ref.bias.grad[s], atol=1e-5)\n        else:\n            n = I//ws; s = slice(rank*n,(rank+1)*n)\n            assert torch.allclose(m.weight.grad, ref.weight.grad[:, s], atol=1e-5)\n            assert torch.allclose(m.bias.grad, ref.bias.grad, atol=1e-5)\n        assert torch.allclose(xm.grad, xr.grad, atol=1e-5), (\"xgrad\", cls)\n    dist.destroy_process_group()\n    if rank == 0: print(\"ok ws\", ws)\n\nif __name__ == \"__main__\":\n    for i, ws in enumerate([1,2,4]):\n        mp.spawn(run, args=(ws, 29600+i), nprocs=ws)\nEOF\npython /tmp/tp_test.py",
+      "description": "Test parallel linear across world sizes",
+      "timeout": 300000
+    },
+    "output": "ok ws 1\nok ws 2\nok ws 4\n",
+    "title": "Test parallel linear across world sizes",
+    "metadata": {
+      "output": "ok ws 1\nok ws 2\nok ws 4\n",
+      "exit": 0,
+      "description": "Test parallel linear across world sizes"
+    },
+    "time": {
+      "start": 1794514615292,
+      "end": 1794514621919
+    }
+  }
+}

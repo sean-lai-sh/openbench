@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2c0bcf70016ag07oMR789iRH",
+  "sessionID": "ses_e2d3f7699ffeRnAjKM0kzDjCAl",
+  "messageID": "msg_1d2c0995e0010FDpAMVZ01JasA",
+  "type": "tool",
+  "callID": "toolu_vrtx_01DLHCvuvvMxpCLyt57ye5oD",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-io8g8tz6/bench_opencode_model-extraction-relu-logits_1it18755/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, depth=0, out=None):\n    \"\"\"Find t values where g(t)=f(x0+t d) has a kink in [lo, hi].\"\"\"\n    if out is None:\n        out = []\n    g = lambda t: f(x0 + t * d)\n    h = 1e-7 * max(1.0, hi - lo)\n    glo, ghi = g(lo), g(hi)\n    slo = (g(lo + h) - glo) / h\n    shi = (ghi - g(hi - h)) / h\n    scale = max(1.0, abs(glo), abs(ghi))\n    mid = 0.5 * (lo + hi)\n    gm = g(mid)\n    if abs(slo - shi) < 1e-6 * max(1.0, abs(slo)):\n        # same slope at both ends: linear if mid matches\n        if abs(gm - (glo + slo * (mid - lo))) < 1e-9 * scale:\n            return out\n    else:\n        # candidate single kink: intersection of the two end lines\n        tk = (ghi - glo + slo * lo - shi * hi) / (slo - shi)\n        if lo < tk < hi:\n            pred = glo + slo * (tk - lo)\n            # verify single kink: value at tk and at two interior points\n            ok = abs(g(tk) - pred) < 1e-9 * scale\n            if ok:\n                for q in (0.5 * (lo + tk), 0.5 * (tk + hi)):\n                    if q <= tk:\n                        p = glo + slo * (q - lo)\n                    else:\n                        p = ghi + shi * (q - hi)\n                    if abs(g(q) - p) > 1e-9 * scale:\n                        ok = False\n                        break\n            if ok:\n                out.append(tk)\n                return out\n    if hi - lo < 1e-6 or depth > 60:\n        out.append(mid)\n        return out\n    find_kinks(x0, d, lo, mid, depth + 1, out)\n    find_kinks(x0, d, mid, hi, depth + 1, out)\n    return out\n\n\ndef gradient(x, h=1e-6):\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef row_at_kink(x0, d, t, delta=1e-4):\n    dn = d / np.linalg.norm(d)\n    p = x0 + t * d\n    g1 = gradient(p + delta * dn, h=delta / 50)\n    g2 = gradient(p - delta * dn, h=delta / 50)\n    diff = g1 - g2\n    n = np.linalg.norm(diff)\n    if n < 1e-8:\n        return None\n    return diff / n\n\n\ndef canon(v):\n    i = np.argmax(np.abs(v))\n    return v * np.sign(v[i])\n\n\nrows = []\nno_new = 0\nit = 0\nwhile no_new < 40 and it < 500:\n    it += 1\n    x0 = rng.normal(size=DIM) * 0.5\n    d = rng.normal(size=DIM)\n    d /= np.linalg.norm(d)\n    kinks = find_kinks(x0, d, -20.0, 20.0)\n    found_new = False\n    for t in kinks:\n        r = row_at_kink(x0, d, t)\n        if r is None:\n            continue\n        r = canon(r)\n        match = False\n        for k, (rr, cnt) in enumerate(rows):\n            if np.linalg.norm(rr - r) < 1e-3:\n                # running average for refinement\n                rows[k] = ((rr * cnt + r) / (cnt + 1), cnt + 1)\n                match = True\n                break\n        if not match:\n            rows.append((r, 1))\n            found_new = True\n    no_new = 0 if found_new else no_new + 1\n\n# keep rows seen more than once (filters spurious detections) if possible\ngood = [r for r, c in rows if c >= 2]\nif len(good) == 0:\n    good = [r for r, c in rows]\nA1_stolen = np.array(good)\nprint(f\"Recovered {A1_stolen.shape[0]} neurons\")\nprint(A1_stolen)\nnp.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_stolen)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-io8g8tz6/bench_opencode_model-extraction-relu-logits_1it18755/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-io8g8tz6/bench_opencode_model-extraction-relu-logits_1it18755/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794537221580,
+      "end": 1794537228001
+    }
+  }
+}

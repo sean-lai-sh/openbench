@@ -1,0 +1,27 @@
+{
+  "id": "prt_1a3bc9708001wjwPt7tk7nRSpU",
+  "sessionID": "ses_e5c452d3cffeJnNFWbQhTFw545",
+  "messageID": "msg_1a3bc9128001HUCHzkvZxuHLlV",
+  "type": "tool",
+  "callID": "toolu_vrtx_01FLPE9wZ8715v3494rT1sNb",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "mkdir -p /tmp/pptest && cat > /tmp/pptest/t.py <<'EOF'\nimport os, sys, torch, copy\nimport torch.distributed as dist\nimport torch.multiprocessing as mp\nsys.path.insert(0, \"/tmp/obench-cell-m2_wyowt/bench_opencode_torch-pipeline-parallelism_8dn8r3i5\")\nfrom transformers import LlamaConfig, LlamaForCausalLM\nimport torch.nn.functional as F\n\ndef run(rank, ws, port):\n    os.environ.update(MASTER_ADDR=\"127.0.0.1\", MASTER_PORT=str(port))\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    from pipeline_parallel import train_step_pipeline_afab\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=100, hidden_size=32, intermediate_size=64, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)\n    dtype=torch.float32; dev=torch.device(\"cpu\")\n    ref = LlamaForCausalLM(cfg).to(dtype); model = copy.deepcopy(ref)\n    ins = [torch.randint(0,100,(2,8)) for _ in range(3)]; tg = [torch.randint(0,100,(2,8)) for _ in range(3)]\n    for i,t in zip(ins,tg):\n        l = ref(i).logits; (F.cross_entropy(l.reshape(-1,100), t.reshape(-1))/3).backward()\n    loss = train_step_pipeline_afab(model, ins, tg, dev, dtype)\n    md=0; n=0\n    for (nm,p),(_,q) in zip(ref.named_parameters(), model.named_parameters()):\n        if q.grad is not None:\n            n+=1; md=max(md,(p.grad-q.grad).abs().max().item())\n    print(f\"ws={ws} rank={rank} loss={loss} params_with_grad={n} maxdiff={md:.2e}\")\n    dist.destroy_process_group()\n\nif __name__==\"__main__\":\n    for ws,port in ((1,29511),(2,29512)):\n        mp.spawn(run, args=(ws,port), nprocs=ws)\nEOF\nPYTHONPATH=/tmp/tfpkgs python /tmp/pptest/t.py 2>&1 | grep -v Warning",
+      "description": "Test pipeline vs reference gradients",
+      "timeout": 300000
+    },
+    "output": "ws=1 rank=0 loss=4.617061138153076 params_with_grad=48 maxdiff=0.00e+00\nws=2 rank=1 loss=4.617061138153076 params_with_grad=20 maxdiff=0.00e+00\nws=2 rank=0 loss=None params_with_grad=28 maxdiff=0.00e+00\n",
+    "title": "Test pipeline vs reference gradients",
+    "metadata": {
+      "output": "ws=1 rank=0 loss=4.617061138153076 params_with_grad=48 maxdiff=0.00e+00\nws=2 rank=1 loss=4.617061138153076 params_with_grad=20 maxdiff=0.00e+00\nws=2 rank=0 loss=None params_with_grad=28 maxdiff=0.00e+00\n",
+      "exit": 0,
+      "description": "Test pipeline vs reference gradients"
+    },
+    "time": {
+      "start": 1793748414610,
+      "end": 1793748463622
+    }
+  }
+}

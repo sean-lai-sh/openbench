@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d23a594b0010QZhEyUjAMy7w9",
+  "sessionID": "ses_e2dc5a74dffeQ2DSHyfyJqhyuH",
+  "role": "user",
+  "time": {
+    "created": 1794528401739
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I've created `filter.py`. Run it as `python3 filter.py file.html` and it removes JavaScript from the file in place, using only Python's standard library.\n\n**Testing:** I ran it on a clean sample page with a doctype, meta, style, comments, a table, links, a form, a textarea, entities and a `data:image/png` image. The output was byte-for-byte identical to the input. I also ran it on about 30 common XSS attacks, and every script, event handler and `javascript:` link was gone afterwards. I haven't tested it in a real browser or on real-world pages.\n\n**Formatting:** it doesn't rebuild the HTML from a parse tree. It reads the markup the way a browser does and rewrites only the parts it removes, so whitespace, quoting, case, entities and line endings stay exactly as they were. If nothing dangerous is found, the file isn't rewritten at all.\n\n**What it removes:**\n- **Whole elements, including their content:** `<script>`, `<iframe>`, `<noscript>`, `<noembed>`, `<noframes>`, `<handler>`.\n- **Just the tag (any content inside stays and is still filtered):** `<object>`, `<embed>`, `<applet>`, `<base>`, `<frame>`, `<frameset>`, `<isindex>`, and tags with invalid names such as `<scr<script>`.\n- **Some `<meta>` and `<link>` tags:** a meta refresh pointing to a `javascript:` or `data:` URL, a meta set-cookie, a UTF-7 charset, and `<link rel=import>`.\n- **Attributes:**\n  - all `on*` event handlers, plus `srcdoc`\n  - any value starting with `javascript:` or `vbscript:` (and similar), including hidden versions like `jav&#x09;ascript:`, `&#106;...` or `javascript&colon;`\n  - `data:` URLs, except ordinary raster images such as PNG or JPEG\n  - SVG animation tricks like `values=\"javascript:…\"`\n  - `style` attributes containing `expression(`, `behavior`, `-moz-binding` or script URLs, even when hidden with CSS escapes or comments\n- **`<style>` blocks** containing the same dangerous CSS. Any tags inside `<style>`, `<textarea>`, `<title>` or `<xmp>` are filtered too, which covers attacks that rely on SVG or MathML being parsed differently.\n- **Comments that could hide markup:** IE conditional comments, and any comment containing `<`, `>` or script-related text.\n\n**Where it removes more than strictly necessary** (I erred on the side of safety):\n- A `title` or other attribute whose text contains something like `onclick=` is removed, even though browsers would treat it as plain text.\n- An `<img src=\"data:image/svg+xml,…\">` is removed.\n- Legitimate comments are deleted if they contain `<`, `>` or words like \"script\".\n- `<object>` and `<embed>` tags (such as video or Flash embeds) are always removed.\n\nYou can relax any of these if your pages rely on them.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

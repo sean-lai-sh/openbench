@@ -1,0 +1,28 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it with 1 and 2 processes on CPU against a reference model, and the gradients matched exactly. The test model was a small LLaMA (5 layers, 3 microbatches) on transformers 5.22.2. I didn't run the activation-hook comparison your tests will use.
+
+**How it works:**
+- **Splitting the layers:** the decoder layers are divided as evenly as possible, with the extra layers going to the lower ranks. With 5 layers on 2 ranks, rank 0 runs 3 and rank 1 runs 2. Rank 0 also runs the embedding; the last rank also runs the final norm and output layer and computes the loss.
+- **Forward pass, all microbatches first:**
+  - Rank 0 turns the input IDs into embeddings.
+  - Every other rank receives a `[microbatch, seq_len, hidden_size]` tensor from the previous rank, marks it as needing gradients, and runs its own layers.
+  - Each layer gets the same position IDs, rotary embeddings and causal mask that `LlamaModel` builds.
+  - Each rank except the last sends its output to the next rank.
+  - The last rank computes `cross_entropy(...) / num_microbatches`.
+- **Backward pass, all microbatches after:**
+  - The last rank runs backward on each microbatch's loss.
+  - Other ranks receive the output gradient from the next rank and run backward with it.
+  - Every rank except rank 0 sends its input gradient back to the previous rank.
+- Every send and receive uses `torch.distributed.P2POp` with `batch_isend_irecv`. Inputs, hidden states and gradients are always moved to the given `device` and `dtype`, and there are no hooks.
+
+**Things to know:**
+- The model isn't changed. Each rank keeps the full model and only runs its own share of layers, so only those parameters get gradients.
+- The function returns the summed loss on the last rank and `None` on the other ranks. It doesn't take an optimizer step, because none is passed in, so it only fills in the gradients.
+- The code assumes the targets are already shifted to line up with the inputs.
+- If the transformers function that builds the causal mask (`create_causal_mask`) fails, the code falls back to a simpler mask it builds itself. Only the normal path ran in testing.
+
+**Test results:**
+
+| Processes | Loss vs reference | Max gradient difference | Parameters with gradients |
+|---|---|---|---|
+| 1 | 4.6004 vs 4.6004 | 0 | 48 |
+| 2 | 4.6004 vs 4.6004 | 0 | 20 on rank 0, 28 on rank 1 |

@@ -1,0 +1,34 @@
+I've written `convert_masks.py` in your working directory. On the demo files it turns all 48 masks into polylines: none overlap, each is a single connected piece, and none is a rectangle. It runs on CPU in about 7 seconds.
+
+**Setup:** `mobile_sam` wasn't installed here, so I installed it, plus pandas and opencv, to test the script. MobileSAM itself needs `timm`, which isn't on your list of packages, so make sure the test machine has it. Installing `timm` also replaced torchvision with a version that didn't work with the installed torch, and I had to put back the matching CPU build. That's worth checking when you set up the test machine.
+
+**How the script works:**
+1. It loads MobileSAM's small model on CPU and processes the image once.
+2. For each row it asks MobileSAM for three candidate outlines, using the annotation's bounding <USER> as the prompt. For polylines it also gives a point well inside the original outline.
+3. It picks one candidate per cell:
+   - **Polylines:** a mix of MobileSAM's own confidence and how closely the outline matches the original annotation.
+   - **Rectangles:** MobileSAM's confidence, marked down if the outline fills almost the whole <USER> (likely background) or covers very little of it.
+4. It cleans each mask up: smooths it, keeps only the largest piece, fills holes, and stops it from spreading more than about 15% outside the original <USER>.
+5. It removes overlaps by letting smaller cells claim contested pixels first, so big masks don't swallow small ones. It also leaves a 1-pixel gap between neighbouring cells, so outlines don't overlap when they're redrawn.
+6. If a mask comes out empty, it falls back to the original outline (or an ellipse for rectangles). If any output outline would still be a plain rectangle, its corners are cut.
+
+**Checks on the demo:** I redrew every output outline and confirmed:
+- No pixel belongs to more than one cell.
+- Every mask is one connected piece and none is a rectangle.
+- xmin/xmax/ymin/ymax match the new coordinates.
+- All other columns are unchanged.
+
+I also drew the new outlines over the image, and they follow the nuclei closely.
+
+**Two weak results on the demo:** both came from rectangle prompts. For the rectangle at (246, 0), the new mask is a thin sliver in a corner, and the large rectangle at (43, 67) gave a long thin shape.
+
+**Arguments:** you can pass them as flags or positionally in the order weights, output, rgb, csv:
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out/ --rgb_path img.png --csv_path meta.csv
+```
+
+**Output file:** if `output_path` is a folder, the CSV is saved inside it under the input CSV's file name. If it ends in `.csv`, it's written to that exact path.
+
+**Decision for you:** besides the <USER> and coordinate columns, I also set the `type` column to `polyline` for every row, since all masks now are. If you want `type` left exactly as in the input, delete the two lines that set it near the end of the script.
+
+The editor flagged some type-check errors on the pandas-to-int conversions near the end of the script. They come from the type checker, not real bugs, and the script runs fine.

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d1b0f397001s4ZUbRLnbUj643",
+  "sessionID": "ses_e2e4fab9bffeIXHL8idcWdipHC",
+  "messageID": "msg_1d1b06209001UyZT1KecVqIrWd",
+  "type": "tool",
+  "callID": "toolu_vrtx_011A1VroiyeQTGDnfsNB76j2",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-22yjiwx3/bench_opencode_model-extraction-relu-logits_lyoax6gb/steal.py",
+      "content": "\"\"\"Extract A1 (up to neuron permutation and positive scaling) from a\none-hidden-layer ReLU network using only black-<USER> queries to forward().\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nrng = np.random.default_rng(1234)\nnq = 0\n\n\ndef f(x):\n    global nq\n    nq += 1\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef grad(x, h=1e-6):\n    g = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM); e[i] = h\n        g[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef find_kinks(x0, d, a, b, fa, fb, sa, sb, out, depth=0):\n    \"\"\"Find kinks of g(t)=f(x0+t d) in [a,b]. sa/sb are slopes at a/b.\"\"\"\n    tol = 1e-9 * (1 + abs(sa) + abs(sb))\n    if abs(sa - sb) < tol:\n        # same slope; check linearity at midpoint\n        m = 0.5 * (a + b)\n        fm = f(x0 + m * d)\n        if abs(fm - (fa + sa * (m - a))) < 1e-10 * (1 + abs(fm)):\n            return\n    elif b - a > 1e-9:\n        # assume one kink: intersection of the two lines\n        t = (fb - fa + sa * a - sb * b) / (sa - sb)\n        if a < t < b:\n            ft = f(x0 + t * d)\n            if abs(ft - (fa + sa * (t - a))) < 1e-10 * (1 + abs(ft)):\n                out.append(t)\n                return\n    if depth > 60 or b - a < 1e-10:\n        return\n    m = 0.5 * (a + b)\n    fm = f(x0 + m * d)\n    hs = 1e-7 * (b - a)\n    sm_l = (fm - f(x0 + (m - hs) * d)) / hs\n    sm_r = (f(x0 + (m + hs) * d) - fm) / hs\n    find_kinks(x0, d, a, m, fa, fm, sa, sm_l, out, depth + 1)\n    find_kinks(x0, d, m, b, fm, fb, sm_r, sb, out, depth + 1)\n\n\ndef slope(x0, d, t, side, h=1e-6):\n    return (f(x0 + (t + side * h) * d) - f(x0 + t * d)) / (side * h)\n\n\nnormals, jumps, offsets = [], [], []\n\n\ndef add_neuron(p, d):\n    eps = 1e-4\n    u = grad(p + eps * d) - grad(p - eps * d)  # jump crossing along d\n    nu = np.linalg.norm(u)\n    if nu < 1e-7:\n        return False\n    n = u / nu\n    if n @ d < 0:\n        n = -n\n    # n oriented so that \"positive side\" is where d points; u = jump neg->pos\n    c = -n @ p  # hyperplane: n.x + c = 0\n    for i, m in enumerate(normals):\n        if abs(abs(m @ n) - 1) < 1e-5:\n            return False\n    normals.append(n); jumps.append(u); offsets.append(c)\n    return True\n\n\nT = 20.0\nno_new = 0\nlines = 0\nwhile no_new < 30 and lines < 2000:\n    lines += 1\n    x0 = rng.normal(size=DIM)\n    d = rng.normal(size=DIM); d /= np.linalg.norm(d)\n    a, b = -T, T\n    fa, fb = f(x0 + a * d), f(x0 + b * d)\n    sa, sb = slope(x0, d, a, +1), slope(x0, d, b, -1)\n    ks = []\n    find_kinks(x0, d, a, b, fa, fb, sa, sb, ks)\n    new = 0\n    for t in ks:\n        if add_neuron(x0 + t * d, d):\n            new += 1\n    no_new = 0 if new else no_new + 1\n\nN = np.array(normals)\nU = np.array(jumps)\nC = np.array(offsets)\nk = len(N)\nprint(f\"found {k} neurons with {nq} queries\")\n\n# ---- Sign recovery ----\n# grad(x) = sum_i U_i [n_i.x + c_i > 0] - sum_{sigma_i=-1} U_i\n# so r = sum_i U_i [pos_i(x)] - grad(x) = sum of U_i over flipped neurons.\nsigns = np.ones(k)\nrs = []\nfor _ in range(5):\n    x = rng.normal(size=DIM)\n    pos = (N @ x + C) > 0\n    rs.append(U[pos].sum(0) - grad(x))\nr = np.mean(rs, axis=0)\nif k <= 26:\n    h1 = k // 2\n    h2 = k - h1\n\n    def all_sums(V):\n        m = len(V)\n        masks = np.arange(2 ** m)\n        bits = ((masks[:, None] >> np.arange(m)) & 1).astype(np.float64)\n        return bits @ V if m else np.zeros((1, DIM)), bits\n\n    S1, B1 = all_sums(U[:h1])\n    S2, B2 = all_sums(U[h1:])\n    best = (np.inf, None, None)\n    chunk = max(1, 2 ** 22 // max(1, len(S2)))\n    for s in range(0, len(S1), chunk):\n        D = np.linalg.norm(S1[s:s + chunk, None, :] + S2[None, :, :] - r, axis=2)\n        idx = np.unravel_index(np.argmin(D), D.shape)\n        if D[idx] < best[0]:\n            best = (D[idx], s + idx[0], idx[1])\n    err, i1, i2 = best\n    flip = np.concatenate([B1[i1], B2[i2]]).astype(bool)\n    print(f\"sign recovery residual {err:.3e}, flipped {flip.sum()}\")\n    signs[flip] = -1\nelse:\n    print(\"too many neurons for exact sign recovery; signs arbitrary\")\n\nA1_stolen = signs[:, None] * N\nnp.save(OUT, A1_stolen)\nprint(A1_stolen)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-22yjiwx3/bench_opencode_model-extraction-relu-logits_lyoax6gb/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-22yjiwx3/bench_opencode_model-extraction-relu-logits_lyoax6gb/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794519414283,
+      "end": 1794519420510
+    }
+  }
+}

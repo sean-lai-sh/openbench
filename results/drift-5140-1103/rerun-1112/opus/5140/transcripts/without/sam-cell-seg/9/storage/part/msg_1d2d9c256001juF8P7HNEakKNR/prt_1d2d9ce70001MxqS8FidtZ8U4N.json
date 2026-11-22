@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2d9ce70001MxqS8FidtZ8U4N",
+  "sessionID": "ses_e2d2993edffeMCDqzql4Q29c8p",
+  "messageID": "msg_1d2d9c256001juF8P7HNEakKNR",
+  "type": "tool",
+  "callID": "toolu_vrtx_01NYfd9EutjZkWxdWiAY2ivg",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-kir_djyj/bench_opencode_sam-cell-seg_79_s5xiw; python - <<'EOF'\nimport pandas as pd, numpy as np, cv2\nfrom PIL import Image, ImageDraw\nimg=np.array(Image.open('demo_rgb.png').convert('RGB'));H,W=img.shape[:2]\na=pd.read_csv('demo_metadata.csv',index_col=0);b=pd.read_csv('/tmp/msout/demo_metadata.csv',index_col=0)\nassert list(a.columns)==list(b.columns) and len(a)==len(b)\np=lambda s:np.array([int(float(v)) for v in str(s).split(',')])\ncnt_cv=np.zeros((H,W),int);cnt_pil=np.zeros((H,W),int);ious=[]\nvis=img.copy()\nfor (i,ra),(_,rb) in zip(a.iterrows(),b.iterrows()):\n    xs,ys=p(rb.coords_x),p(rb.coords_y)\n    assert xs.min()==rb.xmin and xs.max()==rb.xmax and ys.min()==rb.ymin and ys.max()==rb.ymax\n    assert not (len(set(zip(xs,ys)))==4 and len(set(xs))==2 and len(set(ys))==2), i\n    m=np.zeros((H,W),np.uint8);cv2.fillPoly(m,[np.stack([xs,ys],1).astype(np.int32)],1)\n    n,_=cv2.connectedComponents(m,connectivity=8); assert n==2,(i,n)\n    cnt_cv+=m\n    im=Image.new('L',(W,H),0);ImageDraw.Draw(im).polygon(list(zip(xs.tolist(),ys.tolist())),fill=1,outline=1);cnt_pil+=np.array(im)\n    mo=np.zeros((H,W),np.uint8);cv2.fillPoly(mo,[np.stack([p(ra.coords_x),p(ra.coords_y)],1).astype(np.int32)],1)\n    ious.append((ra.type,(m&mo).sum()/(m|mo).sum(), m.sum()))\n    cv2.polylines(vis,[np.stack([xs,ys],1).astype(np.int32)],True,(0,255,0),1)\n    cv2.polylines(vis,[np.stack([p(ra.coords_x),p(ra.coords_y)],1).astype(np.int32)],True,(255,0,0),1)\nprint('max overlap cv2',cnt_cv.max(),'PIL',cnt_pil.max())\nd=pd.DataFrame(ious,columns=['type','iou','area']);print(d.groupby('type').iou.describe());print('min area',d.area.min())\nImage.fromarray(vis).resize((W*2,H*2),Image.NEAREST).save('/tmp/msout/vis.png')\nEOF",
+      "description": "Validate output and render overlay"
+    },
+    "output": "max overlap cv2 1 PIL 1\n           count     mean       std  ...       50%       75%       max\ntype                                 ...                              \npolyline    29.0  0.77319  0.067054  ...  0.769401  0.839370  0.866005\nrectangle   19.0  0.60328  0.131810  ...  0.608917  0.700924  0.822303\n\n[2 rows x 8 columns]\nmin area 290\n",
+    "title": "Validate output and render overlay",
+    "metadata": {
+      "output": "max overlap cv2 1 PIL 1\n           count     mean       std  ...       50%       75%       max\ntype                                 ...                              \npolyline    29.0  0.77319  0.067054  ...  0.769401  0.839370  0.866005\nrectangle   19.0  0.60328  0.131810  ...  0.608917  0.700924  0.822303\n\n[2 rows x 8 columns]\nmin area 290\n",
+      "exit": 0,
+      "description": "Validate output and render overlay"
+    },
+    "time": {
+      "start": 1794538859515,
+      "end": 1794538860200
+    }
+  }
+}

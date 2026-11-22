@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d1f39064001bS8wfONAgedjw6",
+  "sessionID": "ses_e2e0cf6bdffeTYDi5nv8VWmlxv",
+  "messageID": "msg_1d1f38863001QH7JaLt1fvzIw3",
+  "type": "tool",
+  "callID": "toolu_vrtx_01GfUWk3khgDMhPtT2SkaCKS",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, \"/tmp/obench-cell-l0epdwh5/bench_opencode_torch-tensor-parallelism_6kgeq8pt\")\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(port)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    I,O=8,16\n    W=torch.randn(O,I); x=torch.randn(3,5,I)\n    for cls, ax in [(ColumnParallelLinear,0),(RowParallelLinear,1)]:\n        ref=torch.nn.Linear(I,O); \n        with torch.no_grad(): ref.weight.copy_(W); ref.bias.zero_()\n        m=cls(I,O,True,W)\n        xr=x.clone().requires_grad_(); xm=x.clone().requires_grad_()\n        yr=ref(xr); ym=m(xm)\n        assert torch.allclose(yr,ym,atol=1e-5)\n        yr.pow(2).sum().backward(); ym.pow(2).sum().backward()\n        assert torch.allclose(m.weight.grad, ref.weight.grad.chunk(ws,ax)[rank],atol=1e-4)\n        bg = ref.bias.grad.chunk(ws)[rank] if ax==0 else ref.bias.grad\n        assert torch.allclose(m.bias.grad,bg,atol=1e-4)\n        assert torch.allclose(xm.grad,xr.grad,atol=1e-4)\n    if rank==0: print(\"ok ws\",ws)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for i,ws in enumerate([1,2,4]): mp.spawn(run,args=(ws,29600+i),nprocs=ws)\nEOF\npython /tmp/tp_test.py",
+      "description": "Test parallel linear layers",
+      "timeout": 180000
+    },
+    "output": "ok ws 1\nok ws 2\nok ws 4\n",
+    "title": "Test parallel linear layers",
+    "metadata": {
+      "output": "ok ws 1\nok ws 2\nok ws 4\n",
+      "exit": 0,
+      "description": "Test parallel linear layers"
+    },
+    "time": {
+      "start": 1794523768572,
+      "end": 1794523783950
+    }
+  }
+}

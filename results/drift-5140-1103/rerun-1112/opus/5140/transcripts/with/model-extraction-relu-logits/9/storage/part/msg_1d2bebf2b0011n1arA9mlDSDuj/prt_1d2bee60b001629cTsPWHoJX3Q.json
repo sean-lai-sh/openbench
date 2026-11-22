@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2bee60b001629cTsPWHoJX3Q",
+  "sessionID": "ses_e2d414d30ffevyp5RSUlF6uJzC",
+  "messageID": "msg_1d2bebf2b0011n1arA9mlDSDuj",
+  "type": "tool",
+  "callID": "toolu_vrtx_01KkzhwmbXyG5KabzmD3YSJt",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-ae8h5bm3/bench_opencode_model-extraction-relu-logits_aq22uv90/steal.py",
+      "content": "\"\"\"Extract A1 (up to neuron permutation and scaling) from a one-hidden-layer\nReLU network using only black-<USER> queries to forward(x).\n\nMethod: along random lines x0 + t*d, the network output is piecewise linear in t.\nEach kink corresponds to some hidden neuron crossing zero. At a kink, the jump in\nthe input gradient equals A2[j] * A1[j, :], i.e. the row of A1 up to scale.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, a, b, fa=None, fb=None, depth=0, out=None):\n    \"\"\"Recursively find kink locations of g(t) = f(x0 + t d) on [a, b].\"\"\"\n    if out is None:\n        out = []\n    g = lambda t: f(x0 + t * d)\n    if fa is None:\n        fa = g(a)\n    if fb is None:\n        fb = g(b)\n    h = 1e-7 * max(1.0, b - a)\n    sa = (g(a + h) - fa) / h\n    sb = (fb - g(b - h)) / h\n    scale = max(1e-12, abs(sa), abs(sb))\n    if abs(sa - sb) < 1e-7 * scale and abs((fb - fa) - sa * (b - a)) < 1e-9 * max(1, abs(fa)):\n        return out  # linear on the interval\n    if depth > 60 or b - a < 1e-12:\n        return out\n    # Single kink hypothesis: intersect lines from both ends\n    if abs(sa - sb) > 1e-12 * scale:\n        tc = (fb - fa + sa * a - sb * b) / (sa - sb)\n        if a < tc < b:\n            pred = fa + sa * (tc - a)\n            if abs(g(tc) - pred) < 1e-9 * max(1, abs(pred)):\n                # verify linearity on both sides of tc via midpoints\n                m1, m2 = (a + tc) / 2, (tc + b) / 2\n                ok1 = abs(g(m1) - (fa + sa * (m1 - a))) < 1e-9 * max(1, abs(fa))\n                ok2 = abs(g(m2) - (fb + sb * (m2 - b))) < 1e-9 * max(1, abs(fb))\n                if ok1 and ok2:\n                    out.append(tc)\n                    return out\n    m = (a + b) / 2\n    fm = g(m)\n    find_kinks(x0, d, a, m, fa, fm, depth + 1, out)\n    find_kinks(x0, d, m, b, fm, fb, depth + 1, out)\n    return out\n\n\ndef grad(x, h=1e-6):\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        gr[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef row_at_kink(x0, d, t, delta=1e-4):\n    g1 = grad(x0 + (t - delta) * d)\n    g2 = grad(x0 + (t + delta) * d)\n    diff = g2 - g1\n    n = np.linalg.norm(diff)\n    if n < 1e-8:\n        return None\n    return diff / n\n\n\ndef canon(v):\n    # fix sign so the largest-magnitude entry is positive\n    return v * np.sign(v[np.argmax(np.abs(v))])\n\n\ndef main():\n    rows = []\n    stale = 0\n    it = 0\n    while stale < 30 and it < 500:\n        it += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        kinks = find_kinks(x0, d, -50.0, 50.0)\n        new = 0\n        for t in kinks:\n            r = row_at_kink(x0, d, t)\n            if r is None:\n                continue\n            r = canon(r)\n            if any(abs(np.dot(r, q)) > 0.9999 for q in rows):\n                continue\n            rows.append(r)\n            new += 1\n        stale = 0 if new else stale + 1\n    A = np.array(rows)\n    print(f\"Recovered {A.shape[0]} neurons\")\n    print(A)\n    np.save(OUT, A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-ae8h5bm3/bench_opencode_model-extraction-relu-logits_aq22uv90/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-ae8h5bm3/bench_opencode_model-extraction-relu-logits_aq22uv90/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794537100968,
+      "end": 1794537107463
+    }
+  }
+}

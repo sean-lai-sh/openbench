@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2dc4f5e001wQete0Dn0iiYnk",
+  "sessionID": "ses_e2d242728ffe1z2yaOXiWmRgMB",
+  "messageID": "msg_1d2dc47ef001SWemlo3W3rMR0E",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Ho8h7gm4VZw2P8vY1huS3R",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-kai0vfcs/bench_opencode_torch-tensor-parallelism_s_ihavxy && cat > /tmp/t_pl.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ['MASTER_ADDR']='127.0.0.1'; os.environ['MASTER_PORT']=str(port)\n    dist.init_process_group('gloo', rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    I,O=8,12\n    W=torch.randn(O,I); x=torch.randn(3,5,I)\n    ref=torch.nn.Linear(I,O); ref.weight.data=W.clone(); ref.bias.data.zero_()\n    xr=x.clone().requires_grad_(); yr=ref(xr); (yr**2).sum().backward()\n    for cls,dim in [(ColumnParallelLinear,0),(RowParallelLinear,1)]:\n        m=cls(I,O,True,W.clone()); xx=x.clone().requires_grad_()\n        y=m(xx); (y**2).sum().backward()\n        assert torch.allclose(y,yr,atol=1e-5)\n        assert torch.allclose(xx.grad,xr.grad,atol=1e-4)\n        assert torch.allclose(m.weight.grad, ref.weight.grad.chunk(ws,dim)[rank],atol=1e-4)\n        bg = ref.bias.grad.chunk(ws)[rank] if dim==0 else ref.bias.grad\n        assert torch.allclose(m.bias.grad,bg,atol=1e-4)\n    if rank==0: print('ok',ws)\n    dist.destroy_process_group()\nif __name__=='__main__':\n    for i,ws in enumerate([1,2,4]): mp.spawn(run,args=(ws,29500+i),nprocs=ws)\nEOF\npython /tmp/t_pl.py",
+      "description": "Test parallel linear across world sizes"
+    },
+    "output": "ok 1\nok 2\nok 4\n",
+    "title": "Test parallel linear across world sizes",
+    "metadata": {
+      "output": "ok 1\nok 2\nok 4\n",
+      "exit": 0,
+      "description": "Test parallel linear across world sizes"
+    },
+    "time": {
+      "start": 1794539021679,
+      "end": 1794539028444
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "prt_1d1be26a0001zx5U81bDCF6sQ9",
+  "sessionID": "ses_e2e4549c2ffe1EMLYv4rW2eMni",
+  "messageID": "msg_1d1be1896001wnx1HtytqjEbNG",
+  "type": "tool",
+  "callID": "toolu_vrtx_011FPMdE5dnUsXvAw6uDFkid",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-iwdeb86q/bench_opencode_sam-cell-seg_smo93y8w/convert_masks.py",
+      "offset": 118,
+      "limit": 80
+    },
+    "output": "<file>\n00119|         isinstance(state, dict)\n00120|         and \"model\" in state\n00121|         and not any(k.startswith(\"image_encoder\") for k in state)\n00122|     ):\n00123|         state = state[\"model\"]\n00124|     sam.load_state_dict(state)\n00125|     sam.to(device)\n00126|     sam.eval()\n00127|     predictor = SamPredictor(sam)\n00128|     with torch.no_grad():\n00129|         predictor.set_image(image)\n00130| \n00131|     n = len(df)\n00132|     masks = []  # boolean full-image masks per cell\n00133|     logits = []  # float logit maps (full image) per cell, for overlap resolution\n00134|     boxes = []\n00135| \n00136|     # ---------------- per-cell SAM refinement ----------------\n00137|     for i in tqdm(range(n), desc=\"MobileSAM\"):\n00138|         row = df.iloc[i]\n00139|         xs = parse_coords(row[\"coords_x\"])\n00140|         ys = parse_coords(row[\"coords_y\"])\n00141|         if len(xs) >= 1 and len(ys) >= 1:\n00142|             x0, x1 = min(xs), max(xs)\n00143|             y0, y1 = min(ys), max(ys)\n00144|         else:\n00145|             x0, y0, x1, y1 = row[\"xmin\"], row[\"ymin\"], row[\"xmax\"], row[\"ymax\"]\n00146|         x0 = float(np.clip(x0, 0, W - 1))\n00147|         x1 = float(np.clip(x1, 0, W - 1))\n00148|         y0 = float(np.clip(y0, 0, H - 1))\n00149|         y1 = float(np.clip(y1, 0, H - 1))\n00150|         if x1 <= x0:\n00151|             x1 = min(W - 1, x0 + 1)\n00152|         if y1 <= y0:\n00153|             y1 = min(H - 1, y0 + 1)\n00154|         <USER> = np.array([x0, y0, x1, y1], dtype=np.float32)\n00155|         boxes.append(<USER>)\n00156| \n00157|         rect = is_rectangle(xs, ys) or str(row.get(\"type\", \"\")).lower() == \"rectangle\"\n00158|         prior = ellipse_mask(<USER>, (H, W)) if rect else polygon_mask(xs, ys, (H, W))\n00159|         if prior.sum() == 0:\n00160|             prior = ellipse_mask(<USER>, (H, W))\n00161| \n00162|         # restrict SAM output to a slightly enlarged <USER> region\n00163|         pad = max(2, int(0.1 * max(x1 - x0, y1 - y0)))\n00164|         region = np.zeros((H, W), dtype=bool)\n00165|         region[\n00166|             max(0, int(y0) - pad) : min(H, int(y1) + pad + 1),\n00167|             max(0, int(x0) - pad) : min(W, int(x1) + pad + 1),\n00168|         ] = True\n00169|         box_area = max(1.0, (x1 - x0 + 1) * (y1 - y0 + 1))\n00170| \n00171|         # <USER>-prompted MobileSAM; keep full-resolution logits for overlap resolution\n00172|         with torch.no_grad():\n00173|             box_t = predictor.transform.apply_boxes_torch(\n00174|                 torch.as_tensor(<USER>[None], device=predictor.device),\n00175|                 predictor.original_size,\n00176|             )\n00177|             lg_t, sc_t, _ = predictor.predict_torch(\n00178|                 point_coords=None,\n00179|                 point_labels=None,\n00180|                 boxes=box_t,\n00181|                 multimask_output=True,\n00182|                 return_logits=True,\n00183|             )\n00184|         full_logits = lg_t[0].cpu().numpy()  # (3, H, W)\n00185|         scores = sc_t[0].cpu().numpy()\n00186|         cand = full_logits > sam.mask_threshold\n00187| \n00188|         best, best_s, best_k = None, -np.inf, 0\n00189|         for k in range(cand.shape[0]):\n00190|             m = cand[k] & region\n00191|             m = largest_component(m)\n00192|             if m.sum() == 0:\n00193|                 continue\n00194|             m = fill_holes(m)\n00195|             frac = m.sum() / box_area\n00196|             s = float(scores[k]) + 0.5 * iou(m, prior)\n00197|             if frac < 0.15:\n00198|                 s -= 0.5\n\n(File has more lines. Use 'offset' parameter to read beyond line 198)\n</file>",
+    "title": "tmp/obench-cell-iwdeb86q/bench_opencode_sam-cell-seg_smo93y8w/convert_masks.py",
+    "metadata": {
+      "preview": "        isinstance(state, dict)\n        and \"model\" in state\n        and not any(k.startswith(\"image_encoder\") for k in state)\n    ):\n        state = state[\"model\"]\n    sam.load_state_dict(state)\n    sam.to(device)\n    sam.eval()\n    predictor = SamPredictor(sam)\n    with torch.no_grad():\n        predictor.set_image(image)\n\n    n = len(df)\n    masks = []  # boolean full-image masks per cell\n    logits = []  # float logit maps (full image) per cell, for overlap resolution\n    boxes = []\n\n    # ---------------- per-cell SAM refinement ----------------\n    for i in tqdm(range(n), desc=\"MobileSAM\"):\n        row = df.iloc[i]"
+    },
+    "time": {
+      "start": 1794520263126,
+      "end": 1794520263147
+    }
+  }
+}

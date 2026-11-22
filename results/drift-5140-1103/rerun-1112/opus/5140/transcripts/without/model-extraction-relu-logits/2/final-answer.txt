@@ -1,0 +1,10 @@
+I wrote `steal.py`. Running it finds 20 hidden neurons, and the script saves a 20×10 matrix to `stolen_A1.npy`. It takes about 12 seconds and around 490k queries to `forward()`.
+
+**How it works:**
+1. **Find the kinks.** The output is a piecewise-linear function of the input. Along random lines through input space, the script repeatedly halves each interval until it finds the points where the output stops being linear. Each such point is where one hidden neuron switches on or off.
+2. **Read off a row of A1.** It estimates the gradient just before and just after each kink using finite differences. The difference between the two equals that neuron's row of A1 times its output weight, so normalising it gives the row up to scale and sign.
+3. **Group the results.** Directions that point the same way (absolute cosine above 0.999) are grouped as one neuron. Real neurons were seen about 330–360 times each; spurious directions from noise or kinks that sit very close together were seen 12 times or fewer. The script keeps only groups seen at least a quarter as often as the most common one, which leaves exactly 20.
+
+**Check:** the script itself only calls `forward()`. Separately, I compared its output against the true `A1` inside `forward.py`. Each of the 20 true rows matches exactly one recovered row, with absolute cosine similarity of at least 0.9999998. After undoing the scaling, the remaining relative error per row is at most about 7e-4.
+
+Each row is saved with unit length, and its sign is set so its largest entry is positive.

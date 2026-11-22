@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2f0154e0015vMAcCfEfu8d04",
+  "sessionID": "ses_e2d104881ffejg9OuT22jTDL7W",
+  "messageID": "msg_1d2efc5720012ew6b4idEWVCrO",
+  "type": "tool",
+  "callID": "toolu_vrtx_017wEJNxZS9E3bWFX8phJrQM",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-esr3mm44/bench_opencode_model-extraction-relu-logits_g4tljemn/steal.py",
+      "content": "\"\"\"Black-<USER> extraction of the first-layer weights of a 1-hidden-layer ReLU net.\n\nOnly queries forward(x). Strategy:\n  1. Walk along random lines through input space and locate the \"critical\n     points\" where f is non-differentiable (a hidden neuron switches on/off).\n  2. At each critical point, estimate the gradient just on either side.  The\n     difference is A2_i * A1_i (up to sign), i.e. row i of A1 up to scale.\n  3. Normalize and cluster these directions; each cluster is one neuron.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef grad(x, h=1e-7):\n    g = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef find_kinks(x0, d, T=20.0, n=4000):\n    \"\"\"Return t-values of kinks of t -> f(x0 + t d) on [-T, T].\"\"\"\n    ts = np.linspace(-T, T, n + 1)\n    ys = np.array([f(x0 + t * d) for t in ts])\n    dt = ts[1] - ts[0]\n    slopes = np.diff(ys) / dt\n    kinks = []\n    i = 0\n    while i < len(slopes) - 1:\n        if abs(slopes[i + 1] - slopes[i]) > 1e-7 * max(1.0, abs(slopes[i])):\n            # kink lies in [ts[i], ts[i+2]]; refine by bisection on linearity\n            lo, hi = ts[i], ts[i + 2]\n            sl, sr = slopes[i], slopes[i + 1]\n            # intersect left line (through ts[i], ys[i], slope sl)\n            # with right line (through ts[i+2], ys[i+2], slope sr)\n            if abs(sl - sr) > 1e-12:\n                tk = (ys[i + 2] - ys[i] + sl * ts[i] - sr * ts[i + 2]) / (sl - sr)\n                if lo - dt <= tk <= hi + dt:\n                    kinks.append(tk)\n            i += 2\n        else:\n            i += 1\n    return kinks\n\n\ndef refine_kink(x0, d, tk, w=1e-3):\n    \"\"\"Refine kink position via local line intersection with tiny probes.\"\"\"\n    a, b = tk - w, tk + w\n    h = 1e-5\n    fa, fb = f(x0 + a * d), f(x0 + b * d)\n    sl = (fa - f(x0 + (a - h) * d)) / h\n    sr = (f(x0 + (b + h) * d) - fb) / h\n    if abs(sl - sr) < 1e-12:\n        return tk\n    return (fb - fa + sl * a - sr * b) / (sl - sr)\n\n\ndef main():\n    dirs = []\n    n_lines = 60\n    for _ in range(n_lines):\n        x0 = rng.normal(size=DIM) * 2.0\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        for tk in find_kinks(x0, d):\n            tk = refine_kink(x0, d, tk)\n            xk = x0 + tk * d\n            eps = 1e-4\n            gp = grad(xk + eps * d)\n            gm = grad(xk - eps * d)\n            J = gp - gm\n            nrm = np.linalg.norm(J)\n            if nrm < 1e-6:\n                continue\n            v = J / nrm\n            # canonical sign: largest-magnitude coordinate positive\n            v = v * np.sign(v[np.argmax(np.abs(v))])\n            dirs.append(v)\n\n    dirs = np.array(dirs)\n    # greedy clustering by cosine similarity (up to sign)\n    clusters = []\n    for v in dirs:\n        for c in clusters:\n            if abs(np.dot(c[0], v)) > 0.999:\n                c.append(v * np.sign(np.dot(c[0], v)))\n                break\n        else:\n            clusters.append([v])\n\n    # keep clusters with enough support (filters out spurious detections)\n    counts = np.array([len(c) for c in clusters])\n    keep = [c for c in clusters if len(c) >= max(3, 0.05 * np.median(counts))]\n    rows = []\n    for c in keep:\n        m = np.median(np.array(c), axis=0)\n        m /= np.linalg.norm(m)\n        rows.append(m)\n    A1 = np.array(rows)\n    np.save(OUT, A1)\n    print(f\"Recovered {A1.shape[0]} neurons; shape {A1.shape}\")\n    print(A1)\n    return A1\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-esr3mm44/bench_opencode_model-extraction-relu-logits_g4tljemn/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-esr3mm44/bench_opencode_model-extraction-relu-logits_g4tljemn/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794540325842,
+      "end": 1794540332559
+    }
+  }
+}

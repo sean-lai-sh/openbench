@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d2dc9c97001o7lOzYEE1bjYmC",
+  "sessionID": "ses_e2d242728ffe1z2yaOXiWmRgMB",
+  "messageID": "msg_1d2dc7fe7001QucdsTJAckxIln",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with `ColumnParallelLinear` and `RowParallelLinear`. I ran a test on 1, 2 and 4 processes and both classes passed. Their outputs, input gradients, weight gradients and bias gradients matched a normal `nn.Linear` with the same weights. Each rank's weight and bias gradients matched its slice of the full gradients.\n\n`master_weight` is assumed to have the same shape as an `nn.Linear` weight, `(out_features, in_features)`.\n\n- **`ColumnParallelLinear`:** each rank keeps `out_features / world_size` rows of the weight and the matching slice of the bias, which starts at zero. The forward pass computes the local slice of the output, then gathers all slices along the last dimension. In the backward pass, each rank keeps only its own slice of the output gradient, and the input gradient is summed across ranks.\n- **`RowParallelLinear`:** each rank keeps `in_features / world_size` columns of the weight; the bias is full size and starts at zero. The full input is split along its last dimension, each rank computes a partial output, and the partial outputs are summed across ranks before the bias is added. In the backward pass, the input gradient slices are gathered back to full size.\n\nThings to know:\n- **Sizes must divide evenly:** `out_features` (column) or `in_features` (row) must be divisible by `world_size`, otherwise the constructor raises an error.\n- **Pre-split input:** `RowParallelLinear` assumes a full input. If the input's last dimension already equals the per-rank size, it treats the input as already split and skips the split step.\n- **No distributed setup needed:** if `torch.distributed` hasn't been initialised, both classes act like a plain single-process `nn.Linear`.\n- **Editor warnings:** the editor flagged the custom autograd `backward` methods. This is a known false alarm with the standard way of writing them, and it doesn't affect how the code runs.",
+  "time": {
+    "start": 1794539035862,
+    "end": 1794539035862
+  }
+}

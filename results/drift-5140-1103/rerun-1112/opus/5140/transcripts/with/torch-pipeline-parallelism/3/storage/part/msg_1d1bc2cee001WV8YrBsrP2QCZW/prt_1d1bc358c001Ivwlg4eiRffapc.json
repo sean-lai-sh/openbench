@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d1bc358c001Ivwlg4eiRffapc",
+  "sessionID": "ses_e2e44af4effee91pbCZxSAVsea",
+  "messageID": "msg_1d1bc2cee001WV8YrBsrP2QCZW",
+  "type": "tool",
+  "callID": "toolu_vrtx_011RrowWx66wfGja7SHCwv1R",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/pp_test.py <<'EOF'\nimport os, sys, copy, torch, torch.distributed as dist, torch.multiprocessing as mp\nimport torch.nn.functional as F\nsys.path.insert(0, \"/tmp/obench-cell-p3hyz2gb/bench_opencode_torch-pipeline-parallelism_osft_cl1\")\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\n\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=\"29533\"\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5,\n                      num_attention_heads=4, num_key_value_heads=2)\n    model = LlamaForCausalLM(cfg); ref = copy.deepcopy(model)\n    inputs = [torch.randint(0,128,(2,16)) for _ in range(3)]\n    targets = [torch.randint(0,128,(2,16)) for _ in range(3)]\n    loss = train_step_pipeline_afab(model, inputs, targets, torch.device(\"cpu\"), torch.float32)\n    for x,t in zip(inputs,targets):\n        l = F.cross_entropy(ref(x).logits.reshape(-1,128), t.reshape(-1))/3; l.backward()\n    maxd = 0; n=0\n    for (nm,p),(_,q) in zip(model.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            n+=1; maxd = max(maxd,(p.grad-q.grad).abs().max().item())\n    print(rank, \"loss\", loss, \"params with grad\", n, \"max grad diff\", maxd)\n    dist.destroy_process_group()\n\nif __name__==\"__main__\":\n    for ws in (1,2):\n        mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython /tmp/pp_test.py 2>&1 | grep -v Warning",
+      "description": "Test pipeline vs reference gradients",
+      "timeout": 300000
+    },
+    "output": "0 loss tensor(4.8675) params with grad 48 max grad diff 0\n0 loss None params with grad 28 max grad diff 0\n1 loss tensor(4.8675) params with grad 20 max grad diff 0\n",
+    "title": "Test pipeline vs reference gradients",
+    "metadata": {
+      "output": "0 loss tensor(4.8675) params with grad 48 max grad diff 0\n0 loss None params with grad 28 max grad diff 0\n1 loss tensor(4.8675) params with grad 20 max grad diff 0\n",
+      "exit": 0,
+      "description": "Test pipeline vs reference gradients"
+    },
+    "time": {
+      "start": 1794520141065,
+      "end": 1794520183512
+    }
+  }
+}

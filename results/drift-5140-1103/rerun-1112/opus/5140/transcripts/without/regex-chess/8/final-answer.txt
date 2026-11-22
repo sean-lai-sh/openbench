@@ -1,0 +1,16 @@
+I've written `re.json`. It has 3,943 regex/replacement pairs and is about 409 KB, well under both limits. It produces the exact output you gave for the example position, and the provided `check.py` passes on all 18 positions from the Opera Game (I ran a copy pointed at this folder instead of `/app/re.json`).
+
+I also compared it against python-chess on about 2,500 more positions: random games from the start position, plus random games from tricky positions covering castling, en passant, promotion, pins and discovered checks. All matched.
+
+The regexes are produced by a generator script at `/tmp/work/gen.py`; to change the rules, edit that and re-run it. It works in four stages:
+
+1. **Reading the FEN:** the move counters are dropped, each digit is expanded into that many empty squares, and the board is flattened to a fixed 64-character string. The en-passant target square gets a special marker. Rooks that still have castling rights get their own letter, which drops back to an ordinary rook as soon as the rook moves or is captured.
+2. **Making moves:** there is one rule for each possible move of each piece from each square. If the move is allowed on the original board, the rule adds a new line with the board after that move. This covers sliding pieces with clear paths, double pawn pushes, captures, promotion (to queen only) and en passant. Castling also requires the squares between king and rook to be empty, and the king not to start in or pass through check.
+3. **Removing illegal moves:** one rule per king square deletes any line where the white king is attacked. Lines where the king has moved lose white's castling rights.
+4. **Writing the FEN:** each line is turned back into a FEN, with castling rights read from the marked rooks and the en-passant square set after a white double pawn push.
+
+Things to know:
+
+- **En passant:** after a white double pawn push, the output always shows the en-passant square, even when black can't actually capture. `check.py` accepts this because it also tries the same position with "-".
+- **No legal moves:** in checkmate or stalemate the output can't be an empty list, because `split("\n")` always returns at least one item. The tests only use positions where white has a move.
+- **Speed:** each position takes about 1 second, mostly because Python's regex cache only holds 512 patterns, so all 3,943 get recompiled every call.

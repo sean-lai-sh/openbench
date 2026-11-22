@@ -136,6 +136,129 @@ class TestFindPii(unittest.TestCase):
         self.assertEqual(scrub.find_pii("nothing to see here", CTX), [])
 
 
+SHA40 = "b1cbded32a92eb08c107428dc46a1b015ce777c4"
+SHA64 = "2aeae8457f8eaf862375526cc555b84ac8040b9b94a34ce0a88d2809fcb7ced1"
+
+
+def _cell(**fields):
+    import json
+    return json.dumps(dict(sorted(fields.items())))
+
+
+def _cats(hits):
+    return {c for c, _ln, _s in hits}
+
+
+class TestProvenanceHexException(unittest.TestCase):
+    """Codex P2 / PR #258: exact provenance hashes survive in cell JSON/jsonl
+    under their own keys only; the same value anywhere else is still flagged."""
+
+    def _allowed_line(self):
+        return _cell(
+            binary_sha256=SHA64,
+            runner_commit=SHA40,
+            lockfile_sha256=SHA64,
+            final_workspace_tar_sha256=SHA64,
+            binary_path=f"/h1/opencode-src/bin/{SHA40}/opencode",
+            task="dna-insert",
+        )
+
+    # (a) the five fields pass, in cell JSON and in jsonl
+    def test_allowed_keys_not_flagged_structured(self):
+        self.assertEqual(scrub.find_pii(self._allowed_line(), CTX, structured=True), [])
+
+    def test_allowed_keys_pretty_printed_json(self):
+        import json
+        text = json.dumps(json.loads(self._allowed_line()), indent=2)
+        self.assertEqual(scrub.find_pii(text, CTX, structured=True), [])
+
+    def test_allowed_keys_survive_scrub(self):
+        line = self._allowed_line()
+        self.assertEqual(scrub.scrub_text(line, CTX, structured=True), line)
+
+    def test_check_tree_allows_in_json_and_jsonl(self):
+        tmp = tempfile.mkdtemp(prefix="bench_scrub_prov_")
+        try:
+            line = self._allowed_line()
+            _write_file(os.path.join(tmp, "1.json"), line)
+            _write_file(os.path.join(tmp, "with.jsonl"), line + "\n" + line + "\n")
+            self.assertEqual(scrub.check_tree(tmp, CTX), {})
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # (b) the same values elsewhere are still flagged
+    def test_same_value_under_other_key_flagged(self):
+        for key in ("provider_pin_sha256", "sha256", "cell_image", "note",
+                    "binary_sha256_extra", "x_runner_commit"):
+            for value in (SHA40, SHA64):
+                hits = scrub.find_pii(_cell(**{key: value}), CTX, structured=True)
+                self.assertIn("hex-blob", _cats(hits), msg=(key, value))
+                out = scrub.scrub_text(_cell(**{key: value}), CTX, structured=True)
+                self.assertNotIn(value, out, msg=(key, value))
+
+    def test_nested_other_key_flagged(self):
+        text = _cell(checker_workspace_files={"a.txt": {"sha256": SHA64}})
+        self.assertIn("hex-blob", _cats(scrub.find_pii(text, CTX, structured=True)))
+
+    def test_free_text_flagged(self):
+        for text in (f"runner_commit: {SHA40}",
+                     f'"runner_commit": "{SHA40}"',
+                     f"binary at /h1/opencode-src/bin/{SHA40}/opencode",
+                     f"sha256 {SHA64}"):
+            # Free text (structured=False) never gets the exception...
+            self.assertIn("hex-blob", _cats(scrub.find_pii(text, CTX)), msg=text)
+            self.assertNotIn(SHA40 if SHA40 in text else SHA64, scrub.scrub_text(text, CTX))
+
+    def test_txt_file_with_key_syntax_flagged(self):
+        tmp = tempfile.mkdtemp(prefix="bench_scrub_prov_")
+        try:
+            _write_file(os.path.join(tmp, "MANIFEST.txt"),
+                        f"opus/x.workspace.tar.gz 1607 {SHA64}\n")
+            _write_file(os.path.join(tmp, "notes.md"), self._allowed_line())
+            report = scrub.check_tree(tmp, CTX)
+            self.assertIn("MANIFEST.txt", report)
+            self.assertIn("notes.md", report)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_value_in_free_text_field_of_cell_flagged(self):
+        # Escaped JSON inside a string value is free text, not a key.
+        inner = '{"runner_commit": "%s"}' % SHA40
+        text = _cell(output_tail=inner, checker_stdout=f"commit {SHA64}")
+        hits = scrub.find_pii(text, CTX, structured=True)
+        snippets = {s for _c, _ln, s in hits}
+        self.assertTrue(any(SHA40[:20] in s for s in snippets), hits)
+        self.assertTrue(any(SHA64[:20] in s for s in snippets), hits)
+
+    def test_inexact_values_flagged(self):
+        for bad in (SHA64[:48], SHA64 + "ab", "0x" + SHA40, SHA40 + " ", "v" + SHA40):
+            hits = scrub.find_pii(_cell(runner_commit=bad), CTX, structured=True)
+            self.assertTrue(hits, msg=bad)
+
+    def test_binary_path_only_hex_segment(self):
+        # Hex embedded in a longer segment is not an exact segment -> flagged.
+        text = _cell(binary_path=f"/h1/bin/build-{SHA40}/opencode")
+        self.assertTrue(scrub.find_pii(text, CTX, structured=True))
+        # Other PII in binary_path is still caught.
+        text = _cell(binary_path=f"/Users/alice/bin/{SHA40}/opencode")
+        self.assertIn("home-path", _cats(scrub.find_pii(text, CTX, structured=True)))
+        # The hex segment of other path-like keys stays flagged.
+        text = _cell(harness_version=f"0.0.0 (/h1/opencode-src/bin/{SHA40}/opencode)",
+                     cmd=[f"/h1/opencode-src/bin/{SHA40}/opencode", "run"])
+        hits = scrub.find_pii(text, CTX, structured=True)
+        self.assertEqual(sum(1 for c, _l, _s in hits if c == "hex-blob"), 2)
+
+    def test_allowed_and_other_on_same_line(self):
+        text = _cell(runner_commit=SHA40, provider_pin_sha256=SHA64)
+        hits = scrub.find_pii(text, CTX, structured=True)
+        self.assertEqual([s for c, _l, s in hits if c == "hex-blob"], [SHA64[:57] + "..."])
+        out = scrub.scrub_text(text, CTX, structured=True)
+        self.assertIn(SHA40, out)
+        self.assertNotIn(SHA64, out)
+
+
 class TestFileOps(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="bench_scrub_")

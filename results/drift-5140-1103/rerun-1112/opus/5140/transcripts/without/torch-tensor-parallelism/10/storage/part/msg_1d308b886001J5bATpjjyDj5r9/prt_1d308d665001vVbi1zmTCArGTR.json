@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d308d665001vVbi1zmTCArGTR",
+  "sessionID": "ses_e2cf822edffeBejY12YPdi79u9",
+  "messageID": "msg_1d308b886001J5bATpjjyDj5r9",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes, and they match a regular `nn.Linear` at world sizes 1, 2 and 4. I checked this with a throwaway script on the CPU `gloo` backend: outputs, input gradients, and each rank's weight and bias gradients all agreed with the matching slice of the full layer. The script is in `/tmp/t_pl.py`, not in the project.\n\nWeights use the same `(out_features, in_features)` layout as `nn.Linear`, and biases start at zero.\n\n- **`ColumnParallelLinear`**\n  - Each rank keeps rows `rank*O/ws : (rank+1)*O/ws` of `master_weight` and the matching slice of the bias.\n  - In the forward pass, each rank computes its share of the output, then the shares are joined along the last dimension with `all_gather`.\n  - In the backward pass, each rank keeps only its own slice of the output gradient. The input gradient is summed across ranks so that every rank ends up with the full input gradient.\n\n- **`RowParallelLinear`**\n  - Each rank keeps columns `rank*I/ws : (rank+1)*I/ws` of `master_weight` and the full bias.\n  - In the forward pass, each rank computes a partial output from its slice of the input. The partial outputs are summed with `all_reduce`, and the bias is added once, after the sum.\n  - In the backward pass, the output gradient goes straight back to each rank unchanged. The input gradient pieces are gathered back to full size.\n  - The layer accepts either the full input (it splits it itself) or input that is already split to `in_features / world_size`.\n\nThings to know:\n- **Sizes must divide evenly:** `out_features` (column) and `in_features` (row) must divide evenly by the world size, or construction fails with an assertion error.\n- **Custom gradient handling:** I wrote my own autograd functions instead of using `torch.distributed.nn.functional`. Its `all_reduce` also sums the gradients in the backward pass, which would make them `world_size` times too large here.\n- **Without `torch.distributed`:** if it hasn't been initialised, both layers act as a single rank (world size 1).",
+  "time": {
+    "start": 1794541934360,
+    "end": 1794541934360
+  }
+}

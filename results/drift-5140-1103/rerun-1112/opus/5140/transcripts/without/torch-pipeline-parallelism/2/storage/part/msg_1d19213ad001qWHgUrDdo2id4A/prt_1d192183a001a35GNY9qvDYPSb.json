@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d192183a001a35GNY9qvDYPSb",
+  "sessionID": "ses_e2e6e99b5ffe6PVf3cbFnUNPhm",
+  "messageID": "msg_1d19213ad001qWHgUrDdo2id4A",
+  "type": "tool",
+  "callID": "toolu_vrtx_01AR3fFoY6mZjX1wct5KX1nC",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-801ak3j3/bench_opencode_torch-pipeline-parallelism_nxwcgwcf; cat > /tmp/pp_test.py <<'EOF'\nimport os, sys, copy, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nimport torch.nn.functional as F\ndef run(rank, ws):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=\"29533\"\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    from pipeline_parallel import train_step_pipeline_afab\n    torch.manual_seed(0)\n    cfg = LlamaConfig(vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=5, num_attention_heads=4, num_key_value_heads=2)\n    ref = LlamaForCausalLM(cfg).float(); m = copy.deepcopy(ref)\n    inputs=[torch.randint(0,128,(2,16)) for _ in range(4)]; targets=[torch.randint(0,128,(2,16)) for _ in range(4)]\n    loss = train_step_pipeline_afab(m, inputs, targets, torch.device(\"cpu\"), torch.float32)\n    tot=0\n    for x,y in zip(inputs,targets):\n        l=F.cross_entropy(ref(x).logits.reshape(-1,128), y.reshape(-1))/4; l.backward(); tot+=l.item()\n    maxd=0; n=0\n    for (k,p),(_,q) in zip(m.named_parameters(), ref.named_parameters()):\n        if p.grad is not None:\n            n+=1; maxd=max(maxd,(p.grad-q.grad).abs().max().item())\n    print(rank, \"loss\", None if loss is None else loss.item(), tot, \"params w/ grad\", n, \"maxdiff\", maxd)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for ws in (1,2): mp.spawn(run, args=(ws,), nprocs=ws)\nEOF\npython /tmp/pp_test.py 2>&1 | grep -v Warning",
+      "description": "Test pipeline vs reference"
+    },
+    "output": "0 loss 4.840197563171387 4.840197563171387 params w/ grad 48 maxdiff 0\n1 loss 4.840197563171387 4.840197563171387 params w/ grad 20 maxdiff 0\n0 loss None 4.840197563171387 params w/ grad 28 maxdiff 0\n",
+    "title": "Test pipeline vs reference",
+    "metadata": {
+      "output": "0 loss 4.840197563171387 4.840197563171387 params w/ grad 48 maxdiff 0\n1 loss 4.840197563171387 4.840197563171387 params w/ grad 20 maxdiff 0\n0 loss None 4.840197563171387 params w/ grad 28 maxdiff 0\n",
+      "exit": 0,
+      "description": "Test pipeline vs reference"
+    },
+    "time": {
+      "start": 1794517381156,
+      "end": 1794517395398
+    }
+  }
+}

@@ -1,0 +1,29 @@
+I wrote `polyglot/main.rs`. It compiles with both `rustc` and `g++ -x c++` with no warnings, and the two programs gave the same output for every N I tried:
+
+| N | output |
+|---|--------|
+| 0, 1, 2, 3 | 1, 1, 2, 3 |
+| 10 | 89 |
+| 100 | 573147844013817084101 |
+| 200 | <REDACTED_HEX> |
+
+**How each compiler skips the other's code.** It relies on two differences between the languages:
+1. **Nested comments:** Rust block comments nest, so `/* /* */` leaves Rust still inside a comment. C and C++ comments don't nest, so for C++ that same line is a complete comment.
+2. **`#if 0`:** inside Rust's open comment, this line is just comment text. For C++, it's a preprocessor directive that skips everything up to `#endif`.
+
+```
+/* /* */      C++: complete comment      | Rust: comment still open (depth 1)
+#if 0         C++: start skipping        | Rust: (in comment)
+// */         C++: skipped               | Rust: comment closes
+...Rust...    C++: skipped               | Rust: compiled
+/* /* */      C++: comment in skipped part | Rust: depth 2, then back to 1
+#endif        C++: stop skipping         | Rust: (in comment)
+...C++...     C++: compiled              | Rust: (in comment)
+// */         C++: line comment          | Rust: comment closes
+```
+
+**Large N.** Both versions use their own big-number addition, so results don't overflow for large N.
+
+**If you edit the file:**
+- Don't put `/*` or `*/` inside the C++ code, or the comment trick breaks.
+- Avoid apostrophes in the Rust code (lifetimes, char literals like `'a'`). The C++ preprocessor still reads the skipped Rust code and may reject an unmatched quote.

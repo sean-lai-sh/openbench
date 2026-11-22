@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d1f58b99001kGHj9SG6akIoOg",
+  "sessionID": "ses_e2e0ae377ffe2xaK25hiZQWpV2",
+  "messageID": "msg_1d1f584e3001pyXzv5MhVDrm6L",
+  "type": "tool",
+  "callID": "toolu_vrtx_01LjSTE9c4r8JnQvQGcuXuCU",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-kxkjcb1u/bench_opencode_torch-tensor-parallelism_47zkjw2w && cat > /tmp/t_pl.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ['MASTER_ADDR']='127.0.0.1'; os.environ['MASTER_PORT']=str(port)\n    dist.init_process_group('gloo', rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    W = torch.randn(8, 12); x = torch.randn(3, 12, requires_grad=True)\n    ref = torch.nn.Linear(12, 8); ref.weight.data.copy_(W); ref.bias.data.zero_()\n    xr = x.detach().clone().requires_grad_(); y = ref(xr); y.sum().backward()\n    for cls in (ColumnParallelLinear, RowParallelLinear):\n        m = cls(12, 8, True, W); xx = x.detach().clone().requires_grad_()\n        out = m(xx); out.sum().backward()\n        assert torch.allclose(out, y, atol=1e-5), cls\n        assert torch.allclose(xx.grad, xr.grad, atol=1e-5), cls\n        if cls is ColumnParallelLinear:\n            s=8//ws; gw=ref.weight.grad[rank*s:(rank+1)*s]; gb=ref.bias.grad[rank*s:(rank+1)*s]\n        else:\n            s=12//ws; gw=ref.weight.grad[:, rank*s:(rank+1)*s]; gb=ref.bias.grad\n        assert torch.allclose(m.weight.grad, gw, atol=1e-5) and torch.allclose(m.bias.grad, gb, atol=1e-5), cls\n    if rank==0: print('ok', ws)\n    dist.destroy_process_group()\nif __name__=='__main__':\n    for i,ws in enumerate((1,2,4)): mp.spawn(run, args=(ws, 29600+i), nprocs=ws)\nEOF\npython /tmp/t_pl.py",
+      "description": "Test parallel linear layers",
+      "timeout": 300000
+    },
+    "output": "ok 1\nok 2\nok 4\n",
+    "title": "Test parallel linear layers",
+    "metadata": {
+      "output": "ok 1\nok 2\nok 4\n",
+      "exit": 0,
+      "description": "Test parallel linear layers"
+    },
+    "time": {
+      "start": 1794523898684,
+      "end": 1794523915180
+    }
+  }
+}

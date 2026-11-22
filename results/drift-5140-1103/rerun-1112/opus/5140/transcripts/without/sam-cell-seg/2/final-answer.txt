@@ -1,0 +1,25 @@
+I wrote `convert_masks.py` in your working directory. I ran it on the demo files and checked the output: all 48 masks (19 rectangles and 29 polylines) came back as polylines, there was no overlap between masks, and each mask is one connected piece. I also overlaid the new outlines on the image, and they follow the cell nuclei well.
+
+**Usage**
+```
+python convert_masks.py <weights_path> <output_path> <rgb_path> <csv_path>
+```
+The run took about 6 seconds on CPU.
+
+**How it works**
+1. It loads MobileSAM (`sam_model_registry["vit_t"]`) on CPU from the installed `mobile_sam` package, without changing its source, and processes the image once.
+2. Each row's `xmin, ymin, xmax, ymax` <USER> is sent to MobileSAM, which proposes three possible masks.
+3. Proposals are clipped to the <USER> plus a small margin, cut down to their largest piece with holes filled, and thrown out if they are far too small or spill well outside the <USER>.
+4. The best proposal is picked by MobileSAM's confidence plus how well it matches the original annotation. For polylines that's the original polygon; for rectangles it's an ellipse drawn inside the <USER>.
+5. If no proposal passes, the script falls back to the original polygon (or the ellipse for rectangles), so nothing comes out rectangular.
+6. **Overlaps:** smaller masks claim their pixels first, so a large mask can't swallow a small cell. Each later mask must stay at least one pixel away from masks already placed, and is then cut back to its largest piece.
+7. **Polylines:** each mask's outline is traced with `cv2.findContours` and closed by repeating the first point, as in your input. The script then recalculates `xmin, xmax, ymin, ymax` from the new outline.
+
+**Output**
+- The CSV has the same rows, columns and index as the input; only `xmin, ymin, xmax, ymax, coords_x, coords_y` change.
+- If `output_path` is a folder, it's created if needed and the file is saved there under the input CSV's name. If `output_path` ends in `.csv`, the file is written to exactly that path.
+
+**Things to know**
+- **`type` column:** it is left as it was (still `rectangle` for some rows), because you said only those six columns should change. If you'd rather it say `polyline` for every row, that's a one-line change.
+- **Outline shape:** the outlines follow pixel edges, so they look slightly stepped; the long thin fibroblast (row 0) is the most jagged. I didn't smooth them because smoothing could make neighbouring masks overlap again.
+- **Gaps between cells:** cells that touch will have a one-pixel gap between their masks.

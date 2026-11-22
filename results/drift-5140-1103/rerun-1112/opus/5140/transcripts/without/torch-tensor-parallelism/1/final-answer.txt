@@ -1,0 +1,22 @@
+I created `parallel_linear.py` with both classes. I tested them against a plain `torch.nn.Linear` on world sizes 1, 2 and 4, using 2 processes and 4 processes for the larger sizes. Outputs matched, and so did the gradients for weights, bias and input, with each rank compared to its own slice of the reference.
+
+**How the weight is split.** `master_weight` is expected in the usual `nn.Linear` layout, `(out_features, in_features)`.
+
+- **`ColumnParallelLinear`**
+  - Each rank keeps its share of the output rows: `master_weight[r*k:(r+1)*k, :]`, where `k = out_features / world_size`.
+  - Each rank's bias has length `k` and starts at zero.
+  - In the forward pass, each rank computes its local output and the pieces are joined along the last dimension, like `all_gather`.
+  - In the backward pass, each rank takes its slice of the output gradient. The input gradient is summed across ranks.
+- **`RowParallelLinear`**
+  - Each rank keeps its share of the input columns: `master_weight[:, r*k:(r+1)*k]`, where `k = in_features / world_size`.
+  - Each rank gets the full input and uses only its own slice.
+  - The partial outputs are summed with `all_reduce`, then the full bias (length `out_features`, starting at zero) is added once.
+  - In the backward pass, the input gradient is gathered back to full size.
+
+The collectives are wrapped in custom autograd functions, so gradients flow through them correctly. With world size 1, or when `torch.distributed` hasn't been set up, they do nothing.
+
+**Things to check:**
+- `out_features` (column version) and `in_features` (row version) must divide evenly by the world size, or the constructor fails an assertion.
+- I added one behaviour you didn't ask for: `RowParallelLinear` also accepts input that has already been split. If the input's last dimension is `in_features / world_size` and the world size is above 1, it uses that input as-is instead of slicing it.
+
+The test script is at `/tmp/t_pl.py` if you want to run it again.

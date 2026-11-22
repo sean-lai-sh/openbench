@@ -1,0 +1,25 @@
+{
+  "id": "prt_1d16cefce001Z2DfOqkMQ4pXFE",
+  "sessionID": "ses_e2e9cf872ffeGj4TK4A4crqbmA",
+  "messageID": "msg_1d16cdf15001NT16902KrJUKNV",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Mz2wDmLMDLKaA1AfasRqqQ",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-v36bmjkm/bench_opencode_sam-cell-seg_oli3e34e/convert_masks.py",
+      "offset": 215,
+      "limit": 70
+    },
+    "output": "<file>\n00216|     def starts(n):\n00217|         if n <= TILE:\n00218|             return [0]\n00219|         stride = TILE // 2\n00220|         s = list(range(0, n - TILE + 1, stride))\n00221|         if s[-1] != n - TILE:\n00222|             s.append(n - TILE)\n00223|         return s\n00224| \n00225|     return [\n00226|         (x, y, min(w, x + TILE), min(h, y + TILE)) for y in starts(h) for x in starts(w)\n00227|     ]\n00228| \n00229| \n00230| def assign_tile(<USER>, tiles, full):\n00231|     \"\"\"Tile that fully contains the <USER> with the largest margin; otherwise the full image.\"\"\"\n00232|     best, best_margin = None, -1\n00233|     for t in tiles:\n00234|         if <USER>[0] >= t[0] and <USER>[1] >= t[1] and <USER>[2] <= t[2] and <USER>[3] <= t[3]:\n00235|             margin = min(<USER>[0] - t[0], <USER>[1] - t[1], t[2] - <USER>[2], t[3] - <USER>[3])\n00236|             if margin > best_margin:\n00237|                 best, best_margin = t, margin\n00238|     return best if best is not None else full\n00239| \n00240| \n00241| def segment_cell(predictor, ann, tile, shape):\n00242|     \"\"\"Run MobileSAM for one annotation. Returns (mask, logits) in full-image coords\n00243|     restricted to a region of interest, or (None, None).\"\"\"\n00244|     H, W = shape\n00245|     tx, ty = tile[0], tile[1]\n00246|     x0, y0, x1, y1 = ann[\"<USER>\"]\n00247|     bw, bh = x1 - x0, y1 - y0\n00248|     margin = max(3, int(round(0.15 * max(bw, bh))))\n00249|     rx0, ry0 = max(0, int(x0) - margin), max(0, int(y0) - margin)\n00250|     rx1, ry1 = min(W, int(x1) + margin + 1), min(H, int(y1) + margin + 1)\n00251| \n00252|     box_t = np.array([x0 - tx, y0 - ty, x1 - tx, y1 - ty], dtype=np.float32)\n00253|     prompts = []\n00254|     if ann[\"rect\"]:\n00255|         prompts.append((None, None))\n00256|         c = np.array([[(x0 + x1) / 2 - tx, (y0 + y1) / 2 - ty]], np.float32)\n00257|         prompts.append((c, np.array([1])))\n00258|         ref = None\n00259|     else:\n00260|         ref = ann[\"orig_mask\"]\n00261|         prompts.append((None, None))\n00262|         if ann[\"inner_pt\"] is not None:\n00263|             p = np.array(\n00264|                 [[ann[\"inner_pt\"][0] - tx, ann[\"inner_pt\"][1] - ty]], np.float32\n00265|             )\n00266|             prompts.append((p, np.array([1])))\n00267| \n00268|     best, best_score = None, -np.inf\n00269|     for pc, pl in prompts:\n00270|         logits, scores, _ = predictor.predict(\n00271|             point_coords=pc,\n00272|             point_labels=pl,\n00273|             <USER>=box_t,\n00274|             multimask_output=True,\n00275|             return_logits=True,\n00276|         )\n00277|         for lg, sc in zip(logits, scores):\n00278|             # logits are in tile coordinates\n00279|             lg_roi = lg[ry0 - ty : ry1 - ty, rx0 - tx : rx1 - tx]\n00280|             m = lg_roi > predictor.model.mask_threshold\n00281|             area = int(m.sum())\n00282|             if area < 4:\n00283|                 continue\n00284|             if ref is not None:\n00285|                 r = ref[ry0:ry1, rx0:rx1]\n\n(File has more lines. Use 'offset' parameter to read beyond line 285)\n</file>",
+    "title": "tmp/obench-cell-v36bmjkm/bench_opencode_sam-cell-seg_oli3e34e/convert_masks.py",
+    "metadata": {
+      "preview": "    def starts(n):\n        if n <= TILE:\n            return [0]\n        stride = TILE // 2\n        s = list(range(0, n - TILE + 1, stride))\n        if s[-1] != n - TILE:\n            s.append(n - TILE)\n        return s\n\n    return [\n        (x, y, min(w, x + TILE), min(h, y + TILE)) for y in starts(h) for x in starts(w)\n    ]\n\n\ndef assign_tile(<USER>, tiles, full):\n    \"\"\"Tile that fully contains the <USER> with the largest margin; otherwise the full image.\"\"\"\n    best, best_margin = None, -1\n    for t in tiles:\n        if <USER>[0] >= t[0] and <USER>[1] >= t[1] and <USER>[2] <= t[2] and <USER>[3] <= t[3]:\n            margin = min(<USER>[0] - t[0], <USER>[1] - t[1], t[2] - <USER>[2], t[3] - <USER>[3])"
+    },
+    "time": {
+      "start": 1794514940614,
+      "end": 1794514940637
+    }
+  }
+}

@@ -1,0 +1,21 @@
+I created `parallel_linear.py` with both classes. I tested them with the gloo backend at world sizes 1, 2 and 4, against a plain `nn.Linear` using the same weights and a zero bias. The outputs matched, and so did the weight, bias and input gradients on every rank.
+
+**`ColumnParallelLinear`**
+- `master_weight` uses the standard `nn.Linear` layout, `(out_features, in_features)`. Each rank keeps one equal-sized block of output rows; in `y = x @ W.T` terms, that's a block of columns.
+- The bias has `out_features / world_size` entries per rank and starts at zero.
+- In the forward pass the input passes through unchanged and each rank computes its part of the output. The parts are then joined along the last dimension with `all_gather`.
+- In the backward pass each rank takes its own slice of the output gradient. The input gradient is summed across ranks with `all_reduce`.
+
+**`RowParallelLinear`**
+- Each rank keeps one equal-sized block of `in_features` columns of `master_weight`; in `y = x @ W.T` terms, that's a block of rows.
+- The bias is full-size on every rank, starts at zero, and is added after the reduction.
+- In the forward pass each rank computes a partial output with its slice and no bias. The partial outputs are summed with `all_reduce`.
+- In the backward pass the output gradient passes through unchanged. The input gradient is reassembled with `all_gather`.
+
+**Assumptions to check:**
+- **Input to `RowParallelLinear`:** the task didn't say whether this layer gets the full input or one already split per rank. If the input's last dimension equals `in_features`, the layer splits it itself; if it equals `in_features / world_size`, it uses it as is.
+- **Divisibility:** both classes assert that the dimension being split divides evenly by `world_size`, so they won't handle uneven splits.
+
+The collectives are wrapped in custom autograd functions so that gradients flow correctly through them. If `torch.distributed` isn't initialized, the classes act as world size 1.
+
+The test script is at `/tmp/tp_test.py`.

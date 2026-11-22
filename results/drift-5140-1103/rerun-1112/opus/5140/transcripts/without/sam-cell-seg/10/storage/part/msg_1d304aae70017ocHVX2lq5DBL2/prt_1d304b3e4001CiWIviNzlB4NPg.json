@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d304b3e4001CiWIviNzlB4NPg",
+  "sessionID": "ses_e2cfdf725ffeNH4hr5YvrHgMXm",
+  "messageID": "msg_1d304aae70017ocHVX2lq5DBL2",
+  "type": "tool",
+  "callID": "toolu_vrtx_012mBdTUPimk8viP9eNpohex",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-03ngjrow/bench_opencode_sam-cell-seg_3_nxyidb; python -c \"\nimport pandas as pd,numpy as np,cv2\nim=cv2.imread('demo_rgb.png');H,W=im.shape[:2]\na=pd.read_csv('demo_metadata.csv',index_col=0);b=pd.read_csv('/tmp/out_test/demo_metadata.csv',index_col=0)\nprint((a.columns==b.columns).all(), len(a)==len(b), (a.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])==b.drop(columns=['xmin','xmax','ymin','ymax','coords_x','coords_y'])).all().all())\ncnt=np.zeros((H,W),int);ious=[];ov=im.copy()\nfor (_,r),(_,o) in zip(b.iterrows(),a.iterrows()):\n  p=np.stack([list(map(int,r.coords_x.split(','))),list(map(int,r.coords_y.split(',')))],1)\n  m=np.zeros((H,W),np.uint8);cv2.fillPoly(m,[p],1);cnt+=m\n  n,_=cv2.connectedComponents(m);assert n==2\n  q=np.stack([list(map(int,o.coords_x.split(','))),list(map(int,o.coords_y.split(',')))],1)\n  m2=np.zeros((H,W),np.uint8);cv2.fillPoly(m2,[q],1)\n  ious.append(((m&m2).sum()/(m|m2).sum(),o.type,len(p)))\n  cv2.polylines(ov,[q],True,(255,0,0),1);cv2.polylines(ov,[p],True,(0,255,0),1)\nprint('max overlap',cnt.max()); import collections\nfor t in ['rectangle','polyline']: print(t,np.mean([i for i,tt,_ in ious if tt==t]), min(n for _,tt,n in ious if tt==t))\ncv2.imwrite('/tmp/ov.png',cv2.resize(ov,None,fx=2,fy=2,interpolation=cv2.INTER_NEAREST))\n\"",
+      "description": "Validate output and render overlay"
+    },
+    "output": "True True True\nmax overlap 1\nrectangle 0.614023992289728 24\npolyline 0.7746880306901373 31\n",
+    "title": "Validate output and render overlay",
+    "metadata": {
+      "output": "True True True\nmax overlap 1\nrectangle 0.614023992289728 24\npolyline 0.7746880306901373 31\n",
+      "exit": 0,
+      "description": "Validate output and render overlay"
+    },
+    "time": {
+      "start": 1794541669381,
+      "end": 1794541669903
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2eedc33001VIZxfTg1HulUjz",
+  "sessionID": "ses_e2d1169deffeztX7fs1U1sjCjt",
+  "messageID": "msg_1d2eea34b001by4DlA0d1Ypq8u",
+  "type": "tool",
+  "callID": "toolu_vrtx_018b4Qci4xhq8ijDxeo5G4Lk",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-hcdipwmg/bench_opencode_model-extraction-relu-logits__za_21a0/steal.py",
+      "content": "\"\"\"Recover A1 (up to row permutation and scaling) of f(x) = A2 relu(A1 x + b1) + b2\nusing only black-<USER> queries to forward(x).\n\nMethod: walk along random lines, locate the points where f is non-linear\n(a hidden neuron crosses zero), and measure the jump in the gradient there.\nThe jump equals a2_i * A1[i, :], so it gives row i of A1 up to scale.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo=-50.0, hi=50.0, n_init=2000):\n    \"\"\"Return t-values where f(x0 + t d) has a kink.\"\"\"\n    g = lambda t: f(x0 + t * d)\n    kinks = []\n\n    def is_linear(a, b, fa, fb):\n        for frac in (0.25, 0.5, 0.75):\n            t = a + frac * (b - a)\n            interp = fa + frac * (fb - fa)\n            if abs(g(t) - interp) > 1e-11 * (1 + abs(interp)):\n                return False\n        return True\n\n    def rec(a, b, fa, fb, depth=0):\n        if is_linear(a, b, fa, fb):\n            return\n        if b - a < 1e-4 or depth > 60:\n            # Intersect the linear pieces at both ends.\n            dlt = (b - a) * 1e-3\n            sl = (g(a + dlt) - fa) / dlt\n            sr = (fb - g(b - dlt)) / dlt\n            if abs(sl - sr) < 1e-12:\n                return\n            t = (fb - fa + sl * a - sr * b) / (sl - sr)\n            if a - 1e-6 <= t <= b + 1e-6:\n                kinks.append(t)\n            return\n        m = 0.5 * (a + b)\n        fm = g(m)\n        rec(a, m, fa, fm, depth + 1)\n        rec(m, b, fm, fb, depth + 1)\n\n    ts = np.linspace(lo, hi, n_init + 1)\n    fs = [g(t) for t in ts]\n    for i in range(n_init):\n        rec(ts[i], ts[i + 1], fs[i], fs[i + 1])\n    return kinks\n\n\ndef grad(x, h=1e-7):\n    gr = np.zeros(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f(x - e)) / (2 * h)\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v * np.sign(v[k])\n\n\ndef main():\n    rows = []      # normalized candidate directions\n    counts = []\n    n_lines = 0\n    stable = 0\n    while n_lines < 60:\n        n_lines += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        before = len(rows)\n        for t in find_kinks(x0, d):\n            p = x0 + t * d\n            eps = 1e-4\n            jump = grad(p + eps * d) - grad(p - eps * d)\n            if np.linalg.norm(jump) < 1e-8:\n                continue\n            v = normalize(jump)\n            for i, r in enumerate(rows):\n                if abs(np.dot(r, v)) > 1 - 1e-4:\n                    counts[i] += 1\n                    break\n            else:\n                rows.append(v)\n                counts.append(1)\n        stable = stable + 1 if len(rows) == before else 0\n        if n_lines >= 5 and stable >= 5:\n            break\n\n    # Keep directions observed more than once (filters spurious detections)\n    # when there is enough data, otherwise keep everything.\n    keep = [r for r, c in zip(rows, counts) if c >= 2] if n_lines >= 5 else rows\n    A = np.array(keep)\n    np.save(OUT, A)\n    print(f\"Recovered {A.shape[0]} neurons (lines used: {n_lines})\")\n    print(A)\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-hcdipwmg/bench_opencode_model-extraction-relu-logits__za_21a0/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-hcdipwmg/bench_opencode_model-extraction-relu-logits__za_21a0/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794540243989,
+      "end": 1794540250804
+    }
+  }
+}

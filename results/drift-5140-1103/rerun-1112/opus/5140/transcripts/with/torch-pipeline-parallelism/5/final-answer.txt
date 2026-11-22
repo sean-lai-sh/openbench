@@ -1,0 +1,22 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on CPU with world sizes 1 and 2 against an ordinary single-process run of an identical small model (5 layers). The loss matched exactly, and the gradients on every parameter that got one were identical, with a maximum difference of 0. I haven't run your actual test suite, so its activation checks haven't been tried.
+
+**How it works:**
+- **Splitting the layers:** layers are divided as evenly as possible, and the first ranks take one extra when they don't divide evenly. In my 5-layer test, rank 0 got 3 layers and rank 1 got 2.
+  - The first rank also runs the token embedding.
+  - The last rank also runs the final norm, the output head, and the loss.
+- **Forward pass:** all microbatches go forward first.
+  - Rank 0 embeds the input IDs.
+  - Every other rank receives hidden states of shape `[mb, seq, hidden]` from the previous rank and marks them as needing gradients.
+  - Each rank then runs its layers and sends the result on to the next rank.
+  - Communication uses `dist.P2POp` with `batch_isend_irecv`.
+- **Loss:** on the last rank it's `cross_entropy(logits, targets) / num_microbatches`.
+- **Backward pass:** after all forwards, the last rank runs backward on each loss.
+  - The other ranks receive the gradient from the next rank and run backward with it.
+  - Each rank except the first then sends the gradient of its received input back to the previous rank.
+- **Device and dtype:** hidden states and gradients are moved to the given `device` and `dtype`. Input and target IDs are only moved to the device, because the embedding and loss need whole-number token IDs.
+- **No hooks:** the function calls the model's own modules directly, so hooks your test puts on the model will still fire.
+
+**Assumptions to check against your test:**
+- **Targets are already aligned:** the loss compares each position directly with its target and doesn't shift them by one.
+- **No padding:** a standard causal mask is built on each rank and no attention mask is passed in.
+- **Return value:** the function returns the summed loss on the last rank and `None` on the other ranks. It does not call `optimizer.step()`, since the task only asked for forward and backward.

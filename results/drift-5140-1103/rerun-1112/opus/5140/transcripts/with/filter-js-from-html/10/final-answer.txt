@@ -1,0 +1,30 @@
+I've created `filter.py`. Running `python3 filter.py file.html` removes JavaScript from the file in place and leaves everything else exactly as it was. In testing, 94 of 95 XSS attacks failed in a real browser after filtering, and the one flagged case turned out to be a test-harness false positive. A clean HTML document came back byte-for-byte identical.
+
+**How it works**
+- It doesn't rebuild the HTML. It walks the original text and only deletes dangerous parts, so whitespace, letter case, quoting, entities and comments stay as they were. If nothing dangerous is found, the file isn't rewritten at all.
+- It reads tags, attributes, comments and the contents of elements like `<style>` and `<title>` the same way a browser does, so nothing can be hidden by exploiting a difference between the two.
+- It repeats until nothing more changes, so split-up tricks like `<scr<script>x</script>ipt>` are caught too.
+- It uses only Python's standard library, and works even if the file isn't valid UTF-8.
+
+**What gets removed**
+- **Whole elements:** `<script>` and `<iframe>`, including their content.
+- **Just the tags** (content kept): `object`, `embed`, `applet`, `base`, `frame`, `frameset`, `param`, `portal`, plus `<meta http-equiv=refresh|set-cookie>` and `<link rel=import>`.
+- **Attributes:**
+  - every `on*` event handler
+  - `srcdoc`
+  - any value containing `javascript:`, `vbscript:`, `livescript:` or `mocha:`, checked after decoding entities and stripping whitespace or control characters (so `&#106;`, `&colon;` and `jav&#x09;ascript` are caught)
+  - `data:` URLs other than images (`data:image/svg` is also removed)
+  - dangerous `style` values (`expression(`, `-moz-binding`, `behavior:`)
+  - SVG `attributeName=on…`
+- **Comments** that hide dangerous markup.
+- **Ambiguous element content:** a `<style>`, `<noscript>`, `<noembed>` or `<noframes>` containing markup is removed entirely. In `<textarea>`, `<title>`, `<xmp>` and `<plaintext>`, `<` is escaped to `&lt;`. For `<textarea>` and `<title>` this looks the same on screen; in `<xmp>` and `<plaintext>` a literal `&lt;` will show.
+
+**Testing**
+I ran 95 attack examples through the filter, including encoding tricks, broken comments, SVG/MathML parser tricks, `formaction`, meta refresh and `<base>` hijacking. I then loaded each result in headless Chromium, clicked the links, and checked for alerts. I also checked the page as the browser parsed it for any leftover `<script>`, `on*` attribute or `javascript:` URL.
+- No alerts fired.
+- The only flagged case was a false positive: the filtered output was clean, but clicking the remaining `/x` link opened Chromium's error page, which has its own scripts.
+- The clean test page (tables, headers, inline styles, SVG, forms, comments with markup, Unicode) came out unchanged.
+
+**What the filter errs toward removing**
+- Any attribute whose value contains `javascript:` is removed, even harmless text such as `?q=javascript:`.
+- An unclosed `<script>` or `<iframe>` removes everything to the end of the file.

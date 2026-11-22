@@ -1,0 +1,21 @@
+I've written `re.json`: 2,053 [regex, replacement] pairs, about 231 KB, so well under both limits. On your example position it returns exactly the three expected positions (in a different order). It passes `check.py`, all 18 Opera Game positions, when pointed at this file instead of `/app/re.json`.
+
+**Testing:** I also compared the output against python-chess on about 3,500 positions from random games and 26 hand-built edge cases, with no mismatches. The edge cases covered:
+- en passant that would leave the king in check along a rank
+- castling out of, through and into check
+- castling queenside when only b1 is attacked (still legal)
+- losing castling rights when a rook or king moves, or a rook is captured
+- promotions, including promoting by capturing a rook
+
+**Speed:** each position takes about 0.5 seconds, almost all of it Python compiling the 2,000-odd regexes.
+
+**Known gap:** a checkmate or stalemate position (no legal moves) can't pass the checker. Splitting any string on newlines always gives at least one item, so the result can never be an empty list. The checker never tests these positions in the Opera Game.
+
+**How it works:**
+1. **Set-up:** the position is rewritten into a fixed-width form, with empty squares spelled out as dots, the castling rights as four fixed slots, and the en-passant square as two characters. That puts every square at a known offset in the string.
+2. **Generating moves:** each possible from/to square pair for each piece gets one regex. If the pattern matches (right piece, target not a white piece, path clear), it adds a new line holding the resulting position. Double pawn pushes set the en-passant square, and pawns reaching the last rank become queens. There are separate rules for en passant and for castling, which needs the right still held and the squares between empty.
+3. **Removing illegal moves:** one regex per square deletes any line where the white king on that square is attacked by a knight, pawn, king or sliding piece with a clear path. For castling, the squares the king starts on and passes over are marked so the same check also rejects castling out of or through check.
+4. **Castling rights:** a right is kept only if the king and that rook are still on their starting squares, which matches how python-chess reports them.
+5. **Output:** runs of dots go back to digits, " b" is added, and the castling and en-passant fields are tidied. The en-passant square is shown after every double push. The checker accepts that even when python-chess shows "-".
+
+I also left two helper scripts in the folder: `gen.py` rebuilds `re.json`, and `test.py` runs the random-game comparison against python-chess.

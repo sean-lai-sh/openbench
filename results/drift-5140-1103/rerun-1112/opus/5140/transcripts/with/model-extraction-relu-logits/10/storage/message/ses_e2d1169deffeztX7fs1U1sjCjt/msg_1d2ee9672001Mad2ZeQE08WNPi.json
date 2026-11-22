@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d2ee9672001Mad2ZeQE08WNPi",
+  "sessionID": "ses_e2d1169deffeztX7fs1U1sjCjt",
+  "role": "user",
+  "time": {
+    "created": 1794540213874
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. It recovers all 20 hidden neurons and saves them to `stolen_A1.npy` as a 20×10 matrix. I checked it once against the true weights and every recovered row matched a different real row of `A1`.\n\n**How it works (it only calls `forward()`):**\n1. It picks random lines through the 10-dimensional input space and follows each one. Along a line the network's output is made of straight-line segments, and each bend happens where one hidden neuron switches on or off. The script finds these bends by repeatedly halving intervals until it can pin each one down.\n2. At each bend it estimates the gradient just before and just after, using finite differences. The change in gradient equals `A2[i] * A1[i,:]`, so it gives row *i* of `A1` up to a scale factor.\n3. It scales each row to length 1 and fixes the sign so its largest entry is positive. Then it merges duplicates (rows that point in almost exactly the same direction) and keeps only rows seen at least twice, which drops one-off false detections.\n4. It stops once five lines in a row turn up no new neurons. It got there after 6 lines, in about 1 second.\n\n**Check:** for that one run I compared the output with the real `A1` in `forward.py`. Every recovered row lines up with exactly one true row (cosine similarity of 1 to within about 1e-13), and all 20 true rows are covered. The script never reads those weights itself; I opened them only for this comparison.\n\n**Limits:**\n- A neuron whose output weight is zero, or that never switches within the search range (±50 along each line from a random starting point), can't be seen and won't be recovered.\n- The script doesn't know how many neurons there are. It just stops when new lines stop finding any.\n\nRun it with `python steal.py` from that directory.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

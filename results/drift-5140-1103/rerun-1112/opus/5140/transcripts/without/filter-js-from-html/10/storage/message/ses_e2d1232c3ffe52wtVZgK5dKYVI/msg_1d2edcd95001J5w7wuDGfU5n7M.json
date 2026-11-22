@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d2edcd95001J5w7wuDGfU5n7M",
+  "sessionID": "ses_e2d1232c3ffe52wtVZgK5dKYVI",
+  "role": "user",
+  "time": {
+    "created": 1794540162453
+  },
+  "summary": {
+    "title": "Creating filter.py to strip JavaScript from HTML",
+    "body": "I've written `/tmp/obench-cell-2cecoql3/bench_opencode_filter-js-from-html_o_tmd0gn/filter.py`. You run it as `python3 filter.py file.html` and it cleans the file in place. In my tests, a harmless HTML page with tables, headings, forms, comments, styles, UTF-8 text and odd spacing came out byte-for-byte identical. I also wrote 39 attack examples and opened each one in headless Chromium: 25 ran their script before filtering and none did after.\n\n**How it works**\n- **Nothing gets rewritten.** The file is read and written as raw bytes, and the only change is cutting out the dangerous pieces. It never re-generates the HTML, so formatting and whitespace stay exactly as they were.\n- **What gets removed:**\n  - `<script>` elements, including their content.\n  - Any `on*` attribute (`onerror`, `onload`, `ontoggle`, …).\n  - Any attribute whose value contains `javascript:`, `vbscript:`, `livescript:` or `mocha:`. Encoded characters are decoded and whitespace and control characters are stripped before checking, so disguises like `jav&#x09;ascript:` and `&#106;avascript:` are still caught.\n  - `data:` URLs in link and source attributes (`href`, `src`, `data`, `action`, …). The exception is `data:image/video/audio` on image and media elements like `<img>`, which stays.\n  - `srcdoc` attributes that contain anything dangerous.\n  - `style` attributes using `expression(` or `-moz-binding`.\n  - SVG `attributeName=\"on…\"` (used by `<animate>` and `<set>`).\n- **It's hard to trick.** It follows the browser's own rules for reading tags, so things like `<svg/onload=…>`, `<img \"\"\">` and backticks are read the way a browser reads them. It also checks every `<tag` anywhere in the file, including inside comments, attribute values, `<textarea>`, `<title>`, `<noscript>` and SVG `<style>`. That blocks tricks where the browser and the filter would disagree about what is a tag. It then repeats the pass until nothing more changes, so a cut can't stitch together new markup (e.g. `<scr<script>x</script>ipt>`).\n\n**Trade-offs**\n- Because it errs on the safe side, it can occasionally remove something harmless. For example, a `title` attribute containing the text \"javascript:\" would be removed, and so would text that looks like a dangerous tag inside a comment.\n- Removing an attack can leave harmless leftover text. In the comment trick, for instance, part of the payload remains as plain text that doesn't run.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

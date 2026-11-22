@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d299ccac001TcDVbsFULvfTON",
+  "sessionID": "ses_e2d667785ffefLxMbq09zh7dGL",
+  "messageID": "msg_1d29995720010JYO8Zu9ZsPT3P",
+  "type": "tool",
+  "callID": "toolu_vrtx_01LSFSV3Cp33g3ddGeDk9MY4",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-qqmmip5p/bench_opencode_model-extraction-relu-logits_12nyig4v/steal.py",
+      "content": "\"\"\"Black-<USER> extraction of A1 (up to row permutation and scaling) from a\none-hidden-layer ReLU network f(x) = A2 ReLU(A1 x + b1) + b2, using only\nqueries to forward(x).\n\nMethod: along random lines x0 + t*d the function is piecewise linear; each\nkink is a point where some hidden neuron i crosses zero.  At such a critical\npoint the gradient of f jumps by a2_i * A1[i], so the gradient difference\nacross the kink recovers row i of A1 up to scale.  Rows are deduplicated by\ndirection until no new neurons are discovered.\n\"\"\"\nimport os\nimport sys\n\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, lo, hi, tol=1e-9, min_width=1e-7):\n    \"\"\"Return t-values of kinks of g(t)=f(x0+t d) in [lo, hi].\"\"\"\n    g = lambda t: f(x0 + t * d)\n    h = 1e-6\n\n    def slope_right(t):\n        return (g(t + h) - g(t)) / h\n\n    def slope_left(t):\n        return (g(t) - g(t - h)) / h\n\n    kinks = []\n\n    def rec(a, b, fa, fb, sa, sb, depth):\n        if b - a < min_width or depth > 60:\n            kinks.append(0.5 * (a + b))\n            return\n        scale = 1.0 + abs(fa) + abs(fb)\n        # No kink: same slope and consistent line\n        if abs(sa - sb) < tol * (1 + abs(sa)) * 1e3 and \\\n                abs(fa + sa * (b - a) - fb) < tol * scale:\n            return\n        # Try single-kink hypothesis\n        if abs(sa - sb) > 1e-12:\n            ts = (fb - fa + sa * a - sb * b) / (sa - sb)\n            if a + 1e-6 < ts < b - 1e-6:\n                fts = g(ts)\n                if abs(fa + sa * (ts - a) - fts) < tol * scale and \\\n                        abs(fb + sb * (ts - b) - fts) < tol * scale:\n                    kinks.append(ts)\n                    return\n        m = 0.5 * (a + b)\n        fm = g(m)\n        rec(a, m, fa, fm, sa, slope_left(m), depth + 1)\n        rec(m, b, fm, fb, slope_right(m), sb, depth + 1)\n\n    rec(lo, hi, g(lo), g(hi), slope_right(lo), slope_left(hi), 0)\n    return kinks\n\n\ndef gradient(x, h=1e-7):\n    f0 = f(x)\n    gr = np.empty(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        gr[j] = (f(x + e) - f0) / h\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    k = np.argmax(np.abs(v))\n    return v if v[k] > 0 else -v\n\n\ndef main():\n    clusters = []  # list of [sum_vector, count]\n    no_new = 0\n    lines = 0\n    while no_new < 8 and lines < 200:\n        lines += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        kinks = find_kinks(x0, d, -50.0, 50.0)\n        found_new = False\n        for t in kinks:\n            p = x0 + t * d\n            delta = 1e-4\n            g1 = gradient(p + delta * d)\n            g2 = gradient(p - delta * d)\n            diff = g1 - g2\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = normalize(diff)\n            matched = False\n            for c in clusters:\n                u = c[0] / np.linalg.norm(c[0])\n                if abs(u @ v) > 0.999:\n                    c[0] += v if u @ v > 0 else -v\n                    c[1] += 1\n                    matched = True\n                    break\n            if not matched:\n                clusters.append([v.copy(), 1])\n                found_new = True\n        no_new = 0 if found_new else no_new + 1\n\n    A = np.array([normalize(c[0]) for c in clusters])\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A)\n    print(f\"Recovered {A.shape[0]} neurons from {lines} lines\")\n    print(A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-qqmmip5p/bench_opencode_model-extraction-relu-logits_12nyig4v/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-qqmmip5p/bench_opencode_model-extraction-relu-logits_12nyig4v/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794534670268,
+      "end": 1794534676924
+    }
+  }
+}

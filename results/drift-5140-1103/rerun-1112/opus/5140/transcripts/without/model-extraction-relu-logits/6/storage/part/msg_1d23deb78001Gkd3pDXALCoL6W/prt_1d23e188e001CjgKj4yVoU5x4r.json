@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d23e188e001CjgKj4yVoU5x4r",
+  "sessionID": "ses_e2dc22255ffeezPRLalfnOdsvW",
+  "messageID": "msg_1d23deb78001Gkd3pDXALCoL6W",
+  "type": "tool",
+  "callID": "toolu_vrtx_01UTq5DWeGswR5XwGCqtmWq7",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-nek8f0o3/bench_opencode_model-extraction-relu-logits_hnu23x3h/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, a, b, fa, fb, depth=0, out=None):\n    \"\"\"Find t values where g(t)=f(x0+t d) is non-linear, in [a,b].\"\"\"\n    if out is None:\n        out = []\n    g = lambda t: f(x0 + t * d)\n    m = 0.5 * (a + b)\n    fm = g(m)\n    scale = max(1.0, abs(fa), abs(fb))\n    if abs(fm - 0.5 * (fa + fb)) < 1e-11 * scale and depth > 3:\n        return out\n    if depth > 60 or b - a < 1e-9:\n        return out\n    # Try to resolve a single kink via slopes at the ends.\n    h = 1e-7 * (b - a)\n    sa = (g(a + h) - fa) / h\n    sb = (fb - g(b - h)) / h\n    if abs(sa - sb) > 1e-9:\n        # intersection of lines fa + sa (t-a) and fb + sb (t-b)\n        tk = (fb - fa + sa * a - sb * b) / (sa - sb)\n        if a + 2 * h < tk < b - 2 * h:\n            pred = fa + sa * (tk - a)\n            fk = g(tk)\n            # check also points on both sides lie on the respective lines\n            tl = 0.5 * (a + tk)\n            tr = 0.5 * (tk + b)\n            ok = (abs(fk - pred) < 1e-9 * scale\n                  and abs(g(tl) - (fa + sa * (tl - a))) < 1e-9 * scale\n                  and abs(g(tr) - (fb + sb * (tr - b))) < 1e-9 * scale)\n            if ok:\n                out.append(tk)\n                return out\n    find_kinks(x0, d, a, m, fa, fm, depth + 1, out)\n    find_kinks(x0, d, m, b, fm, fb, depth + 1, out)\n    return out\n\n\ndef gradient(x, eps=1e-6):\n    f0 = f(x)\n    gr = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = eps\n        gr[i] = (f(x + e) - f(x - e)) / (2 * eps)\n    return gr\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    # canonical sign: largest-magnitude entry positive\n    if v[np.argmax(np.abs(v))] < 0:\n        v = -v\n    return v\n\n\ndef steal(n_lines=200, T=30.0, patience=60):\n    clusters = []  # list of [sum_vector, count]\n    since_new = 0\n    for it in range(n_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        a, b = -T, T\n        ts = find_kinks(x0, d, a, b, f(x0 + a * d), f(x0 + b * d))\n        new_found = False\n        for t in ts:\n            xs = x0 + t * d\n            delta = 1e-4\n            gdiff = gradient(xs + delta * d) - gradient(xs - delta * d)\n            if np.linalg.norm(gdiff) < 1e-8:\n                continue\n            v = normalize(gdiff)\n            matched = False\n            for c in clusters:\n                cv = c[0] / np.linalg.norm(c[0])\n                if abs(np.dot(cv, v)) > 1 - 1e-5:\n                    c[0] += v * np.sign(np.dot(cv, v))\n                    c[1] += 1\n                    matched = True\n                    break\n            if not matched:\n                clusters.append([v.copy(), 1])\n                new_found = True\n        since_new = 0 if new_found else since_new + 1\n        if since_new >= patience and it > 50:\n            break\n    # keep clusters seen more than once (robust to spurious detections)\n    rows = [normalize(c[0]) for c in clusters if c[1] >= 2]\n    return np.array(rows)\n\n\nif __name__ == \"__main__\":\n    A1_hat = steal()\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_hat)\n    print(\"Recovered\", A1_hat.shape[0], \"neurons\")\n    print(A1_hat)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-nek8f0o3/bench_opencode_model-extraction-relu-logits_hnu23x3h/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-nek8f0o3/bench_opencode_model-extraction-relu-logits_hnu23x3h/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794528659680,
+      "end": 1794528666025
+    }
+  }
+}

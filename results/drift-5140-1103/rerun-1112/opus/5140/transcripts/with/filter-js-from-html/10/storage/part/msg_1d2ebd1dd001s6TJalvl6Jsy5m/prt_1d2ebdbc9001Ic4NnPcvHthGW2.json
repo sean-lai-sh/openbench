@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d2ebdbc9001Ic4NnPcvHthGW2",
+  "sessionID": "ses_e2d18ee04ffeghLFLbrvLuRGF6",
+  "messageID": "msg_1d2ebd1dd001s6TJalvl6Jsy5m",
+  "type": "tool",
+  "callID": "toolu_vrtx_01RetpkQEuKrvd1sTuHGgUDT",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/xsstest/run.py <<'EOF'\nimport subprocess, sys, os, time\nfrom selenium import webdriver\nfrom selenium.webdriver.chrome.options import Options\nfrom selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException\n\nFILTER = '/tmp/obench-cell-wkj0_82p/bench_opencode_filter-js-from-html_h4wwwkki/filter.py'\nvecs = [l for l in open('/tmp/xsstest/vectors.txt').read().split('\\n') if l.strip()]\nvecs += [\"<img src=x\\nonerror=alert(1)>\", \"<script\\n>alert(1)</script\\n>\"]\no = Options()\nfor a in ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']:\n    o.add_argument(a)\nd = webdriver.Chrome(options=o)\nd.set_page_load_timeout(5)\nCHECK = r\"\"\"\nvar bad=[];\ndocument.querySelectorAll('*').forEach(function(e){\n  if(e.tagName.toLowerCase()=='script') bad.push('script');\n  for (var a of e.attributes){var n=a.name.toLowerCase(), v=a.value.replace(/[\\s\\x00-\\x1f]/g,'').toLowerCase();\n    if(n.startsWith('on')) bad.push('attr '+n);\n    if(v.indexOf('javascript:')>=0) bad.push('js url '+n);}\n});\nreturn bad;\"\"\"\nfails = 0\nfor idx, v in enumerate(vecs):\n    path = '/tmp/xsstest/t%d.html' % idx\n    open(path, 'w').write('<html><body>\\n' + v + '\\n</body></html>')\n    subprocess.run([sys.executable, FILTER, path], check=True)\n    out = open(path).read()\n    alerted = False\n    try:\n        d.get('file://' + path)\n        time.sleep(0.3)\n        for eid in ['clk']:\n            try:\n                d.execute_script(\"var e=document.getElementById('clk'); if(e){e.dispatchEvent(new MouseEvent('click',{bubbles:true})); if(e.click) e.click();}\")\n                time.sleep(0.2)\n            except UnexpectedAlertPresentException:\n                alerted = True\n        try:\n            d.switch_to.alert.accept(); alerted = True\n        except NoAlertPresentException:\n            pass\n        bad = d.execute_script(CHECK)\n    except UnexpectedAlertPresentException:\n        alerted = True; bad = ['alert']\n        try: d.switch_to.alert.accept()\n        except Exception: pass\n    except Exception as e:\n        bad = ['ERR ' + type(e).__name__]\n    if alerted or bad:\n        fails += 1\n        print('FAIL', idx, repr(v), alerted, bad, '\\n   ->', repr(out))\nprint('total', len(vecs), 'fails', fails)\nd.quit()\nEOF\ncd /tmp/xsstest && timeout 600 python3 run.py 2>&1 | tail -30",
+      "description": "Run XSS vectors through filter and Chromium",
+      "timeout": 650000
+    },
+    "output": "FAIL 57 '<base href=\"javascript:alert(1)//\"><a href=\"/x\" id=clk>x</a>' False ['script', 'script'] \n   -> '<html><body>\\n<a href=\"/x\" id=clk>x</a>\\n</body></html>'\ntotal 95 fails 1\n",
+    "title": "Run XSS vectors through filter and Chromium",
+    "metadata": {
+      "output": "FAIL 57 '<base href=\"javascript:alert(1)//\"><a href=\"/x\" id=clk>x</a>' False ['script', 'script'] \n   -> '<html><body>\\n<a href=\"/x\" id=clk>x</a>\\n</body></html>'\ntotal 95 fails 1\n",
+      "exit": 0,
+      "description": "Run XSS vectors through filter and Chromium"
+    },
+    "time": {
+      "start": 1794540043654,
+      "end": 1794540117714
+    }
+  }
+}

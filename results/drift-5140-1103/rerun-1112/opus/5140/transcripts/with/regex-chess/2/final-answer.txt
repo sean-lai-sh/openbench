@@ -1,0 +1,25 @@
+I've written `re.json` and it passes every test I ran. It has 3,932 regex/replacement pairs and is about 467 KB, well under both limits.
+
+**Testing:**
+- The example position gives exactly the three expected positions.
+- `check.py` (pointed at the local `re.json` instead of `/app/re.json`) passes all 18 positions from the Opera Game.
+- About 4,000 positions from random games, matched against python-chess, with no failures. The random games were weighted towards captures, castling, en passant and promotions.
+- Hand-picked edge cases also pass:
+  - castling out of, through or into check
+  - castling rights lost when a rook is captured
+  - en passant where the capturing pawn is pinned, including the case where both pawns leave the same rank
+  - promotions, both pushing and capturing
+
+**Two limitations:**
+- **No legal moves (checkmate or stalemate):** the function returns `[""]` rather than an empty list. That's unavoidable, because `"".split("\n")` always gives `[""]`. Positions taken from the moves of real games, like `check.py`'s, never hit this.
+- **Speed:** each position takes about 0.2 seconds, because every move rule is tried in turn.
+
+**How it works:**
+1. **Normalise:** the FEN is turned into a fixed-width line: 64 board squares (`.` for empty), 4 castling slots, and the en-passant file.
+2. **Generate moves:** there is one rule for each possible piece move (piece, from-square, to-square), with conditions that the squares in between are empty. When a rule's conditions hold on the original line, it adds the resulting position as a new line. The same approach covers double pushes (which set the en-passant file), promotion to queen only, en passant, and castling.
+3. **Castling through check:** a castling line temporarily puts extra white kings on the squares the king passes through. The normal "king in check" filter then rejects castling out of, through or into check, and afterwards those lines are converted to the real king and rook squares.
+4. **Remove illegal moves:** for each of the 64 squares, one rule deletes any line where a white king on that square is attacked by a black knight, pawn, king or sliding piece.
+5. **Castling rights:** each right is kept only if the king and that rook are still on their starting squares, which is the same rule python-chess applies. The en-passant square is always written after a double push; `check.py` accepts that even when python-chess shows `-`.
+6. **Output:** lines are converted back to FEN as `... b <castling> <ep> 0 0`.
+
+`gen.py` builds `re.json`, and `test.py` is the random-game test harness; `python3 test.py <seed> <games>` runs it.

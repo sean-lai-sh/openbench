@@ -1,0 +1,29 @@
+{
+  "id": "prt_1d1910256001J3D6scrsOVBDZ9",
+  "sessionID": "ses_e2e722082ffetIOnEElYhDM8Lk",
+  "messageID": "msg_1d190fb6a001ifktyx8PM7LX5R",
+  "type": "tool",
+  "callID": "toolu_vrtx_01LvNBLMF61jn4ctMn77hB6i",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-v4miy3_s/bench_opencode_regex-chess_0i4ql8j9/test.py",
+      "content": "import json, re, random, sys, time\nimport chess\n\nRULES = [(re.compile(p), r) for p, r in json.load(open(\"/tmp/obench-cell-v4miy3_s/bench_opencode_regex-chess_0i4ql8j9/re.json\"))]\n\n\ndef run(fen):\n    for p, r in RULES:\n        fen = p.sub(r, fen)\n    return [\" \".join(x.split(\" \")[:-2]) for x in fen.split(\"\\n\")]\n\n\ndef expected(fen):\n    b = chess.Board(fen)\n    out = set()\n    for m in b.legal_moves:\n        if m.promotion and m.promotion != chess.QUEEN:\n            continue\n        c = b.copy(); c.push(m)\n        out.add(\" \".join(c.fen().split(\" \")[:-2]))\n    return out\n\n\ndef check(fen):\n    ours = run(fen)\n    exp = expected(fen)\n    ok = len(ours) == len(exp) and all(\n        x in exp or x.rpartition(\" \")[0] + \" -\" in exp for x in ours)\n    if not ok:\n        print(\"FAIL\", fen)\n        print(\" ours\", sorted(ours))\n        print(\" exp \", sorted(exp))\n    return ok\n\n\nex = \"<REDACTED_B64> w kq - 0 1\"\nprint(run(ex))\nrandom.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)\nn = fails = 0\nt0 = time.time()\nfor g in range(400):\n    b = chess.Board()\n    while not b.is_game_over() and b.ply() < 200:\n        if b.turn == chess.WHITE:\n            n += 1\n            if not check(b.fen()):\n                fails += 1\n                if fails > 5:\n                    sys.exit(1)\n        moves = list(b.legal_moves)\n        # bias towards captures/castling/ep/promotions for coverage\n        special = [m for m in moves if b.is_castling(m) or b.is_en_passant(m) or m.promotion or b.is_capture(m)]\n        b.push(random.choice(special) if special and random.random() < 0.3 else random.choice(moves))\nprint(n, \"positions\", fails, \"fails\", time.time() - t0, \"s\")\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-v4miy3_s/bench_opencode_regex-chess_0i4ql8j9/test.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-v4miy3_s/bench_opencode_regex-chess_0i4ql8j9/gen.py": [],
+        "/tmp/obench-cell-v4miy3_s/bench_opencode_regex-chess_0i4ql8j9/test.py": []
+      },
+      "filepath": "/tmp/obench-cell-v4miy3_s/bench_opencode_regex-chess_0i4ql8j9/test.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794517310385,
+      "end": 1794517312261
+    }
+  }
+}

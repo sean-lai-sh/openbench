@@ -1,0 +1,24 @@
+I wrote `polyglot/main.rs`. It builds with both `rustc` and `g++ -x c++` with no warnings, and both programs print the same results for N = 0, 1, 2, 3, 10, 92 and 100:
+
+| N | Output |
+|---|--------|
+| 0 | 1 |
+| 1 | 1 |
+| 2 | 2 |
+| 10 | 89 |
+| 92 | 12200160415121876738 |
+| 100 | 573147844013817084101 |
+
+**How it works:** Rust lets comments nest inside each other and C++ doesn't, so the two compilers end each comment at different places.
+
+- **Line 1, `/* /* */ #if 0`:**
+  - C++ sees a complete comment, then `#if 0`. It reads comments before it handles `#` lines, so `#if 0` still counts as a directive. Everything up to the matching `#endif` is skipped.
+  - Rust sees an outer comment that's still open. It closes on the next line, and then the Rust code starts.
+- **After the Rust code, `/* /* */ #endif`:**
+  - C++ reaches `#endif` and starts reading the C++ code.
+  - Rust opens a new comment, so it ignores the C++ code.
+- **Last line, `// */`:**
+  - Rust ends its comment here.
+  - C++ treats the whole line as a single-line comment.
+
+Both versions add numbers in base-10⁹ chunks instead of using a fixed-size integer, so large N doesn't overflow. To keep the trick working, neither code section can contain `/*` or `*/`.

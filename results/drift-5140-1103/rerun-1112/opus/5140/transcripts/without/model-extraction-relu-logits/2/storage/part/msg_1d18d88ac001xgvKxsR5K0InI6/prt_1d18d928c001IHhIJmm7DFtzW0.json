@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d18d928c001IHhIJmm7DFtzW0",
+  "sessionID": "ses_e2e734557ffexiEIsvXEnfc2G9",
+  "messageID": "msg_1d18d88ac001xgvKxsR5K0InI6",
+  "type": "tool",
+  "callID": "toolu_vrtx_01RewYZa3c2726BGGXiETe6a",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-gvdklj4m/bench_opencode_model-extraction-relu-logits_ziku4s97; python - <<'EOF'\ns=open('steal.py').read()\ns=s.replace(\"    print(sorted([len(o) for _,o in found])[::-1][:40])\\n\",\"\")\ns=s.replace(\"\"\"    # keep directions observed repeatedly (filters numerical junk)\n    rows = []\n    for v, obs in found:\n        if len(obs) >= 2:\"\"\",\"\"\"    # Real neurons are hit on nearly every line; spurious directions (from\n    # nearly-coincident kinks / numerical noise) appear rarely. Keep only\n    # clusters seen a substantial fraction as often as the most common one.\n    max_count = max(len(obs) for _, obs in found)\n    rows = []\n    for v, obs in found:\n        if len(obs) >= 0.25 * max_count:\"\"\")\nopen('steal.py','w').write(s)\nEOF\npython steal.py | head -1; python -c \"\nimport numpy as np\nfrom forward import A1\nS=np.load('stolen_A1.npy'); T=A1/np.linalg.norm(A1,axis=1,keepdims=True)\nS=S/np.linalg.norm(S,axis=1,keepdims=True)\nC=np.abs(S@T.T); print(S.shape, C.max(1).min(), C.max(0).min())\nR=A1[C.argmax(1)]/S; print('ratio spread', (R.std(1)/np.abs(R.mean(1))).max())\"",
+      "description": "Apply filter and re-verify",
+      "timeout": 600000
+    },
+    "output": "Recovered 20 neurons using 487371 queries\n(20, 10) 0.9999998299428451 0.9999998299428451\nratio spread 0.0006703511029626012\n",
+    "title": "Apply filter and re-verify",
+    "metadata": {
+      "output": "Recovered 20 neurons using 487371 queries\n(20, 10) 0.9999998299428451 0.9999998299428451\nratio spread 0.0006703511029626012\n",
+      "exit": 0,
+      "description": "Apply filter and re-verify"
+    },
+    "time": {
+      "start": 1794517083078,
+      "end": 1794517091135
+    }
+  }
+}

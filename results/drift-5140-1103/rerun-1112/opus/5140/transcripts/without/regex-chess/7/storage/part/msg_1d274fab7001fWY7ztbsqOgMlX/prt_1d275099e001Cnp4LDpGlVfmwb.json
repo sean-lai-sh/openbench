@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d275099e001Cnp4LDpGlVfmwb",
+  "sessionID": "ses_e2d9953cbffetA5OXAKBCwdW4C",
+  "messageID": "msg_1d274fab7001fWY7ztbsqOgMlX",
+  "type": "tool",
+  "callID": "toolu_vrtx_01SYxhkZTVQYiV3xfusSCEuS",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-zky3ddvf/bench_opencode_regex-chess_l6hpjar2; python3 - <<'EOF'\nsrc=open('gen.py').read()\nstart=src.index('def move(cons):')\nend=src.index('# ---------------- preprocessing')\nnew='''def multi(cons, cands):\n    \"\"\"cons: {idx: regex class}; every idx captured as one group.\n    cands: list of (open, close, check_idxs, mods) where mods maps idx -> literal\n    or ('g', idx) (copy original char of idx). open/close may be '' (no check).\"\"\"\n    idxs = sorted(cons)\n    pat = \"^@\"\n    segs = []  # list of ('gap', g) or ('sq', idx, g)\n    pos = 1\n    g = 0\n    gi = {}\n    for idx in idxs:\n        assert idx >= pos\n        if idx > pos:\n            g += 1\n            pat += \"(.{%d})\" % (idx - pos)\n            segs.append((\"gap\", g))\n        g += 1\n        pat += \"(\" + cons[idx] + \")\"\n        segs.append((\"sq\", idx, g))\n        gi[idx] = g\n        pos = idx + 1\n    g += 1\n    pat += \"(.*)\"\n    segs.append((\"gap\", g))\n    ref = lambda n: \"\\\\\\\\g<%d>\" % n\n    out = \"@\" + \"\".join(ref(s[-1]) for s in segs)\n    for op, cl, chk, mods in cands:\n        line = \"\\\\n:\" + op + \"\".join(ref(gi[i]) for i in chk) + cl\n        for s in segs:\n            if s[0] == \"sq\" and s[1] in mods:\n                m = mods[s[1]]\n                line += m if isinstance(m, str) else ref(gi[m[1]])\n            else:\n                line += ref(s[-1])\n        out += line\n    rules.append([pat, out])\n\n\n'''\nopen('gen.py','w').write(src[:start]+new+src[end:])\nEOF\ngrep -n \"move generation\\|legality filter\" gen.py",
+      "description": "Replace move() with multi()"
+    },
+    "output": "83:# ---------------- move generation ----------------\n195:# ---------------- legality filter ----------------\n",
+    "title": "Replace move() with multi()",
+    "metadata": {
+      "output": "83:# ---------------- move generation ----------------\n195:# ---------------- legality filter ----------------\n",
+      "exit": 0,
+      "description": "Replace move() with multi()"
+    },
+    "time": {
+      "start": 1794532253822,
+      "end": 1794532253928
+    }
+  }
+}

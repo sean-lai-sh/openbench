@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d3062fb9001TRP00QM18Cuo7z",
+  "sessionID": "ses_e2cfb28bcffelZnkqrTrD4qfjC",
+  "messageID": "msg_1d30610a4001D3j7J7yhXFNheE",
+  "type": "text",
+  "text": "I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on a small 5-layer LLaMA with 3 microbatches, comparing it to a normal single-process forward and backward. At world_size 1 and 2 the loss and every parameter gradient matched the reference exactly (max difference 0). The test only ran on CPU in float32; I haven't run your own hook-based test.\n\n**How it works:**\n- **Splitting the layers:** each rank gets a contiguous block of decoder layers, about the same number each. Any leftover layers go to the lower ranks, so 5 layers on 2 ranks splits 3/2. Rank 0 also runs `embed_tokens`, and the last rank also runs `norm`, `lm_head` and the loss.\n- **Forward pass, all microbatches first:**\n  - Rank 0 embeds the input IDs. Every other rank receives a hidden-state tensor of shape `[mb, seq, hidden]` from the rank before it, with gradients turned on.\n  - Each layer is called as a normal module (no hooks). It's given the rotary embeddings and causal mask, built the same way `LlamaModel` builds them.\n  - The output goes to the next rank. On the last rank, the loss is `cross_entropy(...) / num_microbatches`.\n- **Backward pass, after all forwards:**\n  - The last rank calls `loss.backward()`. The other ranks receive the output gradient from the next rank and run `torch.autograd.backward(output, grad)`.\n  - Every rank except rank 0 then sends its input's `.grad` back to the previous rank.\n- **Communication:** sends and receives use `dist.P2POp` with `batch_isend_irecv`. Inputs, hidden states and gradients are all moved to the given `device` and `dtype`.\n\nThe function doesn't zero gradients or step the optimizer; that's left to the caller. It returns the total scaled loss on the last rank and `None` on the others.",
+  "time": {
+    "start": 1794541760554,
+    "end": 1794541760554
+  }
+}

@@ -1,0 +1,14 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on a small randomly initialised LLaMA model (5 layers, 3 microbatches, gloo backend, CPU only) with `world_size` 1 and 2. In both cases the loss and every parameter gradient exactly matched an ordinary single-process training step on the same model. I didn't run your hook-based test, since I don't have it.
+
+**How it works:**
+- **Splitting the layers:** decoder layers are divided evenly across ranks, with any leftover layers going to the lower ranks. Rank 0 also runs the token embedding, and the last rank also runs the final norm and output layer (`lm_head`). With 5 layers on 2 ranks, rank 0 gets layers 0–2 and rank 1 gets layers 3–4.
+- **Running layers outside the model:** each rank calls its decoder layers directly, so it builds the inputs those layers need itself: position IDs, rotary embeddings and the causal attention mask.
+- **Forward pass:** all microbatches go forward first. Ranks after 0 receive the hidden states (`[microbatch, seq_len, hidden_size]`) from the previous rank and mark them as needing gradients. Every rank except the last sends its output to the next rank. The last rank computes `cross_entropy(logits, targets) / num_microbatches` for each microbatch.
+- **Backward pass:** all microbatches then go backward in order. The last rank calls `loss.backward()`; the other ranks receive the output gradient from the next rank and backpropagate it. Every rank except rank 0 sends the gradient of its input back to the previous rank.
+- **Communication:** stages talk through `dist.P2POp` with `dist.batch_isend_irecv`. Inputs, hidden states and gradients are all moved to the given device and dtype, and no hooks are used.
+
+**Choices you might want to change:**
+- The function returns the summed, scaled loss on the last rank and `None` on the other ranks.
+- Targets are used exactly as given, with no shift, so they're assumed to already be the next-token IDs.
+- The loss is computed in float32 even when `dtype` is lower precision.
+- Ranks after 0 work out the hidden-state shape from `inputs[i]` (falling back to `targets[i]`), so every rank needs to be passed the microbatch lists.

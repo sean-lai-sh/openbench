@@ -1,0 +1,9 @@
+I've written `polyglot/main.rs`. It builds with both `rustc` and `g++ -x c++`, and both programs print the same results with your indexing (f(0)=1, f(1)=1, f(2)=2). I tested N = 0, 1, 2, 3, 10, 50, 90 and 150, and the two outputs matched each time. My compiler versions may differ from your rustc 1.75.0 and g++ 13.2.0.
+
+**How it works:** it uses two places where the languages read comments differently.
+- **Rust lines:** each one ends in `//\`. In C++, a `\` at the end of a `//` comment carries the comment onto the next line, so g++ skips the whole Rust block. Rust doesn't do this, so to rustc the `//\` is just a comment at the end of the line.
+- **C++ code:** the line straight after the Rust block is `/*`. g++ is still reading the carried-over comment, so it ignores that line. rustc sees it as the start of a block comment, so it skips all the C++ code that follows. The last line, `// */`, ends that block comment for Rust, and C++ reads it as an ordinary comment.
+
+**Limits:**
+- Both versions use 128-bit integers (`u128` in Rust, `unsigned __int128` in C++), so results are correct up to about N = 184. Beyond that, the C++ version silently wraps around and gives wrong numbers. A debug build from plain `rustc` stops with an overflow error instead.
+- A missing or non-numeric argument is treated as N = 0, so both print 1.

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d261d33b001xXTqNTiLnvAtvI",
+  "sessionID": "ses_e2d9e64dcffeODigu4PtudJusY",
+  "messageID": "msg_1d261a8ea001Xwzbj1ZlAIv9ne",
+  "type": "tool",
+  "callID": "toolu_vrtx_01T8N76Q2a7U3ufAQ53CJ6Fk",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-5sxsk69d/bench_opencode_model-extraction-relu-logits_yfyrns9p/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef grad(x, h=1e-6):\n    \"\"\"Exact gradient for a piecewise-linear function (forward differences).\"\"\"\n    f0 = f(x)\n    g = np.empty(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - f0) / h\n    return g\n\n\ndef find_kinks(x0, d, a, b, fa, fb, out, depth=0):\n    \"\"\"Recursively locate non-linearities of t -> f(x0 + t d) on [a, b].\"\"\"\n    m = 0.5 * (a + b)\n    fm = f(x0 + m * d)\n    q1, q3 = a + 0.25 * (b - a), a + 0.75 * (b - a)\n    f1, f3 = f(x0 + q1 * d), f(x0 + q3 * d)\n    scale = 1e-10 * (1 + abs(fa) + abs(fb))\n    linear = (abs(fm - 0.5 * (fa + fb)) < scale and\n              abs(f1 - 0.5 * (fa + fm)) < scale and\n              abs(f3 - 0.5 * (fm + fb)) < scale)\n    if linear:\n        return\n    if b - a < 1e-9 or depth > 80:\n        out.append(m)\n        return\n    find_kinks(x0, d, a, m, fa, fm, out, depth + 1)\n    find_kinks(x0, d, m, b, fm, fb, out, depth + 1)\n\n\ndef canon(v):\n    v = v / np.linalg.norm(v)\n    return v * np.sign(v[np.argmax(np.abs(v))])\n\n\ndef steal(num_lines=200, T=20.0, patience=40):\n    found = []\n    since_new = 0\n    for _ in range(num_lines):\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        kinks = []\n        find_kinks(x0, d, -T, T, f(x0 - T * d), f(x0 + T * d), kinks)\n        # merge kinks that are numerically the same\n        kinks = sorted(kinks)\n        merged = []\n        for t in kinks:\n            if not merged or t - merged[-1] > 1e-6:\n                merged.append(t)\n        new_here = False\n        for t in merged:\n            eps = 1e-5\n            gl = grad(x0 + (t - eps) * d)\n            gr = grad(x0 + (t + eps) * d)\n            diff = gr - gl\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = canon(diff)\n            if not any(abs(np.dot(v, w)) > 0.9999 for w in found):\n                found.append(v)\n                new_here = True\n        since_new = 0 if new_here else since_new + 1\n        if since_new >= patience:\n            break\n    return np.array(found)\n\n\nif __name__ == \"__main__\":\n    A1_hat = steal()\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A1_hat)\n    print(f\"Recovered {A1_hat.shape[0]} neurons\")\n    print(A1_hat)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-5sxsk69d/bench_opencode_model-extraction-relu-logits_yfyrns9p/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-5sxsk69d/bench_opencode_model-extraction-relu-logits_yfyrns9p/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794530998146,
+      "end": 1794531004490
+    }
+  }
+}

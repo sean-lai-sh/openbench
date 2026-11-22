@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d2ab72eb001memJ1bYxdDCMgs",
+  "sessionID": "ses_e2d55042fffeNPX6hwwVr6TlSR",
+  "messageID": "msg_1d2ab6bea001hgopHl4XQSEcRT",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Xj5jcssmy3ysaRXcJWd9qL",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-7njv8rib/bench_opencode_torch-tensor-parallelism_yg2q1g0t && cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, os.getcwd())\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ.update(MASTER_ADDR=\"127.0.0.1\", MASTER_PORT=str(port))\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    I,O=8,12\n    W=torch.randn(O,I); x=torch.randn(3,I)\n    for cls in (ColumnParallelLinear,RowParallelLinear):\n        ref=torch.nn.Linear(I,O); \n        with torch.no_grad(): ref.weight.copy_(W); ref.bias.zero_()\n        m=cls(I,O,True,W.clone())\n        xa=x.clone().requires_grad_(); xb=x.clone().requires_grad_()\n        y=m(xa); yr=ref(xb)\n        assert torch.allclose(y,yr,atol=1e-5)\n        y.sum().backward(); yr.sum().backward()\n        assert torch.allclose(xa.grad,xb.grad,atol=1e-5)\n        if cls is ColumnParallelLinear:\n            c=O//ws; sl=slice(rank*c,(rank+1)*c)\n            assert torch.allclose(m.weight.grad,ref.weight.grad[sl]); assert torch.allclose(m.bias.grad,ref.bias.grad[sl])\n        else:\n            c=I//ws; sl=slice(rank*c,(rank+1)*c)\n            assert torch.allclose(m.weight.grad,ref.weight.grad[:,sl]); assert torch.allclose(m.bias.grad,ref.bias.grad)\n    if rank==0: print(\"ok ws\",ws)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for i,ws in enumerate((1,2,4)): mp.spawn(run,args=(ws,29600+i),nprocs=ws)\nEOF\npython /tmp/tp_test.py",
+      "description": "Test parallel layers with 1,2,4 ranks",
+      "timeout": 180000
+    },
+    "output": "ok ws 1\nok ws 2\nok ws 4\n",
+    "title": "Test parallel layers with 1,2,4 ranks",
+    "metadata": {
+      "output": "ok ws 1\nok ws 2\nok ws 4\n",
+      "exit": 0,
+      "description": "Test parallel layers with 1,2,4 ranks"
+    },
+    "time": {
+      "start": 1794535820092,
+      "end": 1794535826835
+    }
+  }
+}

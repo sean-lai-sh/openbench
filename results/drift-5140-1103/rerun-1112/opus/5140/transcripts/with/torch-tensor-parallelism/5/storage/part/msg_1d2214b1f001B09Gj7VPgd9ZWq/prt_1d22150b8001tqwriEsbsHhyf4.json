@@ -1,0 +1,27 @@
+{
+  "id": "prt_1d22150b8001tqwriEsbsHhyf4",
+  "sessionID": "ses_e2ddf1edfffe54KHRSpr4wrz8i",
+  "messageID": "msg_1d2214b1f001B09Gj7VPgd9ZWq",
+  "type": "tool",
+  "callID": "toolu_vrtx_01EwCExAjLGEmzbHuoeUkXDu",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cat > /tmp/tp_test.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.multiprocessing as mp\nsys.path.insert(0, \"/tmp/obench-cell-yztaeybb/bench_opencode_torch-tensor-parallelism_qzd4zhxi\")\nfrom parallel_linear import ColumnParallelLinear, RowParallelLinear\ndef run(rank, ws, port):\n    os.environ[\"MASTER_ADDR\"]=\"127.0.0.1\"; os.environ[\"MASTER_PORT\"]=str(port)\n    dist.init_process_group(\"gloo\", rank=rank, world_size=ws)\n    torch.manual_seed(0)\n    W = torch.randn(8, 12); x = torch.randn(3, 12, requires_grad=True)\n    ref = torch.nn.Linear(12, 8); ref.weight.data.copy_(W); ref.bias.data.zero_()\n    xr = x.detach().clone().requires_grad_(); yr = ref(xr); (yr**2).sum().backward()\n    for cls in (ColumnParallelLinear, RowParallelLinear):\n        m = cls(12, 8, True, W); xx = x.detach().clone().requires_grad_()\n        y = m(xx); (y**2).sum().backward()\n        assert torch.allclose(y, yr, atol=1e-5)\n        c = 8//ws; r=rank; ci=12//ws\n        if cls is ColumnParallelLinear:\n            assert torch.allclose(m.weight.grad, ref.weight.grad[r*c:(r+1)*c], atol=1e-4)\n            assert torch.allclose(m.bias.grad, ref.bias.grad[r*c:(r+1)*c], atol=1e-4)\n        else:\n            assert torch.allclose(m.weight.grad, ref.weight.grad[:, r*ci:(r+1)*ci], atol=1e-4)\n            assert torch.allclose(m.bias.grad, ref.bias.grad, atol=1e-4)\n        assert torch.allclose(xx.grad, xr.grad, atol=1e-4)\n    dist.destroy_process_group()\nif __name__==\"__main__\":\n    for i,ws in enumerate((1,2,4)):\n        mp.spawn(run, args=(ws, 29600+i), nprocs=ws); print(\"ok\", ws)\nEOF\npython /tmp/tp_test.py",
+      "description": "Test parallel layers with gloo",
+      "timeout": 180000
+    },
+    "output": "ok 1\nok 2\nok 4\n",
+    "title": "Test parallel layers with gloo",
+    "metadata": {
+      "output": "ok 1\nok 2\nok 4\n",
+      "exit": 0,
+      "description": "Test parallel layers with gloo"
+    },
+    "time": {
+      "start": 1794526767585,
+      "end": 1794526774051
+    }
+  }
+}

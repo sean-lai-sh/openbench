@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d2ab7346001c5ErL4pDqvvsJU",
+  "sessionID": "ses_e2d5564efffe6shkId7aQOH4W6",
+  "messageID": "msg_1d2ab5797001Yq6ehMB57dsBOV",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. I tested them against a plain `nn.Linear` using 1, 2 and 4 processes, and outputs, input gradients, and weight and bias gradients all matched.\n\n**How the weights and bias are split** (the weight uses the `nn.Linear` layout, shape `(out_features, in_features)`):\n- **`ColumnParallelLinear`**: each rank keeps an equal slice of the output features (`out_features / world_size` rows of the weight). The bias is split the same way and starts at zero. Each rank computes its part of the output, then the parts are gathered and joined along the last dimension. In the backward pass, each rank takes back its own slice of the gradient. The gradient for the input is summed across ranks, so it comes out the same as for a single full layer.\n- **`RowParallelLinear`**: each rank keeps an equal slice of the input features (`in_features / world_size` columns of the weight). Each rank's partial output is summed across all ranks, and then the full bias (starting at zero) is added on every rank. As a result, every rank gets the full bias gradient.\n\n**Things that behave differently from what you might assume:**\n- **Input to `RowParallelLinear`**: your spec didn't say whether this layer receives the full input or one already split across ranks, so it accepts both. If the last dimension equals `in_features`, it takes this rank's slice itself and the input gradient is gathered back to full size. If it equals `in_features / world_size`, it uses the input as given.\n- **Divisibility**: the split dimension must divide evenly by `world_size` (`out_features` for column, `in_features` for row), otherwise the constructor raises a `ValueError`.\n- **Without distributed setup**: if `torch.distributed` hasn't been initialised, both layers act as a single process (`world_size=1`, `rank=0`).\n\nThe editor flags the `backward` methods with type-checker errors. These are false positives from the standard `torch.autograd.Function` pattern and don't affect how the code runs.",
+  "time": {
+    "start": 1794535814004,
+    "end": 1794535814004
+  }
+}

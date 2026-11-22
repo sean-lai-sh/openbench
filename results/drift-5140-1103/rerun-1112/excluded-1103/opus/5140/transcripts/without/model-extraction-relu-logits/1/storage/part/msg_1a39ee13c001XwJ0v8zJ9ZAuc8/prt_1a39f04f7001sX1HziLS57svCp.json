@@ -1,0 +1,28 @@
+{
+  "id": "prt_1a39f04f7001sX1HziLS57svCp",
+  "sessionID": "ses_e5c612859ffenXByIc3O3l4VPL",
+  "messageID": "msg_1a39ee13c001XwJ0v8zJ9ZAuc8",
+  "type": "tool",
+  "callID": "toolu_vrtx_01FCksBceGHfR949JT6yzRus",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-xun6oh8b/bench_opencode_model-extraction-relu-logits__majuuwq/steal.py",
+      "content": "import os\nimport sys\nimport numpy as np\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\nfrom forward import forward  # noqa: E402\n\nDIM = 10\nrng = np.random.default_rng(12345)\n\n\ndef f(x):\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef find_kinks(x0, d, a, b, fa, fb, out, depth=0):\n    \"\"\"Recursively locate points t in [a,b] where f(x0+t d) is non-linear.\"\"\"\n    m = 0.5 * (a + b)\n    fm = f(x0 + m * d)\n    if abs(fm - 0.5 * (fa + fb)) < 1e-11 * (1 + abs(fa) + abs(fb)):\n        # check with quarter points too, to reduce chance of cancelling kinks\n        q1, q3 = a + 0.25 * (b - a), a + 0.75 * (b - a)\n        f1, f3 = f(x0 + q1 * d), f(x0 + q3 * d)\n        if (abs(f1 - 0.75 * fa - 0.25 * fb) < 1e-11 * (1 + abs(fa) + abs(fb)) and\n                abs(f3 - 0.25 * fa - 0.75 * fb) < 1e-11 * (1 + abs(fa) + abs(fb))):\n            return\n    if b - a < 1e-6:\n        out.append(m)\n        return\n    find_kinks(x0, d, a, m, fa, fm, out, depth + 1)\n    find_kinks(x0, d, m, b, fm, fb, out, depth + 1)\n\n\ndef grad(x, h=1e-7):\n    g = np.zeros(DIM)\n    for i in range(DIM):\n        e = np.zeros(DIM)\n        e[i] = h\n        g[i] = (f(x + e) - f(x - e)) / (2 * h)\n    return g\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    if v[np.argmax(np.abs(v))] < 0:\n        v = -v\n    return v\n\n\ndef main():\n    rows = []\n    stale = 0\n    lines = 0\n    while stale < 40 and lines < 2000:\n        lines += 1\n        x0 = rng.normal(size=DIM)\n        d = rng.normal(size=DIM)\n        d /= np.linalg.norm(d)\n        a, b = -30.0, 30.0\n        kinks = []\n        find_kinks(x0, d, a, b, f(x0 + a * d), f(x0 + b * d), kinks)\n        # merge kinks that are very close\n        kinks = sorted(kinks)\n        merged = []\n        for t in kinks:\n            if not merged or t - merged[-1] > 1e-5:\n                merged.append(t)\n        new = 0\n        for idx, t in enumerate(merged):\n            # offset must stay away from neighbouring kinks\n            gap = min([abs(t - s) for s in merged if s != t] + [1.0])\n            eps = min(1e-4, gap / 4)\n            gl = grad(x0 + (t - eps) * d, h=eps / 100)\n            gr = grad(x0 + (t + eps) * d, h=eps / 100)\n            diff = gr - gl\n            if np.linalg.norm(diff) < 1e-8:\n                continue\n            v = normalize(diff)\n            if all(abs(np.dot(v, r)) < 1 - 1e-4 for r in rows):\n                rows.append(v)\n                new += 1\n        stale = 0 if new else stale + 1\n\n    A = np.array(rows)\n    np.save(os.path.join(HERE, \"stolen_A1.npy\"), A)\n    print(f\"Recovered {A.shape[0]} neurons (rows), shape {A.shape}\")\n    print(A)\n    return A\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-xun6oh8b/bench_opencode_model-extraction-relu-logits__majuuwq/steal.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-xun6oh8b/bench_opencode_model-extraction-relu-logits__majuuwq/steal.py": []
+      },
+      "filepath": "/tmp/obench-cell-xun6oh8b/bench_opencode_model-extraction-relu-logits__majuuwq/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1793746480658,
+      "end": 1793746485567
+    }
+  }
+}

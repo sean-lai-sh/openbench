@@ -1,0 +1,16 @@
+I created `pipeline_parallel.py` with `train_step_pipeline_afab`, and on a small test model it matches a reference model exactly. I ran it on a 5-layer LLaMA with 4 microbatches against an unsplit copy, at world_size 1 and 2. In both cases the loss matched and every parameter gradient matched with a maximum difference of 0. I did not test it with your actual test file or its hooks.
+
+**How it works**
+- **Splitting the layers:** layers are divided evenly across ranks, with any leftover layers going to the earliest ranks. With 5 layers on 2 ranks, that's 3 and 2. Rank 0 also runs the embedding; the last rank also runs the final norm, `lm_head` and the loss.
+- **Running a stage:** each rank calls its own layers directly (no hooks), so the test's hooks still fire. It rebuilds the position IDs, rotary embeddings and causal mask the same way `LlamaModel.forward` does.
+- **Forward phase:** every microbatch goes forward first. Ranks after rank 0 receive the incoming hidden states (`[mb, seq, hidden]`, in `device`/`dtype`) and mark them as needing gradients. Every rank except the last sends its output on to the next rank, using `P2POp` with `batch_isend_irecv`.
+- **Loss:** on the last rank, cross-entropy is computed against the targets and divided by the number of microbatches.
+- **Backward phase:** the last rank calls `loss.backward()`. Other ranks receive the gradient from the next rank and call `torch.autograd.backward(output, grad)`. Every rank except rank 0 then sends the gradient of its input back to the previous rank.
+- **World size 1:** no communication happens; rank 0 does everything.
+
+**Choices you might want to change**
+- The function returns the summed loss on the last rank and `None` on the others.
+- It doesn't zero the gradients first, so they add up the way a normal `.backward()` would.
+- Input token IDs are moved to `device` but kept as integers, because the embedding layer can't take them as floats. Hidden states and gradients are cast to `dtype`.
+
+The test script I used is `/tmp/pp_test.py`; run it with `python /tmp/pp_test.py 2` for two ranks.

@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d2120baf001PkhAGtHj8WULqs",
+  "sessionID": "ses_e2dedf484ffedOa9ld84F9u2vc",
+  "role": "user",
+  "time": {
+    "created": 1794525760431
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. It recovers all 20 hidden neurons and saves a `(20, 10)` matrix to `stolen_A1.npy`.\n\n**Result:** after the run, I compared the output with the real `A1` (which `forward.py` happens to expose). This check was done separately and is not part of `steal.py`. Every real row matches exactly one recovered row, with cosine similarity of 0.9999999999999998, so they match up to a scale factor and order. Element by element, the ratio between matched rows varies by at most about 5e-7 relative. The script runs in about 3.6 seconds.\n\n**How it works**, using only calls to `forward()`:\n1. **Find the kinks along random lines.** For random lines `x0 + t·d` with `t` between -30 and 30, the script repeatedly halves each segment, checking whether the output is a straight line in between. Where it isn't, a neuron switches on or off. It pins down each switch point by intersecting the straight pieces on either side.\n2. **Read off a row at each kink.** It estimates the gradient just before and just after each kink, using small steps along each input axis. The difference between the two equals `A2_j · A1_j`, so it gives row `j` of `A1` up to a scale factor.\n3. **Remove duplicates.** It normalises each row and fixes its sign, then merges rows that point the same way (cosine above 0.9999), averaging the copies. It stops once 15 lines in a row turn up no new neuron. Rows seen only once are dropped as likely noise.\n\n**Limitations:**\n- A neuron that is never active, or whose output weight in `A2` is 0, has no effect on the output, so no query-based method can find it.\n- Because rows are normalised, the signs of the output rows may differ from `A1`. That still counts as matching up to scaling.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

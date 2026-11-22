@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d1f1e1f00017SNvb6GQyt3PRl",
+  "sessionID": "ses_e2e10814effeeuI9yHgX3GlW0K",
+  "messageID": "msg_1d1f1c649001s5x6f2LCCgPIV7",
+  "type": "text",
+  "text": "I created `pipeline_parallel.py` with `train_step_pipeline_afab(model, inputs, targets, device, dtype)`. I tested it against an unsplit copy of a small 5-layer LLaMA (CPU, float32, gloo backend, 4 microbatches) with world sizes 1 and 2. The loss matched the reference and every gradient was identical (largest difference 0.0). That held with both the \"eager\" and default attention settings. I compared final gradients, not the per-layer activations your test checks with hooks, so that test itself hasn't been run.\n\n**How it works:**\n- **Layer split:** the decoder layers are divided as evenly as possible across ranks, with any extra layers going to the lowest ranks (5 layers over 2 ranks gives 3 and 2). Rank 0 also runs the token embedding; the last rank also runs the final norm, the output head and the loss. Each rank only runs its own layers.\n- **Forward pass, all microbatches first:** rank 0 embeds the input IDs. Every other rank receives hidden states of shape `[microbatch, seq_len, hidden_size]` from the previous rank. Each rank runs its layers and sends the result on. The last rank computes cross-entropy against the targets and divides it by the number of microbatches.\n- **Backward pass, all microbatches second:** the last rank backpropagates from the loss. The other ranks receive gradients from the next rank and backpropagate through their saved outputs. Each rank except rank 0 sends the gradient of its received input back to the previous rank.\n- **Communication** uses `torch.distributed.P2POp` with `batch_isend_irecv`. Input IDs are moved to `device`; hidden states and gradients are moved to `device` and `dtype`. There are no hooks in the implementation.\n\n**Things to know:**\n- Ranks other than 0 work out the size of incoming hidden states from `inputs[i].shape`, so every rank must be passed the `inputs` list, not just rank 0.\n- The function returns the summed, scaled loss on the last rank and `None` on all other ranks.\n- It only computes gradients. It doesn't zero them first or take an optimizer step, so both are left to the caller.",
+  "time": {
+    "start": 1794523652871,
+    "end": 1794523652871
+  }
+}

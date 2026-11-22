@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d1678ab5001ua6chlA0Wg4Rq0",
+  "sessionID": "ses_e2e9945ccffe4zW63Haxcahd0X",
+  "messageID": "msg_1d167854a001vckdCQM9bsbi4K",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Ak4ZG7jbGTAYRy1RwUzVaq",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "cd /tmp/obench-cell-7qagnzzr/bench_opencode_torch-pipeline-parallelism_biflv4ks; mkdir -p /tmp/pptest; cat > /tmp/pptest/t.py <<'EOF'\nimport os, sys, torch, torch.distributed as dist, torch.nn.functional as F\nsys.path.insert(0, os.getcwd())\nfrom transformers import LlamaConfig, LlamaForCausalLM\nfrom pipeline_parallel import train_step_pipeline_afab\ndist.init_process_group(\"gloo\")\nr, ws = dist.get_rank(), dist.get_world_size()\ntorch.manual_seed(0)\ncfg = LlamaConfig(vocab_size=100, hidden_size=32, intermediate_size=64, num_hidden_layers=5, num_attention_heads=4, num_key_value_heads=2)\nref = LlamaForCausalLM(cfg).float()\nm = LlamaForCausalLM(cfg).float(); m.load_state_dict(ref.state_dict())\nids = torch.randint(0,100,(4,8)); tg = torch.randint(0,100,(4,8))\ninp, tgt = list(ids.chunk(2)), list(tg.chunk(2))\nloss = train_step_pipeline_afab(m, inp, tgt, torch.device(\"cpu\"), torch.float32)\nrl = 0\nfor a,b in zip(inp,tgt):\n    l = F.cross_entropy(ref(a).logits.reshape(-1,100), b.reshape(-1))/2; l.backward(); rl += l.item()\nmaxd = 0\nfor (n,p),(_,q) in zip(m.named_parameters(), ref.named_parameters()):\n    if p.grad is not None: maxd = max(maxd, (p.grad-q.grad).abs().max().item())\nprint(r, \"loss\", loss, rl, \"maxgraddiff\", maxd, \"n grads\", sum(p.grad is not None for p in m.parameters()))\ndist.destroy_process_group()\nEOF\nfor n in 1 2; do torchrun --nproc_per_node=$n /tmp/pptest/t.py 2>&1 | grep -v Warn | tail -3; done",
+      "description": "Test against reference"
+    },
+    "output": "0 loss tensor(4.5744) 4.57442045211792 maxgraddiff 0 n grads 48\nW1112 15:16:39.292000 5622 site-packages/torch/distributed/run.py:982] *****************************************\n1 loss tensor(4.5744) 4.57442045211792 maxgraddiff 0 n grads 20\n0 loss None 4.57442045211792 maxgraddiff 0 n grads 28\n",
+    "title": "Test against reference",
+    "metadata": {
+      "output": "0 loss tensor(4.5744) 4.57442045211792 maxgraddiff 0 n grads 48\nW1112 15:16:39.292000 5622 site-packages/torch/distributed/run.py:982] *****************************************\n1 loss tensor(4.5744) 4.57442045211792 maxgraddiff 0 n grads 20\n0 loss None 4.57442045211792 maxgraddiff 0 n grads 28\n",
+      "exit": 0,
+      "description": "Test against reference"
+    },
+    "time": {
+      "start": 1794514591972,
+      "end": 1794514604265
+    }
+  }
+}

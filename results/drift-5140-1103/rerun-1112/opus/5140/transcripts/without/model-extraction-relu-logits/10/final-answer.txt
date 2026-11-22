@@ -1,0 +1,14 @@
+I've written `steal.py`. Running it saves a 20×10 matrix to `stolen_A1.npy`, and it found all 20 hidden neurons in about 1 second.
+
+**How it works.** The script only calls `forward(x)`:
+1. It walks along 60 random lines through the input space and finds the points where the output bends, which is where one hidden neuron switches on or off. It narrows these down by repeatedly halving the interval and intersecting the straight pieces on either side.
+2. At each bend it estimates the gradient just before and just after. The difference between the two is that neuron's row of A1, multiplied by an unknown number.
+3. It scales each of these vectors to unit length and groups them by direction (ignoring sign). Each group is one neuron, and the script averages the group to get the final row.
+
+**Check against the real weights.** After running it, I compared the result with the true `A1` inside `forward.py`. The script never looks at those weights. Every true row matched one stolen row and every stolen row matched one true row, with a direction match (absolute cosine similarity) of 0.9999999999999984 at worst. So the matrix equals A1 up to reordering and rescaling the rows.
+
+**Two things to know:**
+- **Row signs may be flipped.** Each row is unit length, but its sign is set by a convention (largest entry positive), so some rows may be negative multiples of the true ones. Bends in the output can't tell a row from its negative, so the script doesn't try to recover the sign. If your check requires positive scaling, this could fail it.
+- **An earlier version missed neurons.** My first attempt used a fixed grid of sample points along each line and found only 16 of the 20. The current halving search found all 20.
+
+There's also a leftover helper, `refine_kink`, in the file that is no longer called; it doesn't affect the output.

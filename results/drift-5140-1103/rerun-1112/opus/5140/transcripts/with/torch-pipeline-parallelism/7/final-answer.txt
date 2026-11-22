@@ -1,0 +1,17 @@
+I've created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it on CPU with a small 5-layer LLaMA at world sizes 1 and 2: on every rank, the parameter gradients exactly match (max difference 0) those from a reference model trained on the same microbatches. I compared final gradients rather than per-layer activations with hooks the way your test does, and only tested float32.
+
+**How it works:**
+- **Layer split:** layers are divided as evenly as possible, and leftover layers go to the lower ranks. With 5 layers on 2 ranks, rank 0 runs embeddings plus 3 layers, and rank 1 runs 2 layers plus the final norm and output head.
+- **Forward pass, all microbatches first:**
+  - Rank 0 embeds the input IDs.
+  - Every other rank receives hidden states shaped `[mb, seq, hidden]` from the previous rank, in the given device and dtype, and tracks gradients on them.
+  - Each rank builds the attention mask and rotary position embeddings itself, then runs only its own layers.
+  - Middle ranks send their output to the next rank.
+  - The last rank computes cross-entropy against the targets and divides it by the number of microbatches.
+- **Backward pass, all microbatches second:** the last rank calls `loss.backward()`. Other ranks receive the gradient from the next rank and pass it to `output.backward(grad)`. Every rank except 0 then sends the gradient of its received input back to the previous rank.
+- **Communication:** all of it uses `torch.distributed.P2POp` through `batch_isend_irecv`. No hooks are used.
+- **Return value:** the last rank returns the total scaled loss; other ranks return `None`.
+
+**Behaviour to know about:**
+- The layers are called one by one instead of through `LlamaModel.forward`, so the code depends on how this transformers version (5.22.2) sets up attention. For older versions there's a fallback for the old attention-mask helper, but I haven't tested it.
+- The function only converts the data it passes around to `dtype`, not the model. If `dtype` differs from the model's own dtype (say bf16 with a float32 model), the model needs to be cast first or the layers will fail on mixed dtypes.

@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d2cbc9d1001ES9nyNMAjJHXOQ",
+  "sessionID": "ses_e2d35ed9bffeut3UrCnzCozYRG",
+  "messageID": "msg_1d2ca23d8001suOPaBYzIOS9GT",
+  "type": "tool",
+  "callID": "toolu_vrtx_01Dpoi94ouRRiBWxpwHherrJ",
+  "tool": "bash",
+  "state": {
+    "status": "completed",
+    "input": {
+      "command": "mkdir -p /tmp/work && cat > /tmp/work/gen.py <<'EOF'\nimport json\nOUT=\"/tmp/obench-cell-6n8ay3w9/bench_opencode_regex-chess_w9e5h4fo/re.json\"\nrules=[]\ndef idx(f,r): return (8-r)*8+f\ndef fr(i): return i%8, 8-i//8\n# --- preprocessing\nrules.append([r\" \\d+ \\d+$\", \"\"])\nrules.append([r\" w (\\S+) ([a-h])[36]$\", r\" \\1 \\2\"])\nrules.append([r\" w (\\S+) -$\", r\" \\1 -\"])\nfor d in range(8,0,-1):\n    rules.append([str(d), \".\"*d])\nrules.append([\"/\", \"\"])\n# --- generation\nTGT=\"[.pnbrq]\"\ndef gen(cons, changes, tail_re=r\"( \\S+ )(\\S+)\", newep=\"-\"):\n    # cons: idx->regex ; changes: idx->newchar\n    keys=sorted(set(cons)|set(changes))\n    pat=\"^\"; rep_new=\"\"; g=0; pos=0\n    for k in keys:\n        if k>pos:\n            g+=1; pat+=\"(.{%d})\"%(k-pos); rep_new+=\"\\\\g<%d>\"%g\n        c=cons.get(k,\".\")\n        if k in changes:\n            pat+=c if c!=\".\" else \".\"\n            rep_new+=changes[k]\n        else:\n            g+=1; pat+=\"(%s)\"%c; rep_new+=\"\\\\g<%d>\"%g\n        pos=k+1\n    if pos<64:\n        g+=1; pat+=\"(.{%d})\"%(64-pos); rep_new+=\"\\\\g<%d>\"%g\n    pat+=tail_re\n    g+=1; rep_new+=\"\\\\g<%d>\"%g\n    rep_new+=newep\n    rules.append([pat, \"\\\\g<0>\\n\"+rep_new])\n\nKN=[(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]\nKG=[(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]\nORTH=[(1,0),(-1,0),(0,1),(0,-1)]; DIAG=[(1,1),(1,-1),(-1,1),(-1,-1)]\ndef onb(f,r): return 0<=f<8 and 1<=r<=8\nfor s in range(64):\n    f,r=fr(s)\n    for piece,steps,slide in [(\"N\",KN,False),(\"K\",KG,False),(\"R\",ORTH,True),(\"B\",DIAG,True),(\"Q\",ORTH+DIAG,True)]:\n        for df,dr in steps:\n            path=[]; nf,nr=f+df,r+dr\n            while onb(nf,nr):\n                t=idx(nf,nr)\n                cons={s:piece,t:TGT}\n                for p in path: cons[p]=r\"\\.\"\n                gen(cons,{s:\".\",t:piece})\n                if not slide: break\n                path.append(t); nf+=df; nr+=dr\n    # pawns\n    if 2<=r<=7:\n        t=s-8; nc=\"Q\" if r==7 else \"P\"\n        gen({s:\"P\",t:r\"\\.\"},{s:\".\",t:nc})\n        if r==2:\n            gen({s:\"P\",t:r\"\\.\",s-16:r\"\\.\"},{s:\".\",s-16:\"P\"},newep=\"abcdefgh\"[f])\n        for df in (-1,1):\n            if 0<=f+df<8:\n                t=idx(f+df,r+1)\n                gen({s:\"P\",t:\"[pnbrq]\"},{s:\".\",t:nc})\n                if r==5:\n                    cap=idx(f+df,5)\n                    gen({s:\"P\",t:r\"\\.\",cap:\"p\"},{s:\".\",t:\"P\",cap:\".\"},\n                        tail_re=r\"( \\S+ )%s\"%\"abcdefgh\"[f+df])\n# castling\ngen({60:\"K\",61:r\"\\.\",62:r\"\\.\",63:\"R\"},{60:\"M\",61:\"L\",62:\"K\",63:\".\"},tail_re=r\"( \\S*K\\S* )(\\S+)\")\ngen({60:\"K\",59:r\"\\.\",58:r\"\\.\",57:r\"\\.\",56:\"R\"},{60:\"M\",59:\"L\",58:\"K\",56:\".\"},tail_re=r\"( \\S*Q\\S* )(\\S+)\")\n# remove original\nrules.append([r\"^[^\\n]*\\n?\", \"\"])\n# --- check filter\nfor s in range(64):\n    f,r=fr(s); alts=[]\n    for df,dr in KN:\n        if onb(f+df,r+dr): alts.append(\"(?=.{%d}n)\"%idx(f+df,r+dr))\n    for df,dr in KG:\n        if onb(f+df,r+dr): alts.append(\"(?=.{%d}k)\"%idx(f+df,r+dr))\n    for df in (-1,1):\n        if onb(f+df,r+1): alts.append(\"(?=.{%d}p)\"%idx(f+df,r+1))\n    for steps,cls in [(ORTH,\"[rq]\"),(DIAG,\"[bq]\")]:\n        for df,dr in steps:\n            path=[]; nf,nr=f+df,r+dr\n            while onb(nf,nr):\n                t=idx(nf,nr)\n                alts.append(\"\".join(\"(?=.{%d}\\\\.)\"%p for p in path)+\"(?=.{%d}%s)\"%(t,cls))\n                path.append(t); nf+=df; nr+=dr\n    rules.append([r\"(?m)^(?=.{%d}[KLM])(?:%s)[^\\n]*\\n?\"%(s,\"|\".join(alts)), \"\"])\nrules.append([r\"\\n+\\Z\",\"\"])\nrules.append([\"L\",\"R\"]); rules.append([\"M\",\".\"])\n# castling rights\nrules.append([r\"(?m)^(?!.{60}K)(.{64} )K?Q?\", r\"\\1\"])\nrules.append([r\"(?m)^(?!.{63}R)(.{64} )K\", r\"\\1\"])\nrules.append([r\"(?m)^(?!.{56}R)(.{64} K?)Q\", r\"\\1\"])\nrules.append([r\"(?m)^(?!.{7}r)(.{64} K?Q?)k\", r\"\\1\"])\nrules.append([r\"(?m)^(?!r)(.{64} K?Q?k?)q\", r\"\\1\"])\nrules.append([r\"(?m)^(.{64} ) \", r\"\\1- \"])\n# output\nrules.append([r\"(?m) ([a-h])$\", r\" \\g<1>3\"])\nrules.append([r\"(?m)^(.{64}) \", r\"\\1 b \"])\nrules.append([r\"(?m)^\"+\"(.{8})\"*8, \"/\".join(\"\\\\%d\"%i for i in range(1,9))])\nfor d in range(8,0,-1):\n    rules.append([r\"\\.\"*d, str(d)])\nrules.append([r\"(?m)$\", \" 0 0\"])\njson.dump(rules,open(OUT,\"w\"))\nimport os; print(len(rules), os.path.getsize(OUT))\nEOF\npython3 /tmp/work/gen.py",
+      "description": "Write and run regex generator"
+    },
+    "output": "3922 486381\n",
+    "title": "Write and run regex generator",
+    "metadata": {
+      "output": "3922 486381\n",
+      "exit": 0,
+      "description": "Write and run regex generator"
+    },
+    "time": {
+      "start": 1794537950552,
+      "end": 1794537950919
+    }
+  }
+}

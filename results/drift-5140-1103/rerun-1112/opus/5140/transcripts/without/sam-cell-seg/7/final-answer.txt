@@ -1,0 +1,26 @@
+I wrote `convert_masks.py` and ran it on the demo files. All 48 masks came out as polylines, with no overlap between masks and exactly one contiguous region per cell. I checked this by filling every output polygon back in and testing the result. I also overlaid the results on the image and looked at them: the outlines follow the nuclei well, including for the old rectangles.
+
+**How to run it:**
+```
+python convert_masks.py --weights_path mobile_sam.pt --output_path out_dir \
+    --rgb_path demo_rgb.png --csv_path demo_metadata.csv
+```
+On the demo image it took about 20 seconds on CPU. The output is written to `out_dir/<input csv name>`. If you give `--output_path` a path ending in `.csv`, it saves to exactly that file instead.
+
+**What it does:**
+1. **Reads the annotations.** It turns each row's coordinates into a <USER> and a filled original mask.
+2. **Runs MobileSAM.** It loads the `vit_t` model from the installed `mobile_sam` package, unmodified, and gives each cell its <USER> as the prompt. MobileSAM proposes three candidate masks per cell and the script picks one:
+   - For polylines, it uses MobileSAM's own confidence plus how closely the candidate matches the original outline.
+   - For rectangles, it uses the confidence plus how much of the candidate falls inside the <USER>. Candidates that are tiny or fill the whole <USER> are marked down.
+3. **Removes overlap.** Where two cells claim the same pixel, it goes to the cell MobileSAM is more confident about. Each cell then keeps only its largest piece, with any holes filled.
+4. **Final check.** It fills in the finished polygons and checks again. If one cell's outline would surround another cell, it cuts a narrow gap in the outer one; a last-resort step trims pixels if overlap still remains. A cell that ends up with almost nothing gets a small mask at its original location, so every row always has a valid polyline.
+5. **Writes the output.** Outlines are traced without simplification, so the polygons follow the mask pixels exactly; each polyline ends on its first point, like your input. `xmin`, `xmax`, `ymin` and `ymax` are recalculated from the new coordinates.
+
+**Decisions for you:**
+- **`type` column:** it still says `rectangle` for rows whose masks are now polylines. I left it alone because you said only the coordinate and bounding-<USER> columns should change, but it is now inaccurate for those rows. Setting it to `polyline` would be a one-line change.
+- **Index column:** your input has an unnamed index as its first column. The script detects this and writes it back the same way.
+- **Overlap at the edges:** the zero-overlap check fills polygons pixel by pixel. If your test scores overlap differently, adjacent cells' outlines may touch where they share a border.
+
+**Agreement with the original annotations on the demo:** the new polyline masks overlap the old ones by an average of about 78% (overlapping area divided by combined area). For the old rectangles it is about 58%, which is expected because the boxes include background around each cell.
+
+I left the demo output in `out/demo_metadata.csv`.

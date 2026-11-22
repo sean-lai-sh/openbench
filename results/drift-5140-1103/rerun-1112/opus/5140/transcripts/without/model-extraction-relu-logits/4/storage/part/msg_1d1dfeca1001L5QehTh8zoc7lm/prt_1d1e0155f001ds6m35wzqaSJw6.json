@@ -1,0 +1,26 @@
+{
+  "id": "prt_1d1e0155f001ds6m35wzqaSJw6",
+  "sessionID": "ses_e2e202123ffeQZ1p9McYqve5fE",
+  "messageID": "msg_1d1dfeca1001L5QehTh8zoc7lm",
+  "type": "tool",
+  "callID": "toolu_vrtx_01TLJyJuJUkk3YW6xLfUrSPB",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-90mda1tn/bench_opencode_model-extraction-relu-logits_lg05m5vh/steal.py",
+      "content": "\"\"\"Extract A1 (up to row permutation and scaling) from a 1-hidden-layer ReLU net\nusing only black-<USER> queries to forward(x).\n\nMethod: along random lines, locate the kinks (critical points where some hidden\nneuron crosses zero). At each kink the gradient of f jumps by a2_i * A1[i, :],\nso the gradient difference across the kink gives row i of A1 up to scale.\n\"\"\"\nimport os\nimport numpy as np\nfrom forward import forward\n\nDIM = 10\nrng = np.random.default_rng(12345)\nOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"stolen_A1.npy\")\n\nqueries = 0\n\n\ndef f(x):\n    global queries\n    queries += 1\n    return forward(np.asarray(x, dtype=np.float64))\n\n\ndef line_fn(x0, d):\n    return lambda t: f(x0 + t * d)\n\n\ndef slope(g, t, h=1e-7):\n    return (g(t + h) - g(t)) / h\n\n\ndef find_kinks(g, a, b, fa, fb, sa, sb, out, depth=0):\n    \"\"\"Find kinks of the 1-D piecewise linear g on [a, b].\"\"\"\n    if b - a < 1e-9 or depth > 60:\n        return\n    scale = max(1.0, abs(fa), abs(fb))\n    tol = 1e-9 * scale\n    if abs(sa - sb) < 1e-7 * max(1.0, abs(sa), abs(sb)):\n        # Same slope at both ends: linear if endpoints consistent with slope\n        if abs(fa + sa * (b - a) - fb) < tol * 10:\n            return\n    else:\n        # Hypothesise a single kink: intersect the two lines\n        tk = (fb - fa + sa * a - sb * b) / (sa - sb)\n        if a < tk < b:\n            pred = fa + sa * (tk - a)\n            if abs(g(tk) - pred) < tol * 10:\n                out.append(tk)\n                return\n    m = 0.5 * (a + b)\n    fm = g(m)\n    sm = slope(g, m)\n    find_kinks(g, a, m, fa, fm, sa, sm, out, depth + 1)\n    find_kinks(g, m, b, fm, fb, sm, sb, out, depth + 1)\n\n\ndef gradient(x, h=1e-6):\n    f0 = f(x)\n    g = np.empty(DIM)\n    for j in range(DIM):\n        e = np.zeros(DIM)\n        e[j] = h\n        g[j] = (f(x + e) - f0) / h\n    return g\n\n\ndef normalize(v):\n    v = v / np.linalg.norm(v)\n    # canonical sign: largest-magnitude entry positive\n    if v[np.argmax(np.abs(v))] < 0:\n        v = -v\n    return v\n\n\nrows = []      # unit-normalized candidate rows\ncounts = []\n\n\ndef add_candidate(v):\n    for i, r in enumerate(rows):\n        if abs(np.dot(r, v)) > 0.9999:\n            # running average for accuracy\n            rows[i] = normalize(rows[i] * counts[i] + v)\n            counts[i] += 1\n            return False\n    rows.append(v)\n    counts.append(1)\n    return True\n\n\nno_new = 0\nn_lines = 0\nwhile no_new < 40 and n_lines < 400:\n    n_lines += 1\n    x0 = rng.normal(size=DIM) * 2.0\n    d = rng.normal(size=DIM)\n    d /= np.linalg.norm(d)\n    g = line_fn(x0, d)\n    T = 50.0\n    # coarse grid, then recursive refinement\n    grid = np.linspace(-T, T, 41)\n    fv = [g(t) for t in grid]\n    sv = [slope(g, t) for t in grid]\n    kinks = []\n    for k in range(len(grid) - 1):\n        find_kinks(g, grid[k], grid[k + 1], fv[k], fv[k + 1], sv[k], sv[k + 1], kinks)\n    kinks = sorted(kinks)\n    new_here = False\n    for i, tk in enumerate(kinks):\n        # distance to neighbouring kinks to choose a safe offset\n        gaps = [abs(tk - kinks[j]) for j in (i - 1, i + 1) if 0 <= j < len(kinks)]\n        gap = min(gaps) if gaps else 1.0\n        eps = min(1e-3, gap / 4)\n        if eps < 1e-5:\n            continue\n        xk = x0 + tk * d\n        gl = gradient(xk - eps * d, h=min(1e-6, eps / 10))\n        gr = gradient(xk + eps * d, h=min(1e-6, eps / 10))\n        diff = gr - gl\n        if np.linalg.norm(diff) < 1e-8:\n            continue\n        if add_candidate(normalize(diff)):\n            new_here = True\n    no_new = 0 if new_here else no_new + 1\n\n# keep rows seen more than once (robust to spurious detections)\nfinal = [r for r, c in zip(rows, counts) if c >= 2] or rows\nA1_hat = np.array(final)\nnp.save(OUT, A1_hat)\nprint(f\"Recovered {A1_hat.shape[0]} neurons using {queries} queries, {n_lines} lines\")\nnp.set_printoptions(precision=5, suppress=True, linewidth=150)\nprint(A1_hat)\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-90mda1tn/bench_opencode_model-extraction-relu-logits_lg05m5vh/steal.py",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "/tmp/obench-cell-90mda1tn/bench_opencode_model-extraction-relu-logits_lg05m5vh/steal.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794522500757,
+      "end": 1794522506910
+    }
+  }
+}

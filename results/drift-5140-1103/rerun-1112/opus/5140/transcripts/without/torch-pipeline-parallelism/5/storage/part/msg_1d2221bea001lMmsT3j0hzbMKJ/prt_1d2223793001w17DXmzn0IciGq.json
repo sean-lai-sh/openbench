@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d2223793001w17DXmzn0IciGq",
+  "sessionID": "ses_e2ddf2843ffe6RKPtBVCYNgfqu",
+  "messageID": "msg_1d2221bea001lMmsT3j0hzbMKJ",
+  "type": "text",
+  "text": "I created `pipeline_parallel.py` with `train_step_pipeline_afab`. I tested it with world_size 1 and 2 on CPU (gloo backend), using a 5-layer LLaMA in float32. In both cases the loss and every parameter gradient matched a single-process reference model exactly (difference 0). I haven't tried other dtypes, a GPU, or your actual test file.\n\n**How it works:**\n- **Splitting the layers:** decoder layers are divided as evenly as possible, and any leftover layers go to the earlier ranks. For example, 5 layers on 2 ranks gives rank 0 layers 0–2 and rank 1 layers 3–4. Rank 0 also runs the token embedding; the last rank also runs the final norm, `lm_head` and the loss.\n- **Running a stage:** each rank calls its own decoder layers directly, without hooks. It builds the same position IDs, causal mask and rotary embeddings that `LlamaModel.forward` would.\n- **Forward phase:** all microbatches go forward first. Rank 0 starts from input IDs; the other ranks receive hidden states of shape `[mb, seq, hidden]` from the previous rank, on the given device and dtype. Ranks other than the last send their output to the next rank. The last rank computes `cross_entropy(logits, targets) / num_microbatches` and does not shift the targets, so they must already be aligned with the inputs.\n- **Backward phase:** then all microbatches go backward. The last rank calls `loss.backward()`. The other ranks receive the gradient from the next rank and pass it into `torch.autograd.backward`. Every rank except rank 0 sends the gradient of its input back to the previous rank.\n- **Communication:** all sends and receives use `torch.distributed.P2POp` with `batch_isend_irecv`. When world_size is 1, no communication happens.\n- **Return value:** the last rank returns the summed scaled loss, which is not part of the autograd graph. Other ranks return `None`.\n\n**Assumptions:**\n- Every rank gets the full `inputs` list, because the receiving ranks use the input shapes to size their buffers.\n- The function only computes gradients. It doesn't run an optimizer step or zero the gradients, so you need to do both outside it.",
+  "time": {
+    "start": 1794526820624,
+    "end": 1794526820624
+  }
+}

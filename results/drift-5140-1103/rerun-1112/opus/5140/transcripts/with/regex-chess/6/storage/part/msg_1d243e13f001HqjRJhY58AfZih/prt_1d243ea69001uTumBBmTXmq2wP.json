@@ -1,0 +1,29 @@
+{
+  "id": "prt_1d243ea69001uTumBBmTXmq2wP",
+  "sessionID": "ses_e2dbe8d0fffeRqZMzCpB8qAVXA",
+  "messageID": "msg_1d243e13f001HqjRJhY58AfZih",
+  "type": "tool",
+  "callID": "toolu_vrtx_015dbwMbg6npqZN5qUetNCT6",
+  "tool": "write",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/tmp/obench-cell-jcgrrgb5/bench_opencode_regex-chess_wkm4bvsc/test.py",
+      "content": "import json, re, random, sys, time\nimport chess\n\nRULES = json.load(open(\"/tmp/obench-cell-jcgrrgb5/bench_opencode_regex-chess_wkm4bvsc/re.json\"))\n\n\ndef run(fen):\n    for p, r in RULES:\n        fen = re.sub(p, r, fen)\n    return [\" \".join(x.split(\" \")[:-2]) for x in fen.split(\"\\n\")]\n\n\ndef expected(fen):\n    b = chess.Board(fen)\n    s = set()\n    for m in b.legal_moves:\n        if m.promotion and m.promotion != chess.QUEEN:\n            continue\n        c = b.copy(); c.push(m)\n        s.add(\" \".join(c.fen().split(\" \")[:-2]))\n    return s\n\n\ndef check(fen):\n    ours = run(fen)\n    exp = expected(fen)\n    ok = len(ours) == len(exp) and all(x in exp or x.rpartition(\" \")[0] + \" -\" in exp for x in ours)\n    if not ok:\n        print(\"FAIL\", fen)\n        print(\" extra:\", [x for x in ours if not (x in exp or x.rpartition(\" \")[0] + \" -\" in exp)])\n        print(\" missing:\", exp - set(ours) - {x.rpartition(\" \")[0] + \" -\" for x in ours})\n        print(\" counts\", len(ours), len(exp))\n    return ok\n\n\nex = \"<REDACTED_B64> w kq - 0 1\"\nprint(run(ex))\nrandom.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)\nn = fails = 0\nt0 = time.time()\nfor g in range(int(sys.argv[2]) if len(sys.argv) > 2 else 100):\n    b = chess.Board()\n    while not b.is_game_over() and b.ply() < 200:\n        if b.turn == chess.WHITE and b.legal_moves.count():\n            n += 1\n            if not check(b.fen()):\n                fails += 1\n                if fails > 5: sys.exit(1)\n        moves = list(b.legal_moves)\n        # prefer captures/promotions/castling sometimes\n        spicy = [m for m in moves if b.is_capture(m) or m.promotion or b.is_castling(m)]\n        b.push(random.choice(spicy if spicy and random.random() < 0.5 else moves))\nprint(n, \"positions\", fails, \"fails\", \"%.3fs/pos\" % ((time.time() - t0) / max(n, 1)))\n"
+    },
+    "output": "",
+    "title": "tmp/obench-cell-jcgrrgb5/bench_opencode_regex-chess_wkm4bvsc/test.py",
+    "metadata": {
+      "diagnostics": {
+        "/tmp/obench-cell-jcgrrgb5/bench_opencode_regex-chess_wkm4bvsc/gen.py": [],
+        "/tmp/obench-cell-jcgrrgb5/bench_opencode_regex-chess_wkm4bvsc/test.py": []
+      },
+      "filepath": "/tmp/obench-cell-jcgrrgb5/bench_opencode_regex-chess_wkm4bvsc/test.py",
+      "exists": false
+    },
+    "time": {
+      "start": 1794529035547,
+      "end": 1794529038318
+    }
+  }
+}

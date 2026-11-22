@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d2612fd5001jhc1vOv0E1REHs",
+  "sessionID": "ses_e2d9f8ad2ffeyKjkUbsvFFR1VP",
+  "messageID": "msg_1d2610f44001g3cxABDLlQQ4lj",
+  "type": "text",
+  "text": "I wrote `steal.py`. It recovers A1 using only calls to `forward()`, and its output matches the real A1 up to row order and scaling.\n\n**Result:** running `python steal.py` (about 1 second) finds **20 hidden neurons** and saves a 20×10 matrix to `stolen_A1.npy`. Each stolen row is a unit vector. To check it, I compared the result against the real `A1` in `forward.py`; the script itself never reads `A1`. Every stolen row matched exactly one true row, and every true row was matched. The worst match had |cosine similarity| = 1.0000000000 (floating-point precision).\n\n**How it works:**\n1. **Find the kinks.** Along a random straight line through input space, the network's output is piecewise linear. Each kink is the point where one hidden neuron switches on or off (where `A1[i]·x + b1[i] = 0`). The script finds the kinks exactly by repeatedly intersecting the linear pieces on either side and splitting the interval where needed.\n2. **Measure the gradient jump.** At each kink it estimates the full 10-dimensional gradient just before and just after, using finite differences. The difference is `A2[i] * A1[i,:]`, which is that neuron's weight row times a scalar.\n3. **Remove duplicates.** It runs 30 random lines, so each neuron is found several times. It normalises the rows and groups them up to sign (|cos| > 0.999). Each group is averaged into one row; groups seen only once are dropped as possible noise.\n\n**Limitations:**\n- Rows can come out with flipped signs. The scale factor is `A2[i]`, which can be negative, so this counts as \"up to scaling\".\n- The script doesn't need to know the number of neurons. It does assume every neuron switches on or off somewhere along the lines it samples, which run from t = −50 to 50.",
+  "time": {
+    "start": 1794530947231,
+    "end": 1794530947231
+  }
+}

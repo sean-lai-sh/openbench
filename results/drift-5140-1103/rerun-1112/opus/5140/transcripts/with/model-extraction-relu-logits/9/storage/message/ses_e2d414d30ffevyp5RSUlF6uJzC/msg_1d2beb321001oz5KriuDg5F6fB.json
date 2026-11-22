@@ -1,0 +1,18 @@
+{
+  "id": "msg_1d2beb321001oz5KriuDg5F6fB",
+  "sessionID": "ses_e2d414d30ffevyp5RSUlF6uJzC",
+  "role": "user",
+  "time": {
+    "created": 1794537075490
+  },
+  "summary": {
+    "title": "Extracting ReLU network A1 weights via queries",
+    "body": "I wrote `steal.py`. When run, it recovers A1 (up to permuting and rescaling the neurons) using only calls to `forward()`, and saves the result to `stolen_A1.npy`. It takes about 4 seconds.\n\n**Result:** It found 20 hidden neurons and saved a 20×10 matrix. I compared it against the real `forward.A1`. Every true row matches a stolen row up to scale, and vice versa: the absolute cosine similarity is 1.0 to within about 1e-16. That comparison was only a separate check; the script itself never reads the real weights. With four other random seeds it also found 20 neurons each time, but I only checked the neuron count for those runs, not the match against A1.\n\n**How it works:**\n1. **Find the kinks.** Along a random line `x0 + t·d`, the output is piecewise linear in `t`. Each kink is a point where one hidden neuron switches on or off. The script finds the kinks by splitting the interval recursively. In each piece it extends straight lines from both ends and checks whether they meet at a single kink.\n2. **Read off a row.** At each kink it estimates the input gradient just before and just after, using central finite differences. The jump in the gradient equals `A2[j]·A1[j,:]`, which is row j of A1 times a scalar. It normalizes that row and fixes its sign.\n3. **Remove duplicates and noise.** Rows that point the same way (|cos| > 0.99999) are merged. A row is kept only if it was seen at least 3 times. The first version had no such filter and kept one false row (21 instead of 20), probably from two kinks very close together. The filter fixed that.\n4. **Stop.** It keeps sampling new lines until 50 in a row turn up no new neurons, with at least 100 lines and at most 1000.\n\nThe rows come out with unit length, so they match A1 only up to a per-neuron scale factor, which can be negative.\n\nOne limitation: a neuron that is always on or always off within the sampled region (random lines with `t` in [-50, 50]) would never produce a kink, so the script would miss it. That didn't happen with this network.",
+    "diffs": []
+  },
+  "agent": "build",
+  "model": {
+    "providerID": "anthropic",
+    "modelID": "claude-opus-5-5"
+  }
+}

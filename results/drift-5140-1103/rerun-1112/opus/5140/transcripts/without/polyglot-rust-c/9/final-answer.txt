@@ -1,0 +1,10 @@
+I wrote `polyglot/main.rs`. I built it with both `rustc` and `g++ -x c++`, and for N = 0, 1, 2, 3, 10, 50, 90, 100 and 300 both programs printed the same, correct values (f(0)=1, f(1)=1, f(2)=2, …, f(100)=573147844013817084101). The versions I tested with may differ from your rustc 1.75.0 and g++ 13.2.0, but the file only uses standard features.
+
+**How it works:**
+- **Hiding the C++ code from Rust:** the file starts with `/* /* */`. Rust lets block comments nest, so to Rust this opens two levels and closes one, and everything after it is still a comment. C++ doesn't nest comments, so the comment ends there and the C++ program after it gets compiled.
+- **Hiding the Rust code from C++:** a `//` comment that ends in a backslash continues onto the next line in C++, but not in Rust. The line `// \` followed by `*/ // \` ends Rust's open comment, while C++ still sees both lines as one comment. Every Rust line then ends with `// \`, so C++ treats the whole Rust section as one long comment and Rust treats each ending as a normal line comment.
+- **Big numbers:** both versions do their own big-integer arithmetic in base 10⁹, so large N doesn't overflow. Rust and C++ give identical output.
+
+**Limits:**
+- If no argument is given, or the Rust version can't read it as a number, it treats N as 0.
+- The C++ section must never contain `/*` or `*/`, or the trick breaks.

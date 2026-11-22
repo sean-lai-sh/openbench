@@ -1,0 +1,11 @@
+{
+  "id": "prt_1d1f4006c0012qWXgPHLfKFWkg",
+  "sessionID": "ses_e2e0cf6bdffeTYDi5nv8VWmlxv",
+  "messageID": "msg_1d1f3e320001fzJuo3wcSEhHvQ",
+  "type": "text",
+  "text": "I created `parallel_linear.py` with both classes. A multi-process test with world_size 1, 2 and 4 passed: outputs and the gradients for weights, bias and input all match a plain `nn.Linear`, sliced to each rank's shard where needed.\n\n`master_weight` is expected in `nn.Linear`'s layout, shape `(out_features, in_features)`. The layers raise an error if it isn't, or if the dimension being split doesn't divide evenly by world_size. Both layers start the bias at zero.\n\n**ColumnParallelLinear**\n- **Sharding:** each rank keeps its slice of the output dimension (rows of `master_weight`), and a matching slice of the bias.\n- **Forward:** each rank computes its piece of the output, then the pieces are joined along the last dimension with `all_gather`.\n- **Backward:** each rank takes its own slice of the incoming gradient. The input gradient is summed across ranks with `all_reduce`, so it equals the full-layer gradient.\n\n**RowParallelLinear**\n- **Sharding:** each rank keeps its slice of the input dimension (columns of `master_weight`). The bias stays full on every rank.\n- **Forward:** a full-size input is split so each rank gets its part. An input that's already split (such as one rank's output shard from `ColumnParallelLinear`) is used as is. Each rank's partial outputs are summed with `all_reduce`, then the full bias is added.\n- **Backward:** the input gradient is collected back to full size with `all_gather`.\n\n**Things to be aware of:**\n- **Gradient convention:** in `ColumnParallelLinear`, each rank simply takes its own slice of the gradient. That gives the right weight gradients when every rank computes the same loss, which is how I tested it. A version that sums gradients across ranks there instead would make them world_size times too large under that setup.\n- **Ambiguous input size:** `RowParallelLinear` decides whether the input is already split by looking at the size of its last dimension.\n- **No distributed setup:** if torch.distributed isn't initialised, both layers run on a single process as world_size 1.",
+  "time": {
+    "start": 1794523791629,
+    "end": 1794523791629
+  }
+}
