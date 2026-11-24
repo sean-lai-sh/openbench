@@ -58,6 +58,7 @@ def _rel(out: Path, path: Path) -> str:
 def validate_one(executor, tasks_dir: str, task: str, work_root: Path, out: Path) -> dict:
     """One oracle row. ``executor`` is a ``CellExecutor`` (or a test double with the same methods)."""
     started = time.monotonic()
+    work_root, out = Path(work_root).resolve(), Path(out).resolve()
     task_dir = Path(tasks_dir) / task
     ref = find_reference(task_dir)
     head = code_commit().get("commit")
@@ -96,17 +97,23 @@ def validate_one(executor, tasks_dir: str, task: str, work_root: Path, out: Path
         else:
             overlay_solution(str(task_dir), str(workspace))
         # The checker runs after the reference is applied, same as a trial grades the workspace it was given.
-        checker_exit, _mode, output = executor._check(info, workspace)
+        checker_exit, mode, output = executor._check(info, workspace)
         checker_path = dest / "checker-stdout.txt"
         checker_path.write_text(output or "", encoding="utf-8")
         tail = dest / "checker-stdout.tail"
         _tail_file(tail, output or "")
         row["checker_exit"] = checker_exit
         row["checker_output"] = _rel(out, tail)
-        row["passed"] = checker_exit == 0
-        row["status"] = "pass" if checker_exit == 0 else "fail"
-        if solve_exit not in (0, None):
-            row["error"] = f"{ref['kind']} exited {solve_exit}"
+        # Same rule as CellExecutor.finish_trial: the checker container never started, so this is not a verdict.
+        if mode == "container_not_launched" and checker_exit in (125, 126, 127):
+            row["status"] = "error"
+            row["passed"] = None
+            row["error"] = f"checker could not run ({mode}, exit {checker_exit})"
+        else:
+            row["passed"] = checker_exit == 0
+            row["status"] = "pass" if checker_exit == 0 else "fail"
+            if solve_exit not in (0, None):
+                row["error"] = f"{ref['kind']} exited {solve_exit}"
     except Exception as exc:  # image missing, isolation, docker: recorded, not a crash of the command
         row["status"] = "error"
         row["error"] = f"{type(exc).__name__}: {exc}"
@@ -115,10 +122,11 @@ def validate_one(executor, tasks_dir: str, task: str, work_root: Path, out: Path
 
 
 def validate_tasks(executor, tasks: list[tuple[str, str]], out: Path) -> list[dict]:
-    out = Path(out)
+    out = Path(out).expanduser().resolve()
     if out.name == "trials.jsonl":
         raise SystemExit("refusing to write reference results to trials.jsonl; use oracle.jsonl")
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Absolute, so Docker bind-mounts the workspace (a relative source that does not start with "." is not a host path).
     work = out.parent / (out.stem + "-work")
     rows = []
     for tasks_dir, task in tasks:

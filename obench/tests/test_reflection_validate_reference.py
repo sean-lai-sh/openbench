@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,8 +23,9 @@ class FindReference(unittest.TestCase):
 
 
 class FakeExecutor:
-    def __init__(self):
-        self.solves, self.checks, self.networks = [], [], []
+    def __init__(self, check=None):
+        self.solves, self.checks, self.networks, self.workspaces = [], [], [], []
+        self._check_result = check
 
     def isolation_preflight(self):
         return {"ok": True}
@@ -48,10 +50,14 @@ class FakeExecutor:
 
     def run_solve(self, task, workspace, solve, network, stdout_path, stderr_path):
         self.solves.append((task["image"], network, solve.name))
+        self.workspaces.append(Path(workspace))
         return 0, "solved line\n", "stderr line\n"
 
     def _check(self, task, workspace):
         self.checks.append(task["image"])
+        self.workspaces.append(Path(workspace))
+        if self._check_result is not None:
+            return self._check_result
         overlaid = (workspace / "answer.txt").read_text() if (workspace / "answer.txt").exists() else ""
         self.checks.append(overlaid)
         return 0, "in_task_container", "SCORE: 1.0\n" + overlaid
@@ -116,6 +122,46 @@ class Validate(unittest.TestCase):
         for host in SINKHOLED_HOSTS:
             self.assertIn(f"{host}:0.0.0.0", offline)
         self.assertNotIn("opencode", " ".join(offline))
+
+    def _task_with_solve(self) -> tuple[Path, str]:
+        tasks = self.tmp / "tasks"
+        solve = tasks / "with-solve"
+        (solve / "solution").mkdir(parents=True)
+        (solve / "solution" / "solve.sh").write_text("#!/bin/bash\necho ok\n")
+        (solve / "checker.sh").write_text("#!/bin/bash\nexit 0\n")
+        return tasks, "with-solve"
+
+    def test_relative_out_is_an_absolute_docker_mount(self):
+        tasks, name = self._task_with_solve()
+        executor = FakeExecutor()
+        previous = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            rows = vr.validate_tasks(executor, [(str(tasks), name)], Path("oracle.jsonl"))
+        finally:
+            os.chdir(previous)
+        self.assertEqual(rows[0]["status"], "pass")
+        self.assertTrue(executor.workspaces[0].is_absolute())
+        self.assertTrue(executor.workspaces[1].is_absolute())  # the checker sees the same workspace
+        cell = CellExecutor(opencode=None, project="", token=lambda: "", check_pin=False)
+        args = cell.solve_docker_args(
+            {"dir": Path("extract-elf"), "image": "task-img:pinned", "workdir": "/app"},
+            Path("oracle-work/extract-elf/workspace"), Path("solution/solve.sh"), "offline")
+        host = args[args.index("-v") + 1].split(":", 1)[0]
+        self.assertTrue(Path(host).is_absolute())
+        self.assertFalse(host.startswith("oracle-work"))
+
+    def test_checker_that_never_launches_is_an_error_not_a_fail(self):
+        tasks, name = self._task_with_solve()
+        launched = FakeExecutor(check=(127, "in_task_container", "bash: missing\n"))
+        row = vr.validate_tasks(launched, [(str(tasks), name)], self.tmp / "launched.jsonl")[0]
+        self.assertEqual((row["status"], row["passed"], row["checker_exit"]), ("fail", False, 127))
+        missing = FakeExecutor(check=(125, "container_not_launched", "docker: cannot start\n"))
+        row = vr.validate_tasks(missing, [(str(tasks), name)], self.tmp / "missing.jsonl")[0]
+        self.assertEqual(row["status"], "error")
+        self.assertIsNone(row["passed"])
+        self.assertEqual(row["checker_exit"], 125)
+        self.assertIn("container_not_launched", row["error"])
 
     def test_cli_no_reference_writes_oracle_jsonl(self):
         out = self.tmp / "oracle.jsonl"

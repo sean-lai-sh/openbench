@@ -461,7 +461,12 @@ class CellExecutor:
 
     def solve_docker_args(self, task: dict, workspace: Path, solve: Path, network: str) -> list[str]:
         """The reference solution in the task image: same platform, network, sinkholes and workspace mount as
-        ``docker_args``, then ``bash`` on the solution script. No OpenCode and no proxy."""
+        ``docker_args``, then ``bash`` on the solution script. No OpenCode and no proxy.
+
+        Host paths are absolute. Docker treats a bind source as a host path only when it is absolute or starts
+        with ``.``; a relative path such as ``oracle-work/task/workspace`` is not mounted.
+        """
+        workspace, solve = Path(workspace).resolve(), Path(solve).resolve()
         name = f"obench-oracle-{task['dir'].name}-{os.getpid()}"
         args = ["run", "--rm", "--name", name, "--platform", self.platform,
                 "--network", OFFLINE_NETWORK if network == "offline" else AGENT_NETWORK,
