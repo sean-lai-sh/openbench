@@ -128,8 +128,8 @@ from obench.reflection import opencode as oc
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec, code_commit
-from obench.reflection.wire_proxy import (WireProxy, classify_4xx, model_refused, provider_blocked, route_repair_counts,
-                                          route_truncated)
+from obench.reflection.wire_proxy import (WireProxy, classify_4xx, last_vertex_request, model_refused,
+                                          provider_blocked, route_repair_counts, route_truncated)
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
                    "aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com")
@@ -300,15 +300,22 @@ class CellExecutor:
     unflagged_network: str = "bridge"    # tasks with no solution_needs_network: "bridge" (as before) or "offline"
     upstream_host: str | None = None     # tests only: fake Vertex
     checker_runner: Callable = subprocess.run
+    check_pin: bool = True          # reference validation builds an executor with no OpenCode binary
 
     def __post_init__(self):
-        self.opencode = Path(self.opencode)
-        self.pin = oc.verify_binary(self.opencode)
         self.code = code_commit()  # recorded by the executor itself on every trial (cell.json)
         import threading
         self._record_lock = threading.Lock()  # trials of one cell may finish together (runner --workers)
         self.run_context: dict = {}
         self._isolation, self._isolation_lock = None, threading.Lock()
+        if not self.check_pin:
+            self.opencode = Path(self.opencode) if self.opencode else None
+            self.pin = None
+            self.standalone = False
+            self.mount_root = None
+            return
+        self.opencode = Path(self.opencode)
+        self.pin = oc.verify_binary(self.opencode)
         # A standalone build (compile / build.ts) needs only its own bin/<sha>/ directory, mounted read-only at a
         # neutral path, so the host's source tree and worktrees are not visible in the container. Wrapper builds
         # (bun-run / monorepo) exec absolute paths in the cache root and still need it (recorded in cell.json).
@@ -452,6 +459,29 @@ class CellExecutor:
             args += ["--add-host", f"{host}:0.0.0.0"]
         return args + [task["image"], *oc.run_command(self.opencode_in_container(), instruction, vm.opencode_model_arg(model))]
 
+    def solve_docker_args(self, task: dict, workspace: Path, solve: Path, network: str) -> list[str]:
+        """The reference solution in the task image: same platform, network, sinkholes and workspace mount as
+        ``docker_args``, then ``bash`` on the solution script. No OpenCode and no proxy."""
+        name = f"obench-oracle-{task['dir'].name}-{os.getpid()}"
+        args = ["run", "--rm", "--name", name, "--platform", self.platform,
+                "--network", OFFLINE_NETWORK if network == "offline" else AGENT_NETWORK,
+                "-v", f"{workspace}:{task['workdir']}",
+                "-v", f"{solve.parent}:/openbench-solution:ro",
+                "-w", task["workdir"]]
+        for host in SINKHOLED_HOSTS:
+            args += ["--add-host", f"{host}:0.0.0.0"]
+        return args + [task["image"], "bash", f"/openbench-solution/{solve.name}"]
+
+    def run_solve(self, task: dict, workspace: Path, solve: Path, network: str,
+                  stdout_path: Path, stderr_path: Path) -> tuple[int | None, str, str]:
+        """Run ``solve.sh`` / ``solution.sh`` via ``TrialDocker.run_agent`` (the same ``docker run`` path as a trial)."""
+        code, _timed_out = self.docker.run_agent(
+            self.solve_docker_args(task, workspace, solve, network), stdout_path,
+            int(task.get("agent_timeout") or 600), stderr_path=stderr_path)
+        stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+        return code, stdout, stderr
+
     def opencode_mount(self) -> str:
         if self.standalone:
             return f"{self.opencode.parent}:{OPENCODE_IN_CONTAINER}/{self.pin['sha']}:ro"
@@ -507,6 +537,8 @@ class CellExecutor:
         return {"hydrated_from": task["image"], "workdir": task["workdir"], "files": files}
 
     def run_trial(self, spec: TrialSpec, run_dir: Path) -> TrialResult:
+        if self.pin is None:
+            raise CellError("CellExecutor has no pinned OpenCode binary")
         from obench.workspace import materialize_workspace
 
         model = vm.resolve(spec.model)
@@ -622,10 +654,13 @@ class CellExecutor:
                 for w in wires if isinstance(w.get("request"), dict) and w.get("provider_wire")}
         thinking_setting = {"configured": model.thinking_sent(), "sent": [json.loads(x) for x in sorted(sent)]}
         cost, unpriced = wire_cost(wires)
+        live_path = trial_dir / "last_vertex_request.json"
+        live = json.loads(live_path.read_text(encoding="utf-8")) if live_path.is_file() else None
         fours = classify_4xx(wires)
         blocked = provider_blocked(wires)
         common = dict(cost_usd=cost, served_models=served, route_counts=counts, thinking_setting=thinking_setting,
-                      retried_4xx=fours["retried"], image=image, wire=rel(wire_path), cost_unpriced_calls=unpriced)
+                      retried_4xx=fours["retried"], image=image, wire=rel(wire_path),
+                      cost_unpriced_calls=unpriced, last_vertex_request=last_vertex_request(wires, live))
         if blocked is not None:  # the provider refused the prompt: neither pass nor fail
             (trial_dir / "provider_blocked.json").write_text(json.dumps(blocked, sort_keys=True) + "\n")
             return TrialResult(status="provider_blocked", passed=None, provider_blocked=blocked, **common,

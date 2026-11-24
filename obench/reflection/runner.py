@@ -18,6 +18,13 @@ stops before a trial that would push spend past ``spend_cap_usd``, and pauses
 (writing ``status.json``) when spend crosses an alert threshold ($5K, $10K,
 $15K by default), so a person can look before it continues.
 
+On resume, ``--retry-infra`` re-runs infrastructure-error trials (a new row with
+``retry_of`` pointing at the original id; the original row stays) until each
+slot has a settled outcome or has been re-run 3 times. Settled means passed,
+failed, refused, or blocked. Re-runs use the same cross-model schedule as
+ordinary trials. ``plan.json`` records the git commit and host; a resume on
+another commit or machine is refused.
+
 Layout (all paths in rows are relative to the run directory, so tables can be
 committed after scrubbing)::
 
@@ -30,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +73,12 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "provider_blocked",
             "model_refused", "agent_exit_pending_tool", "checker_error")
 SET_ASIDE = ("provider_blocked", "model_refused")  # neither pass/fail nor infra; not in errors
+# Settled = passed or failed (``completed``, including a cap hit while the agent was still working),
+# refused, or blocked. Everything else is an infrastructure error. This is the only infra set:
+# resume re-runs those trials, and a still-working timeout stays a task fail because its status is completed.
+SETTLED_STATUSES = ("completed", *SET_ASIDE)
+INFRA_STATUSES = tuple(s for s in STATUSES if s not in SETTLED_STATUSES)
+MAX_INFRA_RETRIES = 3  # re-runs per trial slot (one index of one cell), not a per-cell budget
 # Run labels that fix which task population a run may use, so runs with different populations are never pooled.
 # "repo pilot suite": the repo's pilot suite and pool only; tasks imported by obench.taskimport (their task.toml
 # records docker_image_id_at_import) are refused.
@@ -86,6 +100,8 @@ class TrialSpec:
     patch_id: str | None
     patch: dict | None
     trial_dir: str            # relative to the run directory
+    retry_of: str | None = None   # original trial id when this spec re-runs an infrastructure error
+    attempt: int = 0              # 0 is the original slot; 1..MAX_INFRA_RETRIES are re-runs
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -117,6 +133,7 @@ class TrialResult:
     trace: str | None = None                  # relative path
     wire: str | None = None                   # relative path
     error: str | None = None
+    last_vertex_request: dict | None = None   # {sent_at, model, response_arrived, first_byte_at, call_index, status}
 
 
 class Executor(Protocol):
@@ -187,6 +204,11 @@ class RunConfig:
                 raise RunnerError(f"suite_label {self.suite_label!r} allows suites {rule['suites']}, not {self.suite!r}")
 
 
+def host_name() -> str:
+    """VM / host identity recorded in ``plan.json`` and checked on resume."""
+    return socket.gethostname()
+
+
 def code_commit(root: Path | None = None) -> dict:
     """The checkout the runner runs from: commit, branch, and whether it has uncommitted changes."""
     import subprocess
@@ -197,8 +219,12 @@ def code_commit(root: Path | None = None) -> dict:
             "dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None}
 
 
-def trial_id(run_id: str, task: str, model: str, patch_id: str | None, index: int) -> str:
-    key = json.dumps([run_id, task, model, patch_id, index])
+def trial_id(run_id: str, task: str, model: str, patch_id: str | None, index: int, attempt: int = 0) -> str:
+    """Attempt 0 keeps the historical id. A re-run (attempt >= 1) is a new id; the row points at the original via ``retry_of``."""
+    payload = [run_id, task, model, patch_id, index]
+    if attempt:
+        payload.append(attempt)
+    key = json.dumps(payload)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -271,6 +297,38 @@ def read_rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _slot_rows(trials: list[dict]) -> dict[int, list[dict]]:
+    by: dict[int, list[dict]] = {}
+    for row in trials:
+        by.setdefault(row["trial_index"], []).append(row)
+    return by
+
+
+def slot_reports(trials: list[dict]) -> list[dict]:
+    """One report per trial slot (index), in index order. A slot is settled when any attempt is passed,
+    failed, refused, or blocked. ``retries`` is how many re-runs have been appended after the original row."""
+    reports = []
+    for index, rows in sorted(_slot_rows(trials).items()):
+        settled = any(r.get("status") in SETTLED_STATUSES for r in rows)
+        retries = len(rows) - 1
+        reports.append({
+            "trial_index": index,
+            "trial_id": rows[0]["trial_id"],
+            "retries": retries,
+            "last_status": rows[-1].get("status"),
+            "settled": settled,
+            "exhausted": (not settled) and retries >= MAX_INFRA_RETRIES,
+        })
+    return reports
+
+
+def infra_retry_reason(exhausted: list[dict]) -> str | None:
+    if not exhausted:
+        return None
+    parts = [f"trial_index {s['trial_index']} still {s['last_status']} after {s['retries']} re-runs" for s in exhausted]
+    return "infra retry cap: " + "; ".join(parts)
+
+
 class Runner:
     def __init__(self, config: RunConfig, run_dir: Path, executor: Executor, suites_dir: Path | None = None,
                  workers: int | None = None):
@@ -311,7 +369,8 @@ class Runner:
 
     def plan(self, tasks_by_model: dict[str, list[str]]) -> list[TrialSpec]:
         """Trials interleaved across models (trial index, then slot, then model), so with ``workers > 1`` both
-        models run side by side under the same load rather than one model after the other."""
+        models run side by side under the same load rather than one model after the other. Re-runs use this
+        same order (``pending_specs``): a retry is not a separate block per model."""
         specs = []
         slots = max((len(t) for t in tasks_by_model.values()), default=0)
         for index in range(self.config.n_trials):
@@ -327,6 +386,67 @@ class Runner:
                         trial_index=index, patch_id=self.config.patch_id, patch=self.config.patch,
                         trial_dir=f"trials/{model}/{task}/{tid}"))
         return specs
+
+    def pending_specs(self, tasks_by_model: dict[str, list[str]], retry_infra: bool) -> list[TrialSpec]:
+        """Attempt-0 trials that have no row yet, then (when ``retry_infra``) one new re-run for each slot
+        whose latest row is an infrastructure error and that still has a retry left. Order is ``plan``'s
+        order, so retries of different models at the same index stay interleaved with each other and with
+        trials that have not run."""
+        rows = read_rows(self.trials_path)
+        seen = {r["trial_id"] for r in rows}
+        slots: dict[tuple, list[dict]] = {}
+        for row in rows:
+            slots.setdefault((row["task"], row["model"], row.get("patch_id"), row["trial_index"]), []).append(row)
+        specs = []
+        for spec in self.plan(tasks_by_model):
+            have = slots.get((spec.task, spec.model, spec.patch_id, spec.trial_index), [])
+            if not have:
+                if spec.trial_id not in seen:
+                    specs.append(spec)
+                continue
+            if not retry_infra:
+                continue
+            state = slot_reports(have)[0]
+            if state["settled"] or state["exhausted"]:
+                continue
+            attempt = state["retries"] + 1
+            if attempt > MAX_INFRA_RETRIES:
+                continue
+            tid = trial_id(spec.run_id, spec.task, spec.model, spec.patch_id, spec.trial_index, attempt)
+            if tid in seen:
+                continue
+            specs.append(TrialSpec(
+                run_id=spec.run_id, trial_id=tid, task=spec.task, tasks_dir=spec.tasks_dir, model=spec.model,
+                trial_index=spec.trial_index, patch_id=spec.patch_id, patch=spec.patch,
+                trial_dir=f"trials/{spec.model}/{spec.task}/{tid}",
+                retry_of=have[0]["trial_id"], attempt=attempt))
+        return specs
+
+    def infra_retry_report(self, allow_mismatch: bool = False) -> dict:
+        """Per cell, without running anything: settled slots, infrastructure slots, and how many would be re-run.
+        Refuses when ``plan.json`` records a different git commit or host."""
+        previous = self._read_plan()
+        if previous is None:
+            raise RunnerError(f"{self.run_dir} has no plan.json to resume")
+        self._check_resume_identity(previous, allow_mismatch)
+        groups: dict[tuple, list[dict]] = {}
+        for row in read_rows(self.trials_path):
+            groups.setdefault((row["model"], row["task"]), []).append(row)
+        cells = []
+        for (model, task), trials in sorted(groups.items()):
+            slots = slot_reports(trials)
+            exhausted = [s for s in slots if s["exhausted"]]
+            cells.append({
+                "task": task, "model": model,
+                "settled": sum(1 for s in slots if s["settled"]),
+                "infra": sum(1 for s in slots if not s["settled"]),
+                "would_rerun": sum(1 for s in slots if not s["settled"] and not s["exhausted"]),
+                "exhausted": len(exhausted),
+                "incomplete_reason": infra_retry_reason(exhausted),
+            })
+        recorded = previous.get("code") or {}
+        return {"run_id": self.config.run_id, "commit": self.code.get("commit"), "host": host_name(),
+                "plan_commit": recorded.get("commit"), "plan_host": previous.get("host"), "cells": cells}
 
     def preflight(self) -> dict:
         """Cost estimate for round 1 (and the worst case if every slot swaps
@@ -353,35 +473,67 @@ class Runner:
         _write_json(self.run_dir / "status.json", status)
         return status
 
-    def run(self, *, acknowledge_alerts: tuple = ()) -> dict:
+    def _read_plan(self) -> dict | None:
+        path = self.run_dir / "plan.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _check_resume_identity(self, previous: dict, allow_mismatch: bool) -> None:
+        """``plan.json`` is the source of truth for the git commit and the VM/host. A resume whose process
+        differs is refused. A missing ``host`` (runs started before the field) is filled in, not refused."""
+        recorded_commit = (previous.get("code") or {}).get("commit")
+        recorded_host = previous.get("host")
+        problems = []
+        if recorded_commit and recorded_commit != self.code.get("commit"):
+            problems.append(f"git commit {self.code.get('commit')} != plan.json {recorded_commit}")
+        if recorded_host and recorded_host != host_name():
+            problems.append(f"host {host_name()!r} != plan.json {recorded_host!r}")
+        if problems and not allow_mismatch:
+            raise RunnerError(f"refusing to resume {self.run_dir}: " + "; ".join(problems)
+                              + ". Pass --allow-plan-mismatch to override.")
+
+    def _write_plan(self, previous: dict | None, cutoff: float, isolation) -> None:
+        # Keep the recorded commit and host once they exist. Fill host when an older plan lacks it.
+        code = (previous or {}).get("code") or self.code
+        host = (previous or {}).get("host") or host_name()
+        _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff, "code": code,
+                                                 "host": host, "isolation": isolation,
+                                                 "workers": self.workers, "host_cpus": os.cpu_count(),
+                                                 "preflight": self.preflight(), "written_at": _now()})
+
+    def run(self, *, acknowledge_alerts: tuple = (), retry_infra: bool = False,
+            allow_plan_mismatch: bool = False) -> dict:
         """Run (or resume) the plan. Returns the final status. ``state`` is
         ``done``, ``capped`` (the next trial would pass the spend cap), or
         ``alert`` (spend crossed an alert threshold not in
-        ``acknowledge_alerts``; rerun with it acknowledged to continue)."""
+        ``acknowledge_alerts``; rerun with it acknowledged to continue).
+
+        With ``retry_infra``, each infrastructure-error slot is re-run (a new row, ``retry_of`` set to the
+        original trial id) until it settles or it has been re-run ``MAX_INFRA_RETRIES`` times. The original
+        row is left in place. Spend alerts and the cap apply to re-runs the same way they apply to any trial.
+        """
         self.run_dir.mkdir(parents=True, exist_ok=True)
         (self.run_dir / "swaps").mkdir(exist_ok=True)
         cutoff = pass_cutoff()
-        previous = self.run_dir / "plan.json"
-        if previous.exists():  # resuming: never pool a different population into this directory
-            old = json.loads(previous.read_text(encoding="utf-8")).get("config") or {}
+        previous = self._read_plan()
+        if previous is not None:  # resuming: never pool a different population into this directory
+            old = previous.get("config") or {}
             for key in ("suite", "suite_label", "models", "patch_id", "n_trials", "workers"):
                 was, now = old.get(key), asdict(self.config).get(key)
                 if (list(was) if isinstance(was, (list, tuple)) else was) != (list(now) if isinstance(now, (list, tuple)) else now):
                     raise RunnerError(f"{self.run_dir} was started with {key}={was!r}, not {now!r}: use a new run directory")
+            self._check_resume_identity(previous, allow_plan_mismatch)
         # Executors that run containers must prove isolation with a live probe before any trial; a failure raises
         # here, so the run never starts. The probe result is recorded in plan.json (and on every cell.json).
         probe = getattr(self.executor, "isolation_preflight", None)
         isolation = probe() if probe is not None else None
-        _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff, "code": self.code,
-                                                 "isolation": isolation,
-                                                 "workers": self.workers, "host_cpus": os.cpu_count(),
-                                                 "preflight": self.preflight(), "written_at": _now()})
+        self._write_plan(previous, cutoff, isolation)
         states = {m: self._swap_state(m) for m in self.config.models}
-        done = {r["trial_id"] for r in read_rows(self.trials_path)}
+        done: set = set()
         for round_no in range(1, self.config.max_rounds + 1):
             tasks_by_model = {m: self._round_tasks(states[m]) for m in self.config.models}
-            stop = self._run_round([s for s in self.plan(tasks_by_model) if s.trial_id not in done], done,
-                                   acknowledge_alerts)
+            stop = self._execute(tasks_by_model, done, acknowledge_alerts, retry_infra)
             if stop is not None:
                 return self._status(stop.pop("state"), round=round_no, **stop)
             summaries = self.write_summary(cutoff)
@@ -393,6 +545,20 @@ class Runner:
             if not swapped or self.config.fixed:
                 break
         return self._status("done")
+
+    def _execute(self, tasks_by_model: dict, done: set, acknowledge_alerts: tuple, retry_infra: bool) -> dict | None:
+        """Run everything still pending. With ``retry_infra``, keep going until each infra slot has settled
+        or used its 3 re-runs. Each wave is one attempt, in plan order, and the spend checks run inside it.
+        The wave bound is the cap plus the original attempt, so a slot cannot be re-run without limit."""
+        waves = 1 if not retry_infra else MAX_INFRA_RETRIES + 1
+        for _ in range(waves):
+            specs = self.pending_specs(tasks_by_model, retry_infra)
+            if not specs:
+                return None
+            stop = self._run_round(specs, done, acknowledge_alerts)
+            if stop is not None or not retry_infra:
+                return stop
+        return None
 
     def _run_round(self, specs: list[TrialSpec], done: set, acknowledge_alerts: tuple) -> dict | None:
         """Run a round's trials on ``self.workers`` threads (1 = one at a time, as before). Swaps happen only after
@@ -465,7 +631,9 @@ class Runner:
                "image_ref": (result.image or {}).get("ref"), "image_id": (result.image or {}).get("id"),
                "image_matches_pin": (result.image or {}).get("matches_pin"),
                "thinking_setting": result.thinking_setting, "thinking_tokens_per_step": result.thinking_tokens_per_step,
-               "thinking_tokens_status": result.thinking_tokens_status, "trace": result.trace, "wire": result.wire, "trial_dir": spec.trial_dir,
+               "thinking_tokens_status": result.thinking_tokens_status, "trace": result.trace, "wire": result.wire,
+               "trial_dir": spec.trial_dir, "retry_of": spec.retry_of, "attempt": spec.attempt,
+               "last_vertex_request": result.last_vertex_request,
                "started_at": started, "finished_at": _now(), "error": result.error}
         with self._rows_lock:
             _append(self.trials_path, row)
@@ -489,6 +657,8 @@ class Runner:
             # verdict counts every set-aside trial as a fail.
             aside = len(blocked) + len(refused)
             settled = len(completed) + aside >= n
+            exhausted = [s for s in slot_reports(trials) if s["exhausted"]]
+            reason = infra_retry_reason(exhausted)
             verdict = ("incomplete" if not settled
                        else "excluded" if not completed
                        else "pass" if swap.passed(passes, len(completed), cutoff) else "fail")
@@ -519,6 +689,10 @@ class Runner:
                 "code_commits": sorted({str(t.get("code_commit")) for t in trials}),
                 "pass_rate": round(passes / len(completed), 4) if completed else None,
                 "cutoff": cutoff, "verdict": verdict,
+                "incomplete_reason": reason if verdict == "incomplete" else None,
+                "infra_retry_exhausted": [{"trial_index": s["trial_index"], "trial_id": s["trial_id"],
+                                           "retries": s["retries"], "last_status": s["last_status"]}
+                                          for s in exhausted],
                 "spend_usd": round(sum(c for c in costs if c is not None), 6),
                 "spend_complete": all(c is not None for c in costs) and not any(t.get("cost_unpriced_calls") for t in trials),
                 "trace_warnings": sum(1 for t in trials if t.get("trace_warning")),
@@ -691,10 +865,18 @@ class FixtureExecutor:
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(description="Reflection-loop N-trial runner (SEA-107)")
-    parser.add_argument("--config", type=Path, required=True, help="RunConfig JSON")
-    parser.add_argument("--out", type=Path, required=True, help="run directory (outside results/ and data/)")
+    parser.add_argument("--config", type=Path, help="RunConfig JSON (not needed with --resume)")
+    parser.add_argument("--out", type=Path, help="run directory (outside results/ and data/; default with --resume is that directory)")
+    parser.add_argument("--resume", type=Path, help="resume this run directory; config and identity come from its plan.json")
+    parser.add_argument("--retry-infra", action="store_true",
+                        help="re-run infrastructure-error trials (new row, retry_of = original id), at most 3 per slot")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --retry-infra: print per-cell settled, infra, and would-rerun counts and exit")
+    parser.add_argument("--allow-plan-mismatch", action="store_true",
+                        help="resume even when git commit or host differs from plan.json")
     parser.add_argument("--preflight", action="store_true", help="print the cost estimate and exit")
     parser.add_argument("--fixture", type=Path, help="dry run: JSON {\"task|model\": passes} for FixtureExecutor")
     parser.add_argument("--cell", action="store_true", help="real trials: one task-image container per trial (paid)")
@@ -705,13 +887,34 @@ def main(argv: list[str] | None = None) -> int:
                         help="--cell: agent image for tasks that name none (openbench-tb-hard)")
     parser.add_argument("--use-image-tag", action="store_true",
                         help="--cell: when a task.toml digest ref isn't on this host, run its docker_image_tag (recorded)")
-    parser.add_argument("--workers", type=int, default=1,
-                        help="trials run in parallel (one container each); swaps stay per model, after each round")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="trials run in parallel (one container each); omitted on resume keeps plan.json's workers")
     parser.add_argument("--acknowledge-alert", type=float, action="append", default=[])
     args = parser.parse_args(argv)
-    if any(part in ("results", "data") for part in args.out.expanduser().resolve().parts):
+    if args.resume is not None:
+        plan_path = args.resume / "plan.json"
+        if not plan_path.is_file():
+            raise SystemExit(f"no plan.json in {args.resume}")
+        config = RunConfig.from_dict(json.loads(plan_path.read_text(encoding="utf-8"))["config"])
+        out = args.out or args.resume
+    elif args.config is None or args.out is None:
+        raise SystemExit("--config and --out are required unless --resume is set")
+    else:
+        config = RunConfig.load(args.config)
+        out = args.out
+    if any(part in ("results", "data") for part in out.expanduser().resolve().parts):
         raise SystemExit("--out must be outside results/ and data/")
-    config = RunConfig.load(args.config)
+    if args.dry_run:
+        if not args.retry_infra:
+            raise SystemExit("--dry-run applies to --retry-infra")
+        runner = Runner(config, out, FixtureExecutor({}), workers=args.workers)
+        try:
+            report = runner.infra_retry_report(allow_mismatch=args.allow_plan_mismatch)
+        except RunnerError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(json.dumps(report, indent=2))
+        return 0
     if args.cell == (args.fixture is not None):
         raise SystemExit("choose exactly one executor: --cell (real trials) or --fixture (dry run)")
     if args.fixture is not None:
@@ -728,7 +931,7 @@ def main(argv: list[str] | None = None) -> int:
         token()  # fail before any trial if credentials are missing
         executor = CellExecutor(args.opencode, project, token, estimates_usd={**DEFAULT_ESTIMATES_USD, **(args.estimates or {})},
                                 default_image=args.default_image, use_image_tag=args.use_image_tag)
-    runner = Runner(config, args.out, executor, workers=args.workers)
+    runner = Runner(config, out, executor, workers=args.workers)
     if args.cell:  # every image must be on this host before the first paid call
         wanted = [(str(t.tasks_dir), t.id) for t in runner.known.values() if not config.tasks or t.id in config.tasks]
         missing = executor.missing_images(wanted)
@@ -744,7 +947,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.preflight:
         print(json.dumps(runner.preflight(), indent=2))
         return 0
-    status = runner.run(acknowledge_alerts=tuple(args.acknowledge_alert))
+    try:
+        status = runner.run(acknowledge_alerts=tuple(args.acknowledge_alert), retry_infra=args.retry_infra,
+                            allow_plan_mismatch=args.allow_plan_mismatch)
+    except RunnerError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(json.dumps(status))
     return 0 if status["state"] == "done" else 3
 

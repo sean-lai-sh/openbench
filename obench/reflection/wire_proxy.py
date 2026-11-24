@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -360,6 +361,27 @@ def response_summary(model: vm.VertexModel, raw: bytes, stream: bool) -> dict:
     return out
 
 
+def last_vertex_request(wires: list[dict] | None, live: dict | None = None) -> dict | None:
+    """The last Vertex call: send time (``sent_at`` / wire ``ts``), model, and whether a response came back.
+    ``live`` is ``last_vertex_request.json``, which exists even when the call never finished a wire line."""
+    keys = ("sent_at", "model", "response_arrived", "first_byte_at", "call_index", "status")
+    best = None
+    if wires:
+        wire = max(wires, key=lambda item: item.get("call_index") or 0)
+        best = {"sent_at": wire.get("ts"), "model": wire.get("requested_model") or wire.get("upstream_model"),
+                "response_arrived": bool(wire.get("response_arrived")), "first_byte_at": wire.get("first_byte_at"),
+                "call_index": wire.get("call_index"), "status": wire.get("status")}
+    if not live:
+        return best
+    live_index = live.get("call_index") or 0
+    if best is None or live_index > (best.get("call_index") or 0):
+        return {k: live.get(k) for k in keys}
+    if live_index == best.get("call_index") and live.get("first_byte_at") and not best.get("first_byte_at"):
+        best["first_byte_at"] = live.get("first_byte_at")
+        best["response_arrived"] = bool(best["response_arrived"] or live.get("response_arrived"))
+    return best
+
+
 class WireProxy:
     """One proxy per run. ``base_url`` goes into the OpenCode config;
     ``wire_path`` collects the wire records."""
@@ -381,7 +403,7 @@ class WireProxy:
         self.on_provider_blocked, self.provider_blocked = on_provider_blocked, None
         self.client_resets: list[str] = []  # client-side socket resets outside a call (counted per trial)
         self.upstream_host, self.opener = upstream_host, opener
-        self._lock, self._index = threading.Lock(), 0
+        self._lock, self._index, self._last = threading.Lock(), 0, None
         self.wire_path.parent.mkdir(parents=True, exist_ok=True)
         proxy = self
 
@@ -458,7 +480,7 @@ class WireProxy:
         started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         if self.provider_blocked is not None:
             self._record(index, started, model, sent, enforced, None, None, None, "provider_blocked: not sent",
-                         extra={"short_circuited": True})
+                         extra={"short_circuited": True}, note_last=False)
             return self._reply(handler, 400, {"error": {"code": 400, "status": "PROVIDER_BLOCKED",
                                                         "message": f"provider blocked: {self.provider_blocked.get('blockReason')}"}})
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.token()}"}
@@ -471,13 +493,18 @@ class WireProxy:
             sent.pop("stream_options", None)
         request = urllib.request.Request(self._url(model, upstream_stream), data=json.dumps(sent).encode("utf-8"),
                                          headers=headers, method="POST")
-        status, chunks, content_type = None, [], "application/json"
+        # Written before the upstream call returns, so a hang (no response before the agent cap) is visible
+        # even when this request never becomes a finished wire line.
+        self._note_last({"sent_at": started, "model": model.vertex_id, "response_arrived": False,
+                         "first_byte_at": None, "call_index": index, "status": None})
+        status, chunks, content_type, first_byte_at = None, [], "application/json", None
         try:
             response = self.opener(request, timeout=600)
         except urllib.error.HTTPError as exc:
             response = exc
         except OSError as exc:
-            self._record(index, started, model, sent, enforced, None, None, None, str(exc))
+            self._record(index, started, model, sent, enforced, None, None, None, str(exc),
+                         response_arrived=False, first_byte_at=None)
             return self._reply(handler, 502, {"error": f"upstream unreachable: {exc}"})
         client = {"ok": True}
 
@@ -496,12 +523,17 @@ class WireProxy:
         with response:
             status = getattr(response, "status", None) or response.getcode()
             content_type = response.headers.get("Content-Type", content_type)
+            # Headers came back: a response arrived, even if the body later hangs or resets.
+            self._note_last({"sent_at": started, "model": model.vertex_id, "response_arrived": True,
+                             "first_byte_at": first_byte_at, "call_index": index, "status": status})
             if model.repair_text_tool_calls and status == 200:
                 # Buffer the whole response, rebuild a tool call the route left as text, then send it.
                 try:
                     raw_all, stream_error = response.read(), None
                 except (OSError, http.client.HTTPException) as exc:  # reset/incomplete upstream body
                     raw_all, stream_error = getattr(exc, "partial", b"") or b"", f"{type(exc).__name__}: {exc}"
+                if raw_all and first_byte_at is None:
+                    first_byte_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
                 sent_bytes, repair = repair_text_tool_calls(raw_all, upstream_stream, sent)
                 usage, served = parse_response(model, raw_all, upstream_stream)
                 if stream and not upstream_stream:
@@ -520,7 +552,8 @@ class WireProxy:
                                     "response_bytes": len(raw_all), "route_repair": repair,
                                     "upstream_response_summary": response_summary(model, raw_all, upstream_stream),
                                     "upstream_stream": upstream_stream, "stream_error": stream_error,
-                                    "upstream_raw": self._save_raw(index, raw_all, upstream_stream)})
+                                    "upstream_raw": self._save_raw(index, raw_all, upstream_stream)},
+                             response_arrived=True, first_byte_at=first_byte_at)
                 send(b"0\r\n\r\n")
                 return
             try:
@@ -546,6 +579,10 @@ class WireProxy:
                     break
                 if not piece:
                     break
+                if first_byte_at is None:
+                    first_byte_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+                    self._note_last({"sent_at": started, "model": model.vertex_id, "response_arrived": True,
+                                     "first_byte_at": first_byte_at, "call_index": index, "status": status})
                 chunks.append(piece)
                 send(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
             # Record before the final chunk, so the record exists once the client has the full reply.
@@ -560,7 +597,8 @@ class WireProxy:
             if model.repair_text_tool_calls:  # gpt-oss error bodies too: what the route sent, byte for byte
                 extra.update({"route_repair": None, "upstream_response_summary": None, "upstream_stream": upstream_stream,
                               "upstream_raw": self._save_raw(index, raw_all, upstream_stream)})
-            self._record(index, started, model, sent, enforced, usage, served, status, None, extra=extra)
+            self._record(index, started, model, sent, enforced, usage, served, status, None, extra=extra,
+                         response_arrived=True, first_byte_at=first_byte_at)
             send(b"0\r\n\r\n")
             if blocked is not None and self.provider_blocked is None:
                 self.provider_blocked = blocked
@@ -581,7 +619,25 @@ class WireProxy:
             return None
         return str(rel)
 
-    def _record(self, index, started, model, sent, enforced, usage, served, status, error, extra=None) -> None:
+    def _note_last(self, payload: dict) -> None:
+        """Atomically refresh ``last_vertex_request.json`` beside the wire file. A later call does not
+        overwrite an earlier one's in-flight record, and an older call does not clobber a newer one."""
+        with self._lock:
+            if self._last and (payload.get("call_index") or 0) < (self._last.get("call_index") or 0):
+                return
+            current = dict(self._last) if self._last and self._last.get("call_index") == payload.get("call_index") else {}
+            current.update(payload)
+            self._last = current
+            path = self.wire_path.with_name("last_vertex_request.json")
+            tmp = path.with_name("last_vertex_request.json.tmp")
+            body = {k: current.get(k) for k in ("sent_at", "model", "response_arrived", "first_byte_at", "call_index", "status")}
+            tmp.write_text(json.dumps(body, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+
+    def _record(self, index, started, model, sent, enforced, usage, served, status, error, extra=None, *,
+                response_arrived=None, first_byte_at=None, note_last=True) -> None:
+        if response_arrived is None:
+            response_arrived = status is not None
         tools = sent.get("tools")
         record = {
             "schema": WIRE_SCHEMA, "call_index": index, "ts": started, "provider_wire": model.wire,
@@ -592,6 +648,8 @@ class WireProxy:
             # when the call finished (response fully read): the timeout ruling asks whether any model call
             # finished in the last minutes before the agent cap
             "ended_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "response_arrived": bool(response_arrived),
+            "first_byte_at": first_byte_at,
         }
         if self.patch_id is not None:
             record["patch_id"] = self.patch_id
@@ -604,5 +662,8 @@ class WireProxy:
                 record["cost_usd"], record["cost_basis"] = detail["usd"], detail["basis"]
             except TraceError as exc:
                 record["usage_error"] = exc.code
+        if note_last:
+            self._note_last({"sent_at": started, "model": model.vertex_id, "response_arrived": bool(response_arrived),
+                             "first_byte_at": first_byte_at, "call_index": index, "status": status})
         with self._lock, self.wire_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
