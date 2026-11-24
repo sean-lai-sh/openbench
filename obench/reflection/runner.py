@@ -697,6 +697,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="run directory (outside results/ and data/)")
     parser.add_argument("--preflight", action="store_true", help="print the cost estimate and exit")
     parser.add_argument("--fixture", type=Path, help="dry run: JSON {\"task|model\": passes} for FixtureExecutor")
+    parser.add_argument("--cell", action="store_true", help="real trials: one task-image container per trial (paid)")
+    parser.add_argument("--opencode", type=Path, help="--cell: the pinned OpenCode binary (bin/<sha>/opencode)")
+    parser.add_argument("--estimates", type=json.loads, default=None,
+                        help='--cell: per-trial USD estimates for the preflight, e.g. {"claude-opus-5-5": 2.0}')
+    parser.add_argument("--default-image", default="h1-env:1027-strace",
+                        help="--cell: agent image for tasks that name none (openbench-tb-hard)")
+    parser.add_argument("--use-image-tag", action="store_true",
+                        help="--cell: when a task.toml digest ref isn't on this host, run its docker_image_tag (recorded)")
     parser.add_argument("--workers", type=int, default=1,
                         help="trials run in parallel (one container each); swaps stay per model, after each round")
     parser.add_argument("--acknowledge-alert", type=float, action="append", default=[])
@@ -704,12 +712,35 @@ def main(argv: list[str] | None = None) -> int:
     if any(part in ("results", "data") for part in args.out.expanduser().resolve().parts):
         raise SystemExit("--out must be outside results/ and data/")
     config = RunConfig.load(args.config)
-    if args.fixture is None:
-        raise SystemExit("only --fixture dry runs are wired here; the containerized cell executor is the next step "
-                         "(see RUNNER_TABLES.md, 'Executors')")
-    raw = json.loads(args.fixture.read_text(encoding="utf-8"))
-    executor = FixtureExecutor({tuple(k.split("|", 1)): v for k, v in raw.items()})
+    if args.cell == (args.fixture is not None):
+        raise SystemExit("choose exactly one executor: --cell (real trials) or --fixture (dry run)")
+    if args.fixture is not None:
+        raw = json.loads(args.fixture.read_text(encoding="utf-8"))
+        executor = FixtureExecutor({tuple(k.split("|", 1)): v for k, v in raw.items()})
+    else:
+        import os as _os
+        from obench.reflection.cell_executor import DEFAULT_ESTIMATES_USD, CellExecutor
+        from thesis.ab.vertex_anthropic_proxy import AdcToken
+        project = _os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+        if not project or not args.opencode:
+            raise SystemExit("--cell needs GOOGLE_CLOUD_PROJECT and --opencode")
+        token = AdcToken()
+        token()  # fail before any trial if credentials are missing
+        executor = CellExecutor(args.opencode, project, token, estimates_usd={**DEFAULT_ESTIMATES_USD, **(args.estimates or {})},
+                                default_image=args.default_image, use_image_tag=args.use_image_tag)
     runner = Runner(config, args.out, executor, workers=args.workers)
+    if args.cell:  # every image must be on this host before the first paid call
+        wanted = [(str(t.tasks_dir), t.id) for t in runner.known.values() if not config.tasks or t.id in config.tasks]
+        missing = executor.missing_images(wanted)
+        if missing:
+            print(json.dumps({"missing_images": missing}, indent=2))
+            return 4
+        from obench.reflection.cell_executor import CellError
+        try:  # no container may reach the GCE metadata server; the proxy must be reachable (cell.json: isolation)
+            executor.isolation_preflight()
+        except CellError as exc:
+            print(json.dumps({"isolation_preflight_failed": str(exc)}, indent=2))
+            return 5
     if args.preflight:
         print(json.dumps(runner.preflight(), indent=2))
         return 0
