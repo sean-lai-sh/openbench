@@ -277,6 +277,13 @@ class Failures(unittest.TestCase):
     def test_step_and_call_counts_must_pair(self):
         self.assert_code("step_call_mismatch", opencode_stream(), anthropic_wires()[:3])
 
+    def test_failed_calls_retried_by_opencode_are_not_paired(self):
+        wires = anthropic_wires()
+        failed = dict(wires[0], status=429, response_usage=None, call_index=0)
+        records = tr.build_trace(opencode_stream(), [failed, *wires])
+        self.assertEqual(len(records), len([w for w in wires if w.get("call_role", "main") != "side"]))
+        self.assert_code("step_call_mismatch", opencode_stream(), [failed, *anthropic_wires()[:3]])
+
     def test_missing_request_and_bad_wire(self):
         wires = anthropic_wires()
         wires[0]["request"] = None
@@ -390,7 +397,12 @@ class SchemaDoc(unittest.TestCase):
         self.assertEqual(self.documented("## Step record"), self.written(record))
 
     def test_wire_fields_match_the_doc(self):
-        self.assertEqual(self.documented("## Wire record"), set(anthropic_wires()[0]))
+        documented = self.documented("## Wire record")
+        section = DOC.read_text().split("## Wire record", 1)[1].split("\n## ", 1)[0]
+        required = {m.group(1) for m in re.finditer(r"^\| `([a-z_]+)` \| [^|]+ \| yes \|", section, re.M)}
+        written = set(anthropic_wires()[0])
+        self.assertLessEqual(required, written)
+        self.assertLessEqual(written, documented)
 
     def test_error_codes_and_kinds_match_the_doc(self):
         text = DOC.read_text()
