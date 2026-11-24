@@ -46,6 +46,41 @@ def workspace_dir(task_dir: str) -> str:
     return os.path.join(task_dir, "workspace")
 
 
+WORKSPACE_MODES = "workspace_modes.json"
+
+
+def make_storable(workspace: str) -> dict[str, str]:
+    """Record, then relax, modes the owner can't read or traverse (files without u+r, dirs without u+rx), so
+    the snapshot can be copied, hashed and committed. Returns ``{relpath: "0o..."}`` of the original modes;
+    ``restore_modes`` puts them back on every materialized copy."""
+    modes: dict[str, str] = {}
+    for root, dirs, files in os.walk(workspace, topdown=True):
+        for name in dirs + files:
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                continue
+            st = os.lstat(path)
+            need = 0o700 if name in dirs else 0o600
+            if st.st_mode & need != need:
+                modes[os.path.relpath(path, workspace)] = oct(st.st_mode & 0o7777)
+                os.chmod(path, (st.st_mode & 0o7777) | need)  # dirs relaxed before os.walk descends into them
+    return modes
+
+
+def restore_modes(task_dir: str, dest: str) -> None:
+    """Apply ``workspace_modes.json`` (if present) to a materialized workspace, deepest paths first."""
+    path = os.path.join(task_dir, WORKSPACE_MODES)
+    if not os.path.isfile(path):
+        return
+    import json
+    with open(path, encoding="utf-8") as fh:
+        modes = json.load(fh)
+    for rel in sorted(modes, key=lambda r: r.count(os.sep), reverse=True):
+        target = os.path.join(dest, rel)
+        if os.path.lexists(target) and not os.path.islink(target):
+            os.chmod(target, int(modes[rel], 8))
+
+
 def workspace_toml_path(task_dir: str) -> str:
     return os.path.join(task_dir, WORKSPACE_TOML)
 
@@ -443,8 +478,11 @@ def materialize_workspace(task_dir: str, dest: str) -> dict | None:
     mode = resolve_workspace_mode(task_dir)
     if mode == "snapshot":
         _copy_snapshot_into(task_dir, dest)
+        restore_modes(task_dir, dest)
         return None
-    return materialize_git_workspace(task_dir, dest)
+    provenance = materialize_git_workspace(task_dir, dest)
+    restore_modes(task_dir, dest)
+    return provenance
 
 
 def overlay_solution(task_dir: str, dest: str) -> None:
