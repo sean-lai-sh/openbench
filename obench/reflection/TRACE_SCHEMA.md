@@ -115,6 +115,7 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `upstream_raw` | string\|null | no | gpt-oss only: path, relative to the wire file's directory, of the raw upstream bytes (`upstream-raw/<call_index>.sse\|json`), for every call including errors. Model output only, but scrub it before committing like any transcript. |
 | `error` | string | no | Transport error when the upstream was unreachable |
 | `usage_error` | string | no | `TraceError` code when the response usage could not be normalized |
+| `patch_id` | string | no | The ideation alternative whose patch the proxy applied (SEA-110). The per-op log is in `thinking_enforced.patch_log`. |
 
 The reflection loop's own routes write these directly: `wire_proxy.py`
 (SEA-105, one fixed Vertex route per model). `wire_records_from_proxy_ledger`
