@@ -619,13 +619,19 @@ def _append_result(run_dir: Path, row: dict) -> None:
         fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
-def _accepted_proposal_ids(run_dir: Path, model: str, task: str, current: dict) -> tuple[list[str], set[str], set[str]]:
+def _result_key(row: dict) -> tuple:
+    """A result belongs to one failure. The same patch may share ``proposal_id`` across failures."""
+    return (row.get("parent_trial_id"), row.get("proposal_id"))
+
+
+def _accepted_proposal_ids(run_dir: Path, model: str, task: str, current: dict) -> tuple[set[tuple], set[str], set[str]]:
     """Accepted proposals across every drawn failure of one cell.
 
-    Returns ``(accepted proposal ids, drawn trial ids, parents that already
-    have a proposal row)``. A drawn failure whose proposals were all rejected
-    is accounted for and adds no accepted id. The proposal being evaluated
-    is included.
+    Returns ``((parent trial, proposal id) pairs, drawn trial ids, parents
+    that already have a proposal row)``. The same patch on two failures is
+    two pairs: ``proposal_id`` is a hash of the patch and is not unique per
+    failure. A drawn failure whose proposals were all rejected is accounted
+    for and adds no accepted pair. The proposal being evaluated is included.
     """
     orders = _cell_draw_orders(run_dir, model, task)
     drawn_ids = set(orders)
@@ -633,8 +639,7 @@ def _accepted_proposal_ids(run_dir: Path, model: str, task: str, current: dict) 
     if parent not in drawn_ids:
         raise ValueError(f"{model}/{task}: parent failure {parent} is not a drawn pick; "
                          "confirm=top ranks the cell's drawn failures")
-    ids: list[str] = []
-    seen: set[str] = set()
+    keys: set[tuple] = set()
     parents: set[str] = set()
     for row in rn.read_rows(Path(run_dir) / "ideation.jsonl"):
         if row.get("model") != model or row.get("task") != task:
@@ -642,27 +647,27 @@ def _accepted_proposal_ids(run_dir: Path, model: str, task: str, current: dict) 
         if row.get("parent_trial_id") not in drawn_ids:
             continue
         parents.add(row["parent_trial_id"])
-        if row.get("status") != "accepted":
+        if row.get("status") != "accepted" or not row.get("proposal_id"):
             continue
-        pid = row.get("proposal_id")
-        if not pid or pid in seen:
-            continue
-        seen.add(pid)
-        ids.append(pid)
-    pid = current.get("proposal_id")
-    if pid and pid not in seen:
-        ids.append(pid)
+        keys.add((row["parent_trial_id"], row["proposal_id"]))
+    if current.get("proposal_id"):
+        keys.add((parent, current["proposal_id"]))
     parents.add(parent)
-    return ids, drawn_ids, parents
+    return keys, drawn_ids, parents
 
 
-def _proposal_by_id(run_dir: Path, proposal_id: str, current: dict) -> dict:
-    if current.get("proposal_id") == proposal_id:
+def _proposal_by_id(run_dir: Path, proposal_id: str, current: dict, parent_trial_id: str | None = None) -> dict:
+    def matches(row: dict) -> bool:
+        if row.get("proposal_id") != proposal_id:
+            return False
+        return parent_trial_id is None or row.get("parent_trial_id") == parent_trial_id
+
+    if matches(current):
         return current
     for row in rn.read_rows(Path(run_dir) / "ideation.jsonl"):
-        if row.get("proposal_id") == proposal_id:
+        if matches(row):
             return row
-    raise ValueError(f"no proposal {proposal_id} in ideation.jsonl")
+    raise ValueError(f"no proposal {proposal_id} for failure {parent_trial_id} in ideation.jsonl")
 
 
 def _skip_not_top(row: dict) -> None:
@@ -709,16 +714,17 @@ def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, execu
     is ``confirm_skipped: not_top`` with ``candidate`` left true.
     """
     model, task = row["model"], row["task"]
-    results = [item for item in _load_results(run_dir) if item.get("proposal_id") != row["proposal_id"]]
+    # The same patch hashes to one proposal_id. Keep the other failure's row.
+    results = [item for item in _load_results(run_dir) if _result_key(item) != _result_key(row)]
     results.append(row)
     accepted, drawn_ids, parents = _accepted_proposal_ids(run_dir, model, task, proposal)
     if not drawn_ids <= parents:
         _save_results(run_dir, results)
         return row
-    have = {item["proposal_id"] for item in results
+    have = {_result_key(item) for item in results
             if item.get("model") == model and item.get("task") == task
             and item.get("parent_trial_id") in drawn_ids and item.get("proposal_id")}
-    if not set(accepted) <= have:
+    if not accepted <= have:
         _save_results(run_dir, results)
         return row
     group = [item for item in results
@@ -728,16 +734,16 @@ def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, execu
         _save_results(run_dir, results)
         return row
     for item in group:
-        if item.get("candidate") and item.get("proposal_id") != winner["proposal_id"]:
+        if item.get("candidate") and _result_key(item) != _result_key(winner):
             _skip_not_top(item)
-    winner_proposal = _proposal_by_id(run_dir, winner["proposal_id"], proposal)
+    winner_proposal = _proposal_by_id(run_dir, winner["proposal_id"], proposal, winner.get("parent_trial_id"))
     # Confirmation can refuse the arm. Save only after it returns.
     confirmed = _run_confirmation(
         run_dir, base_cfg, winner_proposal, dict(winner), executor, n_trials, spend_cap_usd, recorded,
         baseline_commit, [winner.get("alpha", ALPHA)])
-    results = [confirmed if item.get("proposal_id") == winner["proposal_id"] else item for item in results]
+    results = [confirmed if _result_key(item) == _result_key(winner) else item for item in results]
     _save_results(run_dir, results)
-    return next(item for item in results if item.get("proposal_id") == row["proposal_id"])
+    return next(item for item in results if _result_key(item) == _result_key(row))
 
 
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,

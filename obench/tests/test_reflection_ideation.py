@@ -752,6 +752,23 @@ class ConfirmMode(unittest.TestCase):
         self.assertIsNone(idn.top_candidate([{"candidate": False, "selection_alt_passes": 9,
                                               "draw_order": 1, "alternative_index": 0}]))
 
+    def test_same_patch_on_two_failures_keeps_both_results(self):
+        run, trials = self._run()
+        self._draw(run, trials)
+        first = self._proposal(trials[0], 0, "same-patch")
+        second = dict(first, parent_trial_id=trials[1]["trial_id"])
+        self.assertEqual(first["proposal_id"], second["proposal_id"])
+        self._write(run, [first, second])
+        executor = self._executor({first["proposal_id"]: 0})
+        idn.evaluate(run, first, executor, n_trials=2, confirm="top")
+        idn.evaluate(run, second, executor, n_trials=2, confirm="top")
+        rows = self._results(run)
+        self.assertEqual(sorted(row["parent_trial_id"] for row in rows),
+                         sorted(trial["trial_id"] for trial in trials))
+        self.assertTrue(all(row["proposal_id"] == first["proposal_id"] for row in rows))
+        self.assertTrue(all(row["candidate"] is False and row["confirm_skipped"] is None for row in rows))
+        self.assertTrue(all(row["confirmation_alt_passes"] is None for row in rows))
+
     def test_one_cell_confirms_one_candidate_across_two_failures(self):
         run, trials = self._run()
         self._draw(run, trials)  # trials[0] is the earlier pick
