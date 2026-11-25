@@ -880,7 +880,7 @@ class Runner:
 
 
 def ideation_estimate(executor: Executor, failures: dict, n_alternatives: int = 5, n_trials: int = N_TRIALS,
-                      candidate_fraction: float = 1.0, confirm: str = "all") -> dict:
+                      candidate_fraction: float = 1.0, confirm: str = "all", cells: dict | None = None) -> dict:
     """Spend estimate for ideation (SEA-110): selection runs ``n_alternatives
     x n_trials`` per failure, then candidates get a confirmation (a fresh
     ``n_trials`` alternative run **plus** a fresh ``n_trials`` baseline run).
@@ -891,24 +891,38 @@ def ideation_estimate(executor: Executor, failures: dict, n_alternatives: int = 
 
     - ``all``: every candidate is confirmed, so confirmation is
       ``failures × n_alternatives × candidate_fraction × 2N`` trials.
-    - ``top``: one candidate per failure is confirmed, so that product is
-      capped at one confirmation per failure
-      (``min(1, n_alternatives × candidate_fraction)``).
+    - ``top``: one candidate per cell is confirmed, so confirmation is
+      ``cells × 2N`` trials. ``cells`` is ``{model: cell count}`` and is
+      required. ``candidate_fraction`` does not change that count.
     """
     if confirm not in ("all", "top"):
         raise ValueError(f"confirm must be 'top' or 'all', got {confirm!r}")
+    if confirm == "top" and not isinstance(cells, dict):
+        raise ValueError("confirm=top prices one confirmation per cell; pass cells={model: cell count}")
+    cell_counts: dict[str, int] = {}
+    if confirm == "top":
+        for model, count in cells.items():
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError(f"cell count for {model} must be a non-negative int, got {count!r}")
+            cell_counts[model] = count
+        missing = sorted(set(failures) - set(cell_counts))
+        if missing:
+            raise ValueError(f"confirm=top needs a cell count for {missing}")
     per_model = {}
     confirmed_alts = n_alternatives * candidate_fraction
-    if confirm == "top":
-        confirmed_alts = min(1.0, confirmed_alts)
-    for model, count in failures.items():
+    models = list(dict.fromkeys([*failures, *cell_counts]))
+    for model in models:
         unit = executor.estimate_cost_usd(model)
-        selection = count * n_alternatives * n_trials * unit
-        confirmation = count * confirmed_alts * 2 * n_trials * unit
+        failure_count = failures.get(model, 0)
+        selection = failure_count * n_alternatives * n_trials * unit
+        if confirm == "top":
+            confirmation = cell_counts[model] * 2 * n_trials * unit
+        else:
+            confirmation = failure_count * confirmed_alts * 2 * n_trials * unit
         per_model[model] = {"selection_usd": round(selection, 2), "confirmation_usd": round(confirmation, 2),
                             "total_usd": round(selection + confirmation, 2)}
     return {"n_alternatives": n_alternatives, "n_trials": n_trials, "candidate_fraction": candidate_fraction,
-            "confirm": confirm, "per_model": per_model,
+            "confirm": confirm, "cells": cell_counts or None, "per_model": per_model,
             "selection_usd": round(sum(v["selection_usd"] for v in per_model.values()), 2),
             "confirmation_usd": round(sum(v["confirmation_usd"] for v in per_model.values()), 2),
             "total_usd": round(sum(v["total_usd"] for v in per_model.values()), 2)}

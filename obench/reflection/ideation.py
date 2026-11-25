@@ -34,7 +34,7 @@ João Sedoc via Sean, SEA-110, 2026-11-13):
   new fresh N-trial baseline run (new trial ids, no reuse of the selection
   trials or of the selection baseline). ``success`` iff it beats that new
   baseline again. ``confirm`` is ``all`` (default: every selection candidate)
-  or ``top`` (per failure, only the best candidate).
+  or ``top`` (one candidate per cell, across that cell's drawn failures).
 
 Both stages record the one-sided Fisher exact p as a reported statistic only.
 ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0). It
@@ -78,7 +78,7 @@ CREDIT_METHODS = ("A", "B", "A+B")
 IDEATOR_MODEL = "claude-opus-5-5"              # open: configurable; not the model under test by design
 IDEATOR_THINKING = {"type": "adaptive"}        # set explicitly on every ideator request
 CONFIRM_ALL = "all"                            # every selection candidate is confirmed
-CONFIRM_TOP = "top"                            # one best candidate per failure is confirmed
+CONFIRM_TOP = "top"                            # one best candidate per cell (model, task)
 CONFIRM_MODES = (CONFIRM_ALL, CONFIRM_TOP)
 CONFIRM_SKIPPED_NOT_TOP = "not_top"            # a candidate that lost the top ranking
 
@@ -545,9 +545,11 @@ def _set_aside_count(summary: dict) -> int:
 
 
 def _candidate_rank(row: dict) -> tuple:
-    """Lower is better. Highest passes, then lower Fisher p, then lower index, then proposal id.
+    """Lower is better. Highest passes, then earlier draw, then lower index, then proposal id.
 
-    A missing pass count or a missing Fisher p sorts last. A missing
+    Fisher p is not in the key. Inside one cell the baseline is the same, so
+    the same pass count is the same p. A missing pass count sorts last. A
+    missing ``draw_order`` sorts after every seeded pick. A missing
     ``alternative_index`` sorts after every recorded index.
     """
     passes = row.get("selection_alt_passes")
@@ -555,30 +557,50 @@ def _candidate_rank(row: dict) -> tuple:
         passes_rank = float("inf")
     else:
         passes_rank = -float(passes)
-    fisher = row.get("selection_fisher_p")
-    if isinstance(fisher, bool) or not isinstance(fisher, (int, float)):
-        fisher_rank = float("inf")
+    order = row.get("draw_order")
+    if isinstance(order, bool) or not isinstance(order, int):
+        order_rank = 10**9
     else:
-        fisher_rank = float(fisher)
+        order_rank = order
     index = row.get("alternative_index")
     if isinstance(index, bool) or not isinstance(index, int):
         index_rank = 10**9
     else:
         index_rank = index
-    return (passes_rank, fisher_rank, index_rank, str(row.get("proposal_id") or ""))
+    return (passes_rank, order_rank, index_rank, str(row.get("proposal_id") or ""))
 
 
 def top_candidate(rows: list[dict]) -> dict | None:
-    """The single best selection candidate, or None when ``rows`` has none.
+    """The single best selection candidate of one cell, or None when ``rows`` has none.
 
-    Tie-break, in order: higher ``selection_alt_passes``, lower
-    ``selection_fisher_p``, lower ``alternative_index`` (the proposal's
-    ``index``), then ``proposal_id``.
+    Tie-break, in order: higher ``selection_alt_passes``, earlier
+    ``draw_order`` (the seeded pick in ``credit_draw.json``), lower
+    ``alternative_index`` (the proposal's ``index``), then ``proposal_id``.
+    ``selection_fisher_p`` is not a tie-break.
     """
     candidates = [row for row in rows if row.get("candidate")]
     if not candidates:
         return None
     return min(candidates, key=_candidate_rank)
+
+
+def _model_task_of_draw_cell(cell: str) -> tuple[str, str]:
+    """``model/task`` from a draw key. A ``@patch`` suffix is not part of the cell."""
+    model, _, rest = cell.partition("/")
+    return model, rest.split("@", 1)[0]
+
+
+def _cell_draw_orders(run_dir: Path, model: str, task: str) -> dict[str, int]:
+    """``trial_id -> draw_order`` for the drawn failures of one ``(model, task)`` cell."""
+    orders: dict[str, int] = {}
+    for pick in drawn_picks(run_dir):
+        if _model_task_of_draw_cell(pick["cell"]) != (model, task):
+            continue
+        order = pick.get("draw_order")
+        if isinstance(order, bool) or not isinstance(order, int):
+            order = 10**9
+        orders[pick["trial_id"]] = order
+    return orders
 
 
 def _load_results(run_dir: Path) -> list[dict]:
@@ -597,12 +619,30 @@ def _append_result(run_dir: Path, row: dict) -> None:
         fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
-def _accepted_proposal_ids(run_dir: Path, parent_trial_id: str, current: dict) -> list[str]:
-    """Accepted proposals for one failure. The proposal being evaluated is included."""
+def _accepted_proposal_ids(run_dir: Path, model: str, task: str, current: dict) -> tuple[list[str], set[str], set[str]]:
+    """Accepted proposals across every drawn failure of one cell.
+
+    Returns ``(accepted proposal ids, drawn trial ids, parents that already
+    have a proposal row)``. A drawn failure whose proposals were all rejected
+    is accounted for and adds no accepted id. The proposal being evaluated
+    is included.
+    """
+    orders = _cell_draw_orders(run_dir, model, task)
+    drawn_ids = set(orders)
+    parent = current.get("parent_trial_id")
+    if parent not in drawn_ids:
+        raise ValueError(f"{model}/{task}: parent failure {parent} is not a drawn pick; "
+                         "confirm=top ranks the cell's drawn failures")
     ids: list[str] = []
     seen: set[str] = set()
+    parents: set[str] = set()
     for row in rn.read_rows(Path(run_dir) / "ideation.jsonl"):
-        if row.get("status") != "accepted" or row.get("parent_trial_id") != parent_trial_id:
+        if row.get("model") != model or row.get("task") != task:
+            continue
+        if row.get("parent_trial_id") not in drawn_ids:
+            continue
+        parents.add(row["parent_trial_id"])
+        if row.get("status") != "accepted":
             continue
         pid = row.get("proposal_id")
         if not pid or pid in seen:
@@ -612,7 +652,8 @@ def _accepted_proposal_ids(run_dir: Path, parent_trial_id: str, current: dict) -
     pid = current.get("proposal_id")
     if pid and pid not in seen:
         ids.append(pid)
-    return ids
+    parents.add(parent)
+    return ids, drawn_ids, parents
 
 
 def _proposal_by_id(run_dir: Path, proposal_id: str, current: dict) -> dict:
@@ -658,22 +699,30 @@ def _run_confirmation(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, 
 
 def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, executor: rn.Executor,
                  n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str) -> dict:
-    """Confirm the best candidate once every accepted proposal for this failure has a selection row.
+    """Confirm one candidate for the cell once every drawn failure's proposals are selected.
 
-    Until that set is complete, this row is stored with confirmation fields
-    null. When it completes, the winner is confirmed and every other
-    candidate of this failure is ``confirm_skipped: not_top``. Ranking does
-    not cross parent trials.
+    The cell is ``(model, task)``. The set is every accepted alternative of
+    that cell's drawn failures, not one parent failure. Until every drawn
+    failure has a proposal row and every accepted proposal has a selection
+    row, this row is stored with confirmation fields null. When the set
+    completes, the winner is confirmed and every other candidate in the cell
+    is ``confirm_skipped: not_top`` with ``candidate`` left true.
     """
+    model, task = row["model"], row["task"]
     results = [item for item in _load_results(run_dir) if item.get("proposal_id") != row["proposal_id"]]
     results.append(row)
-    parent = row["parent_trial_id"]
-    accepted = _accepted_proposal_ids(run_dir, parent, proposal)
-    have = {item["proposal_id"] for item in results if item.get("parent_trial_id") == parent and item.get("proposal_id")}
+    accepted, drawn_ids, parents = _accepted_proposal_ids(run_dir, model, task, proposal)
+    if not drawn_ids <= parents:
+        _save_results(run_dir, results)
+        return row
+    have = {item["proposal_id"] for item in results
+            if item.get("model") == model and item.get("task") == task
+            and item.get("parent_trial_id") in drawn_ids and item.get("proposal_id")}
     if not set(accepted) <= have:
         _save_results(run_dir, results)
         return row
-    group = [item for item in results if item.get("parent_trial_id") == parent]
+    group = [item for item in results
+             if item.get("model") == model and item.get("task") == task and item.get("parent_trial_id") in drawn_ids]
     winner = top_candidate(group)
     if winner is None:
         _save_results(run_dir, results)
@@ -708,12 +757,15 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
        new baseline (bare beat, full N on both sides).
 
     ``confirm`` is ``all`` (default) or ``top``. ``all`` confirms every
-    selection candidate. ``top`` confirms one candidate per parent failure:
-    highest ``selection_alt_passes``, then lower ``selection_fisher_p``, then
-    lower ``alternative_index``, then ``proposal_id``. Other candidates record
-    ``confirm_skipped: not_top`` and null confirmation fields. The choice
-    waits until every accepted proposal for that failure has a selection row.
-    The mode is stored on every result row as ``confirm``.
+    selection candidate. ``top`` confirms one candidate per cell
+    ``(model, task)``, across that cell's drawn failures: highest
+    ``selection_alt_passes``, then earlier ``draw_order`` from
+    ``credit_draw.json``, then lower ``alternative_index``, then
+    ``proposal_id``. Fisher p is not a tie-break. Other candidates in the
+    cell stay candidates, with ``confirm_skipped: not_top`` and confirmation
+    fields null. The choice waits until every drawn failure has a proposal
+    row and every accepted proposal has a selection row. The mode is stored
+    on every result row as ``confirm``.
 
     The one-sided Fisher p for each stage is recorded as a reported statistic
     only. ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0).
@@ -742,6 +794,14 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
         raise ValueError("uncited proposal is not evaluated")
     baseline_commit = _require_baseline_commit(run_dir, baseline)
     recorded = _recorded_image(baseline)
+    draw_order = None
+    if mode == CONFIRM_TOP:
+        orders = _cell_draw_orders(run_dir, proposal["model"], proposal["task"])
+        parent = proposal.get("parent_trial_id")
+        if parent not in orders:
+            raise ValueError(f"{proposal['model']}/{proposal['task']}: parent failure {parent} is not a drawn pick; "
+                             "confirm=top ranks the cell's drawn failures")
+        draw_order = orders[parent]
     sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd,
                                        recorded)
     sel_commit = _require_arm_commit(run_dir / sel_dir, "selection", baseline_commit)
@@ -751,7 +811,8 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
     row = {"schema": RESULT_SCHEMA, "proposal_id": proposal["proposal_id"], "parent_trial_id": proposal["parent_trial_id"],
            "task": proposal["task"], "model": proposal["model"], "credit_method": proposal["credit_method"],
            "citations": proposal.get("citations"), "uncited": bool(proposal.get("uncited")),
-           "alternative_index": proposal.get("index"), "confirm": mode, "confirm_skipped": None,
+           "alternative_index": proposal.get("index"), "draw_order": draw_order,
+           "confirm": mode, "confirm_skipped": None,
            "n_trials": n_trials, "baseline_commit": baseline_commit, "code_commit": baseline_commit, **selection,
            "candidate": candidate, "selection_spend_usd": sel_alt.get("spend_usd", 0.0),
            "selection_run_dir": sel_dir, "selection_run_state": sel_state, "selection_code_commit": sel_commit,

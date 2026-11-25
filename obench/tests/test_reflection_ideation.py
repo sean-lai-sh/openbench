@@ -617,7 +617,7 @@ class CombinedIdeation(unittest.TestCase):
 
 
 class ConfirmMode(unittest.TestCase):
-    """``confirm=all`` confirms every candidate. ``confirm=top`` confirms one per failure."""
+    """``confirm=all`` confirms every candidate. ``confirm=top`` confirms one per cell."""
 
     def setUp(self):
         p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
@@ -644,6 +644,14 @@ class ConfirmMode(unittest.TestCase):
 
     def _write(self, run, proposals):
         (run / "ideation.jsonl").write_text("".join(json.dumps(row) + "\n" for row in proposals), encoding="utf-8")
+
+    def _draw(self, run, trials, cell=None):
+        cell = cell or f"{trials[0]['model']}/{trials[0]['task']}"
+        (run / "credit_draw.json").write_text(json.dumps({
+            cell: {"status": "IN", "picks": [
+                {"draw_order": i + 1, "slot": trial.get("trial_index", i), "trial_id": trial["trial_id"]}
+                for i, trial in enumerate(trials)]},
+        }), encoding="utf-8")
 
     def _executor(self, by_id, confirm_passes=2, baseline_passes=0):
         class SelectPasses(rn.FixtureExecutor):
@@ -683,7 +691,8 @@ class ConfirmMode(unittest.TestCase):
 
     def test_confirm_top_keeps_only_the_best_candidate_per_failure(self):
         run, trials = self._run()
-        # index 0 passes 1; index 1 and 2 both pass 2. The tie breaks to the lower index.
+        self._draw(run, [trials[0]])
+        # index 0 passes 1; index 1 and 2 both pass 2. Same draw, so the lower index wins.
         low = self._proposal(trials[0], 0, "low")
         tied_high_index = self._proposal(trials[0], 2, "high-index")
         tied_low_index = self._proposal(trials[0], 1, "low-index")
@@ -716,54 +725,82 @@ class ConfirmMode(unittest.TestCase):
                 self.assertIsNone(rows[index][field], field)
         self.assertEqual(len(executor.calls), 3 * 2 + 4)  # selections for three, confirmation for one
 
-    def test_top_is_per_failure_and_fisher_then_index_breaks_ties(self):
-        # Lower Fisher p wins a pass-count tie. A higher pass count wins even with a worse p.
-        # Then the lower alternative index, then the proposal id.
+    def test_top_candidate_ignores_fisher_and_prefers_earlier_draw(self):
+        # More passes beat an earlier pick. A pass-count tie ignores Fisher p:
+        # the earlier draw wins even with a worse p and a higher index.
         rows = [
-            {"candidate": True, "selection_alt_passes": 2, "selection_fisher_p": 0.4,
-             "alternative_index": 0, "proposal_id": "fewer-but-sharper"},
-            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.2,
-             "alternative_index": 5, "proposal_id": "best-passes"},
+            {"candidate": True, "selection_alt_passes": 2, "selection_fisher_p": 0.01,
+             "draw_order": 1, "alternative_index": 0, "proposal_id": "early-fewer"},
             {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.9,
-             "alternative_index": 1, "proposal_id": "same-passes-worse-p"},
+             "draw_order": 2, "alternative_index": 5, "proposal_id": "late-more"},
         ]
-        self.assertEqual(idn.top_candidate(rows)["proposal_id"], "best-passes")
+        self.assertEqual(idn.top_candidate(rows)["proposal_id"], "late-more")
         tied = [
-            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.2,
-             "alternative_index": 3, "proposal_id": "b"},
-            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.2,
-             "alternative_index": 1, "proposal_id": "a"},
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.01,
+             "draw_order": 2, "alternative_index": 0, "proposal_id": "later-sharper"},
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.9,
+             "draw_order": 1, "alternative_index": 9, "proposal_id": "earlier"},
         ]
-        self.assertEqual(idn.top_candidate(tied)["proposal_id"], "a")
-        self.assertIsNone(idn.top_candidate([{"candidate": False, "selection_alt_passes": 9, "alternative_index": 0}]))
+        self.assertEqual(idn.top_candidate(tied)["proposal_id"], "earlier")
+        same_draw = [
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.01,
+             "draw_order": 1, "alternative_index": 3, "proposal_id": "b"},
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.9,
+             "draw_order": 1, "alternative_index": 1, "proposal_id": "a"},
+        ]
+        self.assertEqual(idn.top_candidate(same_draw)["proposal_id"], "a")
+        self.assertIsNone(idn.top_candidate([{"candidate": False, "selection_alt_passes": 9,
+                                              "draw_order": 1, "alternative_index": 0}]))
 
+    def test_one_cell_confirms_one_candidate_across_two_failures(self):
         run, trials = self._run()
-        parent_a, parent_b = trials[0], trials[1]
-        weak = self._proposal(parent_a, 1, "weak")
-        also_weak = self._proposal(parent_a, 0, "also-weak")
-        strong = self._proposal(parent_b, 0, "strong")
-        self._write(run, [weak, also_weak, strong])
-        executor = self._executor({weak["proposal_id"]: 1, also_weak["proposal_id"]: 1, strong["proposal_id"]: 2})
-        idn.evaluate(run, strong, executor, n_trials=2, confirm="top")
-        idn.evaluate(run, weak, executor, n_trials=2, confirm="top")
-        idn.evaluate(run, also_weak, executor, n_trials=2, confirm="top")
-        by_parent = {}
-        for row in self._results(run):
-            by_parent.setdefault(row["parent_trial_id"], []).append(row)
-        a_confirmed = [row for row in by_parent[parent_a["trial_id"]] if row["confirmed"]]
-        b_confirmed = [row for row in by_parent[parent_b["trial_id"]] if row["confirmed"]]
-        self.assertEqual(len(a_confirmed), 1)
-        self.assertEqual(a_confirmed[0]["alternative_index"], 0)  # same passes, lower index
-        self.assertEqual(len(b_confirmed), 1)
-        self.assertEqual(b_confirmed[0]["selection_alt_passes"], 2)
-        skipped = [row for row in by_parent[parent_a["trial_id"]] if row["confirm_skipped"] == "not_top"]
-        self.assertEqual(len(skipped), 1)
-        self.assertEqual(skipped[0]["alternative_index"], 1)
+        self._draw(run, trials)  # trials[0] is the earlier pick
+        early = self._proposal(trials[0], 0, "early")
+        late = self._proposal(trials[1], 0, "late")
+        self._write(run, [early, late])
+        executor = self._executor({early["proposal_id"]: 1, late["proposal_id"]: 2})
+        idn.evaluate(run, early, executor, n_trials=2, confirm="top")
+        self.assertTrue(all(row["confirmation_run_dirs"] is None for row in self._results(run)))
+        idn.evaluate(run, late, executor, n_trials=2, confirm="top")
+        by_parent = {row["parent_trial_id"]: row for row in self._results(run)}
+        self.assertEqual(sum(1 for row in by_parent.values() if row["confirmed"]), 1)
+        self.assertTrue(by_parent[trials[1]["trial_id"]]["confirmed"])
+        self.assertEqual(by_parent[trials[1]["trial_id"]]["selection_alt_passes"], 2)
+        skipped = by_parent[trials[0]["trial_id"]]
+        self.assertTrue(skipped["candidate"])
+        self.assertEqual(skipped["confirm_skipped"], "not_top")
+        self.assertIsNone(skipped["confirmed"])
+        self.assertIsNone(skipped["confirmation_alt_passes"])
+        self.assertEqual(len(executor.calls), 2 * 2 + 4)
+
+    def test_pass_tie_across_failures_goes_to_the_earlier_draw(self):
+        run, trials = self._run()
+        self._draw(run, trials)
+        # Same passes, so the same Fisher p. The later pick has the lower index and still loses.
+        early = self._proposal(trials[0], 4, "early-high-index")
+        late = self._proposal(trials[1], 0, "late-low-index")
+        self._write(run, [early, late])
+        executor = self._executor({early["proposal_id"]: 1, late["proposal_id"]: 1})
+        idn.evaluate(run, late, executor, n_trials=2, confirm="top")
+        idn.evaluate(run, early, executor, n_trials=2, confirm="top")
+        by_parent = {row["parent_trial_id"]: row for row in self._results(run)}
+        winner = by_parent[trials[0]["trial_id"]]
+        loser = by_parent[trials[1]["trial_id"]]
+        self.assertTrue(winner["confirmed"])
+        self.assertEqual(winner["draw_order"], 1)
+        self.assertEqual(winner["selection_alt_passes"], loser["selection_alt_passes"])
+        self.assertEqual(winner["selection_fisher_p"], loser["selection_fisher_p"])
+        self.assertGreater(winner["alternative_index"], loser["alternative_index"])
+        self.assertTrue(loser["candidate"])
+        self.assertEqual(loser["confirm_skipped"], "not_top")
+        self.assertIsNone(loser["confirmation_alt_passes"])
+        self.assertIsNone(loser["confirmation_fisher_p"])
 
     def test_cli_flag_overrides_config(self):
         run, trials = self._run()
         ideator = FakeIdeator([good(i) for i in range(5)])
         idn.propose(run, trials[0], "A", ideator)
+        self._draw(run, [trials[0]])
         fixture = run / "passes.json"
         fixture.write_text(json.dumps({f"extract-elf|{OPUS}": 1}), encoding="utf-8")
         config = run / "ideation-config.json"
@@ -786,6 +823,7 @@ class ConfirmMode(unittest.TestCase):
 
         other, other_trials = self._run()
         idn.propose(other, other_trials[0], "A", FakeIdeator([good(i) for i in range(5)]))
+        self._draw(other, [other_trials[0]])
         other_fixture = other / "passes.json"
         other_fixture.write_text(fixture.read_text(), encoding="utf-8")
         other_config = other / "ideation-config.json"
@@ -806,15 +844,19 @@ class Estimate(unittest.TestCase):
                          (300.0, 600.0, 900.0, "all"))
         half = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, candidate_fraction=0.2)
         self.assertEqual(half["confirmation_usd"], 120.0)
-        top = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, confirm="top")
-        # One confirmation per failure (2 × 30 trials), not five.
-        self.assertEqual((top["selection_usd"], top["confirmation_usd"], top["total_usd"], top["confirm"]),
-                         (300.0, 120.0, 420.0, "top"))
-        spread = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1},
-                                      candidate_fraction=0.5, confirm="top")
-        self.assertEqual(spread["confirmation_usd"], 120.0)  # min(1, 5 × 0.5) = 1
+        # Three failures in one cell: selection is three, confirmation is one.
+        one_cell = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 3},
+                                        confirm="top", cells={OPUS: 1})
+        self.assertEqual((one_cell["selection_usd"], one_cell["confirmation_usd"], one_cell["total_usd"],
+                          one_cell["confirm"]), (900.0, 120.0, 1020.0, "top"))
+        # Eight cells, twenty-four failures: eight confirmations, not twenty-four.
+        eight = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 24},
+                                     confirm="top", cells={OPUS: 8}, candidate_fraction=0.5)
+        self.assertEqual((eight["selection_usd"], eight["confirmation_usd"]), (7200.0, 960.0))
         all_half = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, candidate_fraction=0.5)
         self.assertEqual(all_half["confirmation_usd"], 300.0)
+        with self.assertRaisesRegex(ValueError, "cell"):
+            rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 3}, confirm="top")
         with self.assertRaisesRegex(ValueError, "confirm"):
             rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 1}, confirm="maybe")
 

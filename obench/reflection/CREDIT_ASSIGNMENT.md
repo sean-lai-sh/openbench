@@ -167,8 +167,12 @@ Selection (SEA-110): an alternative is a candidate when its passes are greater
 than this fresh baseline's passes and both sides completed N. A tie is not a
 candidate. Confirmation runs a new N-trial alternative and a new N-trial
 baseline, and the candidate is confirmed only when the alternative has more
-passes than that new baseline. The one-sided Fisher exact p is written on the
-result and is not a gate. `evaluate` does not take an `alpha` argument and
+passes than that new baseline. `confirm=all` (the default) confirms every
+candidate. `confirm=top` confirms one candidate per cell `(model, task)`,
+chosen across that cell's drawn failures: most selection passes, then the
+earlier seeded pick (`draw_order` in `credit_draw.json`), then the lower
+alternative index, then `proposal_id`. Fisher p is not part of that ranking.
+The one-sided Fisher exact p is written on the result and is not a gate. `evaluate` does not take an `alpha` argument and
 always uses `ALPHA` (1.0). The result row records that `alpha` and the fresh
 baseline's `baseline_commit`. `evaluate` refuses to write a row whose alpha is
 not 1.0. `decide(alpha=...)` stays available for a library check. Any p-gated
