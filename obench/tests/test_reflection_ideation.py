@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -204,6 +205,9 @@ class EndToEnd(unittest.TestCase):
                 "completed": summary["completed"], "set_aside": summary.get("set_aside", 0),
                 "provider_blocked": summary.get("provider_blocked", 0),
                 "model_refused": summary.get("model_refused", 0),
+                "baseline_commit": "installed-for-test",
+                "image": {"ref": "recorded:test", "id": "sha256:" + "11" * 32},
+                "image_matches_pin": True,
             }
         (self.run / "credit_baseline.json").write_text(json.dumps(doc) + "\n", encoding="utf-8")
 
@@ -316,6 +320,97 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(executor.calls, [])
         with self.assertRaisesRegex(ValueError, "retired"):
             idn.summary_row_baseline(self.run, proposal)
+
+    def test_result_records_alpha_and_baseline_commit_and_refuses_any_other_alpha(self):
+        proposal = self.proposal()
+        self._set_baseline(proposal, baseline_commit="fresh-commit", passes=0, completed=30, set_aside=0)
+        row = idn.evaluate(self.run, proposal, self.arms(select=1, confirm=0, confirm_baseline=0))
+        self.assertEqual(row["alpha"], 1.0)
+        self.assertEqual(row["baseline_commit"], "fresh-commit")
+        self.assertEqual(idn.ALPHA, 1.0)
+        self.assertNotIn("alpha", inspect.signature(idn.evaluate).parameters)
+        self.assertIn("alpha", inspect.signature(idn.decide).parameters)
+        # decide() still accepts an explicit alpha. evaluate() does not, and will not record one.
+        gated = idn.decide({"passes": 0, "completed": 30}, {"passes": 1, "completed": 30}, alpha=0.05)
+        self.assertEqual((gated["beats_baseline"], gated["success"], gated["alpha"]), (True, False, 0.05))
+
+        saved = (self.run / "ideation_results.jsonl").read_text(encoding="utf-8")
+        other = dict(proposal, proposal_id=proposal["proposal_id"] + "-alpha")
+        with mock_patch.object(idn, "ALPHA", 0.05):
+            with self.assertRaisesRegex(ValueError, "alpha"):
+                idn.evaluate(self.run, other, self.arms(select=1, confirm=1, confirm_baseline=0))
+        self.assertEqual((self.run / "ideation_results.jsonl").read_text(encoding="utf-8"), saved)
+
+    def test_every_arm_reuses_the_recorded_image_and_a_mismatch_is_refused(self):
+        from obench.reflection import credit_baseline as base
+        recorded = {
+            "ref": "openbench-tb2-query-optimize:pinned",
+            "id": "sha256:968acc7b8b359d34b367e04464cfc78d6d32c5ad000182d52dc5793e2cb74945",
+            "matches_pin": False,
+        }
+        rows = rn.read_rows(self.run / "trials.jsonl")
+        for row in rows:
+            row.update(image_ref=recorded["ref"], image_id=recorded["id"], image_matches_pin=False)
+        (self.run / "trials.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+        class Echo(rn.FixtureExecutor):
+            """Reports the image the arm was given, so a re-pin shows up on the trial row."""
+
+            def __init__(self, bad_id=None):
+                super().__init__({})
+                self.bad_id = bad_id
+                self.smoke_compaction = True
+                self.seen_smoke = []
+
+            def run_trial(self, spec, run_dir):
+                self.seen_smoke.append(self.smoke_compaction)
+                rid = spec.run_id
+                unpatched = "--baseline--" in rid or "--confirm-baseline--" in rid
+                self.passes = {(spec.task, spec.model): 0 if unpatched else 99}
+                result = super().run_trial(spec, run_dir)
+                image = dict(spec.recorded_image)
+                if self.bad_id:
+                    image["id"] = self.bad_id
+                result.image = image
+                return result
+
+        echo = Echo()
+        manifests = base.run_baselines(self.run, [f"{OPUS}/extract-elf"], echo, n_trials=2)
+        fresh = manifests[f"{OPUS}/extract-elf"]
+        self.assertIs(fresh["image_matches_pin"], False)
+        self.assertIs(fresh["image_matches_pin_false"], True)
+        self.assertEqual(fresh["image"]["id"], recorded["id"])
+
+        proposal = self.proposal()
+        row = idn.evaluate(self.run, proposal, echo, n_trials=2)
+        self.assertTrue(row["candidate"] and row["success"])
+        self.assertEqual(row["alpha"], 1.0)
+        self.assertTrue(echo.seen_smoke)
+        self.assertTrue(all(flag is False for flag in echo.seen_smoke))
+
+        def image_ids(path):
+            return {item.get("image_id") for item in rn.read_rows(path)}
+
+        arms = {
+            "fresh baseline": self.run / fresh["run_dir"] / "trials.jsonl",
+            "select": self.run / row["selection_run_dir"] / "trials.jsonl",
+            "confirm": self.run / row["confirmation_run_dirs"][0] / "trials.jsonl",
+            "confirm-baseline": self.run / row["confirmation_run_dirs"][1] / "trials.jsonl",
+        }
+        for name, path in arms.items():
+            self.assertEqual(image_ids(path), {recorded["id"]}, name)
+            plan = json.loads((path.parent / "plan.json").read_text(encoding="utf-8"))
+            self.assertFalse(plan["config"]["smoke_compaction"])
+            self.assertEqual(plan["config"]["recorded_image"]["id"], recorded["id"])
+            self.assertIs(plan["config"]["recorded_image"]["matches_pin"], False)
+        self.assertTrue(all(spec.recorded_image["id"] == recorded["id"] and spec.recorded_image["matches_pin"] is False
+                            for spec in echo.calls))
+
+        saved = (self.run / "ideation_results.jsonl").read_text(encoding="utf-8")
+        mismatch = dict(proposal, proposal_id=proposal["proposal_id"] + "-mismatch")
+        with self.assertRaisesRegex(base.BaselineError, "refusing to re-pin"):
+            idn.evaluate(self.run, mismatch, Echo(bad_id="sha256:" + "ff" * 32), n_trials=2)
+        self.assertEqual((self.run / "ideation_results.jsonl").read_text(encoding="utf-8"), saved)
 
     def setUp_zero_baseline(self):
         import shutil

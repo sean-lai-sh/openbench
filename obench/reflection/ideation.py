@@ -28,7 +28,12 @@ João Sedoc via Sean, SEA-110, 2026-11-13):
   baseline again.
 
 Both stages record the one-sided Fisher exact p as a reported statistic only.
-``ALPHA`` stays 1.0 and never gates, including when p is above 0.10.
+``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0). It
+refuses to write a row whose alpha is not 1.0. ``decide(alpha=...)`` remains
+for a library check. A p-gated view is a report column computed from the
+recorded Fisher p and does not change ``candidate``, ``confirmed``, or
+``success``. Each arm reuses the fresh baseline's recorded image, with smoke
+compaction off.
 ``runner.ideation_estimate`` prices selection plus confirmation.
 
 Tables (in the run directory, separate from the trial and credit tables):
@@ -47,7 +52,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from obench.reflection import runner as rn
-from obench.reflection.credit_baseline import fresh_baseline_row
+from obench.reflection.credit_baseline import _check_fresh_image, fresh_baseline_row
 from obench.reflection.credit_locator import MAX_SET_ASIDE, check_max_set_aside, read_trace
 from obench.reflection.patches import OPS, PATCH_SCHEMA, patch_id, validate_patch
 
@@ -198,30 +203,61 @@ def decide(baseline: dict, alternative: dict, n: int = rn.N_TRIALS, alpha: float
                        "beats baseline but not significant at alpha" if beats else "does not beat baseline")}
 
 
+def _recorded_image(baseline: dict) -> dict:
+    """The fresh baseline's image, passed through so an arm does not re-pin."""
+    image = baseline.get("image") if isinstance(baseline.get("image"), dict) else {}
+    ref = image.get("ref")
+    if not isinstance(ref, str) or not ref:
+        raise ValueError("fresh baseline has no recorded image; refusing to re-pin")
+    return {"ref": ref, "id": image.get("id"), "matches_pin": baseline.get("image_matches_pin")}
+
+
 def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: bool, executor: rn.Executor,
-         n_trials: int, spend_cap_usd: float | None) -> tuple[dict, str, str]:
+         n_trials: int, spend_cap_usd: float | None, recorded_image: dict) -> tuple[dict, str, str]:
     """One N-trial arm of one proposal: ``(summary row or {}, run state, relative dir)``.
+
     Each arm has its own run_id, so its trial ids are new and never reuse
-    another arm's trials."""
+    another arm's trials. The image is the fresh baseline's recorded image.
+    Smoke compaction is off. A trial that reports a different image is refused.
+    """
+    if not isinstance(recorded_image, dict) or not recorded_image.get("ref"):
+        raise ValueError("arm has no recorded image; refusing to re-pin")
     pid = proposal["proposal_id"]
-    cfg = rn.RunConfig.from_dict({
-        "run_id": f"{base_cfg['run_id']}--{label}--{pid}", "suite": base_cfg["suite"], "models": [proposal["model"]],
-        "n_trials": n_trials, "tasks": [proposal["task"]], "max_rounds": 1, "fixed_tasks": True,
-        "patch_id": pid if patched else None, "patch": proposal["patch"] if patched else None,
-        "spend_cap_usd": spend_cap_usd})
     rel = f"ideation/{pid}/{label}"
-    status = rn.Runner(cfg, run_dir / rel, executor).run()
-    rows = [s for s in rn.read_rows(run_dir / rel / "summary.jsonl")
+    child = run_dir / rel
+    previous = getattr(executor, "smoke_compaction", None)
+    if previous:
+        executor.smoke_compaction = False
+    try:
+        cfg = rn.RunConfig.from_dict({
+            "run_id": f"{base_cfg['run_id']}--{label}--{pid}", "suite": base_cfg["suite"], "models": [proposal["model"]],
+            "n_trials": n_trials, "tasks": [proposal["task"]], "max_rounds": 1, "fixed_tasks": True,
+            "patch_id": pid if patched else None, "patch": proposal["patch"] if patched else None,
+            "spend_cap_usd": spend_cap_usd, "smoke_compaction": False, "recorded_image": recorded_image})
+        status = rn.Runner(cfg, child, executor).run()
+        _check_fresh_image(f"{proposal['model']}/{proposal['task']}", child, recorded_image)
+    finally:
+        if previous:
+            executor.smoke_compaction = previous
+    rows = [s for s in rn.read_rows(child / "summary.jsonl")
             if s["patch_id"] == (pid if patched else None) and s["task"] == proposal["task"]]
     return (rows[0] if rows else {}), status["state"], rel
 
 
-def _stage(prefix: str, baseline: dict, alt: dict, n: int) -> dict:
-    d = decide(baseline, alt, n=n)
-    return {f"{prefix}_baseline_passes": baseline.get("passes"), f"{prefix}_baseline_completed": baseline.get("completed"),
-            f"{prefix}_alt_passes": alt.get("passes"), f"{prefix}_alt_completed": alt.get("completed", 0),
-            f"{prefix}_beats_baseline": d["beats_baseline"], f"{prefix}_complete": d["complete"],
-            f"{prefix}_fisher_p": d["fisher_p"]}
+def _stage(prefix: str, baseline: dict, alt: dict, n: int) -> tuple[dict, float | None]:
+    """Stage columns, and the alpha ``decide`` actually used."""
+    d = decide(baseline, alt, n=n, alpha=ALPHA)
+    return ({f"{prefix}_baseline_passes": baseline.get("passes"), f"{prefix}_baseline_completed": baseline.get("completed"),
+             f"{prefix}_alt_passes": alt.get("passes"), f"{prefix}_alt_completed": alt.get("completed", 0),
+             f"{prefix}_beats_baseline": d["beats_baseline"], f"{prefix}_complete": d["complete"],
+             f"{prefix}_fisher_p": d["fisher_p"]}, d["alpha"])
+
+
+def _require_alpha(alphas: list) -> float:
+    """``evaluate`` writes a row only when every stage used 1.0."""
+    if any(alpha != 1.0 for alpha in alphas):
+        raise ValueError(f"refusing to write an ideation result with alpha {alphas}; evaluate always uses 1.0")
+    return 1.0
 
 
 def _set_aside_count(summary: dict) -> int:
@@ -247,10 +283,12 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
        new baseline (bare beat, full N on both sides).
 
     The one-sided Fisher p for each stage is recorded as a reported statistic
-    only. ``ALPHA`` stays 1.0 and never gates. ``spend_cap_usd`` applies to each
-    arm. The cell is evaluated when the fresh baseline's set-aside count is at
-    most ``max_set_aside`` (default 3, about 10% of 30), the same cap as credit
-    assignment."""
+    only. ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0).
+    A row whose alpha is not 1.0 is not written. ``spend_cap_usd`` applies to
+    each arm. Every arm reuses the fresh baseline's recorded image, with smoke
+    compaction off. The cell is evaluated when the fresh baseline's set-aside
+    count is at most ``max_set_aside`` (default 3, about 10% of 30), the same
+    cap as credit assignment."""
     if proposal["status"] != "accepted":
         raise ValueError("only accepted proposals are evaluated")
     run_dir = Path(run_dir)
@@ -264,26 +302,33 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
     if aside > max_set_aside:
         raise ValueError(f"{proposal['task']} / {proposal['model']} has {aside} set-aside trials "
                          f"(max_set_aside {max_set_aside}); not evaluated")
-    sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd)
-    selection = _stage("selection", baseline, sel_alt, n_trials)
+    recorded = _recorded_image(baseline)
+    sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd,
+                                       recorded)
+    selection, sel_alpha = _stage("selection", baseline, sel_alt, n_trials)
     candidate = selection["selection_complete"] and selection["selection_beats_baseline"]
+    alphas = [sel_alpha]
     row = {"schema": RESULT_SCHEMA, "proposal_id": proposal["proposal_id"], "parent_trial_id": proposal["parent_trial_id"],
            "task": proposal["task"], "model": proposal["model"], "credit_method": proposal["credit_method"],
-           "n_trials": n_trials, **selection, "candidate": candidate, "selection_spend_usd": sel_alt.get("spend_usd", 0.0),
+           "n_trials": n_trials, "baseline_commit": baseline.get("baseline_commit"), **selection,
+           "candidate": candidate, "selection_spend_usd": sel_alt.get("spend_usd", 0.0),
            "selection_run_dir": sel_dir, "selection_run_state": sel_state,
            "confirmation_baseline_passes": None, "confirmation_baseline_completed": None,
            "confirmation_alt_passes": None, "confirmation_alt_completed": None, "confirmation_beats_baseline": None,
            "confirmation_complete": None, "confirmation_fisher_p": None, "confirmation_spend_usd": 0.0,
            "confirmation_run_dirs": None, "confirmation_run_states": None, "confirmed": None, "success": False}
     if candidate:
-        conf_alt, alt_state, alt_dir = _arm(run_dir, base_cfg, proposal, "confirm", True, executor, n_trials, spend_cap_usd)
+        conf_alt, alt_state, alt_dir = _arm(run_dir, base_cfg, proposal, "confirm", True, executor, n_trials,
+                                            spend_cap_usd, recorded)
         conf_base, base_state, base_dir = _arm(run_dir, base_cfg, proposal, "confirm-baseline", False, executor,
-                                               n_trials, spend_cap_usd)
-        confirmation = _stage("confirmation", conf_base, conf_alt, n_trials)
+                                               n_trials, spend_cap_usd, recorded)
+        confirmation, conf_alpha = _stage("confirmation", conf_base, conf_alt, n_trials)
+        alphas.append(conf_alpha)
         confirmed = confirmation["confirmation_complete"] and confirmation["confirmation_beats_baseline"]
         row.update(confirmation, confirmed=confirmed, success=confirmed,
                    confirmation_spend_usd=round(conf_alt.get("spend_usd", 0.0) + conf_base.get("spend_usd", 0.0), 6),
                    confirmation_run_dirs=[alt_dir, base_dir], confirmation_run_states=[alt_state, base_state])
+    row["alpha"] = _require_alpha(alphas)
     with (run_dir / "ideation_results.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, sort_keys=True) + "\n")
     return row

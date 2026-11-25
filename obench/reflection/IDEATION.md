@@ -70,7 +70,11 @@ called.
    alternative beats the new baseline: full N on both sides, more passes.
 
 Every arm runs through the SEA-107 runner in `fixed_tasks` mode: exactly the
-parent's task (even a pool task), never a suite swap.
+parent's task (even a pool task), never a suite swap. Each arm, including the
+confirmation baseline, reuses the fresh baseline's recorded image
+(`recorded_image`: ref, id, and `image_matches_pin`) and runs with smoke
+compaction off. A trial that reports a different image is refused. The image
+is not re-pinned.
 
 **Columns, one row per evaluated proposal:**
 
@@ -78,12 +82,18 @@ parent's task (even a pool task), never a suite swap.
 |---|---|
 | Selection | `selection_baseline_passes`, `selection_baseline_completed`, `selection_alt_passes`, `selection_alt_completed`, `selection_beats_baseline`, `selection_complete`, `selection_fisher_p`, `candidate`, `selection_spend_usd`, `selection_run_dir`, `selection_run_state` |
 | Confirmation | `confirmation_baseline_passes`, `confirmation_baseline_completed`, `confirmation_alt_passes`, `confirmation_alt_completed`, `confirmation_beats_baseline`, `confirmation_complete`, `confirmation_fisher_p`, `confirmed`, `confirmation_spend_usd`, `confirmation_run_dirs`, `confirmation_run_states`. All null for non-candidates. |
-| Outcome | `success` (= `confirmed`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials` |
+| Outcome | `success` (= `confirmed`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials`, `alpha`, `baseline_commit` |
+
+`alpha` is the value `evaluate` used. It is always `1.0`. `evaluate` has no
+`alpha` parameter and refuses to write a row whose alpha is not 1.0.
+`baseline_commit` is the fresh baseline's checkout.
 
 `*_fisher_p` is the one-sided Fisher exact p for that stage, **reported only,
-never a gate** (`ALPHA = 1.0`). A higher pass count is a candidate even when
-that p is above 0.10. Passing `alpha=0.05` to `decide` re-enables a gate for
-sensitivity analysis; `evaluate` does not.
+never a gate**. A higher pass count is a candidate even when that p is above
+0.10. `decide(alpha=...)` can still apply a gate for a library check.
+`evaluate` does not. A p-gated reading belongs only in a report, as a separate
+sensitivity column computed from the recorded Fisher p. It does not change
+`candidate`, `confirmed`, or `success`.
 
 ## Cost
 

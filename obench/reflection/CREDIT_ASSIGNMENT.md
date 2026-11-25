@@ -164,16 +164,28 @@ than this fresh baseline's passes and both sides completed N. A tie is not a
 candidate. Confirmation runs a new N-trial alternative and a new N-trial
 baseline, and the candidate is confirmed only when the alternative has more
 passes than that new baseline. The one-sided Fisher exact p is written on the
-result and is not a gate. `ALPHA` stays 1.0, so a higher pass count still
-qualifies when p is above 0.10.
+result and is not a gate. `evaluate` does not take an `alpha` argument and
+always uses `ALPHA` (1.0). The result row records that `alpha` and the fresh
+baseline's `baseline_commit`. `evaluate` refuses to write a row whose alpha is
+not 1.0. `decide(alpha=...)` stays available for a library check. Any p-gated
+view of a result belongs only in a report, as a separate sensitivity column
+computed from the recorded Fisher p. That column never changes `candidate`,
+`confirmed`, or `success`.
+
+Every arm (selection, confirmation, and the confirmation baseline) is run on
+the fresh baseline's recorded image, with smoke compaction off. A trial that
+reports a different ref or id is refused. The image is not re-pinned.
 
 ```text
 python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --fixture <passes.json> [--n-trials 30]
 ```
 
-The command's executor is the offline fixture. A live run calls `run_baselines`
-with its own executor; the function still forces the knob off and passes the
-recorded image.
+That command's only executor is the offline `--fixture` pass table. It does
+not start a provider. The paid baseline calls `run_baselines` with a
+`CellExecutor`, the same executor `python3 -m obench.reflection.runner --cell`
+builds (one container of the recorded image per trial, pinned OpenCode,
+recording proxy). That run is on `thesis-h1-cpu`, the same VM as the selection
+and confirmation arms. This module does not launch that path.
 
 ## Shared first-failure locator (`credit_locator.py`, `locator-v1`)
 
