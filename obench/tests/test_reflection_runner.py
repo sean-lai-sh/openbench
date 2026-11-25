@@ -295,6 +295,43 @@ class Tables(Base):
                          ("side_thinking_signature", None, "vertex_thinking_signature", 1))
         self.assertEqual((s["verdict"], s["side_thinking_signature"], s["signature_400s"], s["errors"],
                           s["agent_exit_pending_tool"]), ("incomplete", 1, 1, 1, 0))
+        self.assertEqual(s["post_compaction_signature"], 0)
+        self.assertEqual(row["stripped_side_thinking_blocks"], 0)
+        self.assertIsNone(row["post_compaction"])
+        self.assertFalse(row["smoke_compaction"]["enabled"])
+
+    def test_post_compaction_signature_counts_as_infra_and_not_a_task_fail(self):
+        class Exits(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.trial_index == 0:
+                    return rn.TrialResult(status="post_compaction_signature", passed=False,
+                                          env_cause="vertex_thinking_signature", signature_400s=1,
+                                          side_kinds={"compaction": 1},
+                                          post_compaction={"prior_side_kind": "compaction"},
+                                          stripped_side_thinking_blocks=2)
+                return super().run_trial(spec, run_dir)
+        self.run_with(Exits({("extract-elf", OPUS): 3}), models=[OPUS], tasks=["extract-elf"], max_rounds=1)
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        row = next(r for r in rn.read_rows(self.dir / "trials.jsonl") if r["trial_index"] == 0)
+        self.assertEqual((row["status"], row["passed"], row["env_cause"], row["stripped_side_thinking_blocks"]),
+                         ("post_compaction_signature", None, "vertex_thinking_signature", 2))
+        self.assertEqual((s["verdict"], s["post_compaction_signature"], s["stripped_side_thinking_blocks"],
+                          s["errors"], s["upstream_4xx"], s["side_thinking_signature"],
+                          s["agent_exit_pending_tool"]), ("incomplete", 1, 2, 1, 0, 0, 0))
+
+    def test_smoke_compaction_is_recorded_and_not_resumed_into_a_normal_run(self):
+        self.run_with(rn.FixtureExecutor({("extract-elf", OPUS): 1}), models=[OPUS], tasks=["extract-elf"],
+                      n_trials=1, max_rounds=1, smoke_compaction=True)
+        plan = json.loads((self.dir / "plan.json").read_text())
+        row = rn.read_rows(self.dir / "trials.jsonl")[0]
+        self.assertTrue(plan["config"]["smoke_compaction"])
+        self.assertTrue(plan["smoke_compaction"]["enabled"])
+        self.assertEqual(plan["smoke_compaction"]["context_limit"], vm.SMOKE_COMPACTION_CONTEXT)
+        self.assertEqual(row["smoke_compaction"]["usable_tokens"], 1)
+        with self.assertRaisesRegex(rn.RunnerError, "smoke_compaction"):
+            rn.Runner(config(models=[OPUS], tasks=["extract-elf"], n_trials=1, max_rounds=1,
+                             smoke_compaction=False),
+                      self.dir, rn.FixtureExecutor({})).run()
 
     def test_isolation_probe_gates_the_run_and_is_recorded(self):
         class Probed(rn.FixtureExecutor):

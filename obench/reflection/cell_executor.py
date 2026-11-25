@@ -52,7 +52,12 @@ still runs. OpenCode exiting 0 with a tool call pending is
 fail. A final side request rejected for a thinking-block signature bound to
 another conversation is ``side_thinking_signature`` instead
 (``side_signature.json``, ``env_cause=vertex_thinking_signature``): the last
-tool had already finished, and the 400 is not a pending tool.
+tool had already finished, and the 400 is not a pending tool. A main turn
+rejected for that signature after a side call in the same trial is
+``post_compaction_signature`` (``post_compaction.json``, same env_cause):
+the side response's thinking block was replayed. That outranks
+``upstream_4xx`` and ``agent_exit_pending_tool``. If the last call is the
+side signature 400, ``side_thinking_signature`` still wins.
 
 Timeouts (Researcher ruling 2026-11-17): the cap is the task's agent timeout
 (``task.toml`` ``agent_timeout_s``, else 1800 s, the same for both models). A
@@ -132,8 +137,9 @@ from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec, code_commit
 from obench.reflection.wire_proxy import (WireProxy, classify_4xx, last_vertex_request, model_refused,
-                                          provider_blocked, route_repair_counts, route_truncated,
-                                          side_kind_counts, signature_400_count, terminating_side_signature,
+                                          post_compaction_detail, provider_blocked, route_repair_counts,
+                                          route_truncated, side_kind_counts, signature_400_count,
+                                          stripped_side_thinking_total, terminating_side_signature,
                                           thinking_binding_seen)
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
@@ -306,6 +312,7 @@ class CellExecutor:
     upstream_host: str | None = None     # tests only: fake Vertex
     checker_runner: Callable = subprocess.run
     check_pin: bool = True          # reference validation builds an executor with no OpenCode binary
+    smoke_compaction: bool = False  # opt-in smoke profile: lower OpenCode limit.context (default off)
 
     def __post_init__(self):
         self.code = code_commit()  # recorded by the executor itself on every trial (cell.json)
@@ -502,10 +509,9 @@ class CellExecutor:
             return Path(OPENCODE_IN_CONTAINER) / self.pin["sha"] / self.opencode.name
         return self.opencode
 
-    @staticmethod
-    def opencode_config(model: vm.VertexModel, proxy_base: str) -> str:
-        return json.dumps(dict(vm.opencode_config(model, proxy_base), permission=dict(AGENT_PERMISSIONS)),
-                          sort_keys=True)
+    def opencode_config(self, model: vm.VertexModel, proxy_base: str) -> str:
+        body = vm.opencode_config(model, proxy_base, smoke_compaction=self.smoke_compaction)
+        return json.dumps(dict(body, permission=dict(AGENT_PERMISSIONS)), sort_keys=True)
 
     def image_record(self, task: dict) -> dict:
         """What actually runs: the ref, its local image id, the pin, and whether the pin was honoured
@@ -597,6 +603,7 @@ class CellExecutor:
             "workers": self.run_context.get("workers"), "agent_seconds": agent_seconds,
             "workspace_seed": seed, "opencode_mount": "standalone" if self.standalone else "source_tree",
             "agent_permissions": AGENT_PERMISSIONS, "isolation": isolation,
+            "smoke_compaction": vm.smoke_compaction_profile(self.smoke_compaction),
             "host_load": {"before": load_before, "after": load_after, "cpus": os.cpu_count()}}, sort_keys=True) + "\n")
         return self.record(spec, run_dir, self.finish_trial(spec, run_dir, task))
 
@@ -672,6 +679,7 @@ class CellExecutor:
                       retried_4xx=fours["retried"], image=image, wire=rel(wire_path),
                       cost_unpriced_calls=unpriced, last_vertex_request=last_vertex_request(wires, live),
                       signature_400s=signature_400_count(wires), side_kinds=side_kind_counts(wires),
+                      stripped_side_thinking_blocks=stripped_side_thinking_total(wires),
                       thinking_block_binding=thinking_binding_seen(wires))
         if blocked is not None:  # the provider refused the prompt: neither pass nor fail
             (trial_dir / "provider_blocked.json").write_text(json.dumps(blocked, sort_keys=True) + "\n")
@@ -681,14 +689,36 @@ class CellExecutor:
         # Researcher ruling 2026-11-17: each trial classified on its own - blocked (last call) first, otherwise any
         # refusal / SAFETY stop makes it model_refused, before the infrastructure outcomes. The checker still runs.
         refused = model_refused(wires)
-        if fours["breaking"] and refused is None:  # a 4xx ended or broke the trial: infrastructure, never a task fail
-            (trial_dir / "upstream_4xx.json").write_text(json.dumps(fours, sort_keys=True) + "\n")
-            return TrialResult(status="upstream_4xx", passed=None, **common,
-                               error="upstream 4xx: " + ", ".join(f"call {c['call_index']} -> {c['status']}"
-                                                                  for c in fours["breaking"]))
+        # Signature-400 precedence (first match wins):
+        # 1. side_thinking_signature — last call is a side signature 400 and the last step
+        #    still has a tool call. Checked after the trace. A breaking main 4xx does not
+        #    steal it; that 4xx is deferred until this check misses.
+        # 2. post_compaction_signature — a breaking main-turn signature 400 follows a side
+        #    call, and the last call is not a side signature 400. Outranks upstream_4xx
+        #    and agent_exit_pending_tool.
+        # 3. upstream_4xx — every other breaking main 4xx, including a main-turn signature
+        #    400 with no earlier side call.
+        # 4. agent_exit_pending_tool — exit 0 with a tool call still pending.
+        post = post_compaction_detail(wires)
+        deferred_breaking = False
+        if fours["breaking"] and refused is None:
+            if post is not None:
+                (trial_dir / "post_compaction.json").write_text(json.dumps(post, sort_keys=True) + "\n")
+                (trial_dir / "upstream_4xx.json").unlink(missing_ok=True)
+                kind = f" after {post.get('prior_side_kind')}" if post.get("prior_side_kind") else ""
+                return TrialResult(status="post_compaction_signature", passed=None,
+                                   env_cause="vertex_thinking_signature", post_compaction=post, **common,
+                                   error="main turn rejected after a side request: thinking block signature "
+                                         "is bound to a different conversation" + kind)
+            if terminating_side_signature(wires) is None:
+                (trial_dir / "upstream_4xx.json").write_text(json.dumps(fours, sort_keys=True) + "\n")
+                return TrialResult(status="upstream_4xx", passed=None, **common,
+                                   error="upstream 4xx: " + ", ".join(f"call {c['call_index']} -> {c['status']}"
+                                                                      for c in fours["breaking"]))
+            deferred_breaking = True
         (trial_dir / "upstream_4xx.json").unlink(missing_ok=True)
         timeout_detail = None
-        if timed_out and refused is None:
+        if timed_out and refused is None and not deferred_breaking:
             timeout_detail = self.timeout_detail(wires, cell.get("agent_started_at"),
                                                  cell.get("agent_timeout") or task["agent_timeout"])
             if not timeout_detail["still_working"]:  # no model call finished in the 5 min before the cap: infra
@@ -697,7 +727,10 @@ class CellExecutor:
                                                    "with no model call in the last 5 minutes")
         # Still working at the cap: a task FAIL (Researcher ruling 2026-11-17). The checker and trace still run
         # (the checker exit is recorded), but the verdict is fail.
-        working_timeout = timed_out and refused is None
+        # A deferred breaking 4xx already outranks a timeout (it used to return
+        # upstream_4xx before this check). Keep that order unless the trace says
+        # the trial actually died on the side signature 400.
+        working_timeout = timed_out and refused is None and not deferred_breaking
         checker_exit, checker_mode, checker_out = self._check(task, workspace) if run_checker else (None, None, "")
         if refused is None and checker_mode == "container_not_launched" and checker_exit in (125, 126, 127):
             # Only a launch failure of the checker container itself (docker error 125, bash not invocable 126 / not
@@ -715,6 +748,11 @@ class CellExecutor:
         except tr.TraceError as exc:
             if refused is not None:
                 return self._refused(trial_dir, refused, [], dict(common, checker_exit=checker_exit))
+            if deferred_breaking:
+                (trial_dir / "upstream_4xx.json").write_text(json.dumps(fours, sort_keys=True) + "\n")
+                return TrialResult(status="upstream_4xx", passed=None, checker_exit=checker_exit, **common,
+                                   error="upstream 4xx: " + ", ".join(f"call {c['call_index']} -> {c['status']}"
+                                                                      for c in fours["breaking"]))
             # A trace/accounting problem (e.g. step_call_mismatch) is a logged warning only, never a status that
             # drops the trial: the checker's verdict stands (no trace is written for this trial).
             warning = f"{exc.code}: {exc}" if getattr(exc, "code", None) else str(exc)
@@ -749,6 +787,11 @@ class CellExecutor:
                                side_signature=info, **done,
                                error="side request rejected: thinking block signature is bound to a different conversation"
                                      + kind)
+        if deferred_breaking:  # side signature did not take the trial; the breaking main 4xx still did
+            (trial_dir / "upstream_4xx.json").write_text(json.dumps(fours, sort_keys=True) + "\n")
+            return TrialResult(status="upstream_4xx", passed=None, **done,
+                               error="upstream 4xx: " + ", ".join(f"call {c['call_index']} -> {c['status']}"
+                                                                  for c in fours["breaking"]))
         if last_finish in ("tool-calls", "tool_calls", "tool_use") and code in (0, None):
             # OpenCode exited 0 with a tool call pending: infrastructure, never a task fail. Usually `opencode run`
             # auto-rejecting a permission request; also an upstream stream reset mid-response.

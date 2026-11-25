@@ -38,7 +38,7 @@ import hashlib
 import json
 import os
 import socket
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -74,8 +74,13 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # with HTTP 400 "Invalid signature in thinking block" / bound to a different conversation, and the last step
 # still shows a tool call. The tool had already finished; this is not agent_exit_pending_tool. Infrastructure,
 # env_cause vertex_thinking_signature. Not a task fail. The pass/fail formula is unchanged.
+# post_compaction_signature: a main turn after a side call in the same trial was rejected with that same 400,
+# and no later main call succeeded. The side response's thinking block was replayed into the main conversation.
+# Infrastructure, same env_cause. It outranks upstream_4xx and agent_exit_pending_tool. A trial that dies on
+# the side request itself stays side_thinking_signature (that check wins when both could match).
 STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "provider_blocked",
-            "model_refused", "agent_exit_pending_tool", "side_thinking_signature", "checker_error")
+            "model_refused", "agent_exit_pending_tool", "side_thinking_signature",
+            "post_compaction_signature", "checker_error")
 SET_ASIDE = ("provider_blocked", "model_refused")  # neither pass/fail nor infra; not in errors
 # Settled = passed or failed (``completed``, including a cap hit while the agent was still working),
 # refused, or blocked. Everything else is an infrastructure error. This is the only infra set:
@@ -130,10 +135,12 @@ class TrialResult:
     provider_blocked: dict | None = None      # raw {blockReason, blockReasonMessage, ...} when status is provider_blocked
     model_refused: dict | None = None         # {stop_reason, stop_details, call_index, step, refusals, ...}
     agent_exit: dict | None = None            # agent_exit_pending_tool: {last_finish, pending_tools, permission_rejected, ...}
-    env_cause: str | None = None              # vertex_thinking_signature when status is side_thinking_signature
+    env_cause: str | None = None              # vertex_thinking_signature for side_thinking_signature and post_compaction_signature
     signature_400s: int = 0                   # side or main calls whose body was the thinking-signature 400
     side_kinds: dict | None = None            # {title, summary, compaction, unknown: counts} of side requests
     side_signature: dict | None = None        # the terminating side signature-400, when that is the status
+    post_compaction: dict | None = None       # the breaking main-turn signature 400, when that is the status
+    stripped_side_thinking_blocks: int = 0    # thinking blocks removed from main turns because a side response signed them
     thinking_block_binding: str | None = None  # drop_block if a side request applied it, else off, else None
     trace_warning: str | None = None          # the trace could not be built (e.g. step_call_mismatch); verdict kept
     timed_out: bool = False                   # the agent hit its cap (task.toml agent_timeout_s, else 1800 s)
@@ -168,6 +175,7 @@ class RunConfig:
     fixed_tasks: bool = False            # run exactly ``tasks`` (suite or pool), never swap: ideation arms
     suite_label: str | None = None       # SUITE_LABELS key; on every row; a run directory never mixes labels
     workers: int = 1                     # trials in parallel; fixed for the whole run (resume refuses another value)
+    smoke_compaction: bool = False       # opt-in: lower OpenCode limit.context so multi-step trials compact
 
     @classmethod
     def load(cls, path: Path) -> "RunConfig":
@@ -205,6 +213,8 @@ class RunConfig:
             raise RunnerError("patch and patch_id go together")
         if isinstance(self.workers, bool) or not isinstance(self.workers, int) or self.workers < 1:
             raise RunnerError(f"workers must be a positive int, got {self.workers!r}")
+        if not isinstance(self.smoke_compaction, bool):
+            raise RunnerError(f"smoke_compaction must be a bool, got {self.smoke_compaction!r}")
         if self.suite_label is not None:
             rule = SUITE_LABELS.get(self.suite_label)
             if rule is None:
@@ -509,6 +519,7 @@ class Runner:
         _write_json(self.run_dir / "plan.json", {"config": asdict(self.config), "cutoff": cutoff, "code": code,
                                                  "host": host, "isolation": isolation,
                                                  "workers": self.workers, "host_cpus": os.cpu_count(),
+                                                 "smoke_compaction": vm.smoke_compaction_profile(self.config.smoke_compaction),
                                                  "preflight": self.preflight(), "written_at": _now()})
 
     def run(self, *, acknowledge_alerts: tuple = (), retry_infra: bool = False,
@@ -528,8 +539,12 @@ class Runner:
         previous = self._read_plan()
         if previous is not None:  # resuming: never pool a different population into this directory
             old = previous.get("config") or {}
-            for key in ("suite", "suite_label", "models", "patch_id", "n_trials", "workers"):
+            for key in ("suite", "suite_label", "models", "patch_id", "n_trials", "workers", "smoke_compaction"):
                 was, now = old.get(key), asdict(self.config).get(key)
+                if key == "smoke_compaction":
+                    # Plans written before the field are normal runs, not smoke-compaction runs.
+                    was = bool(was) if was is not None else False
+                    now = bool(now)
                 if (list(was) if isinstance(was, (list, tuple)) else was) != (list(now) if isinstance(now, (list, tuple)) else now):
                     raise RunnerError(f"{self.run_dir} was started with {key}={was!r}, not {now!r}: use a new run directory")
             self._check_resume_identity(previous, allow_plan_mismatch)
@@ -635,6 +650,9 @@ class Runner:
                "model_refused": result.model_refused, "agent_exit": result.agent_exit,
                "env_cause": result.env_cause, "signature_400s": result.signature_400s,
                "side_kinds": result.side_kinds or {}, "side_signature": result.side_signature,
+               "post_compaction": result.post_compaction,
+               "stripped_side_thinking_blocks": result.stripped_side_thinking_blocks,
+               "smoke_compaction": vm.smoke_compaction_profile(self.config.smoke_compaction),
                "thinking_block_binding": result.thinking_block_binding,
                "trace_warning": result.trace_warning, "cost_unpriced_calls": result.cost_unpriced_calls,
                "timed_out": result.timed_out, "timeout_detail": result.timeout_detail,
@@ -693,7 +711,9 @@ class Runner:
                 "verdict_all_fail": verdict_all_fail,
                 "agent_exit_pending_tool": sum(1 for t in trials if t["status"] == "agent_exit_pending_tool"),
                 "side_thinking_signature": sum(1 for t in trials if t["status"] == "side_thinking_signature"),
+                "post_compaction_signature": sum(1 for t in trials if t["status"] == "post_compaction_signature"),
                 "signature_400s": sum(int(t.get("signature_400s") or 0) for t in trials),
+                "stripped_side_thinking_blocks": sum(int(t.get("stripped_side_thinking_blocks") or 0) for t in trials),
                 "checker_error": sum(1 for t in trials if t["status"] == "checker_error"),
                 "workers": sorted({t.get("workers") for t in trials if t.get("workers") is not None}),
                 "retried_4xx": _sum_counts(t.get("retried_4xx") for t in trials),
@@ -903,6 +923,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="--cell: when a task.toml digest ref isn't on this host, run its docker_image_tag (recorded)")
     parser.add_argument("--workers", type=int, default=None,
                         help="trials run in parallel (one container each); omitted on resume keeps plan.json's workers")
+    parser.add_argument("--smoke-compaction", action="store_true",
+                        help="smoke only, default off: set OpenCode limit.context so multi-step trials compact "
+                             f"(also {vm.SMOKE_COMPACTION_ENV}=1). Recorded on plan.json and every trial row")
     parser.add_argument("--acknowledge-alert", type=float, action="append", default=[])
     args = parser.parse_args(argv)
     if args.resume is not None:
@@ -916,6 +939,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         config = RunConfig.load(args.config)
         out = args.out
+    if args.smoke_compaction or vm.smoke_compaction_from_env():
+        config = replace(config, smoke_compaction=True)
     if any(part in ("results", "data") for part in out.expanduser().resolve().parts):
         raise SystemExit("--out must be outside results/ and data/")
     if args.dry_run:
@@ -944,7 +969,8 @@ def main(argv: list[str] | None = None) -> int:
         token = AdcToken()
         token()  # fail before any trial if credentials are missing
         executor = CellExecutor(args.opencode, project, token, estimates_usd={**DEFAULT_ESTIMATES_USD, **(args.estimates or {})},
-                                default_image=args.default_image, use_image_tag=args.use_image_tag)
+                                default_image=args.default_image, use_image_tag=args.use_image_tag,
+                                smoke_compaction=config.smoke_compaction)
     runner = Runner(config, out, executor, workers=args.workers)
     if args.cell:  # every image must be on this host before the first paid call
         wanted = [(str(t.tasks_dir), t.id) for t in runner.known.values() if not config.tasks or t.id in config.tasks]

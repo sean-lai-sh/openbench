@@ -365,6 +365,13 @@ def _thinking(step: dict, wire: str, setting: dict, thinking_tokens: int | None,
             "tokens_counted": counted, "tokens_counted_by": counted_by}
 
 
+def _stripped_count(wire: dict) -> int:
+    count = wire.get("stripped_side_thinking_blocks") or 0
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return 0
+    return count
+
+
 def _iso(ms: Any) -> str | None:
     if isinstance(ms, (int, float)) and not isinstance(ms, bool):
         return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(timespec="milliseconds")
@@ -430,6 +437,8 @@ def build_trace(events: list[dict], wire_records: list[dict], *, run: dict | Non
             "cost": {"usd": finish.get("cost"), "source": "opencode.step_finish" if "cost" in finish else None},
             "finish_reason": finish.get("reason"),
             "opencode_tokens": finish.get("tokens"),
+            # 0 when the wire record predates the field or this step replayed no side-signed block.
+            "stripped_side_thinking_blocks": _stripped_count(wire),
         }
         if record["thinking"].get("flag") == "reported_zero_text_present":
             usage["thinking_tokens_status"] = "reported_zero_text_present"  # contradicts the text: don't read as 0

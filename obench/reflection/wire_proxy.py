@@ -25,8 +25,15 @@ thinking block`` / ``bound to a different conversation``. Side requests that
 still carry such a block are sent with ``thinking.block_binding
 .prefix_mismatch_behavior=drop_block`` and beta
 ``thinking-binding-controls-2026-08-01`` (the H2 proxy's
-``apply_block_binding``). Main turns are not modified. stdlib plus that one
-helper.
+``apply_block_binding``). Main turns never get that control.
+
+The compaction response's own thinking block is signed for the side
+request. OpenCode replays it on the next main turn, and Vertex answers
+400 ``Invalid signature in thinking block``. This proxy remembers every
+thinking ``signature`` and redacted_thinking ``data`` from a side response
+(SSE or JSON) for the trial, and on a later main turn removes only those
+blocks. A main turn with none of them is the bytes ``prepare_request``
+already produced. stdlib plus ``apply_block_binding``.
 """
 
 from __future__ import annotations
@@ -172,8 +179,159 @@ def is_thinking_signature_error(raw: bytes | str | None) -> bool:
     return _THINKING_SIGNATURE_RE.search(text) is not None
 
 
+# Kept only when stripping the side-signed thinking block would leave an
+# assistant message with no content. The message itself is never dropped:
+# Anthropic rejects an empty content array, and a missing message would
+# change the conversation without a trace. Summary text, when present, stays
+# instead of this placeholder.
+EMPTY_ASSISTANT_AFTER_STRIP = "[omitted side-signed thinking]"
+
+
+def _remember_signature(found: set[str], value) -> None:
+    if isinstance(value, str) and value:
+        found.add(value)
+
+
+def _collect_content_signatures(content, found: set[str]) -> None:
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "thinking":
+            _remember_signature(found, block.get("signature"))
+        elif block.get("type") == "redacted_thinking":
+            _remember_signature(found, block.get("data"))
+
+
+def response_thinking_signatures(model: vm.VertexModel, raw: bytes, stream: bool) -> set[str]:
+    """Thinking ``signature`` values and redacted_thinking ``data`` in one Anthropic response.
+
+    Streamed signatures are concatenated per content block (``signature_delta``
+    can arrive in more than one event). Empty strings are not recorded.
+    """
+    if model.wire != "anthropic" or not raw:
+        return set()
+    found: set[str] = set()
+    if not stream:
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return set()
+        docs = doc if isinstance(doc, list) else [doc]
+        for item in docs:
+            if isinstance(item, dict):
+                _collect_content_signatures(item.get("content"), found)
+        return found
+    partial: dict[int, dict] = {}
+    order: list[int] = []
+    for event in _sse_payloads(raw):
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "content_block_start":
+            idx = event.get("index")
+            if not isinstance(idx, int):
+                idx = len(order)
+            block = event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
+            partial[idx] = {"type": block.get("type"), "signature": block.get("signature") or "",
+                            "data": block.get("data") or "", "deltas": []}
+            if idx not in order:
+                order.append(idx)
+        elif kind == "content_block_delta":
+            idx = event.get("index")
+            if not isinstance(idx, int):
+                idx = order[-1] if order else 0
+            delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
+            slot = partial.setdefault(idx, {"type": None, "signature": "", "data": "", "deltas": []})
+            if idx not in order:
+                order.append(idx)
+            if delta.get("type") == "signature_delta":
+                piece = delta.get("signature")
+                if isinstance(piece, str) and piece:
+                    slot["deltas"].append(piece)
+            piece = delta.get("data")
+            if isinstance(piece, str) and piece:
+                slot["data"] = f"{slot.get('data') or ''}{piece}"
+        elif isinstance(event.get("content"), list):
+            _collect_content_signatures(event.get("content"), found)
+    for idx in order:
+        slot = partial.get(idx) or {}
+        kind = slot.get("type")
+        signature = "".join(slot.get("deltas") or []) or slot.get("signature") or ""
+        if kind == "redacted_thinking":
+            _remember_signature(found, slot.get("data"))
+        elif kind == "thinking" or slot.get("deltas"):
+            _remember_signature(found, signature)
+    return found
+
+
+def _block_replay_key(block: dict) -> str | None:
+    """The value a later request uses to replay this block: thinking signature, or redacted data."""
+    if block.get("type") == "thinking" and isinstance(block.get("signature"), str) and block["signature"]:
+        return block["signature"]
+    if block.get("type") == "redacted_thinking" and isinstance(block.get("data"), str) and block["data"]:
+        return block["data"]
+    return None
+
+
+def strip_side_thinking_blocks(sent: dict, signatures: set[str]) -> tuple[dict, int]:
+    """Drop thinking / redacted_thinking blocks whose replay key is in ``signatures``.
+
+    Returns ``(body, removed)``. When ``removed`` is 0 the original dict is
+    returned, so ``json.dumps`` matches what ``prepare_request`` produced.
+    Summary text and every other block stay, including thinking signed in the
+    main conversation. An assistant message that would have no content left
+    is kept, with one text block ``EMPTY_ASSISTANT_AFTER_STRIP``; the message
+    is not removed.
+    """
+    if not signatures or not isinstance(sent, dict):
+        return sent, 0
+    messages = sent.get("messages")
+    if not isinstance(messages, list):
+        return sent, 0
+    removed = 0
+    changed = False
+    new_messages = []
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            new_messages.append(message)
+            continue
+        kept = []
+        local = 0
+        for block in content:
+            key = _block_replay_key(block) if isinstance(block, dict) else None
+            if key is not None and key in signatures:
+                local += 1
+                continue
+            kept.append(block)
+        if local == 0:
+            new_messages.append(message)
+            continue
+        changed = True
+        removed += local
+        if not kept:
+            kept = [{"type": "text", "text": EMPTY_ASSISTANT_AFTER_STRIP}]
+        new_messages.append(dict(message, content=kept))
+    if not changed:
+        return sent, 0
+    out = dict(sent)
+    out["messages"] = new_messages
+    return out, removed
+
+
 def signature_400_count(wire_records: list[dict]) -> int:
     return sum(1 for w in wire_records if w.get("thinking_signature_reject"))
+
+
+def stripped_side_thinking_total(wire_records: list[dict]) -> int:
+    total = 0
+    for record in wire_records:
+        count = record.get("stripped_side_thinking_blocks") or 0
+        if isinstance(count, int) and not isinstance(count, bool):
+            total += count
+    return total
 
 
 def side_kind_counts(wire_records: list[dict]) -> dict:
@@ -206,6 +364,48 @@ def terminating_side_signature(wire_records: list[dict]) -> dict | None:
     return {"call_index": last.get("call_index"), "side_kind": last.get("side_kind"),
             "status": last.get("status"), "thinking_block_binding": last.get("thinking_block_binding"),
             "anthropic_beta": last.get("anthropic_beta")}
+
+
+def post_compaction_detail(wire_records: list[dict]) -> dict | None:
+    """A breaking main-turn thinking-signature 400 that follows a side call.
+
+    Precedence, applied by ``cell_executor.finish_trial``:
+
+    1. ``side_thinking_signature`` wins when the last call is itself a side
+       signature 400 and the last step still shows a tool call. This function
+       returns None in that case so the side status is not overwritten.
+    2. ``post_compaction_signature`` is this detail: the 400 is on a main turn,
+       no later main call succeeded, and some earlier call in the trial was a
+       side request. It outranks ``upstream_4xx`` and ``agent_exit_pending_tool``.
+    3. Anything else stays ``upstream_4xx`` (or a recovered covariate).
+
+    A main-turn signature 400 with no side call earlier in the trial is not
+    this status.
+    """
+    if not wire_records or terminating_side_signature(wire_records) is not None:
+        return None
+    breaking = classify_4xx(wire_records)["breaking"]
+    if not breaking:
+        return None
+    by_index = {w.get("call_index"): w for w in wire_records}
+    hits = []
+    for call in breaking:
+        record = by_index.get(call.get("call_index"))
+        if not record or record.get("call_role") == "side" or not record.get("thinking_signature_reject"):
+            continue
+        prior = [w for w in wire_records if w.get("call_role") == "side"
+                 and (w.get("call_index") or 0) < (record.get("call_index") or 0)]
+        if not prior:
+            continue
+        nearest = max(prior, key=lambda w: w.get("call_index") or 0)
+        hits.append({"call_index": record.get("call_index"), "status": record.get("status"),
+                     "prior_side_call_index": nearest.get("call_index"),
+                     "prior_side_kind": nearest.get("side_kind")})
+    if not hits:
+        return None
+    return {"call_index": hits[-1]["call_index"], "status": hits[-1]["status"],
+            "prior_side_call_index": hits[-1]["prior_side_call_index"],
+            "prior_side_kind": hits[-1]["prior_side_kind"], "calls": hits}
 
 
 def prepare_request(model: vm.VertexModel, client_path: str, body: dict) -> tuple[dict, bool, dict]:
@@ -567,6 +767,10 @@ class WireProxy:
         self.client_resets: list[str] = []  # client-side socket resets outside a call (counted per trial)
         self.upstream_host, self.opener = upstream_host, opener
         self._lock, self._index, self._last = threading.Lock(), 0, None
+        # Thinking signatures (and redacted_thinking data) returned by side
+        # responses in this trial. One proxy is one trial. Main turns drop
+        # only blocks whose replay key is in this set.
+        self._side_signatures: set[str] = set()
         self.wire_path.parent.mkdir(parents=True, exist_ok=True)
         proxy = self
 
@@ -638,13 +842,22 @@ class WireProxy:
         except ValueError as exc:
             return self._reply(handler, 400, {"error": str(exc)})
         beta = handler.headers.get("anthropic-beta")
+        side = is_side_request(sent)
         binding, beta = bind_side_request(model, sent, beta)
+        # Main turns never receive drop_block. Strip only blocks signed by an
+        # earlier side response. No match leaves ``sent`` as prepare_request
+        # (and the patch, if any) built it, so the upstream bytes do not change.
+        stripped = 0
+        if model.wire == "anthropic" and not side:
+            sent, stripped = strip_side_thinking_blocks(sent, self._side_signatures_copy())
         note = {
-            "side_kind": classify_side_kind(sent) if is_side_request(sent) else None,
+            "side_kind": classify_side_kind(sent) if side else None,
             "thinking_block_binding": binding,
             "anthropic_beta": beta,
             "thinking_signature_reject": False,
         }
+        if not side:
+            note["stripped_side_thinking_blocks"] = stripped
         with self._lock:
             self._index += 1
             index = self._index
@@ -722,6 +935,8 @@ class WireProxy:
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     client["ok"] = False
                 send(f"{len(sent_bytes):X}\r\n".encode() + sent_bytes + b"\r\n")
+                if side and status == 200:
+                    self._remember_side_signatures(response_thinking_signatures(model, raw_all, upstream_stream))
                 self._record(index, started, model, sent, enforced, usage, served, status, None,
                              extra={"response_summary": summary, "client_disconnected": not client["ok"],
                                     "response_bytes": len(raw_all), "route_repair": repair,
@@ -763,6 +978,8 @@ class WireProxy:
                 send(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
             # Record before the final chunk, so the record exists once the client has the full reply.
             raw_all = b"".join(chunks)
+            if side and status == 200:
+                self._remember_side_signatures(response_thinking_signatures(model, raw_all, upstream_stream))
             usage, served = parse_response(model, raw_all, upstream_stream) if status == 200 else (None, None)
             blocked = prompt_feedback(model, raw_all, upstream_stream) if status == 200 else None
             extra = {"response_summary": response_summary(model, raw_all, upstream_stream) if status == 200 else None,
@@ -784,6 +1001,16 @@ class WireProxy:
                         self.on_provider_blocked(blocked)
                     except Exception:  # stopping the agent must never break the proxy
                         pass
+
+    def _side_signatures_copy(self) -> set[str]:
+        with self._lock:
+            return set(self._side_signatures)
+
+    def _remember_side_signatures(self, found: set[str]) -> None:
+        if not found:
+            return
+        with self._lock:
+            self._side_signatures.update(found)
 
     def _save_raw(self, index: int, raw: bytes, stream: bool) -> str | None:
         """gpt-oss only: the upstream response exactly as Vertex sent it, next to the wire file

@@ -46,6 +46,7 @@ call together with its result (`tool_calls[].source = "next_request"`).
 | `request.sent_at` | string\|null | yes | The wire record's timestamp (when the request was sent) |
 | `request.response_arrived` | bool | yes | Whether an upstream HTTP response was received for this call (headers, including 4xx/5xx). False when the request was sent and nothing came back |
 | `request.first_byte_at` | string\|null | yes | ISO-8601 UTC when the first upstream body byte arrived; null if none |
+| `stripped_side_thinking_blocks` | int | yes | How many `thinking` or `redacted_thinking` blocks this main turn's request had removed because their `signature` (or redacted `data`) was returned by an earlier side response in this trial. `0` when none. Summary text and this conversation's own thinking stay. If removal would leave an assistant message with no content, the message is kept and given one text block `[omitted side-signed thinking]` |
 | `tool_calls[]` | array | yes | `{call_id, name, arguments, result, status, source}`; `source` is `opencode.tool_use` or `next_request` (errored calls recovered from the next request) |
 | `assistant_text` | string | yes | Visible text of the step (`""` if none) |
 | `thinking.kind` | string | yes | `full` \| `summary` \| `redacted` \| `omitted` \| `none` |
@@ -98,7 +99,8 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `side_kind` | string\|null | no | On a side request: `title`, `summary`, `compaction`, or `unknown` (OpenCode's title agent, summary agent, or compaction agent at the pin). Null on a main turn |
 | `thinking_block_binding` | string\|null | no | `drop_block` when this side request was sent with `thinking.block_binding.prefix_mismatch_behavior=drop_block`. `off` on an Anthropic side request that was not rewritten (no thinking block, or `OBENCH_THINKING_BLOCK_BINDING` set to something other than `drop_block`). Null on a main turn and on non-Anthropic calls. Main-turn thinking and effort are not modified |
 | `anthropic_beta` | string\|null | no | The `anthropic-beta` header actually sent upstream. When binding is applied this includes `thinking-binding-controls-2026-08-01`, appended to whatever the client sent. Null when no beta header was sent |
-| `thinking_signature_reject` | bool | no | True when this response was HTTP 400 whose body matches `Invalid signature in thinking block` (backticks optional). A trial's `signature_400s` is the count of these |
+| `thinking_signature_reject` | bool | no | True when this response was HTTP 400 whose body matches `Invalid signature in thinking block` (backticks optional), on a side request or a main turn. A watcher can stop on it. A trial's `signature_400s` is the count of these |
+| `stripped_side_thinking_blocks` | int | no | Main turns only. How many thinking or redacted_thinking blocks were removed from this request because a side response in this trial returned that signature or redacted data. `0` when the request was not changed. Absent on a side request |
 | `requested_model` | string\|null | no | Model id on the incoming request |
 | `upstream_model` | string\|null | yes | Model actually served |
 | `request` | object | yes | Request body as sent |
@@ -175,6 +177,7 @@ The CLI prints the error and exits 2.
   "usage": {"source": "response.usage", "input_tokens": 12, "output_tokens": 410, "thinking_tokens": 233, "thinking_tokens_field": "output_tokens_details.thinking_tokens", "thinking_tokens_status": "reported", "output_tokens_include_thinking": true, "cache_read_tokens": 15840, "cache_write_tokens": 512, "raw": {"input_tokens": 12, "output_tokens": 410, "cache_read_input_tokens": 15840, "cache_creation_input_tokens": 512, "output_tokens_details": {"thinking_tokens": 233}}},
   "cost": {"usd": 0.0412, "source": "opencode.step_finish"},
   "finish_reason": "tool-calls",
-  "opencode_tokens": {"input": 12, "output": 177, "reasoning": 233, "cache": {"read": 15840, "write": 512}}
+  "opencode_tokens": {"input": 12, "output": 177, "reasoning": 233, "cache": {"read": 15840, "write": 512}},
+  "stripped_side_thinking_blocks": 0
 }
 ```

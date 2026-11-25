@@ -177,16 +177,76 @@ def opencode_model_arg(model: VertexModel) -> str:
     return f"{provider_id(model)}/{model.opencode_model}"
 
 
-def opencode_config(model: VertexModel, proxy_base: str) -> dict:
+# OpenCode pin ba54cee55e18b47fb70badc84ae2cbac7c83d258 (package 1.1.61).
+# ``session/compaction.ts`` ``isOverflow`` compacts when the assistant token
+# count is at least the usable window. With no ``limit.input`` that window is
+# ``limit.context - maxOutputTokens``. ``provider/transform.ts``
+# ``maxOutputTokens`` is ``min(limit.output, OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32000)``
+# (or 32000 when that min is 0). ``provider/provider.ts`` copies a config
+# model's ``limit.context`` and ``limit.output`` and drops ``limit.input``, so
+# ``compaction.reserved`` (which applies only when ``limit.input`` is set) does
+# not move the threshold for this custom provider. ``OPENCODE_DISABLE_AUTOCOMPACT``
+# only sets ``compaction.auto = false``. ``processor.ts`` returns ``"compact"``
+# from the step that overflowed, including a step whose finish reason is
+# ``stop``, and ``prompt.ts`` then runs the compaction side request.
+DEFAULT_CONTEXT_LIMIT = 200_000
+DEFAULT_OUTPUT_LIMIT = 32_000
+OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+# One token of usable context: any assistant step that reported tokens overflows,
+# so the next loop iteration compacts. Context 0 disables compaction in OpenCode.
+SMOKE_COMPACTION_CONTEXT = DEFAULT_OUTPUT_LIMIT + 1
+SMOKE_COMPACTION_ENV = "OBENCH_SMOKE_COMPACTION"
+
+
+def compaction_usable(context: int, output: int = DEFAULT_OUTPUT_LIMIT,
+                      output_token_max: int = OPENCODE_OUTPUT_TOKEN_MAX) -> int:
+    """Tokens ``isOverflow`` allows before compacting when ``limit.input`` is unset."""
+    max_out = min(int(output), int(output_token_max)) or int(output_token_max)
+    return int(context) - max_out
+
+
+def smoke_compaction_from_env(raw: str | None = None) -> bool:
+    """True when ``OBENCH_SMOKE_COMPACTION`` is ``1``, ``true``, ``yes``, or ``on``."""
+    if raw is None:
+        import os
+        raw = os.environ.get(SMOKE_COMPACTION_ENV, "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def smoke_compaction_profile(enabled: bool) -> dict:
+    """What a trial row and ``plan.json`` record so a smoke-compaction run is not pooled with a normal one.
+
+    ``enabled`` false keeps the stock reflection window (context 200000, usable 168000).
+    ``enabled`` true sets ``limit.context`` to 32001 (usable 1). Nothing else in the
+    OpenCode config changes. OpenCode itself stays the pinned binary.
+    """
+    context = SMOKE_COMPACTION_CONTEXT if enabled else DEFAULT_CONTEXT_LIMIT
+    return {
+        "enabled": bool(enabled),
+        "knob": "provider.models.<model>.limit.context",
+        "context_limit": context,
+        "output_limit": DEFAULT_OUTPUT_LIMIT,
+        "usable_tokens": compaction_usable(context, DEFAULT_OUTPUT_LIMIT),
+        "env": SMOKE_COMPACTION_ENV,
+    }
+
+
+def opencode_config(model: VertexModel, proxy_base: str, *, smoke_compaction: bool = False) -> dict:
     """``OPENCODE_CONFIG_CONTENT`` for one model: a single provider pointed
     at the recording proxy route, ``enabled_providers`` limited to it (no
     other provider can load), and ``small_model`` on the same model so side
-    calls (titles) stay on it."""
+    calls (titles) stay on it.
+
+    ``smoke_compaction`` lowers only ``limit.context`` (see
+    ``smoke_compaction_profile``). Default off. The OpenCode schema is strict,
+    so the profile is recorded on the trial and the plan, not inside this object.
+    """
     pid = provider_id(model)
     base = proxy_base.rstrip("/") + f"/m/{model.key}"
     base += {"anthropic": "/v1", "gemini": "/v1beta", "openai_chat": "/v1"}[model.wire]
+    context = SMOKE_COMPACTION_CONTEXT if smoke_compaction else DEFAULT_CONTEXT_LIMIT
     entry = {"name": model.display, "reasoning": True, "tool_call": True,
-             "limit": {"context": 200000, "output": 32000}}
+             "limit": {"context": context, "output": DEFAULT_OUTPUT_LIMIT}}
     if model.wire == "openai_chat":
         entry["interleaved"] = {"field": "reasoning_content"}
     return {
@@ -202,8 +262,8 @@ def opencode_config(model: VertexModel, proxy_base: str) -> dict:
     }
 
 
-def opencode_config_env(model: VertexModel, proxy_base: str) -> str:
-    return json.dumps(opencode_config(model, proxy_base), sort_keys=True)
+def opencode_config_env(model: VertexModel, proxy_base: str, *, smoke_compaction: bool = False) -> str:
+    return json.dumps(opencode_config(model, proxy_base, smoke_compaction=smoke_compaction), sort_keys=True)
 
 
 def cost_detail(model: VertexModel, usage: dict) -> dict:
