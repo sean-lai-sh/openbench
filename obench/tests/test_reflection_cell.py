@@ -563,6 +563,95 @@ class Trial(CellCase):
         result = self.executor(Crashes()).run_trial(self.spec(index=48), self.tmp / "run")
         self.assertEqual((result.status, result.passed), ("error", None))  # non-zero exit: a harness crash, not a fail
 
+    def test_final_side_signature_400_is_not_a_pending_tool(self):
+        """The last bash tool already completed. OpenCode then died on a compaction request that
+        replayed a thinking block signed for the main conversation. That 400 is its own status."""
+        from thesis.ab.vertex_anthropic_proxy import BLOCK_BINDING_ENV
+        signature_400 = json.dumps({
+            "type": "error",
+            "error": {"type": "invalid_request_error",
+                      "message": "messages.1.content.0: Invalid `signature` in `thinking` block. "
+                                 "The block is bound to a different conversation."},
+        }).encode()
+        calls = {"n": 0}
+
+        def reply(path):
+            calls["n"] += 1
+            if calls["n"] >= 2 and "RawPredict" in path:
+                return 400, "application/json", signature_400
+            return default_reply(path)
+
+        self.vertex.reply = reply
+
+        class Compacts(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                inner.calls.append(args)
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+                base = next(iter(cfg["provider"].values()))["options"]["baseURL"]
+                workspace = next(args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v")
+                signed = {"type": "thinking", "thinking": "from the main turn", "signature": "sig-main"}
+                main = {"model": OPUS, "stream": True, "max_tokens": 1000, "tools": TOOLS,
+                        "messages": [{"role": "user", "content": "go"}]}
+                side = {"model": OPUS, "stream": True, "max_tokens": 32000,
+                        "system": "You are a helpful AI assistant tasked with summarizing conversations.",
+                        "messages": [
+                            {"role": "user", "content": "go"},
+                            {"role": "assistant", "content": [
+                                signed, {"type": "tool_use", "id": "toolu_bash", "name": "bash", "input": {"command": "ls"}}]},
+                            {"role": "user", "content": [
+                                {"type": "tool_result", "tool_use_id": "toolu_bash", "content": "warriors/\n"},
+                                {"type": "text", "text": "Provide a detailed prompt for continuing our conversation above. "
+                                                         "Also generate a title for this conversation."}]},
+                        ]}
+                for body in (main, side):
+                    req = urllib.request.Request(base + "/messages", data=json.dumps(body).encode(), method="POST",
+                                                 headers={"Content-Type": "application/json"})
+                    try:
+                        urllib.request.urlopen(req, timeout=10).read()
+                    except urllib.error.HTTPError:
+                        pass
+                events = [
+                    {"type": "step_start", "timestamp": 10, "sessionID": "s",
+                     "part": {"messageID": "m1", "type": "step-start"}},
+                    {"type": "tool_use", "timestamp": 12, "sessionID": "s",
+                     "part": {"messageID": "m1", "type": "tool", "callID": "toolu_bash", "tool": "bash",
+                              "state": {"status": "completed", "input": {"command": "ls"}, "output": "warriors/\n",
+                                        "title": "ls", "metadata": {}, "time": {"start": 11, "end": 12}}}},
+                    {"type": "step_finish", "timestamp": 13, "sessionID": "s",
+                     "part": {"messageID": "m1", "type": "step-finish", "reason": "tool-calls", "cost": 0.0,
+                              "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}},
+                ]
+                Path(workspace, "out.txt").write_text("done\n")
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in events))
+                if stderr_path:
+                    Path(stderr_path).write_text("")
+                return 0, False
+
+        with mock_patch.dict(os.environ, {BLOCK_BINDING_ENV: "off"}):
+            result = self.executor(Compacts()).run_trial(self.spec(index=70), self.tmp / "run")
+        self.assertEqual((result.status, result.passed), ("side_thinking_signature", None))
+        self.assertEqual(result.env_cause, "vertex_thinking_signature")
+        self.assertEqual(result.signature_400s, 1)
+        self.assertEqual(result.side_kinds, {"compaction": 1})
+        self.assertEqual(result.thinking_block_binding, "off")
+        self.assertEqual(result.side_signature["pending_tools"], ["bash"])
+        self.assertEqual(result.side_signature["side_kind"], "compaction")
+        self.assertIsNone(result.agent_exit)
+        trial_dir = self.tmp / "run" / self.spec(index=70).trial_dir
+        self.assertFalse((trial_dir / "agent_exit.json").exists())
+        saved = json.loads((trial_dir / "side_signature.json").read_text())
+        self.assertEqual(saved["pending_tools"], ["bash"])
+        wires = [json.loads(l) for l in (trial_dir / "wire.jsonl").read_text().splitlines()]
+        main, side = wires
+        self.assertEqual(main["call_role"], "main")
+        self.assertEqual(main["request"]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertNotIn("block_binding", json.dumps(main["request"]))
+        self.assertEqual(main["request"]["output_config"], {"effort": "high"})
+        self.assertEqual(side["side_kind"], "compaction")
+        self.assertTrue(side["thinking_signature_reject"])
+        self.assertEqual(side["status"], 400)
+
     def test_refusal_is_model_refused_with_stop_details(self):
         from obench.tests.test_reflection_vertex import sse
         refusal = sse({"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},

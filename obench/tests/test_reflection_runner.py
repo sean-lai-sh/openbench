@@ -277,6 +277,25 @@ class Tables(Base):
         s = rn.read_rows(self.dir / "summary.jsonl")[0]
         self.assertEqual((s["verdict"], s["agent_exit_pending_tool"], s["errors"]), ("incomplete", 1, 1))
 
+    def test_side_thinking_signature_counts_as_infra_and_not_a_task_fail(self):
+        class Exits(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if spec.trial_index == 0:
+                    return rn.TrialResult(status="side_thinking_signature", passed=False,
+                                          env_cause="vertex_thinking_signature", signature_400s=1,
+                                          side_kinds={"compaction": 1},
+                                          side_signature={"side_kind": "compaction"},
+                                          thinking_block_binding="off")
+                return super().run_trial(spec, run_dir)
+        self.run_with(Exits({("extract-elf", OPUS): 3}), models=[OPUS], tasks=["extract-elf"], max_rounds=1)
+        s = rn.read_rows(self.dir / "summary.jsonl")[0]
+        row = next(r for r in rn.read_rows(self.dir / "trials.jsonl") if r["trial_index"] == 0)
+        # passed=False on the executor result is dropped: only completed trials have a verdict.
+        self.assertEqual((row["status"], row["passed"], row["env_cause"], row["signature_400s"]),
+                         ("side_thinking_signature", None, "vertex_thinking_signature", 1))
+        self.assertEqual((s["verdict"], s["side_thinking_signature"], s["signature_400s"], s["errors"],
+                          s["agent_exit_pending_tool"]), ("incomplete", 1, 1, 1, 0))
+
     def test_isolation_probe_gates_the_run_and_is_recorded(self):
         class Probed(rn.FixtureExecutor):
             result = {"ok": True, "networks": {"openbench-agent": {"metadata_reachable": False}}}
