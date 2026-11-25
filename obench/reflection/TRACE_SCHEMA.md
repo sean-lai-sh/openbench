@@ -43,7 +43,9 @@ call together with its result (`tool_calls[].source = "next_request"`).
 | `request.payload` | object | yes | Request body as sent, enough to reproduce the call |
 | `request.thinking_setting` | object | yes | `{explicit: bool, field, value[, effort]}`: Anthropic `thinking` (+ `output_config.effort`), OpenAI `reasoning_effort`/`reasoning`, Gemini `generationConfig.thinkingConfig` |
 | `request.call_index` | int\|null | yes | The wire record's call index |
-| `request.sent_at` | string\|null | yes | The wire record's timestamp |
+| `request.sent_at` | string\|null | yes | The wire record's timestamp (when the request was sent) |
+| `request.response_arrived` | bool | yes | Whether an upstream HTTP response was received for this call (headers, including 4xx/5xx). False when the request was sent and nothing came back |
+| `request.first_byte_at` | string\|null | yes | ISO-8601 UTC when the first upstream body byte arrived; null if none |
 | `tool_calls[]` | array | yes | `{call_id, name, arguments, result, status, source}`; `source` is `opencode.tool_use` or `next_request` (errored calls recovered from the next request) |
 | `assistant_text` | string | yes | Visible text of the step (`""` if none) |
 | `thinking.kind` | string | yes | `full` \| `summary` \| `redacted` \| `omitted` \| `none` |
@@ -111,6 +113,8 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `short_circuited` | bool | no | True on a call the proxy refused without sending because the prompt was already blocked (`status: null`, `error: "provider_blocked: not sent"`, HTTP 400 `PROVIDER_BLOCKED` to the client) |
 | `stream_error` | string\|null | no | The upstream body failed mid-response (e.g. `ConnectionResetError`, `IncompleteRead`). The record keeps the bytes received; an Anthropic client is sent an SSE `error` event, so the SDK raises instead of ending the turn quietly. |
 | `ended_at` | string | no | ISO-8601 UTC time the call finished (response fully read, or failed); `ts` is when it started |
+| `response_arrived` | bool | no | True once an upstream HTTP response was received (headers, including 4xx/5xx). False when the request was sent and no response came back (a hang before the agent cap). Every trial's last call is also summarized as `last_vertex_request` on the trial row and in `last_vertex_request.json` beside this file, written when the request is sent and updated when a response or the first body byte arrives, so a hang that never finishes a wire line is still visible |
+| `first_byte_at` | string\|null | no | ISO-8601 UTC when the first upstream body byte arrived; null if none |
 | `usage_events` | array\|null | no | Anthropic streams: every usage object the response carried, in order (`{event: message_start\|message_delta, usage}`). Shows whether Vertex ever reports a thinking count, and in which event. |
 | `upstream_raw` | string\|null | no | gpt-oss only: path, relative to the wire file's directory, of the raw upstream bytes (`upstream-raw/<call_index>.sse\|json`), for every call including errors. Model output only, but scrub it before committing like any transcript. |
 | `error` | string | no | Transport error when the upstream was unreachable |
@@ -155,7 +159,9 @@ The CLI prints the error and exits 2.
     "payload": {"model": "claude-opus-5-5", "max_tokens": 32000, "thinking": {"type": "adaptive", "display": "summarized"}, "messages": ["..."]},
     "thinking_setting": {"explicit": true, "field": "thinking", "value": {"type": "adaptive", "display": "summarized"}},
     "call_index": 2,
-    "sent_at": "2026-11-12T20:00:01.000Z"
+    "sent_at": "2026-11-12T20:00:01.000Z",
+    "response_arrived": true,
+    "first_byte_at": "2026-11-12T20:00:01.400Z"
   },
   "tool_calls": [
     {"call_id": "toolu_2", "name": "bash", "arguments": {"command": "cargo build"}, "result": "error[E0425]: …", "status": "error", "source": "next_request"}

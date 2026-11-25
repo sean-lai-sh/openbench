@@ -26,10 +26,10 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 
 | File | What |
 |---|---|
-| `plan.json` | `isolation`: the executor's live metadata probe (a container on the trial network must fail to reach 169.254.169.254:80 and metadata.google.internal:80; if it connects, the run does not start). Config (including `suite_label` and `workers`), `host_cpus`, cutoff, `code` (commit, branch, dirty), and the preflight cost estimate. Resuming a run directory with a different `suite`, `suite_label`, `models`, `patch_id`, `n_trials` or `workers` is refused, so populations are never pooled in one directory. `workers` (`--workers N`, one fixed value for the run and both models; 6-8 on the 16-CPU VM): each trial is its own container and proxy, trials are interleaved across models (trial index, then slot, then model), swaps are applied per model after each round so they are the same at any N, and the spend cap counts the estimates of running trials. |
+| `plan.json` | `isolation`: the executor's live metadata probe (a container on the trial network must fail to reach 169.254.169.254:80 and metadata.google.internal:80; if it connects, the run does not start). Config (including `suite_label` and `workers`), `host_cpus`, cutoff, `code` (commit, branch, dirty), `host` (the VM hostname), and the preflight cost estimate. Resuming a run directory with a different `suite`, `suite_label`, `models`, `patch_id`, `n_trials` or `workers` is refused, so populations are never pooled in one directory. A resume whose git commit or `host` differs from this file is also refused (`--allow-plan-mismatch` overrides that check only). A plan written before `host` existed gets the current host filled in. `workers` (`--workers N`, one fixed value for the run and both models; 6-8 on the 16-CPU VM): each trial is its own container and proxy, trials are interleaved across models (trial index, then slot, then model), swaps are applied per model after each round so they are the same at any N, and the spend cap counts the estimates of running trials. Omitting `--workers` on resume keeps the value recorded here. |
 | `set_aside.json` | Per model and task: `provider_blocked` and `model_refused` counts, the refusals (trial, stop reason, step, details), pass rate and verdict over completed trials, and the all-fail sensitivity check |
 | `provider_blocked.json` | Per model, per task: provider-blocked trials (`trials_blocked` of `trials`), the raw `block_reasons` counts and `block_reason_messages`, and how many were `inferred` |
-| `trials.jsonl` | One `openbench.reflection.trial/v1` row per trial (append-only; a rerun skips ids already present) |
+| `trials.jsonl` | One `openbench.reflection.trial/v1` row per attempt (append-only). A resume skips trial ids already present. `--retry-infra` appends a new row for an infrastructure-error slot (`retry_of` is the original trial id) and does not rewrite the original row. At most 3 re-runs per slot; the cell then stays `incomplete` with `incomplete_reason` |
 | `summary.jsonl` | One `openbench.reflection.summary/v1` row per (task, model, patch) |
 | `verdicts.json` | Per model: `pass` / `fail` / `incomplete` tasks, and its current suite after swaps |
 | `swaps/<model>.json` | That model's swap state (`obench.hardsuite.swap`) |
@@ -40,7 +40,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema`, `run_id`, `trial_id` | string | `trial_id = sha256([run_id, task, model, patch_id, index])[:16]`: deterministic |
+| `schema`, `run_id`, `trial_id` | string | `trial_id = sha256([run_id, task, model, patch_id, index])[:16]` for the original attempt. A re-run appends the attempt number to that list, so it is a new id |
 | `task`, `bench`, `bench_commit` | string | The task and its upstream bench snapshot |
 | `model`, `vertex_id` | string | The reflection model and its Vertex ID |
 | `trial_index` | int | 0..n_trials-1 |
@@ -73,6 +73,9 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `trace_warning` | string\|null | The trace could not be built (e.g. `step_call_mismatch: 11 OpenCode steps but 10 main wire calls`). The checker's verdict stands; `trace` is null. |
 | `cost_unpriced_calls` | int | Calls with no cost (e.g. cut off by a timeout before usage arrived). `cost_usd` sums the priced calls, so it is a lower bound when this is > 0. |
 | `error` | string\|null | |
+| `retry_of` | string\|null | Original trial id when this row re-runs an infrastructure error. Null on the original row, which is kept |
+| `attempt` | int | 0 for the original slot; 1, 2, or 3 for a re-run. A slot still infra after attempt 3 is not re-run again |
+| `last_vertex_request` | object\|null | Every trial, not only re-runs: the last Vertex call `{sent_at, model, response_arrived, first_byte_at, call_index, status}`. `sent_at` is when the request was sent; `response_arrived` is whether an HTTP response came back; `first_byte_at` is the first body byte. Written to `last_vertex_request.json` when the request is sent, so a hang before any wire line is visible. Null when the trial made no model call |
 
 ## Summary row (`openbench.reflection.summary/v1`)
 
@@ -95,7 +98,9 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `trials_with_route_repair`, `passes_with_route_repair` | Trials with at least one repair, and how many of those passed: the passes that depend on the parser |
 | `trials_without_route_counts` | Trials with no wire counts (crashes), left out of the sums |
 | `pass_rate` | `passes / completed` |
-| `cutoff`, `verdict` | `pass` iff `completed == planned` and `passes / completed >= cutoff` (exact; 27/30 at 0.90). `incomplete` when fewer than `planned` trials completed. |
+| `cutoff`, `verdict` | `pass` iff the settled outcomes (completed trials, plus refused and blocked trials set aside) cover `planned` and `passes / completed >= cutoff` (exact; 27/30 at 0.90). `incomplete` when a slot has no settled outcome. The swap rule is unchanged: it sees `(passes, completed)` for a pass or fail verdict only. An infrastructure row kept beside a successful re-run still counts in `errors`; it is not a settled outcome, so it does not by itself keep the verdict incomplete once every slot has settled. |
+| `incomplete_reason` | Set when the verdict is `incomplete` because a slot is still an infrastructure error after 3 re-runs (`infra retry cap: trial_index N still <status> after 3 re-runs`). Null when the cell is incomplete only because trials have not finished, and null when the verdict is pass, fail, or excluded |
+| `infra_retry_exhausted` | Those slots: `{trial_index, trial_id, retries, last_status}`. Empty when none. A later resume does not re-run them |
 | `spend_usd`, `spend_complete` | Sum of trial costs. `spend_complete` is false if any trial had no cost or unpriced calls. |
 | `trace_warnings` | Trials whose trace could not be built but whose checker verdict stands |
 | `timed_out`, `timeout_fails` | Trials that hit the cap, and how many of them were task fails (agent still working) |
@@ -121,7 +126,18 @@ So a model's suite keeps its planned size. If the pool runs out, `PoolExhausted`
   - confirmation: `failures × 5 × candidate_fraction × 2N` trials (a fresh
     alternative run plus a fresh baseline run);
   - the worst case (every alternative a candidate) is 3× selection.
-- During the run, spend is the sum of logged trial costs. Every trial checks the cap and the alert thresholds before it starts.
+- During the run, spend is the sum of logged trial costs. Every trial, including an infrastructure re-run, checks the cap and the alert thresholds before it starts.
+
+## Infrastructure re-runs
+
+Settled outcomes are `completed` (passed or failed, including a timeout where a model call finished in the last 300 seconds and the agent was still working), `model_refused`, and `provider_blocked`. `INFRA_STATUSES` in `runner.py` is everything else (`error`, `timeout`, `route_truncated`, `upstream_4xx`, `agent_exit_pending_tool`, `checker_error`). An infra timeout is re-run; a still-working timeout is a task fail and is not.
+
+```bash
+python3 -m obench.reflection.runner --resume <run_dir> --retry-infra --dry-run
+python3 -m obench.reflection.runner --resume <run_dir> --retry-infra --cell --opencode <bin> --use-image-tag
+```
+
+`--dry-run` prints, per cell, `settled`, `infra`, and `would_rerun`, and runs nothing. Re-runs are scheduled in the same order as ordinary trials (trial index, then suite slot, then model), one new attempt per wave, at most 3 per slot. Each new row has `retry_of` set to the original trial id. The original row stays in `trials.jsonl`.
 
 ## Executors
 

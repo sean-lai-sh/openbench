@@ -190,7 +190,46 @@ class AnthropicRoute(ProxyCase):
                                                     "client_effort": None, "effort": "high", "removed": ["temperature"]})
         self.assertEqual(seen["body"]["output_config"], {"effort": "high"})
         self.assertGreater(rec["cost_usd"], 0)
+        self.assertTrue(rec["response_arrived"])
+        self.assertTrue(rec["first_byte_at"])
+        live = json.loads((self.wire.parent / "last_vertex_request.json").read_text())
+        self.assertEqual((live["sent_at"], live["model"], live["response_arrived"], live["call_index"]),
+                         (rec["ts"], "claude-opus-5-5", True, rec["call_index"]))
         self.assertLessEqual(set(rec), Registry_documented_wire())
+
+    def test_last_vertex_request_is_visible_before_a_response(self):
+        started, release = threading.Event(), threading.Event()
+
+        def opener(request, timeout=None):
+            started.set()
+            self.assertTrue(release.wait(5))
+            raise OSError("still waiting")
+
+        wire = self.tmp / "hang" / "wire.jsonl"
+        proxy = WireProxy("proj", wire, lambda: "tok", opener=opener, upstream_host="http://127.0.0.1:9")
+        self.addCleanup(proxy.close)
+        body = {"model": "claude-opus-5-5", "max_tokens": 100, "messages": [{"role": "user", "content": "go"}]}
+
+        def post():
+            req = urllib.request.Request(proxy.base_url + "/m/claude-opus-5-5/v1/messages",
+                                         data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(req, timeout=10).read()
+            except urllib.error.HTTPError:
+                return
+
+        thread = threading.Thread(target=post)
+        thread.start()
+        self.assertTrue(started.wait(5))
+        live = json.loads((wire.parent / "last_vertex_request.json").read_text())
+        self.assertEqual(live["model"], "claude-opus-5-5")
+        self.assertTrue(live["sent_at"])
+        self.assertFalse(live["response_arrived"])
+        self.assertIsNone(live["first_byte_at"])
+        release.set()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
 
     def test_opus_effort_overrides_the_client_and_smoke_requires_it(self):
         body = {"model": "claude-opus-5-5", "stream": True, "tools": TOOLS_ANTHROPIC, "output_config": {"effort": "low"},
