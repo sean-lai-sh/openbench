@@ -97,6 +97,30 @@ called.
    seed: every trial is an independent sample. **`success`** iff the
    alternative beats the new baseline: full N on both sides, more passes.
 
+   **`confirm`** chooses which candidates are confirmed. The default is
+   `all`: every selection candidate, which is the behaviour above. `top`
+   confirms one candidate per cell `(model, task)`. The pool is every
+   accepted alternative of that cell's drawn failures (`credit_draw.json`,
+   status `IN`), and the choice waits until each of those failures has a
+   proposal row and every accepted proposal has a selection row. The winner
+   has the most `selection_alt_passes`. A pass-count tie goes to the earlier
+   seeded pick (`draw_order`), then the lower `alternative_index` (the
+   proposal's `index`), then `proposal_id`. Fisher p is not a tie-break: the
+   cell shares one baseline, so the same pass count is the same p. The other
+   candidates stay candidates, with `confirm_skipped` `not_top` and
+   confirmation fields null. Eight cells are eight confirmations, not one
+   per drawn failure. The mode is stored on every result row as `confirm`,
+   and a `top` row records `draw_order`.
+
+```text
+python3 -m obench.reflection.ideation --run <run dir> --fixture passes.json [--config ideation.json] [--confirm top|all]
+```
+
+`--config` is an `IdeationConfig` JSON object (`{"confirm": "top"}` or
+`"all"`). `--confirm` overrides the file. The default is `all`. `evaluate(..., confirm="top"|"all")`
+is the same setting. That command's only executor is the offline `--fixture`
+pass table. It does not start a provider.
+
 Every arm runs through the SEA-107 runner in `fixed_tasks` mode: exactly the
 parent's task (even a pool task), never a suite swap. Each arm, including the
 confirmation baseline, reuses the fresh baseline's recorded image
@@ -115,8 +139,8 @@ baseline's own `code_commit` must equal `baseline_commit`.
 | Stage | Columns |
 |---|---|
 | Selection | `selection_baseline_passes`, `selection_baseline_completed`, `selection_alt_passes`, `selection_alt_completed`, `selection_beats_baseline`, `selection_complete`, `selection_fisher_p`, `candidate`, `selection_spend_usd`, `selection_run_dir`, `selection_run_state`, `selection_code_commit` |
-| Confirmation | `confirmation_baseline_passes`, `confirmation_baseline_completed`, `confirmation_alt_passes`, `confirmation_alt_completed`, `confirmation_beats_baseline`, `confirmation_complete`, `confirmation_fisher_p`, `confirmed`, `confirmation_spend_usd`, `confirmation_run_dirs`, `confirmation_run_states`, `confirmation_code_commit`, `confirmation_baseline_code_commit`. All null for non-candidates. |
-| Outcome | `success` (= `confirmed`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials`, `alpha`, `baseline_commit`, `code_commit`, `citations`, `uncited` |
+| Confirmation | `confirmation_baseline_passes`, `confirmation_baseline_completed`, `confirmation_alt_passes`, `confirmation_alt_completed`, `confirmation_beats_baseline`, `confirmation_complete`, `confirmation_fisher_p`, `confirmed`, `confirmation_spend_usd`, `confirmation_run_dirs`, `confirmation_run_states`, `confirmation_code_commit`, `confirmation_baseline_code_commit`. All null for non-candidates and for candidates skipped under `confirm=top`. |
+| Outcome | `success` (= `confirmed`), `confirm` (`all` or `top`, on every row), `confirm_skipped` (`not_top` when a candidate in the cell was not the one confirmed; otherwise null), `alternative_index`, `draw_order` (the seeded pick, set under `top`; null under `all`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials`, `alpha`, `baseline_commit`, `code_commit`, `citations`, `uncited` |
 
 `alpha` is the value `evaluate` used. It is always `1.0`. `evaluate` has no
 `alpha` parameter and refuses to write a row whose alpha is not 1.0.
@@ -132,11 +156,17 @@ sensitivity column computed from the recorded Fisher p. It does not change
 ## Cost
 
 `runner.ideation_estimate(executor, {model: failures}, n_alternatives=5,
-n_trials=30, candidate_fraction=1.0)`:
-- selection costs `failures × 5 × 30` trials;
-- confirmation adds `failures × 5 × candidate_fraction × (30 + 30)` trials
-  (the fresh alternative plus the fresh baseline).
+n_trials=30, candidate_fraction=1.0, confirm="all", cells=None)`:
+- selection costs `failures × 5 × 30` trials either way;
+- `confirm=all` adds `failures × 5 × candidate_fraction × (30 + 30)` trials
+  (every candidate: the fresh alternative plus the fresh baseline);
+- `confirm=top` adds `cells × (30 + 30)` trials. `cells` is
+  `{model: cell count}` and is required. One cell is one confirmation, however
+  many drawn failures it holds. `candidate_fraction` does not change that count.
 
-The worst case (`candidate_fraction = 1`) is 3× the selection cost. For
-example, one failure at Opus's provisional $2/trial costs $300 to select and
-up to $600 more to confirm.
+The worst case for `confirm=all` (`candidate_fraction = 1`) is 3× the
+selection cost. For example, one failure at Opus's provisional $2/trial costs
+$300 to select and up to $600 more to confirm. Three failures in one cell at
+`confirm=top` still cost $900 to select and $120 to confirm the one best
+candidate ($1020). Eight cells are eight confirmations ($960 at $2/trial),
+not twenty-four. The estimate records `confirm` and `cells`.

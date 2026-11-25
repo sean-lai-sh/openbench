@@ -33,7 +33,8 @@ João Sedoc via Sean, SEA-110, 2026-11-13):
 - **Confirmation:** each candidate gets a fresh N-trial alternative run and a
   new fresh N-trial baseline run (new trial ids, no reuse of the selection
   trials or of the selection baseline). ``success`` iff it beats that new
-  baseline again.
+  baseline again. ``confirm`` is ``all`` (default: every selection candidate)
+  or ``top`` (one candidate per cell, across that cell's drawn failures).
 
 Both stages record the one-sided Fisher exact p as a reported statistic only.
 ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0). It
@@ -57,12 +58,13 @@ import json
 import math
 import os
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
 from obench.reflection import runner as rn
-from obench.reflection.credit_baseline import _check_fresh_image, fresh_baseline_row
+from obench.reflection.credit_baseline import BaselineError, _check_fresh_image, fresh_baseline_row
+from obench.reflection.credit_draw import drawn_picks
 from obench.reflection.credit_locator import MAX_SET_ASIDE, check_max_set_aside, read_trace
 from obench.reflection.patches import OPS, PATCH_SCHEMA, patch_id, validate_patch
 
@@ -75,6 +77,40 @@ RESULT_SCHEMA = "openbench.reflection.ideation_result/v1"
 CREDIT_METHODS = ("A", "B", "A+B")
 IDEATOR_MODEL = "claude-opus-5-5"              # open: configurable; not the model under test by design
 IDEATOR_THINKING = {"type": "adaptive"}        # set explicitly on every ideator request
+CONFIRM_ALL = "all"                            # every selection candidate is confirmed
+CONFIRM_TOP = "top"                            # one best candidate per cell (model, task)
+CONFIRM_MODES = (CONFIRM_ALL, CONFIRM_TOP)
+CONFIRM_SKIPPED_NOT_TOP = "not_top"            # a candidate that lost the top ranking
+
+
+def check_confirm(value: str) -> str:
+    """``all`` (default) or ``top``. Anything else is an error."""
+    if value not in CONFIRM_MODES:
+        raise ValueError(f"confirm must be 'top' or 'all', got {value!r}")
+    return value
+
+
+@dataclass(frozen=True)
+class IdeationConfig:
+    """Settings for evaluation. ``confirm`` is the only key today."""
+    confirm: str = CONFIRM_ALL
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "IdeationConfig":
+        unknown = set(raw) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown ideation config keys: {sorted(unknown)}")
+        cfg = cls(**raw)
+        check_confirm(cfg.confirm)
+        return cfg
+
+
+def resolve_config(config_path: Path | None = None, confirm: str | None = None) -> IdeationConfig:
+    """Settings from ``--config``. ``--confirm`` overrides the file when passed."""
+    cfg = IdeationConfig.from_dict(json.loads(Path(config_path).read_text(encoding="utf-8"))) if config_path else IdeationConfig()
+    if confirm is None:
+        return cfg
+    return IdeationConfig.from_dict({**asdict(cfg), "confirm": confirm})
 
 
 class Ideator(Protocol):
@@ -268,25 +304,14 @@ def citation_rows(alt, catalog: dict[str, dict]) -> list[dict]:
 
 def drawn_trials(run_dir: Path) -> list[dict]:
     """Drawn failures in ``(cell, draw_order)``. ``EXCLUDED``, ``NOT_LISTED``, and ``NO_ROWS`` are skipped."""
-    path = Path(run_dir) / "credit_draw.json"
-    if not path.is_file():
-        raise ValueError(f"no draw at {path}; ideation runs on drawn failures")
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(doc, dict):
-        raise ValueError("credit_draw.json must be an object keyed by cell")
-    by_id = {row["trial_id"]: row for row in rn.read_rows(Path(run_dir) / "trials.jsonl")}
+    run_dir = Path(run_dir)
+    by_id = {row["trial_id"]: row for row in rn.read_rows(run_dir / "trials.jsonl")}
     picked = []
-    for cell in sorted(doc):
-        rec = doc[cell]
-        if not isinstance(rec, dict) or rec.get("status") != "IN":
-            continue
-        picks = sorted(rec.get("picks") or [], key=lambda pick: (pick.get("draw_order") is None, pick.get("draw_order") or 0))
-        for pick in picks:
-            trial_id = pick.get("trial_id")
-            trial = by_id.get(trial_id)
-            if trial is None:
-                raise ValueError(f"{cell}: drawn trial {trial_id} is not in trials.jsonl")
-            picked.append(trial)
+    for pick in drawn_picks(run_dir):
+        trial = by_id.get(pick["trial_id"])
+        if trial is None:
+            raise ValueError(f"{pick['cell']}: drawn trial {pick['trial_id']} is not in trials.jsonl")
+        picked.append(trial)
     return picked
 
 
@@ -519,8 +544,211 @@ def _set_aside_count(summary: dict) -> int:
     return int(summary.get("provider_blocked") or 0) + int(summary.get("model_refused") or 0)
 
 
+def _candidate_rank(row: dict) -> tuple:
+    """Lower is better. Highest passes, then earlier draw, then lower index, then proposal id.
+
+    Fisher p is not in the key. Inside one cell the baseline is the same, so
+    the same pass count is the same p. A missing pass count sorts last. A
+    missing ``draw_order`` sorts after every seeded pick. A missing
+    ``alternative_index`` sorts after every recorded index.
+    """
+    passes = row.get("selection_alt_passes")
+    if isinstance(passes, bool) or not isinstance(passes, (int, float)):
+        passes_rank = float("inf")
+    else:
+        passes_rank = -float(passes)
+    order = row.get("draw_order")
+    if isinstance(order, bool) or not isinstance(order, int):
+        order_rank = 10**9
+    else:
+        order_rank = order
+    index = row.get("alternative_index")
+    if isinstance(index, bool) or not isinstance(index, int):
+        index_rank = 10**9
+    else:
+        index_rank = index
+    return (passes_rank, order_rank, index_rank, str(row.get("proposal_id") or ""))
+
+
+def top_candidate(rows: list[dict]) -> dict | None:
+    """The single best selection candidate of one cell, or None when ``rows`` has none.
+
+    Tie-break, in order: higher ``selection_alt_passes``, earlier
+    ``draw_order`` (the seeded pick in ``credit_draw.json``), lower
+    ``alternative_index`` (the proposal's ``index``), then ``proposal_id``.
+    ``selection_fisher_p`` is not a tie-break.
+    """
+    candidates = [row for row in rows if row.get("candidate")]
+    if not candidates:
+        return None
+    return min(candidates, key=_candidate_rank)
+
+
+def _model_task_of_draw_cell(cell: str) -> tuple[str, str]:
+    """``model/task`` from a draw key. A ``@patch`` suffix is not part of the cell."""
+    model, _, rest = cell.partition("/")
+    return model, rest.split("@", 1)[0]
+
+
+def _cell_draw_orders(run_dir: Path, model: str, task: str) -> dict[str, int]:
+    """``trial_id -> draw_order`` for the drawn failures of one ``(model, task)`` cell."""
+    orders: dict[str, int] = {}
+    for pick in drawn_picks(run_dir):
+        if _model_task_of_draw_cell(pick["cell"]) != (model, task):
+            continue
+        order = pick.get("draw_order")
+        if isinstance(order, bool) or not isinstance(order, int):
+            order = 10**9
+        orders[pick["trial_id"]] = order
+    return orders
+
+
+def _load_results(run_dir: Path) -> list[dict]:
+    return rn.read_rows(Path(run_dir) / "ideation_results.jsonl")
+
+
+def _save_results(run_dir: Path, rows: list[dict]) -> None:
+    path = Path(run_dir) / "ideation_results.jsonl"
+    tmp = path.with_suffix(".jsonl.tmp")
+    tmp.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _append_result(run_dir: Path, row: dict) -> None:
+    with (Path(run_dir) / "ideation_results.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def _result_key(row: dict) -> tuple:
+    """A result belongs to one failure. The same patch may share ``proposal_id`` across failures."""
+    return (row.get("parent_trial_id"), row.get("proposal_id"))
+
+
+def _accepted_proposal_ids(run_dir: Path, model: str, task: str, current: dict) -> tuple[set[tuple], set[str], set[str]]:
+    """Accepted proposals across every drawn failure of one cell.
+
+    Returns ``((parent trial, proposal id) pairs, drawn trial ids, parents
+    that already have a proposal row)``. The same patch on two failures is
+    two pairs: ``proposal_id`` is a hash of the patch and is not unique per
+    failure. A drawn failure whose proposals were all rejected is accounted
+    for and adds no accepted pair. The proposal being evaluated is included.
+    """
+    orders = _cell_draw_orders(run_dir, model, task)
+    drawn_ids = set(orders)
+    parent = current.get("parent_trial_id")
+    if parent not in drawn_ids:
+        raise ValueError(f"{model}/{task}: parent failure {parent} is not a drawn pick; "
+                         "confirm=top ranks the cell's drawn failures")
+    keys: set[tuple] = set()
+    parents: set[str] = set()
+    for row in rn.read_rows(Path(run_dir) / "ideation.jsonl"):
+        if row.get("model") != model or row.get("task") != task:
+            continue
+        if row.get("parent_trial_id") not in drawn_ids:
+            continue
+        parents.add(row["parent_trial_id"])
+        if row.get("status") != "accepted" or not row.get("proposal_id"):
+            continue
+        keys.add((row["parent_trial_id"], row["proposal_id"]))
+    if current.get("proposal_id"):
+        keys.add((parent, current["proposal_id"]))
+    parents.add(parent)
+    return keys, drawn_ids, parents
+
+
+def _proposal_by_id(run_dir: Path, proposal_id: str, current: dict, parent_trial_id: str | None = None) -> dict:
+    def matches(row: dict) -> bool:
+        if row.get("proposal_id") != proposal_id:
+            return False
+        return parent_trial_id is None or row.get("parent_trial_id") == parent_trial_id
+
+    if matches(current):
+        return current
+    for row in rn.read_rows(Path(run_dir) / "ideation.jsonl"):
+        if matches(row):
+            return row
+    raise ValueError(f"no proposal {proposal_id} for failure {parent_trial_id} in ideation.jsonl")
+
+
+def _skip_not_top(row: dict) -> None:
+    """A selection candidate that is not the one confirmed under ``confirm=top``."""
+    row.update(
+        confirmation_baseline_passes=None, confirmation_baseline_completed=None,
+        confirmation_alt_passes=None, confirmation_alt_completed=None,
+        confirmation_beats_baseline=None, confirmation_complete=None, confirmation_fisher_p=None,
+        confirmation_spend_usd=None, confirmation_run_dirs=None, confirmation_run_states=None,
+        confirmation_code_commit=None, confirmation_baseline_code_commit=None,
+        confirmed=None, success=False, confirm_skipped=CONFIRM_SKIPPED_NOT_TOP)
+
+
+def _run_confirmation(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, executor: rn.Executor,
+                      n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str,
+                      alphas: list) -> dict:
+    """Fresh confirmation arms. Raises before the result row is replaced when a check fails."""
+    conf_alt, alt_state, alt_dir = _arm(run_dir, base_cfg, proposal, "confirm", True, executor, n_trials,
+                                        spend_cap_usd, recorded)
+    conf_commit = _require_arm_commit(run_dir / alt_dir, "confirmation", baseline_commit)
+    conf_base, base_state, base_dir = _arm(run_dir, base_cfg, proposal, "confirm-baseline", False, executor,
+                                           n_trials, spend_cap_usd, recorded)
+    base_commit = _require_arm_commit(run_dir / base_dir, "confirmation-baseline", baseline_commit)
+    confirmation, conf_alpha = _stage("confirmation", conf_base, conf_alt, n_trials)
+    alphas.append(conf_alpha)
+    confirmed = confirmation["confirmation_complete"] and confirmation["confirmation_beats_baseline"]
+    row.update(confirmation, confirmed=confirmed, success=confirmed, confirm_skipped=None,
+               confirmation_spend_usd=round(conf_alt.get("spend_usd", 0.0) + conf_base.get("spend_usd", 0.0), 6),
+               confirmation_run_dirs=[alt_dir, base_dir], confirmation_run_states=[alt_state, base_state],
+               confirmation_code_commit=conf_commit, confirmation_baseline_code_commit=base_commit)
+    row["alpha"] = _require_alpha(alphas)
+    return row
+
+
+def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, executor: rn.Executor,
+                 n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str) -> dict:
+    """Confirm one candidate for the cell once every drawn failure's proposals are selected.
+
+    The cell is ``(model, task)``. The set is every accepted alternative of
+    that cell's drawn failures, not one parent failure. Until every drawn
+    failure has a proposal row and every accepted proposal has a selection
+    row, this row is stored with confirmation fields null. When the set
+    completes, the winner is confirmed and every other candidate in the cell
+    is ``confirm_skipped: not_top`` with ``candidate`` left true.
+    """
+    model, task = row["model"], row["task"]
+    # The same patch hashes to one proposal_id. Keep the other failure's row.
+    results = [item for item in _load_results(run_dir) if _result_key(item) != _result_key(row)]
+    results.append(row)
+    accepted, drawn_ids, parents = _accepted_proposal_ids(run_dir, model, task, proposal)
+    if not drawn_ids <= parents:
+        _save_results(run_dir, results)
+        return row
+    have = {_result_key(item) for item in results
+            if item.get("model") == model and item.get("task") == task
+            and item.get("parent_trial_id") in drawn_ids and item.get("proposal_id")}
+    if not accepted <= have:
+        _save_results(run_dir, results)
+        return row
+    group = [item for item in results
+             if item.get("model") == model and item.get("task") == task and item.get("parent_trial_id") in drawn_ids]
+    winner = top_candidate(group)
+    if winner is None:
+        _save_results(run_dir, results)
+        return row
+    for item in group:
+        if item.get("candidate") and _result_key(item) != _result_key(winner):
+            _skip_not_top(item)
+    winner_proposal = _proposal_by_id(run_dir, winner["proposal_id"], proposal, winner.get("parent_trial_id"))
+    # Confirmation can refuse the arm. Save only after it returns.
+    confirmed = _run_confirmation(
+        run_dir, base_cfg, winner_proposal, dict(winner), executor, n_trials, spend_cap_usd, recorded,
+        baseline_commit, [winner.get("alpha", ALPHA)])
+    results = [confirmed if _result_key(item) == _result_key(winner) else item for item in results]
+    _save_results(run_dir, results)
+    return next(item for item in results if _result_key(item) == _result_key(row))
+
+
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,
-             spend_cap_usd: float | None = None, max_set_aside: int = MAX_SET_ASIDE) -> dict:
+             spend_cap_usd: float | None = None, max_set_aside: int = MAX_SET_ASIDE,
+             confirm: str = CONFIRM_ALL) -> dict:
     """Two-stage evaluation of one accepted proposal (João Sedoc via Sean, SEA-110).
 
     1. **Selection:** the alternative runs N trials. It is a *candidate* iff
@@ -534,6 +762,17 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
        of the selection baseline. ``success`` iff the alternative beats that
        new baseline (bare beat, full N on both sides).
 
+    ``confirm`` is ``all`` (default) or ``top``. ``all`` confirms every
+    selection candidate. ``top`` confirms one candidate per cell
+    ``(model, task)``, across that cell's drawn failures: highest
+    ``selection_alt_passes``, then earlier ``draw_order`` from
+    ``credit_draw.json``, then lower ``alternative_index``, then
+    ``proposal_id``. Fisher p is not a tie-break. Other candidates in the
+    cell stay candidates, with ``confirm_skipped: not_top`` and confirmation
+    fields null. The choice waits until every drawn failure has a proposal
+    row and every accepted proposal has a selection row. The mode is stored
+    on every result row as ``confirm``.
+
     The one-sided Fisher p for each stage is recorded as a reported statistic
     only. ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0).
     A row whose alpha is not 1.0 is not written. ``spend_cap_usd`` applies to
@@ -543,6 +782,7 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
     The cell is evaluated when the fresh baseline's set-aside
     count is at most ``max_set_aside`` (default 3, about 10% of 30), the same
     cap as credit assignment."""
+    mode = check_confirm(confirm)
     if proposal["status"] != "accepted":
         raise ValueError("only accepted proposals are evaluated")
     run_dir = Path(run_dir)
@@ -560,6 +800,14 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
         raise ValueError("uncited proposal is not evaluated")
     baseline_commit = _require_baseline_commit(run_dir, baseline)
     recorded = _recorded_image(baseline)
+    draw_order = None
+    if mode == CONFIRM_TOP:
+        orders = _cell_draw_orders(run_dir, proposal["model"], proposal["task"])
+        parent = proposal.get("parent_trial_id")
+        if parent not in orders:
+            raise ValueError(f"{proposal['model']}/{proposal['task']}: parent failure {parent} is not a drawn pick; "
+                             "confirm=top ranks the cell's drawn failures")
+        draw_order = orders[parent]
     sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd,
                                        recorded)
     sel_commit = _require_arm_commit(run_dir / sel_dir, "selection", baseline_commit)
@@ -569,6 +817,8 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
     row = {"schema": RESULT_SCHEMA, "proposal_id": proposal["proposal_id"], "parent_trial_id": proposal["parent_trial_id"],
            "task": proposal["task"], "model": proposal["model"], "credit_method": proposal["credit_method"],
            "citations": proposal.get("citations"), "uncited": bool(proposal.get("uncited")),
+           "alternative_index": proposal.get("index"), "draw_order": draw_order,
+           "confirm": mode, "confirm_skipped": None,
            "n_trials": n_trials, "baseline_commit": baseline_commit, "code_commit": baseline_commit, **selection,
            "candidate": candidate, "selection_spend_usd": sel_alt.get("spend_usd", 0.0),
            "selection_run_dir": sel_dir, "selection_run_state": sel_state, "selection_code_commit": sel_commit,
@@ -578,23 +828,16 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
            "confirmation_run_dirs": None, "confirmation_run_states": None,
            "confirmation_code_commit": None, "confirmation_baseline_code_commit": None,
            "confirmed": None, "success": False}
-    if candidate:
-        conf_alt, alt_state, alt_dir = _arm(run_dir, base_cfg, proposal, "confirm", True, executor, n_trials,
-                                            spend_cap_usd, recorded)
-        conf_commit = _require_arm_commit(run_dir / alt_dir, "confirmation", baseline_commit)
-        conf_base, base_state, base_dir = _arm(run_dir, base_cfg, proposal, "confirm-baseline", False, executor,
-                                               n_trials, spend_cap_usd, recorded)
-        base_commit = _require_arm_commit(run_dir / base_dir, "confirmation-baseline", baseline_commit)
-        confirmation, conf_alpha = _stage("confirmation", conf_base, conf_alt, n_trials)
-        alphas.append(conf_alpha)
-        confirmed = confirmation["confirmation_complete"] and confirmation["confirmation_beats_baseline"]
-        row.update(confirmation, confirmed=confirmed, success=confirmed,
-                   confirmation_spend_usd=round(conf_alt.get("spend_usd", 0.0) + conf_base.get("spend_usd", 0.0), 6),
-                   confirmation_run_dirs=[alt_dir, base_dir], confirmation_run_states=[alt_state, base_state],
-                   confirmation_code_commit=conf_commit, confirmation_baseline_code_commit=base_commit)
-    row["alpha"] = _require_alpha(alphas)
-    with (run_dir / "ideation_results.jsonl").open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, sort_keys=True) + "\n")
+    if candidate and mode == CONFIRM_ALL:
+        row = _run_confirmation(run_dir, base_cfg, proposal, row, executor, n_trials, spend_cap_usd, recorded,
+                                baseline_commit, alphas)
+    elif mode == CONFIRM_TOP:
+        row["alpha"] = _require_alpha(alphas)
+        return _confirm_top(run_dir, base_cfg, proposal, row, executor, n_trials, spend_cap_usd, recorded,
+                            baseline_commit)
+    else:
+        row["alpha"] = _require_alpha(alphas)
+    _append_result(run_dir, row)
     return row
 
 
@@ -620,3 +863,52 @@ class VertexClaudeIdeator:
         text = "".join(b.get("text", "") for b in doc.get("content") or [] if b.get("type") == "text")
         start, end = text.find("{"), text.rfind("}")
         return (text[start:end + 1] if start >= 0 else text), doc.get("usage")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Evaluate accepted proposals. The only executor is the offline ``--fixture`` table.
+
+    This command does not start a provider. ``--confirm`` overrides ``--config``.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Evaluate accepted ideation proposals (offline fixture only)")
+    parser.add_argument("--run", type=Path, required=True)
+    parser.add_argument("--config", type=Path, help="IdeationConfig JSON (confirm: top|all)")
+    parser.add_argument("--confirm", choices=list(CONFIRM_MODES), default=None,
+                        help="which selection candidates to confirm (default all; overrides --config)")
+    parser.add_argument("--fixture", type=Path, required=True,
+                        help='offline pass table {"task|model": passes}. This command does not call a provider.')
+    parser.add_argument("--n-trials", type=int, default=rn.N_TRIALS)
+    parser.add_argument("--max-set-aside", type=int, default=MAX_SET_ASIDE)
+    args = parser.parse_args(argv)
+    if isinstance(args.n_trials, bool) or args.n_trials < 1:
+        raise SystemExit("n-trials must be a positive integer")
+    try:
+        cfg = resolve_config(args.config, args.confirm)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    raw = json.loads(args.fixture.read_text(encoding="utf-8"))
+    executor = rn.FixtureExecutor({tuple(k.split("|", 1)): int(v) for k, v in raw.items()})
+    proposals = [row for row in rn.read_rows(args.run / "ideation.jsonl") if row.get("status") == "accepted"]
+    proposals.sort(key=lambda row: (row.get("parent_trial_id") or "", row.get("index") is None,
+                                    row.get("index") if isinstance(row.get("index"), int) else 0,
+                                    row.get("proposal_id") or ""))
+    try:
+        for proposal in proposals:
+            evaluate(args.run, proposal, executor, n_trials=args.n_trials,
+                     max_set_aside=args.max_set_aside, confirm=cfg.confirm)
+    except (ValueError, rn.RunnerError, BaselineError) as exc:
+        raise SystemExit(str(exc)) from None
+    rows = rn.read_rows(args.run / "ideation_results.jsonl")
+    print(json.dumps({
+        "confirm": cfg.confirm, "evaluated": len(rows),
+        "candidates": sum(1 for row in rows if row.get("candidate")),
+        "confirmed": sum(1 for row in rows if row.get("confirmed")),
+        "confirm_skipped": sum(1 for row in rows if row.get("confirm_skipped")),
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,6 +1,10 @@
 """Credit assignment Method B: System 1 weights over the first failure + K earlier steps (SEA-109).
 
-For every failed trial (the same rows Method A reads), Method B:
+``run_method_b`` judges the drawn failures only (``credit_draw.json``, status
+``IN``). An admitted failure that was not drawn gets no row and no judge
+call. A missing draw file is an error. ``method_b_row`` itself does not
+read the draw: it still labels whatever trace it is given. For one drawn
+failure, Method B:
 
 1. finds the first failing step ``f`` with the shared locator
    (``credit_locator.first_failure``, so A and B agree on ``f``);
@@ -33,6 +37,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
+from obench.reflection.credit_draw import drawn_picks
 from obench.reflection.credit_locator import (
     LOCATOR_RULE_VERSION, MAX_SET_ASIDE, check_max_set_aside, failed_trials, first_failure, read_trace,
 )
@@ -188,10 +193,20 @@ def method_b_row(trial: dict, steps: list[dict], judge: System1, cfg: MethodBCon
 
 
 def run_method_b(run_dir: Path, judge: System1, cfg: MethodBConfig | None = None) -> list[dict]:
+    """Judge drawn failures only. ``credit_draw.json`` must exist.
+
+    Picks of ``IN`` cells are labelled. An admitted failure that was not
+    drawn is skipped, so the judge is not called for it. A drawn trial that
+    is not an admitted failure is an error.
+    """
     cfg = cfg or MethodBConfig()
     run_dir = Path(run_dir)
+    admitted = {trial["trial_id"]: trial for trial in failed_trials(run_dir, max_set_aside=cfg.max_set_aside)}
     rows = []
-    for trial in failed_trials(run_dir, max_set_aside=cfg.max_set_aside):
+    for pick in drawn_picks(run_dir):
+        trial = admitted.get(pick["trial_id"])
+        if trial is None:
+            raise ValueError(f"{pick['cell']}: drawn trial {pick['trial_id']} is not an admitted failure")
         steps = read_trace(run_dir / trial["trace"]) if trial.get("trace") else []
         rows.append(method_b_row(trial, steps, judge, cfg))
     tmp = run_dir / (TABLE + ".tmp")
@@ -251,7 +266,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("GOOGLE_CLOUD_PROJECT is not set")
     from thesis.ab.vertex_anthropic_proxy import AdcToken
 
-    rows = run_method_b(args.run, VertexGeminiJudge(cfg, project, AdcToken()), cfg)
+    try:
+        rows = run_method_b(args.run, VertexGeminiJudge(cfg, project, AdcToken()), cfg)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     print(json.dumps({"rows": len(rows), "table": str(args.run / TABLE),
                       "errors": sum(1 for r in rows if r["judge_error"]), "max_set_aside": cfg.max_set_aside}))
     return 0

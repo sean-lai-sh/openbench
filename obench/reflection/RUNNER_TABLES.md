@@ -141,12 +141,24 @@ So a model's suite keeps its planned size. If the pool runs out, `PoolExhausted`
 ## Spend
 
 - `preflight()` gives `round_one_usd` (tasks × models × N × the executor's per-trial estimate) and `worst_case_usd` (× `max_rounds`), checked against `spend_cap_usd`.
-- `ideation_estimate(executor, {model: failures})` prices ideation:
+- `ideation_estimate(executor, {model: failures}, confirm="all", cells=None)` prices ideation.
+  `confirm` is `all` (default) or `top`, the same setting as
+  `evaluate(..., confirm=)`. `cells` is `{model: cell count}`, required for `top`:
   - selection: `failures × 5 × N` trials;
-  - confirmation: `failures × 5 × candidate_fraction × 2N` trials (a fresh
-    alternative run plus a fresh baseline run);
-  - the worst case (every alternative a candidate) is 3× selection.
+  - `confirm=all`: confirmation is `failures × 5 × candidate_fraction × 2N`
+    trials (a fresh alternative run plus a fresh baseline run for every
+    candidate);
+  - `confirm=top`: confirmation is `cells × 2N` trials, because the cell
+    confirms one candidate across its drawn failures;
+  - the worst case for `all` (every alternative a candidate) is 3× selection.
+    For `top` it is one confirmation per cell (2N trials) on top of selection.
 - During the run, spend is the sum of logged trial costs. Every trial, including an infrastructure re-run, checks the cap and the alert thresholds before it starts.
+
+## Credit-assignment agreement
+
+`credit_agreement.jsonl` is one row per drawn failure (`credit_draw.json`, status `IN`). An admitted failure that was not drawn is absent, and the summary counts are over the drawn rows only. Method B's judge runs on those same drawn failures.
+
+`same_step` is kept and is tautological: Method B's first failing step is the shared locator step Method A records, because B's window is built from that step. `earliest_near_error_step` is the earliest step in B's window that the judge labels `near_error` (null when none of the window is `near_error`, or when the window is empty). `steps_before_a` is Method A's step minus that step (null when either is unavailable).
 
 ## Infrastructure re-runs
 

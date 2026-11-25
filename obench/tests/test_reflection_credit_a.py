@@ -161,6 +161,8 @@ class SetAsideCap(unittest.TestCase):
         from obench.tests.test_reflection_credit_b import FakeJudge
 
         run = set_aside_run()
+        from obench.tests.test_reflection_credit_b import draw_admitted
+        draw_admitted(run)
         rows = cb.run_method_b(run, FakeJudge(), cb.MethodBConfig())
         self.assertEqual(_counts(rows), {"zero": 0, "one": 1, "three": 3, "timeouts": 0})
         self.assertTrue(all(r["max_set_aside"] == 3 for r in rows))
@@ -168,6 +170,7 @@ class SetAsideCap(unittest.TestCase):
         cfg_path = run / "b.json"
         cfg_path.write_text(json.dumps({"max_set_aside": 0}))
         cfg = cb.resolve_config(cfg_path, max_set_aside=4)
+        draw_admitted(run, max_set_aside=4)
         rows = cb.run_method_b(run, FakeJudge(), cfg)
         on_disk = [json.loads(line) for line in (run / "credit_b.jsonl").read_text().splitlines()]
         self.assertEqual(_counts(on_disk), {"zero": 0, "one": 1, "three": 3, "four": 4, "timeouts": 0})
