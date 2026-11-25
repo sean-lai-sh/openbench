@@ -24,7 +24,7 @@ or more stays out.
 
 Every credit row records `max_set_aside` and that cell's `set_aside_count`
 beside the trial's result. Ideation uses the same cap
-(`evaluate(..., max_set_aside=3)`, read from the baseline summary's `set_aside`).
+(`evaluate(..., max_set_aside=3)`, read from the fresh baseline's `set_aside`).
 
 ## Rule 2: `cap_cutoff` (Researcher, 2026-11-25)
 
@@ -59,8 +59,12 @@ The candidate cells are an explicit list, passed as `--cells`. The driver does
 not infer candidates from `trials.jsonl`. A cell that appears in the rows and
 is absent from the list is recorded as `NOT_LISTED` with `reason` `not in the
 cell list`, an empty `picks` list, and `eligible_pool` 0. Nothing is drawn for
-it. A listed cell over the set-aside cap stays `EXCLUDED`. The cap rule is
-unchanged.
+it. A listed cell that has no rows in `trials.jsonl` is `NO_ROWS` with `reason`
+`no rows in trials.jsonl`, an empty `picks` list, and `eligible_pool` 0.
+Nothing is drawn for it. That is not `IN` with an empty pool: a listed cell
+that has rows, and no eligible failure left after the filters, stays `IN`.
+A typo in the cell list is `NO_ROWS`. A listed cell over the set-aside cap
+stays `EXCLUDED`. The cap rule is unchanged.
 
 `--cells` is a text file, one `<model>/<task>` key per line (blank lines and
 `#` comments ignored), or a JSON array of those keys, or `{"cells": [...]}`.
@@ -100,6 +104,7 @@ drawn (`eligible_pool` 0, `picks` empty). The manifest still lists that cell's
 example `max_set_aside=3: 5 set-aside (provider_blocked) trials > 3`. No task
 name is special-cased. The set-aside cap applies only to listed cells. A cell
 in the rows that the list does not name is `NOT_LISTED`, with nothing drawn.
+A listed cell with no rows is `NO_ROWS`, with nothing drawn.
 
 The driver writes `credit_draw.json` in the run directory (one object keyed by
 cell) and one file per cell under `credit_draw/`. A rerun replaces them.
@@ -108,8 +113,8 @@ cell) and one file per cell under `credit_draw/`. A rerun replaces them.
 | Field | Meaning |
 |---|---|
 | `cell`, `seed_string`, `seed_sha256` | `<model>/<task>` (plus `@patch` when set), `sea111-` + that key, and its sha256 |
-| `status`, `reason` | `IN` (`reason` null), `EXCLUDED` with the set-aside reason, or `NOT_LISTED` with `not in the cell list` |
-| `eligible_pool` | How many trials remained after the cap filter and the no-trace filter. 0 when the cell is excluded or not listed |
+| `status`, `reason` | `IN` (`reason` null), `EXCLUDED` with the set-aside reason, `NOT_LISTED` with `not in the cell list`, or `NO_ROWS` with `no rows in trials.jsonl` |
+| `eligible_pool` | How many trials remained after the cap filter and the no-trace filter. 0 when the cell is excluded, not listed, or has no rows |
 | `n_pick` | How many the draw was asked for (`3` or `all`) |
 | `picks` | `{draw_order, slot, trial_id}` in draw order. `slot` is the trial's `trial_index` |
 | `cap_cutoff_dropped` | `{slot, trial_id}` for rule 2, including on an excluded cell |
@@ -123,6 +128,52 @@ python3 -m obench.reflection.credit_draw --run <run dir> --cells <cell list> [--
 `--config` is a `DrawConfig` JSON object (`n_pick`, `max_set_aside`).
 `--n-pick` and `--max-set-aside` override the file when passed. The default
 cap is 3, the same setting as Method A and Method B.
+
+## Fresh baseline (`credit_baseline.py`)
+
+Before selection, each admitted cell (a listed cell the draw would mark `IN`)
+gets a fresh N-trial baseline at the current checkout. N defaults to **30**.
+`EXCLUDED` and `NO_ROWS` cells are not run. The trials are a new run under
+`credit_baseline/runs/`. `trials.jsonl` is not modified.
+
+The image is the one recorded on that cell's original trials (`image_ref`,
+`image_id`, `image_matches_pin`). It is reused as `recorded_image`. The step
+does not re-pin: a missing image, two different recorded images, or a fresh
+trial that ran a different ref is an error. The smoke-compaction knob is off
+for this run, including when `OBENCH_SMOKE_COMPACTION` is set.
+
+`credit_baseline.json` (and one file per cell under `credit_baseline/`) records:
+
+| Field | Meaning |
+|---|---|
+| `baseline_commit` | The checkout the fresh trials ran |
+| `image` | `{ref, id}` from the cell's original trials |
+| `image_matches_pin` | The recorded flag, kept when it is false |
+| `image_matches_pin_false` | True when `image_matches_pin` is false, so the mismatch is visible on the row |
+| `passes`, `completed` | The fresh run |
+| `set_aside` | Set-aside trials in the fresh run |
+| `cost_usd` | Spend of the fresh run |
+| `smoke_compaction` | False |
+
+`evaluate` scores selection against this row. A cell with no fresh baseline is
+an error. The pilot `summary.jsonl` row is not a fallback (`summary_row_baseline`
+raises if called).
+
+Selection (SEA-110): an alternative is a candidate when its passes are greater
+than this fresh baseline's passes and both sides completed N. A tie is not a
+candidate. Confirmation runs a new N-trial alternative and a new N-trial
+baseline, and the candidate is confirmed only when the alternative has more
+passes than that new baseline. The one-sided Fisher exact p is written on the
+result and is not a gate. `ALPHA` stays 1.0, so a higher pass count still
+qualifies when p is above 0.10.
+
+```text
+python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --fixture <passes.json> [--n-trials 30]
+```
+
+The command's executor is the offline fixture. A live run calls `run_baselines`
+with its own executor; the function still forces the knob off and passes the
+recorded image.
 
 ## Shared first-failure locator (`credit_locator.py`, `locator-v1`)
 

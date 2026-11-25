@@ -15,16 +15,20 @@ Every proposal row records its parent trial and the credit method (``A``,
 
 Evaluation: each accepted proposal runs ``n_trials`` (default 30) on the
 parent's task and model through the SEA-107 runner, with the patch applied
-by the recording proxy. ``decide`` compares it with the baseline summary row
-(same task, model, N). Two stages (``evaluate``; João Sedoc via Sean, 2026-11-13):
+by the recording proxy. ``decide`` compares it with the fresh baseline
+(``credit_baseline.json``, same task and model, N). The pilot ``summary.jsonl``
+row is not a baseline and there is no fallback. Two stages (``evaluate``;
+João Sedoc via Sean, SEA-110, 2026-11-13):
 - **Selection:** a *candidate* iff both sides completed all N trials and
-  the alternative has more passes than the baseline (``decide``: a bare beat,
-  no significance gate; 1/30 vs 0/30 qualifies).
+  the alternative has more passes than the fresh baseline (``decide``: a bare
+  beat, no significance gate; 1/30 vs 0/30 qualifies; a tie does not).
 - **Confirmation:** each candidate gets a fresh N-trial alternative run and a
-  fresh N-trial baseline run (new trial ids, no reuse of the selection
-  trials). ``success`` iff it beats the fresh baseline again.
+  new fresh N-trial baseline run (new trial ids, no reuse of the selection
+  trials or of the selection baseline). ``success`` iff it beats that new
+  baseline again.
 
 Both stages record the one-sided Fisher exact p as a reported statistic only.
+``ALPHA`` stays 1.0 and never gates, including when p is above 0.10.
 ``runner.ideation_estimate`` prices selection plus confirmation.
 
 Tables (in the run directory, separate from the trial and credit tables):
@@ -43,6 +47,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from obench.reflection import runner as rn
+from obench.reflection.credit_baseline import fresh_baseline_row
 from obench.reflection.credit_locator import MAX_SET_ASIDE, check_max_set_aside, read_trace
 from obench.reflection.patches import OPS, PATCH_SCHEMA, patch_id, validate_patch
 
@@ -161,8 +166,24 @@ def fisher_one_sided(alt_pass: int, alt_n: int, base_pass: int, base_n: int) -> 
                for k in range(alt_pass, min(total_pass, alt_n) + 1)) / denom
 
 
+def summary_row_baseline(*_args, **_kwargs):
+    """Retired. Selection used to read the pilot ``summary.jsonl`` row.
+
+    That comparison is gone. ``evaluate`` reads the fresh baseline and raises
+    when the cell has none. This function stays so a caller cannot quietly
+    grow the old path back.
+    """
+    raise ValueError("the old summary-row baseline is retired; score against the fresh baseline "
+                     "(credit_baseline.json), not summary.jsonl")
+
+
 def decide(baseline: dict, alternative: dict, n: int = rn.N_TRIALS, alpha: float = ALPHA) -> dict:
-    """The success rule. Both summary rows must have completed all ``n`` trials."""
+    """The success rule. Both sides must have completed all ``n`` trials.
+
+    ``baseline`` is a fresh baseline row (or a confirmation arm's summary),
+    never the pilot ``summary.jsonl`` row. ``alpha`` defaults to ``ALPHA``
+    (1.0) and does not gate. The Fisher p is still returned.
+    """
     complete = baseline.get("completed") == n and alternative.get("completed") == n
     if not complete:
         return {"complete": False, "beats_baseline": False, "fisher_p": None, "success": False,
@@ -212,38 +233,39 @@ def _set_aside_count(summary: dict) -> int:
 
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,
              spend_cap_usd: float | None = None, max_set_aside: int = MAX_SET_ASIDE) -> dict:
-    """Two-stage evaluation of one accepted proposal (João Sedoc via Sean, 2026-11-13).
+    """Two-stage evaluation of one accepted proposal (João Sedoc via Sean, SEA-110).
 
     1. **Selection:** the alternative runs N trials. It is a *candidate* iff
-       both it and the original baseline completed N and it has more passes
-       (bare beat, no significance gate; 1/30 vs 0/30 qualifies).
+       both it and the fresh baseline completed N and it has more passes
+       (bare beat, no significance gate; 1/30 vs 0/30 qualifies; a tie does not).
+       The fresh baseline is ``credit_baseline.json``. A cell without one is
+       an error. The pilot ``summary.jsonl`` row is not read.
     2. **Confirmation** (candidates only): a fresh N-trial run of the
-       alternative **and** a fresh N-trial baseline run (no patch), both with
-       new run ids, so new trial ids, and no reuse of the selection trials.
-       ``success`` iff the alternative beats the fresh baseline again (bare
-       beat, full N on both sides).
+       alternative **and** a new fresh N-trial baseline run (no patch), both with
+       new run ids, so new trial ids, and no reuse of the selection trials or
+       of the selection baseline. ``success`` iff the alternative beats that
+       new baseline (bare beat, full N on both sides).
 
     The one-sided Fisher p for each stage is recorded as a reported statistic
-    only. ``spend_cap_usd`` applies to each arm. The baseline cell is evaluated
-    when its set-aside count is at most ``max_set_aside`` (default 3, about
-    10% of 30), the same cap as credit assignment."""
+    only. ``ALPHA`` stays 1.0 and never gates. ``spend_cap_usd`` applies to each
+    arm. The cell is evaluated when the fresh baseline's set-aside count is at
+    most ``max_set_aside`` (default 3, about 10% of 30), the same cap as credit
+    assignment."""
     if proposal["status"] != "accepted":
         raise ValueError("only accepted proposals are evaluated")
     run_dir = Path(run_dir)
     base_cfg = json.loads((run_dir / "plan.json").read_text())["config"]
-    baseline = [s for s in rn.read_rows(run_dir / "summary.jsonl")
-                if s["task"] == proposal["task"] and s["model"] == proposal["model"] and s["patch_id"] is None]
-    if not baseline:
-        raise ValueError(f"no baseline summary for {proposal['task']} / {proposal['model']}")
+    # The pilot summary row is retired. Do not fall back to it when this raises.
+    baseline = fresh_baseline_row(run_dir, proposal["task"], proposal["model"])
     max_set_aside = check_max_set_aside(max_set_aside)
-    aside = _set_aside_count(baseline[0])
+    aside = _set_aside_count(baseline)
     # Amended Researcher ruling 2026-11-17: a cell enters when its set-aside count is at most max_set_aside
-    # (default 3, about 10% of 30). The same cap admits the cell to credit assignment.
+    # (default 3, about 10% of 30). The count is the fresh baseline's, not the old summary row.
     if aside > max_set_aside:
         raise ValueError(f"{proposal['task']} / {proposal['model']} has {aside} set-aside trials "
                          f"(max_set_aside {max_set_aside}); not evaluated")
     sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd)
-    selection = _stage("selection", baseline[0], sel_alt, n_trials)
+    selection = _stage("selection", baseline, sel_alt, n_trials)
     candidate = selection["selection_complete"] and selection["selection_beats_baseline"]
     row = {"schema": RESULT_SCHEMA, "proposal_id": proposal["proposal_id"], "parent_trial_id": proposal["parent_trial_id"],
            "task": proposal["task"], "model": proposal["model"], "credit_method": proposal["credit_method"],

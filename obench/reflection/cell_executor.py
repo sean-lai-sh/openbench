@@ -516,12 +516,46 @@ class CellExecutor:
 
     def image_record(self, task: dict) -> dict:
         """What actually runs: the ref, its local image id, the pin, and whether the pin was honoured
-        (``False`` when ``--use-image-tag`` ran ``docker_image_tag``; ``None`` when the task pins nothing)."""
+        (``False`` when ``--use-image-tag`` ran ``docker_image_tag``; ``None`` when the task pins nothing).
+
+        A recorded image keeps the flag from the original trials. It is not recomputed, so a recorded
+        ``matches_pin`` of false stays false.
+        """
+        if task.get("image_source") == "recorded":
+            image_id = task.get("image_id") or self.docker.image_id(task["image"])
+            return {"ref": task["image"], "id": image_id, "pinned": task.get("image_id"),
+                    "matches_pin": task.get("recorded_matches_pin")}
         pin = task.get("image_pin")
         pinned = pin["pinned"] if pin else (task["image"] if "@sha256:" in task["image"] else task.get("image_id"))
         matches = False if pin else (True if pinned else None)
         return {"ref": task["image"], "id": pin["used_id"] if pin else self.docker.image_id(task["image"]),
                 "pinned": pinned, "matches_pin": matches}
+
+    def prepare_task(self, spec: TrialSpec) -> dict:
+        """The image this trial runs.
+
+        ``recorded_image`` on the spec is the image the cell's original trials ran. It is reused as
+        that ref and id. ``resolve_image`` is not called, so a missing digest is not replaced with
+        ``docker_image_tag`` and the pin is not looked up again.
+        """
+        recorded = getattr(spec, "recorded_image", None)
+        if not recorded:
+            task = self.resolve_image(self._task(spec), spec.task)
+            if task["image_id"] and self.docker.image_id(task["image"]) != task["image_id"]:
+                raise CellError(f"{spec.task}: {task['image']} is not the pinned image {task['image_id']}")
+            return task
+        if not isinstance(recorded, dict) or not isinstance(recorded.get("ref"), str) or not recorded["ref"]:
+            raise CellError(f"{spec.task}: recorded_image needs a ref, got {recorded!r}")
+        ref = recorded["ref"]
+        if not self.docker.has_image(ref):
+            raise CellError(f"{spec.task}: recorded image {ref} is not on this host; refusing to re-pin")
+        image_id = recorded.get("id")
+        local_id = self.docker.image_id(ref)
+        if image_id and local_id != image_id:
+            raise CellError(f"{spec.task}: recorded image {ref} is {local_id}, not {image_id}; refusing to re-pin")
+        task = self._task(spec)
+        return dict(task, image=ref, image_source="recorded", image_id=image_id, image_pin=None, image_tag=None,
+                    recorded_matches_pin=recorded.get("matches_pin"))
 
     def seed_workspace(self, task: dict, workspace: Path) -> dict:
         """The agent starts from the task image's WORKDIR, as ``obench run --exec docker`` stages it: the image's
@@ -559,9 +593,7 @@ class CellExecutor:
         from obench.workspace import materialize_workspace
 
         model = vm.resolve(spec.model)
-        task = self.resolve_image(self._task(spec), spec.task)
-        if task["image_id"] and self.docker.image_id(task["image"]) != task["image_id"]:
-            raise CellError(f"{spec.task}: {task['image']} is not the pinned image {task['image_id']}")
+        task = self.prepare_task(spec)
         image = self.image_record(task)
         trial_dir = Path(run_dir) / spec.trial_dir
         workspace = trial_dir / "workspace"

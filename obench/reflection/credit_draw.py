@@ -6,8 +6,10 @@ unchanged.
 
 The candidate cells are an explicit list of ``<model>/<task>`` keys (``--cells``).
 The driver does not infer candidates from the rows. A cell present in the
-rows and absent from the list is ``NOT_LISTED`` and nothing is drawn. For
-each listed cell ``failed_trials()`` admits (``set_aside_count <= max_set_aside``):
+rows and absent from the list is ``NOT_LISTED`` and nothing is drawn. A listed
+cell with no rows in ``trials.jsonl`` is ``NO_ROWS`` (not ``IN`` with an empty
+pool) and nothing is drawn. For each listed cell ``failed_trials()`` admits
+(``set_aside_count <= max_set_aside``):
 
 1. Start from that output (completed failures of an admitted cell).
 2. Remove ``cap_cutoff`` trials.
@@ -25,6 +27,7 @@ Picks stay in draw order. A listed cell over the set-aside cap is ``EXCLUDED``
 and nothing is drawn; its ``cap_cutoff`` trials are still listed. The reason is
 the count (``max_set_aside=3: 5 set-aside (provider_blocked) trials > 3``),
 never a task name. An unlisted cell's reason is ``not in the cell list``.
+A listed cell with no rows has reason ``no rows in trials.jsonl``.
 
     python3 -m obench.reflection.credit_draw --run <run dir> --cells <cell list> [--n-pick 3|all] [--max-set-aside 3] [--config draw.json]
 """
@@ -260,7 +263,8 @@ def run_draw(run_dir: Path, cells: list[str], n_pick: int | str = N_PICK,
     """Write ``credit_draw.json`` and one manifest per cell. A rerun replaces them.
 
     ``cells`` is the candidate list. Rows do not add candidates. A row cell
-    missing from the list is ``NOT_LISTED`` and is not drawn.
+    missing from the list is ``NOT_LISTED`` and is not drawn. A listed cell
+    with no rows is ``NO_ROWS`` and is not drawn.
     """
     run_dir = Path(run_dir)
     cell_list = check_cells(list(cells))
@@ -320,7 +324,9 @@ def run_draw(run_dir: Path, cells: list[str], n_pick: int | str = N_PICK,
         if "@" in task:
             task, patch_id = task.split("@", 1)
         rec = _record(name, model, task, patch_id, 0, max_set_aside, n_pick)
-        rec.update(status="IN", reason=None, eligible_pool=0, picks=[])
+        # Rows never arrived for this key (a typo, or the wrong patch). An empty
+        # eligible pool is a different case: the cell has rows, and stays IN.
+        rec.update(status="NO_ROWS", reason="no rows in trials.jsonl", eligible_pool=0, picks=[])
         manifests[name] = rec
 
     _write_json(run_dir / TABLE, manifests)
@@ -367,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Seeded draw of failed trials for credit assignment")
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--cells", type=Path, required=True,
-                        help="candidate cells: <model>/<task> keys, one per line or a JSON array. Rows outside this list are NOT_LISTED")
+                        help="candidate cells: <model>/<task> keys, one per line or a JSON array. Rows outside this list are NOT_LISTED; a listed cell with no rows is NO_ROWS")
     parser.add_argument("--config", type=Path, help="DrawConfig JSON (n_pick, max_set_aside)")
     parser.add_argument("--n-pick", type=parse_n_pick, default=None,
                         help="failures to draw per admitted cell (default 3, or 'all'; overrides --config)")
@@ -383,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         "in": sum(1 for rec in manifests.values() if rec["status"] == "IN"),
         "excluded": sum(1 for rec in manifests.values() if rec["status"] == "EXCLUDED"),
         "not_listed": sum(1 for rec in manifests.values() if rec["status"] == "NOT_LISTED"),
+        "no_rows": sum(1 for rec in manifests.values() if rec["status"] == "NO_ROWS"),
         "picks": sum(len(rec["picks"]) for rec in manifests.values()),
         "n_pick": cfg.n_pick, "max_set_aside": cfg.max_set_aside,
     }))

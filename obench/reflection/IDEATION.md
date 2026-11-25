@@ -46,24 +46,28 @@ Rejected proposals are stored with reasons and never run.
 
 ## Evaluation: selection, then confirmation (`ideation_results.jsonl`)
 
-Two stages (João Sedoc via Sean, 2026-11-13). `evaluate(run_dir, proposal, executor)` runs both.
-The baseline cell is evaluated when its summary `set_aside` count is at most
+Two stages (João Sedoc via Sean, SEA-110). `evaluate(run_dir, proposal, executor)` runs both.
+The cell is evaluated when the fresh baseline's `set_aside` count is at most
 `max_set_aside` (default **3**, about 10% of 30), the same cap as credit
-assignment. `evaluate(..., max_set_aside=n)` overrides the default. The count
-is reported on the credit rows for that cell.
+assignment. `evaluate(..., max_set_aside=n)` overrides the default.
+
+The selection baseline is the fresh baseline in `credit_baseline.json` (see
+`CREDIT_ASSIGNMENT.md`), not the pilot `summary.jsonl` row. A cell with no
+fresh baseline raises. There is no fallback. `summary_row_baseline` raises if
+called.
 
 1. **Selection.** The alternative runs **N = 30** trials on the parent's task
    and model, with its patch (`ideation/<proposal_id>/select/`). It is a
-   **candidate** iff both it and the original baseline completed all N trials
+   **candidate** iff both it and the fresh baseline completed all N trials
    and it has **more passes** (`decide`: a bare beat, no significance gate).
-   **1/30 vs 0/30 qualifies.**
+   **1/30 vs 0/30 qualifies. A tie does not.**
 2. **Confirmation (candidates only).** A **fresh** N-trial run of the
-   alternative (`.../confirm/`) **and** a **fresh** N-trial baseline run with
+   alternative (`.../confirm/`) **and** a **new** N-trial baseline run with
    no patch (`.../confirm-baseline/`). Each arm has its own run id, so its
-   trial ids are new, and no selection trial is reused. OpenCode has no
-   sampling seed: every trial is an independent sample. **`success`** iff the
-   alternative beats the fresh baseline again: full N on both sides, more
-   passes.
+   trial ids are new. The confirmation baseline is that new run, not the
+   selection baseline and not the pilot summary. OpenCode has no sampling
+   seed: every trial is an independent sample. **`success`** iff the
+   alternative beats the new baseline: full N on both sides, more passes.
 
 Every arm runs through the SEA-107 runner in `fixed_tasks` mode: exactly the
 parent's task (even a pool task), never a suite swap.
@@ -77,8 +81,9 @@ parent's task (even a pool task), never a suite swap.
 | Outcome | `success` (= `confirmed`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials` |
 
 `*_fisher_p` is the one-sided Fisher exact p for that stage, **reported only,
-never a gate** (`ALPHA = 1.0`). Passing `alpha=0.05` to `decide` re-enables a
-gate for sensitivity analysis.
+never a gate** (`ALPHA = 1.0`). A higher pass count is a candidate even when
+that p is above 0.10. Passing `alpha=0.05` to `decide` re-enables a gate for
+sensitivity analysis; `evaluate` does not.
 
 ## Cost
 
