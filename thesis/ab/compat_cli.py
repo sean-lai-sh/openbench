@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -39,6 +40,14 @@ def extra_args(text: str, name: str) -> list[str]:
         args.append("--approve")
     if name == "omp":
         args.append("--yolo")
+    # Matched pair only. A help text that does not list --thinking is left
+    # alone, and the flag is absent unless OBENCH_MATCHED_CONFIG is set.
+    if (
+        name == "pi"
+        and os.environ.get("OBENCH_MATCHED_CONFIG", "").strip().lower() in {"1", "true", "yes", "on"}
+        and _flag_present(text, "--thinking")
+    ):
+        args.extend(["--thinking", "off"])
     return args
 
 

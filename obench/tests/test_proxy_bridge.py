@@ -296,6 +296,13 @@ class SharedOriginTests(unittest.TestCase):
         self.assertEqual(read_proxy_observed(ledger, "cell"), [{
             "thinking_mode": "default",
             "thinking_sent": "adaptive",
+            "thinking_json": None,
+            "output_config_json": None,
+            "upstream_thinking_json": None,
+            "upstream_output_config_json": None,
+            "received_thinking_json": None,
+            "received_output_config_json": None,
+            "thinking_tokens": None,
             "reasoning_tokens": 12,
         }])
 

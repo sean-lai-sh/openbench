@@ -12,11 +12,15 @@ names the field.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 PROVIDER = "vertex-anthropic"
 MODEL_ID = "claude-opus-5-5"
 CONTEXT = 1_000_000
+# Opt-in matched Pi vs OpenCode pair. The default document stays at CONTEXT.
+MATCHED_CONTEXT = 200_000
+MATCHED_CONFIG_ENV = "OBENCH_MATCHED_CONFIG"
 MAX_TOKENS = 128_000
 
 
@@ -79,9 +83,14 @@ def thinking_options(mode: str) -> dict:
     raise ValueError(f"unknown omp thinking mode {mode!r}")
 
 
+def _matched_config() -> bool:
+    return os.environ.get(MATCHED_CONFIG_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def model_document(root: Path, proxy_base: str, filename: str, *,
                    adaptive_thinking: bool = False,
-                   reasoning: bool = True) -> str:
+                   reasoning: bool = True,
+                   context_window: int | None = None) -> str:
     """Return the models file body for ``proxy_base`` (no ``/v1`` suffix).
 
     The vertex-anthropic provider sets ``auth`` to ``apiKey``. From Oh My Pi
@@ -93,7 +102,15 @@ def model_document(root: Path, proxy_base: str, filename: str, *,
     unless a caller opts in. ``reasoning`` defaults to true. 12–13.x builds
     send the old thinking format, so those checkouts need ``reasoning=False``
     or the adaptive pin.
+
+    ``context_window`` defaults to 1_000_000. ``OBENCH_MATCHED_CONFIG`` selects
+    200_000 when the caller does not pass a window. Passing ``context_window``
+    wins over that flag.
     """
+    if context_window is None:
+        window = MATCHED_CONTEXT if _matched_config() else CONTEXT
+    else:
+        window = int(context_window)
     model = {
         "id": MODEL_ID,
         "name": "Claude Opus 5.5",
@@ -101,7 +118,7 @@ def model_document(root: Path, proxy_base: str, filename: str, *,
         "reasoning": bool(reasoning),
         "input": ["text", "image"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-        "contextWindow": CONTEXT,
+        "contextWindow": window,
         "maxTokens": MAX_TOKENS,
     }
     if adaptive_thinking:

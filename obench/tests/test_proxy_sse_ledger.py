@@ -234,5 +234,68 @@ class ClientBytesTests(unittest.TestCase):
                 self.assertEqual(got, body)
 
 
+class RequestFieldTests(unittest.TestCase):
+    """anthropic-beta, stop_reason, and the max_tokens flag on every call."""
+
+    def test_beta_and_stop_reason_on_stream_and_json_rows(self):
+        httpd, proxy, ledger = ProxyLedgerTests.start(self, {})
+        capped = json.dumps({
+            "id": "msg", "type": "message", "role": "assistant",
+            "content": [{"type": "text", "text": "x"}],
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 3, "output_tokens": 64},
+        }).encode()
+        ended = json.dumps({
+            "id": "msg", "type": "message", "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        }).encode()
+        httpd.queue.extend([(capped, False), (STREAM, True), (ended, False)])
+        plain = {
+            "model": "claude-opus-5-5", "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        url = proxy.base_url + "/c/cap/v1/messages"
+        status, _ = _post(url, plain, headers={
+            "anthropic-beta": "claude-code-20250219,prompt-caching-2024-07-31",
+        })
+        self.assertEqual(status, 200)
+        status, _ = _post(url, BODY, headers={"anthropic-beta": "prompt-caching-2024-07-31"})
+        self.assertEqual(status, 200)
+        status, _ = _post(url, plain)
+        self.assertEqual(status, 200)
+        self.assertEqual(httpd.seen[0]["beta"], "prompt-caching-2024-07-31")
+        self.assertEqual(httpd.seen[1]["beta"], "prompt-caching-2024-07-31")
+        self.assertIsNone(httpd.seen[2]["beta"])
+        rows = [json.loads(line) for line in (ledger / "cap.jsonl").read_text().splitlines()]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            rows[0]["anthropic_beta_received"],
+            "claude-code-20250219,prompt-caching-2024-07-31",
+        )
+        self.assertEqual(rows[0]["anthropic_beta_upstream"], "prompt-caching-2024-07-31")
+        self.assertEqual(rows[0]["stop_reason"], "max_tokens")
+        self.assertIs(rows[0]["hit_max_tokens"], True)
+        self.assertNotIn("stream", rows[0])
+        self.assertEqual(rows[1]["anthropic_beta_received"], "prompt-caching-2024-07-31")
+        self.assertEqual(rows[1]["anthropic_beta_upstream"], "prompt-caching-2024-07-31")
+        self.assertEqual(rows[1]["stop_reason"], "tool_use")
+        self.assertEqual(rows[1]["stream"]["stop_reason"], "tool_use")
+        self.assertIs(rows[1]["hit_max_tokens"], False)
+        self.assertIsNone(rows[2]["anthropic_beta_received"])
+        self.assertIsNone(rows[2]["anthropic_beta_upstream"])
+        self.assertEqual(rows[2]["stop_reason"], "end_turn")
+        self.assertIs(rows[2]["hit_max_tokens"], False)
+        metered = apply_cell_meter(
+            {"turns": 3},
+            {"ledger_dir": str(ledger), "cell_id": "cap"},
+            protocol_model=MODEL_ID,
+        )
+        self.assertEqual(metered["proxy_hit_max_tokens"], 1)
+        self.assertIs(metered["proxy_hit_max_tokens_any"], True)
+        self.assertEqual(metered["proxy_stop_reasons"], ["tool_use"])
+
+
 if __name__ == "__main__":
     unittest.main()

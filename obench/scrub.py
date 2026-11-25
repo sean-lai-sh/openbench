@@ -120,8 +120,11 @@ def _dynamic_rules(ctx):
     if user and len(user) >= 3:
         rules.append(("username", re.compile(r"\b" + re.escape(user) + r"\b"), "<USER>"))
 
+    # Whole words only, same as the username rule. A hostname inside an
+    # identifier (``test_cursor`` when the machine is named ``cursor``) is a
+    # tool or package name, not the machine.
     for h in sorted((h for h in ctx["hostnames"] if len(h) >= 4), key=len, reverse=True):
-        rules.append(("hostname", re.compile(re.escape(h)), "<HOST>"))
+        rules.append(("hostname", re.compile(r"\b" + re.escape(h) + r"\b"), "<HOST>"))
 
     return rules
 
@@ -203,19 +206,76 @@ def scrub_tree(src, out_dir, ctx):
     return written
 
 
+# A directory that contains this file asks --check to ignore exact 40-hex
+# git commit IDs in that directory and below. Transcripts do not carry it.
+# scrub_text still redacts those IDs; this is a check-only exception.
+GIT_SHA_ALLOW_FILE = "SCRUB_ALLOW_GIT_SHA"
+_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _is_allowed_git_sha(category, snippet):
+    """True for a hex or base64 hit that is exactly one 40-hex commit ID.
+
+    A 40-hex SHA also matches the base64 blob rule. Longer hashes, truncated
+    snippets, and any non-hex text stay reported.
+    """
+    if category not in {"hex-blob", "base64-blob"}:
+        return False
+    return _GIT_SHA_RE.fullmatch(snippet) is not None
+
+
+def _git_sha_allowed(src, full):
+    """True when ``full`` is at or under a directory holding the allow file.
+
+    The walk stops at ``src``. A marker in one subdirectory does not cover
+    a sibling tree.
+    """
+    src = os.path.abspath(src)
+    root = os.path.dirname(src) if os.path.isfile(src) else src
+    start = os.path.dirname(os.path.abspath(full)) if os.path.isfile(full) else os.path.abspath(full)
+    cur = start
+    while True:
+        if os.path.isfile(os.path.join(cur, GIT_SHA_ALLOW_FILE)):
+            return True
+        if cur == root:
+            return False
+        parent = os.path.dirname(cur)
+        if parent == cur or not cur.startswith(root + os.sep):
+            return False
+        cur = parent
+
+
 def check_tree(src, ctx):
-    """Return {rel_path: [findings]} for every file under ``src`` with PII."""
+    """Return ({rel_path: [findings]}, ignored_git_sha_hits).
+
+    Findings are the PII ``--check`` still reports. ``ignored_git_sha_hits``
+    counts exact 40-hex commit IDs skipped because ``SCRUB_ALLOW_GIT_SHA``
+    sits on that file's directory. Every other rule is unchanged.
+    """
     report = {}
+    ignored = 0
     for full, rel in _iter_files(src):
-        hits = find_pii(_read_text(full), ctx)
-        if hits:
-            report[rel] = hits
-    return report
+        allow = _git_sha_allowed(src, full)
+        kept = []
+        for hit in find_pii(_read_text(full), ctx):
+            category, _lineno, snippet = hit
+            if allow and _is_allowed_git_sha(category, snippet):
+                ignored += 1
+                continue
+            kept.append(hit)
+        if kept:
+            report[rel] = kept
+    return report, ignored
 
 
-def _print_check_report(src, report):
+def _print_check_report(src, report, ignored_git_shas=0):
     """Human-readable --check summary. Returns total number of hits."""
     total = 0
+    if ignored_git_shas:
+        print(
+            f"Ignored {ignored_git_shas} exact 40-hex git commit ID hit(s) "
+            f"where {GIT_SHA_ALLOW_FILE} is present. Other PII rules are unchanged."
+        )
     if not report:
         print(f"CLEAN: no potential PII found under {src}")
         return 0
@@ -267,8 +327,8 @@ def main(argv=None):
     ctx = build_context(user=args.user, home=args.home, hostnames=args.hostname)
 
     if args.check:
-        report = check_tree(args.src, ctx)
-        total = _print_check_report(args.src, report)
+        report, ignored = check_tree(args.src, ctx)
+        total = _print_check_report(args.src, report, ignored)
         return 1 if total else 0
 
     if not args.out:

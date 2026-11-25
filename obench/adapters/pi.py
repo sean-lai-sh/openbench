@@ -1124,7 +1124,12 @@ def _run_vertex(instruction, workdir, timeout_s, spec):
             "tokens": tokens,
             "turns": turns,
             "cmd": cmd,
-            "model_context_window": 1000000,
+            "model_context_window": (
+                200_000
+                if os.environ.get("OBENCH_MATCHED_CONFIG", "").strip().lower()
+                in {"1", "true", "yes", "on"}
+                else 1000000
+            ),
             "model_max_tokens": 128000,
             **token_usage,
         }

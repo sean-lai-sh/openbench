@@ -73,6 +73,15 @@ class TestScrubClasses(unittest.TestCase):
         self.assertIn("<HOST>", out)
         self.assertNotIn("Alices-Laptop", out)
 
+    def test_hostname_skips_identifier(self):
+        # Same word-boundary rule as usernames. A harness test named
+        # test_cursor is not the machine hostname cursor.
+        ctx = scrub.build_context(user="alice", home="/Users/alice", hostnames=["cursor"])
+        out = scrub.scrub_text("ran test_cursor on cursor today", ctx)
+        self.assertIn("test_cursor", out)
+        self.assertIn("on <HOST> today", out)
+        self.assertNotIn("on cursor", out)
+
     def test_api_key(self):
         out = self._scrub("export OPENAI_API_KEY=sk-abcDEF0123456789ghijklmnop")
         self.assertIn("<REDACTED_KEY>", out)
@@ -232,6 +241,52 @@ class TestCli(unittest.TestCase):
         _write_file(f, "x")
         proc = self._run(f)
         self.assertNotEqual(proc.returncode, 0)
+
+    def test_check_ignores_exact_git_sha_only_under_marker(self):
+        sha = "39875fac6670b24c1cef2635aaf077e5c6e04741"
+        proof = os.path.join(self.tmp, "proof")
+        os.makedirs(proof)
+        note = os.path.join(proof, "note.txt")
+        _write_file(note, "commit " + sha + "\n")
+        _write_file(os.path.join(proof, scrub.GIT_SHA_ALLOW_FILE), "allow\n")
+        proc = self._run(proof, "--check")
+        self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
+        self.assertIn("CLEAN", proc.stdout)
+        self.assertIn("40-hex git commit", proc.stdout)
+        self.assertIn(sha, _read(note))
+
+        bare = os.path.join(self.tmp, "bare.txt")
+        _write_file(bare, "commit " + sha + "\n")
+        flagged = self._run(bare, "--check")
+        self.assertEqual(flagged.returncode, 1)
+        self.assertIn("hex-blob", flagged.stdout)
+
+    def test_git_sha_marker_still_flags_email_and_longer_hex(self):
+        sha = "39875fac6670b24c1cef2635aaf077e5c6e04741"
+        proof = os.path.join(self.tmp, "proof")
+        os.makedirs(proof)
+        _write_file(os.path.join(proof, scrub.GIT_SHA_ALLOW_FILE), "allow\n")
+        _write_file(
+            os.path.join(proof, "note.txt"),
+            "commit " + sha + "\nmail jane@example.com\nblob " + ("ab" * 32) + "\n",
+        )
+        proc = self._run(proof, "--check")
+        self.assertEqual(proc.returncode, 1, msg=proc.stdout)
+        self.assertIn("email", proc.stdout)
+        self.assertIn("hex-blob", proc.stdout)
+        self.assertNotIn(sha, proc.stdout)
+
+    def test_git_sha_marker_does_not_cover_a_sibling(self):
+        sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        root = os.path.join(self.tmp, "root")
+        os.makedirs(os.path.join(root, "proof"))
+        _write_file(os.path.join(root, "proof", scrub.GIT_SHA_ALLOW_FILE), "allow\n")
+        _write_file(os.path.join(root, "proof", "ok.txt"), "commit " + sha + "\n")
+        _write_file(os.path.join(root, "transcript.txt"), "commit " + sha + "\n")
+        proc = self._run(root, "--check")
+        self.assertEqual(proc.returncode, 1, msg=proc.stdout)
+        self.assertIn("transcript.txt", proc.stdout)
+        self.assertNotIn("ok.txt", proc.stdout)
 
 
 if __name__ == "__main__":
