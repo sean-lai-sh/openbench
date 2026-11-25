@@ -96,6 +96,7 @@ class MultiStep(unittest.TestCase):
         self.assertEqual([r["message_id"] for r in self.records], ["msg_1", "msg_2", "msg_3"])
         self.assertEqual([r["finish_reason"] for r in self.records], ["tool-calls", "tool-calls", "stop"])
         self.assertEqual([r["request"]["call_index"] for r in self.records], [1, 3, 4])  # side call 2 skipped
+        self.assertEqual([r["stripped_side_thinking_blocks"] for r in self.records], [0, 0, 0])
         self.assertEqual(self.records[0]["started_at"], "1970-01-01T00:00:01.000+00:00")
         for r in self.records:
             self.assertEqual(r["schema"], "openbench.reflection.step/v1")
@@ -103,6 +104,12 @@ class MultiStep(unittest.TestCase):
             self.assertEqual(r["model"], {"requested": "claude-opus-5-5", "served": "claude-opus-5-5",
                                           "wire": "anthropic"})
             self.assertEqual(r["run"], {"task": "t", "trial": 1})
+
+    def test_stripped_side_thinking_blocks_are_copied_onto_the_step(self):
+        wires = anthropic_wires()
+        wires[0] = dict(wires[0], stripped_side_thinking_blocks=2)
+        records = tr.build_trace(opencode_stream(), wires)
+        self.assertEqual([r["stripped_side_thinking_blocks"] for r in records], [2, 0, 0])
 
     def test_tool_calls_include_the_errored_call_recovered_from_the_next_request(self):
         first, second, third = (r["tool_calls"] for r in self.records)

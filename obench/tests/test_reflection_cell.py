@@ -652,6 +652,154 @@ class Trial(CellCase):
         self.assertTrue(side["thinking_signature_reject"])
         self.assertEqual(side["status"], 400)
 
+    def _signature_trial(self, bodies, reply, index, events_reason="tool-calls"):
+        """One fake OpenCode run that posts ``bodies`` in order, then one step finishing ``events_reason``."""
+        signature_400 = json.dumps({
+            "type": "error",
+            "error": {"type": "invalid_request_error",
+                      "message": "Invalid `signature` in `thinking` block. The block is bound to a different conversation."},
+        }).encode()
+        calls = {"n": 0}
+
+        def wrapped(path):
+            calls["n"] += 1
+            return reply(calls["n"], path, signature_400)
+
+        self.vertex.reply = wrapped
+
+        class Scripted(FakeTrialDocker):
+            def run_agent(inner, args, stdout_path, timeout, stderr_path=None):
+                inner.calls.append(args)
+                env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+                cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+                base = next(iter(cfg["provider"].values()))["options"]["baseURL"]
+                workspace = next(args[i + 1].split(":")[0] for i, a in enumerate(args) if a == "-v")
+                for body in bodies:
+                    req = urllib.request.Request(base + "/messages", data=json.dumps(body).encode(), method="POST",
+                                                 headers={"Content-Type": "application/json"})
+                    try:
+                        urllib.request.urlopen(req, timeout=10).read()
+                    except urllib.error.HTTPError:
+                        pass
+                events = [
+                    {"type": "step_start", "timestamp": 10, "sessionID": "s",
+                     "part": {"messageID": "m1", "type": "step-start"}},
+                    {"type": "tool_use", "timestamp": 12, "sessionID": "s",
+                     "part": {"messageID": "m1", "type": "tool", "callID": "toolu_bash", "tool": "bash",
+                              "state": {"status": "completed", "input": {"command": "ls"}, "output": "ok\n",
+                                        "title": "ls", "metadata": {}, "time": {"start": 11, "end": 12}}}},
+                    {"type": "step_finish", "timestamp": 13, "sessionID": "s",
+                     "part": {"messageID": "m1", "type": "step-finish", "reason": events_reason, "cost": 0.0,
+                              "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}},
+                ]
+                Path(workspace, "out.txt").write_text("done\n")
+                Path(stdout_path).write_text("".join(json.dumps(e) + "\n" for e in events))
+                if stderr_path:
+                    Path(stderr_path).write_text("")
+                return 0, False
+
+        return self.executor(Scripted()).run_trial(self.spec(index=index), self.tmp / "run")
+
+    def test_post_compaction_signature_is_not_upstream_4xx_or_a_pending_tool(self):
+        """Compaction returned 200. The next main turn replayed its thinking block and Vertex returned 400.
+        Exit 0 with a tool-call finish would otherwise look like agent_exit_pending_tool."""
+        main = {"model": OPUS, "stream": True, "max_tokens": 1000, "tools": TOOLS,
+                "messages": [{"role": "user", "content": "go"}]}
+        side = {"model": OPUS, "stream": False, "max_tokens": 32000,
+                "system": "You are a helpful AI assistant tasked with summarizing conversations.",
+                "messages": [{"role": "user", "content": "Provide a detailed prompt for continuing our conversation above."}]}
+        replay = {"model": OPUS, "stream": False, "max_tokens": 1000, "tools": TOOLS,
+                  "messages": [{"role": "user", "content": "go"},
+                               {"role": "assistant", "content": [
+                                   {"type": "thinking", "thinking": "from compaction", "signature": "SIDE-SIG"},
+                                   {"type": "text", "text": "summary kept"}]}]}
+
+        def reply(n, path, signature_400):
+            if n == 3:
+                return 400, "application/json", signature_400
+            return default_reply(path)
+
+        result = self._signature_trial([main, side, replay], reply, index=71)
+        self.assertEqual((result.status, result.passed, result.env_cause),
+                         ("post_compaction_signature", None, "vertex_thinking_signature"))
+        self.assertEqual(result.signature_400s, 1)
+        self.assertEqual(result.side_kinds, {"compaction": 1})
+        self.assertEqual(result.post_compaction["prior_side_kind"], "compaction")
+        self.assertIsNone(result.agent_exit)
+        self.assertIsNone(result.side_signature)
+        trial_dir = self.tmp / "run" / self.spec(index=71).trial_dir
+        self.assertTrue((trial_dir / "post_compaction.json").is_file())
+        self.assertFalse((trial_dir / "upstream_4xx.json").exists())
+        self.assertFalse((trial_dir / "agent_exit.json").exists())
+        wires = [json.loads(l) for l in (trial_dir / "wire.jsonl").read_text().splitlines()]
+        self.assertEqual([w["call_role"] for w in wires], ["main", "side", "main"])
+        self.assertTrue(wires[-1]["thinking_signature_reject"])
+        self.assertEqual(wires[-1]["stripped_side_thinking_blocks"], 0)
+        self.assertIsNone(wires[-1]["thinking_block_binding"])
+
+    def test_main_signature_400_without_a_side_call_stays_upstream_4xx(self):
+        main = {"model": OPUS, "stream": True, "max_tokens": 1000, "tools": TOOLS,
+                "messages": [{"role": "user", "content": "go"}]}
+        again = {"model": OPUS, "stream": False, "max_tokens": 1000, "tools": TOOLS,
+                 "messages": [{"role": "user", "content": "go"}]}
+
+        def reply(n, path, signature_400):
+            if n == 2:
+                return 400, "application/json", signature_400
+            return default_reply(path)
+
+        result = self._signature_trial([main, again], reply, index=72)
+        self.assertEqual((result.status, result.passed), ("upstream_4xx", None))
+        self.assertIsNone(result.env_cause)
+        self.assertIsNone(result.post_compaction)
+        self.assertEqual(result.signature_400s, 1)
+
+    def test_side_signature_outranks_an_earlier_post_compaction_400(self):
+        """The trial's last call is the side signature 400, and the last step still has a tool call.
+        An earlier breaking main-turn signature 400 does not become post_compaction_signature
+        or agent_exit_pending_tool."""
+        main = {"model": OPUS, "stream": True, "max_tokens": 1000, "tools": TOOLS,
+                "messages": [{"role": "user", "content": "go"}]}
+        side_ok = {"model": OPUS, "stream": False, "max_tokens": 64,
+                   "system": "You are a helpful AI assistant tasked with summarizing conversations.",
+                   "messages": [{"role": "user", "content": "Provide a detailed prompt for continuing our conversation above."}]}
+        main_400 = {"model": OPUS, "stream": False, "max_tokens": 1000, "tools": TOOLS,
+                    "messages": [{"role": "user", "content": "again"}]}
+        side_400 = {"model": OPUS, "stream": False, "max_tokens": 64,
+                    "system": "You are a title generator. You output ONLY a thread title.",
+                    "messages": [{"role": "user", "content": "Generate a title for this conversation."}]}
+
+        def reply(n, path, signature_400):
+            if n >= 3:
+                return 400, "application/json", signature_400
+            return default_reply(path)
+
+        result = self._signature_trial([main, side_ok, main_400, side_400], reply, index=73)
+        self.assertEqual((result.status, result.passed, result.env_cause),
+                         ("side_thinking_signature", None, "vertex_thinking_signature"))
+        self.assertEqual(result.side_signature["side_kind"], "title")
+        self.assertIsNone(result.post_compaction)
+        self.assertIsNone(result.agent_exit)
+        self.assertEqual(result.signature_400s, 2)
+
+    def test_smoke_compaction_is_off_unless_the_executor_opts_in(self):
+        result = self.executor(FakeTrialDocker(steps=1)).run_trial(self.spec(index=74), self.tmp / "run")
+        self.assertEqual(result.status, "completed")
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        self.assertFalse(cell["smoke_compaction"]["enabled"])
+        self.assertEqual(cell["smoke_compaction"]["context_limit"], vm.DEFAULT_CONTEXT_LIMIT)
+        early = self.executor(FakeTrialDocker(steps=1), smoke_compaction=True)
+        result = early.run_trial(self.spec(index=75), self.tmp / "run")
+        args = early.docker.calls[-1]
+        env = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-e")
+        cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        limit = next(iter(cfg["provider"].values()))["models"]["claude-opus-5-5"]["limit"]
+        self.assertEqual(limit, {"context": vm.SMOKE_COMPACTION_CONTEXT, "output": vm.DEFAULT_OUTPUT_LIMIT})
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
+        self.assertTrue(cell["smoke_compaction"]["enabled"])
+        self.assertEqual(cell["smoke_compaction"]["context_limit"], 72000)
+        self.assertEqual(cell["smoke_compaction"]["usable_tokens"], 40000)
+
     def test_refusal_is_model_refused_with_stop_details(self):
         from obench.tests.test_reflection_vertex import sse
         refusal = sse({"type": "message_start", "message": {"model": OPUS, "usage": {"input_tokens": 5, "output_tokens": 1}}},

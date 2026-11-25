@@ -56,7 +56,7 @@ class FakeVertex(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        self.server.seen.append({"path": self.path, "body": json.loads(raw),
+        self.server.seen.append({"path": self.path, "body": json.loads(raw), "raw": raw,
                                  "headers": {k.lower(): v for k, v in self.headers.items()}})
         status, ctype, payload = self.server.reply(self.path)
         self.send_response(status)
@@ -141,6 +141,30 @@ class Registry(unittest.TestCase):
             self.assertEqual(cfg["model"], cfg["small_model"])
             self.assertEqual(cfg["model"], f"{pid}/{model.opencode_model}")
             self.assertTrue(cfg["provider"][pid]["options"]["baseURL"].startswith(f"http://127.0.0.1:9/m/{key}/"))
+            self.assertEqual(cfg["provider"][pid]["models"][model.opencode_model]["limit"],
+                             {"context": vm.DEFAULT_CONTEXT_LIMIT, "output": vm.DEFAULT_OUTPUT_LIMIT})
+
+    def test_smoke_compaction_lowers_only_the_context_limit(self):
+        model = vm.resolve("claude-opus-5-5")
+        plain = vm.opencode_config(model, "http://127.0.0.1:9")
+        early = vm.opencode_config(model, "http://127.0.0.1:9", smoke_compaction=True)
+        pid = vm.provider_id(model)
+        self.assertEqual(early["provider"][pid]["models"][model.opencode_model]["limit"]["context"],
+                         vm.SMOKE_COMPACTION_CONTEXT)
+        self.assertEqual(early["provider"][pid]["models"][model.opencode_model]["limit"]["output"],
+                         vm.DEFAULT_OUTPUT_LIMIT)
+        without_limit = json.loads(json.dumps(plain))
+        early_copy = json.loads(json.dumps(early))
+        without_limit["provider"][pid]["models"][model.opencode_model]["limit"]["context"] = vm.SMOKE_COMPACTION_CONTEXT
+        self.assertEqual(early_copy, without_limit)
+        profile = vm.smoke_compaction_profile(True)
+        self.assertEqual(vm.SMOKE_COMPACTION_CONTEXT, 72000)
+        self.assertEqual((profile["enabled"], profile["usable_tokens"], profile["context_limit"]),
+                         (True, 40000, 72000))
+        self.assertEqual(vm.smoke_compaction_profile(False)["usable_tokens"],
+                         vm.DEFAULT_CONTEXT_LIMIT - vm.DEFAULT_OUTPUT_LIMIT)
+        self.assertFalse(vm.smoke_compaction_from_env(""))
+        self.assertTrue(vm.smoke_compaction_from_env("1"))
 
     def test_cost(self):
         opus = vm.resolve("claude-opus-5-5")
@@ -303,6 +327,7 @@ class AnthropicRoute(ProxyCase):
         self.assertEqual(status, 200)
         seen = self.vertex.seen[-1]
         expected, _, _ = prepare_request(vm.resolve("claude-opus-5-5"), "/m/claude-opus-5-5/v1/messages", body)
+        self.assertEqual(seen["raw"], json.dumps(expected).encode())  # bytes, not a re-serialized copy
         self.assertEqual(seen["body"], expected)  # nothing after prepare_request touched a main turn
         self.assertEqual(seen["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
         self.assertEqual(seen["body"]["output_config"], {"effort": "high"})
@@ -313,6 +338,7 @@ class AnthropicRoute(ProxyCase):
         (rec,) = self.records()
         self.assertEqual((rec["call_role"], rec["side_kind"], rec["thinking_block_binding"]), ("main", None, None))
         self.assertEqual(rec["anthropic_beta"], client_beta)
+        self.assertEqual(rec["stripped_side_thinking_blocks"], 0)
         self.assertFalse(rec["thinking_signature_reject"])
         self.assertEqual(rec["request"]["thinking"], {"type": "adaptive", "display": "summarized"})
         self.assertEqual(rec["request"]["messages"], messages)
@@ -416,6 +442,155 @@ class AnthropicRoute(ProxyCase):
         (rec,) = self.records()
         self.assertEqual((rec["side_kind"], rec["thinking_block_binding"], rec["thinking_signature_reject"]),
                          ("summary", "off", False))
+        self.assertNotIn("stripped_side_thinking_blocks", rec)
+
+    def test_main_turn_strips_only_side_response_signatures(self):
+        """A side response's thinking signature (JSON and SSE) is removed from the next main turn.
+        The main conversation's own thinking, the summary text, and tool calls stay. No binding control."""
+        from obench.reflection.wire_proxy import EMPTY_ASSISTANT_AFTER_STRIP
+        json_sig, redacted, sse_sig, main_sig = "JSON-SIG", "REDACTED-DATA", "SSE-SIG", "MAIN-SIG"
+        json_body = json.dumps({
+            "model": "claude-opus-5-5", "stop_reason": "end_turn",
+            "usage": {"input_tokens": 4, "output_tokens": 8},
+            "content": [
+                {"type": "thinking", "thinking": "side thought", "signature": json_sig},
+                {"type": "redacted_thinking", "data": redacted},
+                {"type": "text", "text": "json summary"},
+            ],
+        }).encode()
+        sse_body = sse(
+            {"type": "message_start", "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 4, "output_tokens": 1}}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "streamed"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "SSE-"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "SIG"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "sse summary"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 6}},
+            {"type": "message_stop"},
+        )
+        replies = {"n": 0}
+
+        def reply(path):
+            replies["n"] += 1
+            if replies["n"] == 1:
+                return 200, "application/json", json_body
+            return 200, "text/event-stream", sse_body
+
+        self.vertex.reply = reply
+        title = {"model": "claude-opus-5-5", "max_tokens": 64, "stream": False,
+                 "system": "You are a title generator. You output ONLY a thread title.",
+                 "messages": [{"role": "user", "content": "name this"}]}
+        compact = {"model": "claude-opus-5-5", "max_tokens": 32000, "stream": True,
+                   "system": "You are a helpful AI assistant tasked with summarizing conversations.",
+                   "messages": [{"role": "user", "content": "Provide a detailed prompt for continuing our conversation above."}]}
+        self.assertEqual(self.post("/m/claude-opus-5-5/v1/messages", title)[0], 200)
+        self.assertEqual(self.post("/m/claude-opus-5-5/v1/messages", compact)[0], 200)
+        client_beta = "fine-grained-tool-streaming-2025-05-14"
+        replay = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "from json side", "signature": json_sig},
+                {"type": "redacted_thinking", "data": redacted},
+                {"type": "text", "text": "summary kept"},
+                {"type": "thinking", "thinking": "from sse side", "signature": sse_sig},
+                {"type": "thinking", "thinking": "from the main turn", "signature": main_sig},
+                {"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "ls"}},
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "only the side block", "signature": json_sig},
+            ]},
+        ]
+        body = {"model": "claude-opus-5-5", "max_tokens": 32000, "stream": True, "tools": TOOLS_ANTHROPIC,
+                "messages": replay}
+        status, _ = self.post("/m/claude-opus-5-5/v1/messages", body, {"anthropic-beta": client_beta})
+        self.assertEqual(status, 200)
+        seen = self.vertex.seen[-1]
+        plain, _, _ = prepare_request(vm.resolve("claude-opus-5-5"), "/m/claude-opus-5-5/v1/messages", body)
+        self.assertNotEqual(seen["raw"], json.dumps(plain).encode())
+        self.assertEqual({k: v for k, v in seen["body"].items() if k != "messages"},
+                         {k: v for k, v in plain.items() if k != "messages"})
+        self.assertEqual(seen["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertNotIn("block_binding", json.dumps(seen["body"]))
+        self.assertEqual(seen["headers"].get("anthropic-beta"), client_beta)
+        self.assertNotIn("thinking-binding-controls", seen["headers"].get("anthropic-beta", ""))
+        first, second = seen["body"]["messages"][1]["content"], seen["body"]["messages"][2]["content"]
+        self.assertEqual([b.get("type") for b in first], ["text", "thinking", "tool_use"])
+        self.assertEqual(first[0], {"type": "text", "text": "summary kept"})
+        self.assertEqual(first[1]["signature"], main_sig)
+        self.assertEqual(first[2]["type"], "tool_use")
+        self.assertEqual(second, [{"type": "text", "text": EMPTY_ASSISTANT_AFTER_STRIP}])
+        self.assertEqual(len(seen["body"]["messages"]), 3)  # neither assistant message was dropped
+        (json_rec, sse_rec, main_rec) = self.records()
+        self.assertEqual(json_rec["side_kind"], "title")
+        self.assertEqual(sse_rec["side_kind"], "compaction")
+        self.assertNotIn("stripped_side_thinking_blocks", json_rec)
+        self.assertEqual(main_rec["stripped_side_thinking_blocks"], 4)
+        self.assertEqual(main_rec["call_role"], "main")
+        self.assertIsNone(main_rec["thinking_block_binding"])
+        self.assertFalse(main_rec["thinking_signature_reject"])
+
+    def test_unmatched_side_signature_leaves_the_main_turn_byte_identical(self):
+        """A side response records a signature the next main turn does not replay.
+        That main turn is the bytes and beta header prepare_request already sends."""
+        side_body = json.dumps({
+            "model": "claude-opus-5-5", "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 5},
+            "content": [{"type": "thinking", "thinking": "side", "signature": "SIDE-ONLY"},
+                        {"type": "text", "text": "title"}],
+        }).encode()
+        self.vertex.reply = lambda path: (200, "application/json", side_body)
+        side = {"model": "claude-opus-5-5", "max_tokens": 32, "stream": False,
+                "system": "You are a title generator. You output ONLY a thread title.",
+                "messages": [{"role": "user", "content": "name this"}]}
+        self.assertEqual(self.post("/m/claude-opus-5-5/v1/messages", side)[0], 200)
+        client_beta = "fine-grained-tool-streaming-2025-05-14"
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "main plan", "signature": "MAIN-SIG"},
+                {"type": "text", "text": "kept"},
+            ]},
+        ]
+        body = {"model": "claude-opus-5-5", "max_tokens": 32000, "stream": True, "tools": TOOLS_ANTHROPIC,
+                "messages": messages}
+        self.vertex.reply = default_reply
+        status, _ = self.post("/m/claude-opus-5-5/v1/messages", body, {"anthropic-beta": client_beta})
+        self.assertEqual(status, 200)
+        seen = self.vertex.seen[-1]
+        expected, _, _ = prepare_request(vm.resolve("claude-opus-5-5"), "/m/claude-opus-5-5/v1/messages", body)
+        self.assertEqual(seen["raw"], json.dumps(expected).encode())
+        self.assertEqual(seen["headers"].get("anthropic-beta"), client_beta)
+        self.assertNotIn("thinking-binding-controls", seen["headers"].get("anthropic-beta", ""))
+        self.assertNotIn("block_binding", json.dumps(seen["body"]))
+        self.assertEqual(seen["body"]["messages"], messages)
+        main = self.records()[-1]
+        self.assertEqual(main["stripped_side_thinking_blocks"], 0)
+        self.assertEqual(main["call_role"], "main")
+
+    def test_main_turn_signature_400_sets_thinking_signature_reject(self):
+        signature_400 = json.dumps({
+            "type": "error",
+            "error": {"type": "invalid_request_error",
+                      "message": "Invalid `signature` in `thinking` block"},
+        }).encode()
+        self.vertex.reply = lambda path: (400, "application/json", signature_400)
+        body = {"model": "claude-opus-5-5", "max_tokens": 100, "stream": False, "tools": TOOLS_ANTHROPIC,
+                "messages": [{"role": "user", "content": "go"},
+                             {"role": "assistant", "content": [
+                                 {"type": "thinking", "thinking": "replayed", "signature": "FOREIGN"},
+                                 {"type": "text", "text": "summary"}]}]}
+        status, payload = self.post("/m/claude-opus-5-5/v1/messages", body)
+        self.assertEqual(status, 400)
+        self.assertIn(b"signature", payload)
+        seen = self.vertex.seen[-1]
+        self.assertNotIn("block_binding", json.dumps(seen["body"]))
+        self.assertNotIn("anthropic-beta", seen["headers"])
+        (rec,) = self.records()
+        self.assertEqual(rec["call_role"], "main")
+        self.assertTrue(rec["thinking_signature_reject"])
+        self.assertIsNone(rec["thinking_block_binding"])
 
 
 def Registry_documented_wire():

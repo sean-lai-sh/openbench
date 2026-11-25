@@ -69,10 +69,10 @@ def check_out_dir(out: Path) -> Path:
     return resolved
 
 
-def child_env(model: vm.VertexModel, proxy_base: str, home: Path) -> dict:
+def child_env(model: vm.VertexModel, proxy_base: str, home: Path, *, smoke_compaction: bool = False) -> dict:
     env = {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV}
     env.update({
-        "OPENCODE_CONFIG_CONTENT": vm.opencode_config_env(model, proxy_base),
+        "OPENCODE_CONFIG_CONTENT": vm.opencode_config_env(model, proxy_base, smoke_compaction=smoke_compaction),
         "HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local/share"),
         "XDG_CACHE_HOME": str(home / ".cache"), "XDG_STATE_HOME": str(home / ".local/state"),
         "OPENCODE_DISABLE_AUTOUPDATE": "1",
@@ -179,7 +179,8 @@ def run(args) -> int:
     try:
         try:
             with events_path.open("w", encoding="utf-8") as events:
-                proc = subprocess.run(cmd, cwd=work, env=child_env(model, proxy.base_url, home),
+                proc = subprocess.run(cmd, cwd=work, env=child_env(model, proxy.base_url, home,
+                                                                   smoke_compaction=bool(args.smoke_compaction)),
                                       stdout=events, stderr=subprocess.PIPE, text=True, timeout=args.timeout,
                                       stdin=subprocess.DEVNULL)
             opencode_exit, stderr = proc.returncode, proc.stderr or ""
@@ -222,6 +223,7 @@ def _finish(args, model, out, task, cmd, wire_path, events_path, pin_check, open
     summary = {"model": model.key, "vertex_id": model.vertex_id, "location": model.location, "task": task.name,
                "opencode_exit": opencode_exit, "opencode_timed_out": timed_out,
                "command": [cmd[0], *cmd[1:-1], "<instruction>"],
+               "smoke_compaction": vm.smoke_compaction_profile(bool(args.smoke_compaction)),
                "checks": result, "pass": all(c["pass"] for c in result.values())}
     (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({k: v["pass"] for k, v in result.items()}, sort_keys=True))
@@ -235,7 +237,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--task", default=str(DEFAULT_TASK))
     parser.add_argument("--timeout", type=int, default=1800)
-    return run(parser.parse_args(argv))
+    parser.add_argument("--smoke-compaction", action="store_true",
+                        help="opt-in, default off: lower OpenCode limit.context so a multi-step trial compacts. "
+                             f"Also enabled by {vm.SMOKE_COMPACTION_ENV}=1. Stock OpenCode is not patched. "
+                             "Recorded on summary.json as smoke_compaction")
+    args = parser.parse_args(argv)
+    if vm.smoke_compaction_from_env():
+        args.smoke_compaction = True
+    return run(args)
 
 
 if __name__ == "__main__":

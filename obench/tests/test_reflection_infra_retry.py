@@ -79,7 +79,8 @@ class InfraRetry(unittest.TestCase):
     def test_infra_set_is_everything_but_settled(self):
         self.assertEqual(rn.SETTLED_STATUSES, ("completed", "provider_blocked", "model_refused"))
         self.assertEqual(rn.INFRA_STATUSES, ("error", "timeout", "route_truncated", "upstream_4xx",
-                                             "agent_exit_pending_tool", "side_thinking_signature", "checker_error"))
+                                             "agent_exit_pending_tool", "side_thinking_signature",
+                                             "post_compaction_signature", "checker_error"))
         self.assertEqual(rn.MAX_INFRA_RETRIES, 3)
 
     def test_resume_reruns_only_the_infra_slot_then_the_unchanged_swap_rule_fires(self):
