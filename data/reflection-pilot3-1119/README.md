@@ -88,8 +88,7 @@ file). Re-running until a slot settled therefore favored attempts that never nee
 agents off.
 
 The hard swap (winning-avg-corewars → video-processing) **stands**: the swap rule was applied as written.
-An uncensored 30-trial Opus corewars cell will be run at the post-#272 commit and reported as a separate
-cell, not pooled with pilot-3. Credit assignment leaves this cell out until then.
+The corewars cell here is compaction-censored; the uncensored Opus corewars result is `data/reflection-corewars-b595f7d7-1125/` (28/30, Wilson [0.787, 0.982]), reported separately and not pooled.
 
 **Other cells are unaffected.** Every Opus wire record in pilot-3 (373 trials, both commits, all 11
 tasks) was matched against OpenCode's side prompts at the pin. The only compaction calls are the 13 in
