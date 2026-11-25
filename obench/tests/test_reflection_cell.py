@@ -797,7 +797,8 @@ class Trial(CellCase):
         self.assertEqual(limit, {"context": vm.SMOKE_COMPACTION_CONTEXT, "output": vm.DEFAULT_OUTPUT_LIMIT})
         cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text())
         self.assertTrue(cell["smoke_compaction"]["enabled"])
-        self.assertEqual(cell["smoke_compaction"]["usable_tokens"], 1)
+        self.assertEqual(cell["smoke_compaction"]["context_limit"], 72000)
+        self.assertEqual(cell["smoke_compaction"]["usable_tokens"], 40000)
 
     def test_refusal_is_model_refused_with_stop_details(self):
         from obench.tests.test_reflection_vertex import sse

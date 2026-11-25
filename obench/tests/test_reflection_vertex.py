@@ -158,8 +158,9 @@ class Registry(unittest.TestCase):
         without_limit["provider"][pid]["models"][model.opencode_model]["limit"]["context"] = vm.SMOKE_COMPACTION_CONTEXT
         self.assertEqual(early_copy, without_limit)
         profile = vm.smoke_compaction_profile(True)
+        self.assertEqual(vm.SMOKE_COMPACTION_CONTEXT, 72000)
         self.assertEqual((profile["enabled"], profile["usable_tokens"], profile["context_limit"]),
-                         (True, 1, vm.SMOKE_COMPACTION_CONTEXT))
+                         (True, 40000, 72000))
         self.assertEqual(vm.smoke_compaction_profile(False)["usable_tokens"],
                          vm.DEFAULT_CONTEXT_LIMIT - vm.DEFAULT_OUTPUT_LIMIT)
         self.assertFalse(vm.smoke_compaction_from_env(""))

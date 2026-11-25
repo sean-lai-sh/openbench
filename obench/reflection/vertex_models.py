@@ -192,9 +192,9 @@ def opencode_model_arg(model: VertexModel) -> str:
 DEFAULT_CONTEXT_LIMIT = 200_000
 DEFAULT_OUTPUT_LIMIT = 32_000
 OPENCODE_OUTPUT_TOKEN_MAX = 32_000
-# One token of usable context: any assistant step that reported tokens overflows,
-# so the next loop iteration compacts. Context 0 disables compaction in OpenCode.
-SMOKE_COMPACTION_CONTEXT = DEFAULT_OUTPUT_LIMIT + 1
+# Smoke profile context. Opus output limit is 32000 and limit.input is unset, so
+# isOverflow's usable window is 72000 - min(32000, 32000) = 40000.
+SMOKE_COMPACTION_CONTEXT = 72_000
 SMOKE_COMPACTION_ENV = "OBENCH_SMOKE_COMPACTION"
 
 
@@ -217,7 +217,7 @@ def smoke_compaction_profile(enabled: bool) -> dict:
     """What a trial row and ``plan.json`` record so a smoke-compaction run is not pooled with a normal one.
 
     ``enabled`` false keeps the stock reflection window (context 200000, usable 168000).
-    ``enabled`` true sets ``limit.context`` to 32001 (usable 1). Nothing else in the
+    ``enabled`` true sets ``limit.context`` to 72000 (usable 40000). Nothing else in the
     OpenCode config changes. OpenCode itself stays the pinned binary.
     """
     context = SMOKE_COMPACTION_CONTEXT if enabled else DEFAULT_CONTEXT_LIMIT

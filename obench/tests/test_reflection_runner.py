@@ -326,8 +326,9 @@ class Tables(Base):
         row = rn.read_rows(self.dir / "trials.jsonl")[0]
         self.assertTrue(plan["config"]["smoke_compaction"])
         self.assertTrue(plan["smoke_compaction"]["enabled"])
-        self.assertEqual(plan["smoke_compaction"]["context_limit"], vm.SMOKE_COMPACTION_CONTEXT)
-        self.assertEqual(row["smoke_compaction"]["usable_tokens"], 1)
+        self.assertEqual(plan["smoke_compaction"]["context_limit"], 72000)
+        self.assertEqual(row["smoke_compaction"]["context_limit"], 72000)
+        self.assertEqual(row["smoke_compaction"]["usable_tokens"], 40000)
         with self.assertRaisesRegex(rn.RunnerError, "smoke_compaction"):
             rn.Runner(config(models=[OPUS], tasks=["extract-elf"], n_trials=1, max_rounds=1,
                              smoke_compaction=False),
