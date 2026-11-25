@@ -26,6 +26,90 @@ Every credit row records `max_set_aside` and that cell's `set_aside_count`
 beside the trial's result. Ideation uses the same cap
 (`evaluate(..., max_set_aside=3)`, read from the baseline summary's `set_aside`).
 
+## Rule 2: `cap_cutoff` (Researcher, 2026-11-25)
+
+A failed trial that hit the agent cap is `cap_cutoff` when its trace contains
+no tool error anywhere. It is dropped from the locator, from credit assignment,
+and from the seeded draw below. The filter lives in the draw driver
+(`credit_draw.py`). The locator is unchanged: `first_failure()` still returns
+`final_answer_rejected` at the last step for a trace with no tool error, and
+`LOCATOR_RULE_VERSION` stays `locator-v1`.
+
+- **Hit the cap.** The trial is a completed failure (`status: completed`,
+  `passed: false`) with `timed_out` set: the agent was still working when the
+  task cap fired. An infrastructure timeout (`status: timeout`) is not a
+  failure and is not `cap_cutoff`.
+- **No tool error anywhere.** No step has `step_error`: a tool call with
+  `status: error`, or a result matching `ERROR_PATTERNS`. The driver searches
+  the whole trace. It does not ask the locator for a new signal.
+- **A timeout with a tool error stays in.** It is eligible, and the locator
+  would place it at that error step.
+- **A timeout with no trace is not `cap_cutoff`.** There is nothing to search.
+  A missing path, a missing file, or a trace with no steps is no-trace. Those
+  trials are recorded and are not eligible. They are not rebuilt here.
+
+`credit_a` and `credit_b` still score every admitted failure they are given.
+The driver is what leaves `cap_cutoff` trials out of the set those stages
+will be handed. Running Method A or B on a run directory directly does not
+apply rule 2.
+
+## Seeded failure draw (`credit_draw.py`)
+
+One draw per admitted cell. The pool is built in this order:
+
+1. Start from `failed_trials()` (completed failures whose cell has
+   `set_aside_count <= max_set_aside`).
+2. Remove `cap_cutoff` trials.
+3. Remove trials with no trace.
+4. Sort the remaining trial ids and draw.
+
+```text
+cell   = "<model>/<task>"                 # "@<patch_id>" when patch_id is set
+digest = sha256(("sea111-" + cell).encode("utf-8")).hexdigest()
+picks  = random.Random(int(digest, 16)).sample(sorted(eligible_trial_ids), n_pick)
+```
+
+`cell` is the same `<model>/<task>` key as the pilot cells, for example
+`claude-opus-5-5/model-extraction-relu-logits`. A cell is still
+`(task, model, patch_id)` for admission, matching `failed_trials()`. When
+`patch_id` is set, the seed key gains `@<patch_id>` so two patches do not
+share a draw. Picks stay in the order `sample` returned. `draw_order` starts
+at 1. The same cell and the same pool always produce the same picks
+(Python 3 `random.Random`, the digest as an int seed).
+
+`n_pick` defaults to **3**. `--n-pick all` (or `"n_pick": "all"` in the config)
+draws every eligible failure, a seeded sample of the whole pool. When a cell
+has fewer eligible failures than `n_pick`, the draw is the whole pool.
+
+A cell with `set_aside_count > max_set_aside` is `EXCLUDED`. Nothing is drawn
+(`eligible_pool` 0, `picks` empty). The manifest still lists that cell's
+`cap_cutoff` trials and no-trace failures. The reason is the count, for
+example `max_set_aside=3: 5 set-aside (provider_blocked) trials > 3`. No task
+name is special-cased.
+
+The driver writes `credit_draw.json` in the run directory (one object keyed by
+cell) and one file per cell under `credit_draw/`. A rerun replaces them.
+`trials.jsonl` is not modified. Neither file stores trace paths.
+
+| Field | Meaning |
+|---|---|
+| `cell`, `seed_string`, `seed_sha256` | `<model>/<task>` (plus `@patch` when set), `sea111-` + that key, and its sha256 |
+| `status`, `reason` | `IN`, or `EXCLUDED` with the set-aside reason. `reason` is null when the cell is in |
+| `eligible_pool` | How many trials remained after the cap filter and the no-trace filter. 0 when the cell is excluded |
+| `n_pick` | How many the draw was asked for (`3` or `all`) |
+| `picks` | `{draw_order, slot, trial_id}` in draw order. `slot` is the trial's `trial_index` |
+| `cap_cutoff_dropped` | `{slot, trial_id}` for rule 2, including on an excluded cell |
+| `no_trace_count`, `no_trace_trials` | Completed failures with no usable trace (`{slot, trial_id}`) |
+| `set_aside_count`, `max_set_aside` | The cell's set-aside count and the cap that admitted or excluded it |
+
+```text
+python3 -m obench.reflection.credit_draw --run <run dir> [--n-pick 3|all] [--max-set-aside 3] [--config draw.json]
+```
+
+`--config` is a `DrawConfig` JSON object (`n_pick`, `max_set_aside`).
+`--n-pick` and `--max-set-aside` override the file when passed. The default
+cap is 3, the same setting as Method A and Method B.
+
 ## Shared first-failure locator (`credit_locator.py`, `locator-v1`)
 
 1. Walk the steps in order. A step **fails** when one of its tool calls has an
@@ -43,7 +127,9 @@ beside the trial's result. Ideation uses the same cap
 4. An empty trace means `empty_trace`, and `failing_step` is null.
 
 Both methods call `first_failure()`, so A and B can't disagree on the step.
-Any change to the rule bumps `LOCATOR_RULE_VERSION`.
+Any change to the rule bumps `LOCATOR_RULE_VERSION`. Rule 2 is not such a
+change: `cap_cutoff` trials are filtered out by the draw driver before a
+trial is handed to the locator.
 
 ## Method A (`credit_a.py`, rule `A1+locator-v1`)
 
