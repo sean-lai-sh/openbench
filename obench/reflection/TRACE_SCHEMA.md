@@ -15,8 +15,26 @@ raises `TraceError` (see [Failures](#failures)).
 | OpenCode at the pin (`opencode_pin.json`), run with `--format json --thinking` | step boundaries and timestamps, tool calls, assistant text, thinking text, OpenCode's own cost | `step_start`, `tool_use`, `text`, `reasoning`, `step_finish` events |
 | Wire records (`openbench.reflection.wire/v1`), one per model call, written where the call is routed | the request body exactly as sent (including the thinking setting), the model actually served, the provider's response `usage` | JSONL, below |
 
-OpenCode step *i* is main wire call *i*. Side calls (`call_role: "side"`,
-e.g. title generation) are not steps.
+Main OpenCode step *i* is answered main wire call *i* (HTTP 200). Side calls
+(`call_role: "side"`, e.g. title generation) are not steps. A failed main call
+(4xx/5xx) is not a step: OpenCode's client retried it, or it ended the trial
+(`post_compaction_signature` / `upstream_4xx`).
+
+OpenCode emits a compaction summary as a `step_start` in the same session,
+then a synthetic user text (`part.synthetic: true`, text starting "Continue if
+you have next steps, or stop and ask for clarification if") before the next
+`step_start`. That text is input, not a model step, and it does not open one.
+The step it follows is a compaction step. Compaction steps are not rows in
+this file. The trial row counts them as `compaction_steps`, counts the prompt
+as `synthetic_continue_messages`, and puts their provider thinking tokens in
+`compaction_thinking_tokens` (never added to `thinking_tokens`). OpenCode's own
+`tokens.reasoning` on those steps is not that total. A summary step, if one
+can be distinguished from a compaction step, is `summary_steps`; title and
+summary side calls do not emit a session step, and none of these streams has
+one. A text event in the gap after that compaction, before the next
+`step_start`, is an implicit non-model segment: `trace_warnings` records
+`implicit_text_before_step_start` and the trace is still written. A text event
+before any step, with no compaction behind it, is still `events_malformed`.
 
 Two things at the pin shape this:
 - `reasoning` events are emitted only with `--thinking`.
@@ -138,9 +156,9 @@ the request bodies from its raw request capture.
 
 | Code | When |
 |---|---|
-| `events_malformed` | A JSON line isn't an OpenCode event, or a part arrives before any `step_start` |
+| `events_malformed` | A JSON line isn't an OpenCode event, or a part arrives before any open step. A text event in the gap after a compaction (the synthetic continue prompt, or any other text before the next `step_start`) is not this failure: it is an implicit non-model segment, counted on the trial row, and the trace is still written. |
 | `wire_malformed` | A wire record isn't `wire/v1`, or has an unknown `provider_wire` |
-| `step_call_mismatch` | The number of OpenCode steps differs from the number of answered (status 200) main wire calls. Failed calls that OpenCode retried have no step and are not paired. |
+| `step_call_mismatch` | The number of main OpenCode steps differs from the number of answered (status 200) main wire calls. Compaction summary steps are not main steps. Failed calls that OpenCode retried have no step and are not paired. |
 | `request_missing` | A step's wire record has no request body |
 | `thinking_unset` | The request has no explicit thinking setting (standing rule: set thinking on every request). `require_explicit_thinking=False` turns this off, for inspection only. |
 | `usage_missing` | The response had no usage object |

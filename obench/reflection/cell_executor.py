@@ -744,6 +744,7 @@ class CellExecutor:
                                                           "task": spec.task, "model": spec.model, "patch_id": spec.patch_id},
                                      cost_fn=lambda rec: (vm.cost_usd(model, rec["usage"]), "reflection.vertex_models"),
                                      count_thinking_tokens=vm.THINKING_TOKENS_FROM_TEXT.get(model.key))
+            side = tr.trace_side_counts(events, wires)
             tr.write_trace(trial_dir / "trace.jsonl", records)
         except tr.TraceError as exc:
             if refused is not None:
@@ -767,6 +768,10 @@ class CellExecutor:
         statuses = [r["usage"].get("thinking_tokens_status", "reported") for r in records]
         done = dict(common, checker_exit=checker_exit, steps=len(records), thinking_tokens=sum(thinking) if thinking else None,
                     thinking_tokens_status={k: statuses.count(k) for k in sorted(set(statuses))},
+                    compaction_steps=side["compaction_steps"], summary_steps=side["summary_steps"],
+                    synthetic_continue_messages=side["synthetic_continue_messages"],
+                    compaction_thinking_tokens=side["compaction_thinking_tokens"],
+                    trace_warnings=side["trace_warnings"],
                     thinking_flags=flags, thinking_tokens_per_step=per_step, trace=rel(trial_dir / "trace.jsonl"))
         if refused is not None:
             return self._refused(trial_dir, refused, records, done)

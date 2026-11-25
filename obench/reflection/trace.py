@@ -13,10 +13,12 @@ module reads them:
   ``wire_records_from_proxy_ledger`` builds them from the existing Vertex proxy
   ledger.
 
-``build_trace`` joins them in order (OpenCode step *i* is main wire call *i*)
-into one ``openbench.reflection.step/v1`` record per step, and
-``write_trace`` writes them as JSONL. Token counts, thinking tokens and cache
-tokens come from the provider's response usage, never from OpenCode's
+``build_trace`` joins them in order (main OpenCode step *i* is answered main
+wire call *i*) into one ``openbench.reflection.step/v1`` record per main step,
+and ``write_trace`` writes them as JSONL. A compaction summary is its own
+step in the same session; it is not a main step, and its thinking tokens are
+not added to the main total. Token counts, thinking tokens and cache tokens
+come from the provider's response usage, never from OpenCode's
 ``tokens.reasoning``: unset thinking still returns server thinking tokens.
 
 Failures raise ``TraceError`` with a stable ``code``; nothing is written for a
@@ -42,6 +44,13 @@ THINKING_FLAGS = (
     "reported_zero_text_present",   # usage reports 0 thinking tokens but thinking text came back
     "reported_absent_text_present", # usage has no thinking-token field at all, but thinking text came back (gpt-oss on Vertex)
 )
+# OpenCode inserts this user text after a compaction summary, before the next
+# model step. It is input, not a step. ``part.synthetic`` is the pin's flag;
+# the prefix covers a stream that omitted the flag.
+SYNTHETIC_CONTINUE_PREFIX = "Continue if you have next steps, or stop and ask for clarification if"
+# A text event in the gap after compaction used to abort the parse. It is now
+# counted on the trial row and the trace is still written.
+IMPLICIT_TEXT_WARNING = "implicit_text_before_step_start"
 ERROR_CODES = (
     "events_malformed",     # the OpenCode stream is not a sequence of steps
     "wire_malformed",       # a wire record is not a wire/v1 object
@@ -91,27 +100,80 @@ def _part(event: dict) -> dict:
     return part if isinstance(part, dict) else {}
 
 
-def opencode_steps(events: list[dict]) -> list[dict]:
+def _synthetic_continue(part: dict) -> bool:
+    """OpenCode's post-compaction prompt. Input, not a model step."""
+    if part.get("synthetic") is True:
+        return True
+    text = part.get("text")
+    return isinstance(text, str) and text.startswith(SYNTHETIC_CONTINUE_PREFIX)
+
+
+class OpenCodeParse:
+    """One event stream grouped into model steps.
+
+    ``steps`` includes main, compaction, and (when distinguished) summary
+    steps. Each step has ``kind``. Synthetic continue texts are not steps.
+    ``trace_warnings`` lists non-fatal codes; one
+    ``implicit_text_before_step_start`` per text recovered in the gap after
+    a compaction. A text before any step, with no compaction behind it, is
+    still ``events_malformed``."""
+
+    def __init__(self, steps: list[dict], synthetic_continue_messages: int, trace_warnings: list[str]):
+        self.steps = steps
+        self.synthetic_continue_messages = synthetic_continue_messages
+        self.trace_warnings = trace_warnings
+
+    def by_kind(self, kind: str) -> list[dict]:
+        return [step for step in self.steps if step.get("kind") == kind]
+
+
+def parse_opencode(events: list[dict]) -> OpenCodeParse:
     """Group events into steps. Parts attach to the step with the same
     ``messageID`` (falling back to the open step). A step with no
-    ``step_finish`` (killed run) is kept with ``finish`` None."""
+    ``step_finish`` (killed run) is kept with ``finish`` None.
+
+    The step immediately before OpenCode's synthetic continue text is a
+    compaction step (``kind`` ``compaction``): OpenCode emits the compaction
+    summary as a step in the same session, then that prompt. The prompt does
+    not open a step. Any other text in that same gap (after the compaction
+    step, before the next ``step_start``) is an implicit non-model segment:
+    it is warned, not fatal. Summary steps stay ``kind`` ``summary`` only
+    when something distinguishes them; nothing in the stream does today, so
+    the count is 0. Title and summary side calls do not emit a session step."""
     steps: list[dict] = []
     by_message: dict[str, dict] = {}
     current: dict | None = None
+    synthetic = 0
+    warnings: list[str] = []
+    post_compaction = False
     for event in events:
         kind, part = event["type"], _part(event)
         if kind == "step_start":
             current = {"started_ms": event.get("timestamp"), "session_id": event.get("sessionID"),
                        "message_id": part.get("messageID"), "tools": [], "texts": [], "reasoning": [],
-                       "finish": None, "finished_ms": None}
+                       "finish": None, "finished_ms": None, "kind": "main"}
             steps.append(current)
             if current["message_id"]:
                 by_message[current["message_id"]] = current
+            post_compaction = False
             continue
         if kind not in ("tool_use", "text", "reasoning", "step_finish"):
             continue  # error events are run-level; the runner reads them from the stream
-        step = by_message.get(part.get("messageID")) or current
+        message_id = part.get("messageID")
+        if kind == "text" and _synthetic_continue(part) and message_id not in by_message:
+            # The continue prompt arrives with no open step, after the compaction
+            # summary has finished. It is not model output and does not open one.
+            synthetic += 1
+            warnings.append(IMPLICIT_TEXT_WARNING)
+            if current is None and steps and steps[-1]["kind"] == "main":
+                steps[-1]["kind"] = "compaction"
+                post_compaction = True
+            continue
+        step = by_message.get(message_id) or current
         if step is None:
+            if kind == "text" and post_compaction:
+                warnings.append(IMPLICIT_TEXT_WARNING)
+                continue
             raise TraceError("events_malformed", f"{kind} event before any step_start")
         if kind == "tool_use":
             step["tools"].append(part)
@@ -123,7 +185,100 @@ def opencode_steps(events: list[dict]) -> list[dict]:
             step["finish"], step["finished_ms"] = part, event.get("timestamp")
             if step is current:
                 current = None
-    return steps
+    return OpenCodeParse(steps, synthetic, warnings)
+
+
+def opencode_steps(events: list[dict]) -> list[dict]:
+    """Main-agent steps only. Compaction summary steps are left out so they
+    are not paired with answered main wire calls. A synthetic continue text
+    does not open a step and does not raise."""
+    return parse_opencode(events).by_kind("main")
+
+
+def _call_index(record: dict):
+    index = record.get("call_index")
+    return (not isinstance(index, int), index or 0)
+
+
+def _answered_main(record: dict) -> bool:
+    return record.get("call_role", "main") != "side" and record.get("status", 200) == 200
+
+
+def _answered_side(record: dict, side_kind: str) -> bool:
+    return (record.get("call_role") == "side" and record.get("side_kind") == side_kind
+            and record.get("status", 200) == 200)
+
+
+def _thinking_of(record: dict) -> tuple[int | None, str]:
+    """``(thinking tokens, status)`` for a wire record or a wire summary row.
+
+    A full wire record uses ``usage_from_response``. A summary row
+    (``thinking_tokens`` at the top level, no wire schema) treats null as
+    unreported and an int, including 0, as reported."""
+    if record.get("schema") == WIRE_SCHEMA and record.get("provider_wire") in WIRES:
+        usage = usage_from_response(record["provider_wire"], record.get("response_usage"), 1)
+        return usage["thinking_tokens"], usage["thinking_tokens_status"]
+    if "thinking_tokens" in record:
+        value = record["thinking_tokens"]
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None, "unreported"
+        return value, "reported"
+    return None, "unreported"
+
+
+def _event_reasoning(step: dict) -> int:
+    """OpenCode's own ``step_finish.tokens.reasoning``. Not the source of truth."""
+    tokens = (step.get("finish") or {}).get("tokens") or {}
+    reasoning = tokens.get("reasoning") if isinstance(tokens, dict) else None
+    if isinstance(reasoning, bool) or not isinstance(reasoning, int):
+        return 0
+    return reasoning
+
+
+def trace_side_counts(events: list[dict] | OpenCodeParse, wire_records: list[dict]) -> dict:
+    """Trial-row counts from the event stream joined to wire calls.
+
+    ``steps`` is answered main calls paired with main steps.
+    ``thinking_tokens`` sums reported main-step usage (null is omitted, and
+    the total is null when nothing was reported). ``compaction_thinking_tokens``
+    sums the provider usage of the compaction calls paired, in ``call_index``
+    order, with compaction steps; null usage counts as 0, and the total is 0
+    when nothing was compacted. It is never added to ``thinking_tokens``.
+    OpenCode's own reasoning counter on those steps is returned as
+    ``compaction_event_reasoning_tokens`` and is not that total: when the two
+    differ, the provider usage stands. A length mismatch is a warning, and
+    only the paired prefix is summed."""
+    parsed = events if isinstance(events, OpenCodeParse) else parse_opencode(events)
+    warnings = list(parsed.trace_warnings)
+    main_steps = parsed.by_kind("main")
+    compaction_steps = parsed.by_kind("compaction")
+    summary_steps = parsed.by_kind("summary")
+    main = sorted((w for w in wire_records if _answered_main(w)), key=_call_index)
+    compaction = sorted((w for w in wire_records if _answered_side(w, "compaction")), key=_call_index)
+    if len(main_steps) != len(main):
+        warnings.append(f"step_call_mismatch: {len(main_steps)} main OpenCode steps "
+                        f"but {len(main)} main wire calls")
+    if len(compaction_steps) != len(compaction):
+        warnings.append(f"compaction_step_call_mismatch: {len(compaction_steps)} compaction steps "
+                        f"but {len(compaction)} compaction wire calls")
+    main_obs = [_thinking_of(wire) for _step, wire in zip(main_steps, main)]
+    reported = [tokens for tokens, _status in main_obs if isinstance(tokens, int)]
+    statuses = [status for _tokens, status in main_obs]
+    comp_tokens = []
+    for _step, wire in zip(compaction_steps, compaction):
+        tokens, _status = _thinking_of(wire)
+        comp_tokens.append(tokens if isinstance(tokens, int) else 0)
+    return {
+        "steps": len(main_steps),
+        "compaction_steps": len(compaction_steps),
+        "summary_steps": len(summary_steps),
+        "synthetic_continue_messages": parsed.synthetic_continue_messages,
+        "thinking_tokens": sum(reported) if reported else None,
+        "thinking_tokens_status": {key: statuses.count(key) for key in sorted(set(statuses))},
+        "compaction_thinking_tokens": sum(comp_tokens),
+        "compaction_event_reasoning_tokens": sum(_event_reasoning(step) for step in compaction_steps),
+        "trace_warnings": warnings,
+    }
 
 
 # ---------------------------------------------------------------- wire records
@@ -390,7 +545,9 @@ def build_trace(events: list[dict], wire_records: list[dict], *, run: dict | Non
                 cost_fn: Callable[[dict], tuple[float | None, str]] | None = None,
                 require_explicit_thinking: bool = True,
                 count_thinking_tokens: Callable[[str], tuple[int | None, str]] | None = None) -> list[dict]:
-    """One ``step/v1`` record per OpenCode step. ``cost_fn(record)`` returns
+    """One ``step/v1`` record per main OpenCode step. Compaction summary steps
+    are not records here; their thinking is ``trace_side_counts``'
+    ``compaction_thinking_tokens``. ``cost_fn(record)`` returns
     ``(usd, source)`` to replace OpenCode's per-step cost (the runner's
     ledger-priced cost hook). ``count_thinking_tokens(text)`` returns
     ``(count, label)`` for ``thinking.tokens_counted`` (our own count, e.g.
@@ -400,11 +557,12 @@ def build_trace(events: list[dict], wire_records: list[dict], *, run: dict | Non
     wires = [_check_wire(r, i) for i, r in enumerate(wire_records, 1)]
     # A main call that failed (4xx/5xx) produced no OpenCode step: OpenCode's client retried it. Only answered
     # calls pair with steps; failed ones stay in wire.jsonl (classify_4xx / retried_4xx).
+    # Compaction calls are side calls and pair with compaction steps, not these.
     main = sorted((w for w in wires if w.get("call_role", "main") != "side" and w.get("status", 200) == 200),
                   key=lambda w: w.get("call_index", 0))
     if len(main) != len(steps):
         raise TraceError("step_call_mismatch",
-                         f"{len(steps)} OpenCode steps but {len(main)} main wire calls")
+                         f"{len(steps)} main OpenCode steps but {len(main)} main wire calls")
     records = []
     for index, (step, wire) in enumerate(zip(steps, main), 1):
         kind, body = wire["provider_wire"], wire.get("request")
