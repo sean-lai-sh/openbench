@@ -140,7 +140,10 @@ The image is the one recorded on that cell's original trials (`image_ref`,
 `image_id`, `image_matches_pin`). It is reused as `recorded_image`. The step
 does not re-pin: a missing image, two different recorded images, or a fresh
 trial that ran a different ref is an error. The smoke-compaction knob is off
-for this run, including when `OBENCH_SMOKE_COMPACTION` is set.
+for this run, including when `OBENCH_SMOKE_COMPACTION` is set. A rerun is
+checked in a side directory and replaces the published baseline only after
+that check passes. A failed rerun leaves the previous manifest and its trials
+in place.
 
 `credit_baseline.json` (and one file per cell under `credit_baseline/`) records:
 

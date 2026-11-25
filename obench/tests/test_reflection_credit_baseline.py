@@ -156,6 +156,30 @@ class FreshBaseline(unittest.TestCase):
             base.run_baselines(run, [f"{OPUS}/{ELF}"], stub, n_trials=1)
         self.assertFalse((run / "credit_baseline.json").exists())
         self.assertEqual(len(stub.calls), 1)
+        self.assertFalse((run / "credit_baseline" / "runs" / f"{OPUS}__{ELF}.incoming").exists())
+
+    def test_a_failed_rerun_keeps_the_published_baseline(self):
+        run = _parent((ELF,))
+        _stamp(run, {ELF: ELF_IMAGE})
+        first = base.run_baselines(run, [f"{OPUS}/{ELF}"], Stub(passes={(ELF, OPUS): 1}), n_trials=2)
+        manifest = (run / "credit_baseline.json").read_text(encoding="utf-8")
+        trials = (run / first[f"{OPUS}/{ELF}"]["run_dir"] / "trials.jsonl").read_text(encoding="utf-8")
+        per_cell = (run / "credit_baseline" / f"{OPUS}__{ELF}.json").read_text(encoding="utf-8")
+
+        class Repin(Stub):
+            def run_trial(self, spec, run_dir):
+                result = super().run_trial(spec, run_dir)
+                result.image = {"ref": "other:tag", "id": "sha256:" + "ff" * 32, "matches_pin": True}
+                return result
+
+        with self.assertRaisesRegex(base.BaselineError, "refusing to re-pin"):
+            base.run_baselines(run, [f"{OPUS}/{ELF}"], Repin(passes={(ELF, OPUS): 2}), n_trials=2)
+        self.assertEqual((run / "credit_baseline.json").read_text(encoding="utf-8"), manifest)
+        self.assertEqual((run / "credit_baseline" / f"{OPUS}__{ELF}.json").read_text(encoding="utf-8"), per_cell)
+        published = run / first[f"{OPUS}/{ELF}"]["run_dir"] / "trials.jsonl"
+        self.assertEqual(published.read_text(encoding="utf-8"), trials)
+        self.assertEqual(json.loads(manifest)[f"{OPUS}/{ELF}"]["passes"], 1)
+        self.assertFalse((run / "credit_baseline" / "runs" / f"{OPUS}__{ELF}.incoming").exists())
 
     def test_mixed_or_missing_recorded_images_and_a_patched_cell_do_not_run(self):
         run = _parent((ELF,))

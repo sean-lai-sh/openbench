@@ -139,30 +139,58 @@ def _check_fresh_image(cell: str, child: Path, image: dict) -> None:
             f"{cell}: fresh trials ran image id {sorted(ids)}, not the recorded id {image['id']}; refusing to re-pin")
 
 
-def _run_one(run_dir: Path, base_cfg: dict, item: dict, image: dict, executor: rn.Executor, n_trials: int) -> dict:
+def _publish_run(staging: Path, published: Path) -> None:
+    """Move a checked run into the directory the manifest names.
+
+    The previous run is kept until the new directory is in place. A failure
+    before this call leaves that previous run, and the manifest that points
+    at it, unchanged.
+    """
+    backup = published.with_name(published.name + ".replacing")
+    if backup.exists():
+        shutil.rmtree(backup)
+    if published.exists():
+        published.rename(backup)
+    try:
+        staging.rename(published)
+    except Exception:
+        if backup.exists() and not published.exists():
+            backup.rename(published)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
+
+
+def _run_one(run_dir: Path, base_cfg: dict, item: dict, image: dict, executor: rn.Executor,
+             n_trials: int) -> tuple[dict, Path]:
+    """Run into ``<slug>.incoming``. The caller publishes it after every cell succeeds."""
     cell, model, task = item["cell"], item["model"], item["task"]
     if item["patch_id"] is not None:
         raise BaselineError(f"{cell}: fresh baseline runs the unpatched cell; a patched cell is not baselined here")
     slug = draw._manifest_name(cell).removesuffix(".json")
-    child = run_dir / CELL_DIR / RUNS_DIR / slug
-    if child.exists():
-        shutil.rmtree(child)
+    staging = run_dir / CELL_DIR / RUNS_DIR / (slug + ".incoming")
+    if staging.exists():
+        shutil.rmtree(staging)
     rel = f"{CELL_DIR}/{RUNS_DIR}/{slug}"
     cfg = rn.RunConfig.from_dict({
         "run_id": f"{base_cfg['run_id']}--baseline--{slug}", "suite": base_cfg["suite"], "models": [model],
         "n_trials": n_trials, "tasks": [task], "max_rounds": 1, "fixed_tasks": True,
         "smoke_compaction": False, "recorded_image": image,
     })
-    status = rn.Runner(cfg, child, executor).run()
-    if status["state"] != "done":
-        raise BaselineError(f"{cell}: baseline run state is {status['state']}, not done")
-    _check_fresh_image(cell, child, image)
-    plan = json.loads((child / "plan.json").read_text(encoding="utf-8"))
-    summaries = [row for row in rn.read_rows(child / "summary.jsonl")
-                 if row["task"] == task and row["model"] == model and row["patch_id"] is None]
-    if len(summaries) != 1:
-        raise BaselineError(f"{cell}: expected one baseline summary row, got {len(summaries)}")
-    return _baseline_row(cell, model, task, image, summaries[0], plan, n_trials, rel, status["state"])
+    try:
+        status = rn.Runner(cfg, staging, executor).run()
+        if status["state"] != "done":
+            raise BaselineError(f"{cell}: baseline run state is {status['state']}, not done")
+        _check_fresh_image(cell, staging, image)
+        plan = json.loads((staging / "plan.json").read_text(encoding="utf-8"))
+        summaries = [row for row in rn.read_rows(staging / "summary.jsonl")
+                     if row["task"] == task and row["model"] == model and row["patch_id"] is None]
+        if len(summaries) != 1:
+            raise BaselineError(f"{cell}: expected one baseline summary row, got {len(summaries)}")
+        return _baseline_row(cell, model, task, image, summaries[0], plan, n_trials, rel, status["state"]), staging
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def run_baselines(run_dir: Path, cells: list[str], executor: rn.Executor, n_trials: int = rn.N_TRIALS,
@@ -170,7 +198,9 @@ def run_baselines(run_dir: Path, cells: list[str], executor: rn.Executor, n_tria
     """Run one fresh baseline per admitted cell and write ``credit_baseline.json``.
 
     The executor's smoke-compaction knob is forced off for the call and restored
-    afterwards. Admitted means the draw would mark the cell ``IN``.
+    afterwards. Admitted means the draw would mark the cell ``IN``. A rerun
+    that fails leaves the previous baseline manifest and its trial directory
+    in place.
     """
     run_dir = Path(run_dir)
     if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials < 1:
@@ -191,12 +221,21 @@ def run_baselines(run_dir: Path, cells: list[str], executor: rn.Executor, n_tria
     previous = getattr(executor, "smoke_compaction", None)
     if previous:
         executor.smoke_compaction = False
+    staged: list[tuple[str, dict, Path]] = []
     try:
-        manifests = {item["cell"]: _run_one(run_dir, base_cfg, item, image, executor, n_trials)
-                     for item, image in prepared}
+        for item, image in prepared:
+            row, staging = _run_one(run_dir, base_cfg, item, image, executor, n_trials)
+            staged.append((item["cell"], row, staging))
+    except Exception:
+        for _, _, staging in staged:
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
     finally:
         if previous:
             executor.smoke_compaction = previous
+    for _, row, staging in staged:
+        _publish_run(staging, staging.with_name(staging.name.removesuffix(".incoming")))
+    manifests = {name: row for name, row, _ in staged}
     _write_json(run_dir / TABLE, manifests)
     cell_dir = run_dir / CELL_DIR
     cell_dir.mkdir(parents=True, exist_ok=True)
