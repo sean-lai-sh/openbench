@@ -4,7 +4,10 @@ The draw is the set later stages score. It does not run the locator, a judge,
 or a model. Rule 2 (``cap_cutoff``) is a filter here. ``credit_locator`` is
 unchanged.
 
-For each cell ``failed_trials()`` admits (``set_aside_count <= max_set_aside``):
+The candidate cells are an explicit list of ``<model>/<task>`` keys (``--cells``).
+The driver does not infer candidates from the rows. A cell present in the
+rows and absent from the list is ``NOT_LISTED`` and nothing is drawn. For
+each listed cell ``failed_trials()`` admits (``set_aside_count <= max_set_aside``):
 
 1. Start from that output (completed failures of an admitted cell).
 2. Remove ``cap_cutoff`` trials.
@@ -18,12 +21,12 @@ For each cell ``failed_trials()`` admits (``set_aside_count <= max_set_aside``):
     picks = random.Random(int(digest, 16)).sample(sorted(eligible_trial_ids), n_pick)
 
 ``n_pick`` defaults to 3. ``n_pick == "all"`` draws every eligible failure.
-Picks stay in draw order. A cell over the set-aside cap is ``EXCLUDED`` and
-nothing is drawn; its ``cap_cutoff`` trials are still listed. The reason is
+Picks stay in draw order. A listed cell over the set-aside cap is ``EXCLUDED``
+and nothing is drawn; its ``cap_cutoff`` trials are still listed. The reason is
 the count (``max_set_aside=3: 5 set-aside (provider_blocked) trials > 3``),
-never a task name.
+never a task name. An unlisted cell's reason is ``not in the cell list``.
 
-    python3 -m obench.reflection.credit_draw --run <run dir> [--n-pick 3|all] [--max-set-aside 3] [--config draw.json]
+    python3 -m obench.reflection.credit_draw --run <run dir> --cells <cell list> [--n-pick 3|all] [--max-set-aside 3] [--config draw.json]
 """
 
 from __future__ import annotations
@@ -195,6 +198,56 @@ def _record(cell: str, model, task, patch_id, count: int, max_set_aside: int, n_
     }
 
 
+def load_cells(path: Path) -> list[str]:
+    """``<model>/<task>`` keys from a JSON array, a ``{"cells": [...]}`` object, or a text file.
+
+    Text files are one key per line. Blank lines and ``#`` comments are ignored.
+    ``@<patch_id>`` is allowed on a key when that patch is itself a candidate.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError(f"cell list {path} is empty")
+    if stripped[0] in "[{":
+        doc = json.loads(text)
+        if isinstance(doc, list):
+            raw = doc
+        elif isinstance(doc, dict) and isinstance(doc.get("cells"), list):
+            raw = doc["cells"]
+        else:
+            raise ValueError("cell list JSON must be an array or an object with a cells array")
+    else:
+        raw = []
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                raw.append(line)
+    return check_cells(raw)
+
+
+def check_cells(names: list[str]) -> list[str]:
+    """Validate and return the candidate cell keys. Duplicates and an empty list fail."""
+    if not names:
+        raise ValueError("cell list is empty")
+    checked: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not isinstance(name, str) or name.count("/") != 1 or any(ch.isspace() for ch in name) or "\\" in name:
+            raise ValueError(f"cell must be <model>/<task>, got {name!r}")
+        model, task = name.split("/", 1)
+        if "@" in task:
+            base, _, patch = task.partition("@")
+            if not base or not patch or "@" in patch:
+                raise ValueError(f"cell must be <model>/<task>, got {name!r}")
+        if not model or not task:
+            raise ValueError(f"cell must be <model>/<task>, got {name!r}")
+        if name in seen:
+            raise ValueError(f"duplicate cell {name}")
+        seen.add(name)
+        checked.append(name)
+    return checked
+
+
 def _read_rows(run_dir: Path) -> list[dict]:
     path = run_dir / "trials.jsonl"
     if not path.exists():
@@ -202,9 +255,16 @@ def _read_rows(run_dir: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def run_draw(run_dir: Path, n_pick: int | str = N_PICK, max_set_aside: int = MAX_SET_ASIDE) -> dict[str, dict]:
-    """Write ``credit_draw.json`` and one manifest per cell. A rerun replaces them."""
+def run_draw(run_dir: Path, cells: list[str], n_pick: int | str = N_PICK,
+             max_set_aside: int = MAX_SET_ASIDE) -> dict[str, dict]:
+    """Write ``credit_draw.json`` and one manifest per cell. A rerun replaces them.
+
+    ``cells`` is the candidate list. Rows do not add candidates. A row cell
+    missing from the list is ``NOT_LISTED`` and is not drawn.
+    """
     run_dir = Path(run_dir)
+    cell_list = check_cells(list(cells))
+    listed = set(cell_list)
     n_pick = check_n_pick(n_pick)
     max_set_aside = check_max_set_aside(max_set_aside)
     rows = _read_rows(run_dir)
@@ -220,12 +280,18 @@ def run_draw(run_dir: Path, n_pick: int | str = N_PICK, max_set_aside: int = MAX
 
     steps_of = _steps_of(run_dir)
     manifests: dict[str, dict] = {}
+    seen: set[str] = set()
     for key in sorted(grouped, key=lambda item: draw_cell(item[1], item[0], item[2])):
         task, model, patch_id = key
         name = draw_cell(model, task, patch_id)
+        seen.add(name)
         count = counts.get(key, 0)
         group = grouped[key]
         rec = _record(name, model, task, patch_id, count, max_set_aside, n_pick)
+        if name not in listed:
+            rec.update(status="NOT_LISTED", reason="not in the cell list", eligible_pool=0, picks=[])
+            manifests[name] = rec
+            continue
         if count > max_set_aside:
             # Not admitted. List cap_cutoff and no-trace failures; do not draw.
             _ignored, cap, no_trace = partition_failures(_completed_failures(group), steps_of)
@@ -244,6 +310,17 @@ def run_draw(run_dir: Path, n_pick: int | str = N_PICK, max_set_aside: int = MAX
                    picks=[{"draw_order": i + 1, "slot": by_id[tid].get("trial_index"), "trial_id": tid}
                           for i, tid in enumerate(chosen)],
                    cap_cutoff_dropped=_listed(cap), no_trace_count=len(no_trace), no_trace_trials=_listed(no_trace))
+        manifests[name] = rec
+
+    for name in cell_list:
+        if name in seen:
+            continue
+        model, task = name.split("/", 1)
+        patch_id = None
+        if "@" in task:
+            task, patch_id = task.split("@", 1)
+        rec = _record(name, model, task, patch_id, 0, max_set_aside, n_pick)
+        rec.update(status="IN", reason=None, eligible_pool=0, picks=[])
         manifests[name] = rec
 
     _write_json(run_dir / TABLE, manifests)
@@ -289,6 +366,8 @@ def parse_n_pick(text: str) -> int | str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Seeded draw of failed trials for credit assignment")
     parser.add_argument("--run", type=Path, required=True)
+    parser.add_argument("--cells", type=Path, required=True,
+                        help="candidate cells: <model>/<task> keys, one per line or a JSON array. Rows outside this list are NOT_LISTED")
     parser.add_argument("--config", type=Path, help="DrawConfig JSON (n_pick, max_set_aside)")
     parser.add_argument("--n-pick", type=parse_n_pick, default=None,
                         help="failures to draw per admitted cell (default 3, or 'all'; overrides --config)")
@@ -296,12 +375,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="admit a cell when its set-aside trials are at most this many (default 3; overrides --config)")
     args = parser.parse_args(argv)
     cfg = resolve_config(args.config, n_pick=args.n_pick, max_set_aside=args.max_set_aside)
-    manifests = run_draw(args.run, n_pick=cfg.n_pick, max_set_aside=cfg.max_set_aside)
+    cell_list = load_cells(args.cells)
+    manifests = run_draw(args.run, cell_list, n_pick=cfg.n_pick, max_set_aside=cfg.max_set_aside)
     print(json.dumps({
         "table": str(args.run / TABLE),
         "cells": len(manifests),
         "in": sum(1 for rec in manifests.values() if rec["status"] == "IN"),
         "excluded": sum(1 for rec in manifests.values() if rec["status"] == "EXCLUDED"),
+        "not_listed": sum(1 for rec in manifests.values() if rec["status"] == "NOT_LISTED"),
         "picks": sum(len(rec["picks"]) for rec in manifests.values()),
         "n_pick": cfg.n_pick, "max_set_aside": cfg.max_set_aside,
     }))

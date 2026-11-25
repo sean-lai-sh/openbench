@@ -55,7 +55,20 @@ apply rule 2.
 
 ## Seeded failure draw (`credit_draw.py`)
 
-One draw per admitted cell. The pool is built in this order:
+The candidate cells are an explicit list, passed as `--cells`. The driver does
+not infer candidates from `trials.jsonl`. A cell that appears in the rows and
+is absent from the list is recorded as `NOT_LISTED` with `reason` `not in the
+cell list`, an empty `picks` list, and `eligible_pool` 0. Nothing is drawn for
+it. A listed cell over the set-aside cap stays `EXCLUDED`. The cap rule is
+unchanged.
+
+`--cells` is a text file, one `<model>/<task>` key per line (blank lines and
+`#` comments ignored), or a JSON array of those keys, or `{"cells": [...]}`.
+A key may add `@<patch_id>` when that patch is itself a candidate. The SEA-111
+v2 plan list is `obench/tests/fixtures/sea111_v2_cells.txt`: the 8 cells that
+enter and `gemini-4-carbon/dna-insert`.
+
+For each listed cell the pool is built in this order:
 
 1. Start from `failed_trials()` (completed failures whose cell has
    `set_aside_count <= max_set_aside`).
@@ -81,11 +94,12 @@ at 1. The same cell and the same pool always produce the same picks
 draws every eligible failure, a seeded sample of the whole pool. When a cell
 has fewer eligible failures than `n_pick`, the draw is the whole pool.
 
-A cell with `set_aside_count > max_set_aside` is `EXCLUDED`. Nothing is drawn
-(`eligible_pool` 0, `picks` empty). The manifest still lists that cell's
+A listed cell with `set_aside_count > max_set_aside` is `EXCLUDED`. Nothing is
+drawn (`eligible_pool` 0, `picks` empty). The manifest still lists that cell's
 `cap_cutoff` trials and no-trace failures. The reason is the count, for
 example `max_set_aside=3: 5 set-aside (provider_blocked) trials > 3`. No task
-name is special-cased.
+name is special-cased. The set-aside cap applies only to listed cells. A cell
+in the rows that the list does not name is `NOT_LISTED`, with nothing drawn.
 
 The driver writes `credit_draw.json` in the run directory (one object keyed by
 cell) and one file per cell under `credit_draw/`. A rerun replaces them.
@@ -94,8 +108,8 @@ cell) and one file per cell under `credit_draw/`. A rerun replaces them.
 | Field | Meaning |
 |---|---|
 | `cell`, `seed_string`, `seed_sha256` | `<model>/<task>` (plus `@patch` when set), `sea111-` + that key, and its sha256 |
-| `status`, `reason` | `IN`, or `EXCLUDED` with the set-aside reason. `reason` is null when the cell is in |
-| `eligible_pool` | How many trials remained after the cap filter and the no-trace filter. 0 when the cell is excluded |
+| `status`, `reason` | `IN` (`reason` null), `EXCLUDED` with the set-aside reason, or `NOT_LISTED` with `not in the cell list` |
+| `eligible_pool` | How many trials remained after the cap filter and the no-trace filter. 0 when the cell is excluded or not listed |
 | `n_pick` | How many the draw was asked for (`3` or `all`) |
 | `picks` | `{draw_order, slot, trial_id}` in draw order. `slot` is the trial's `trial_index` |
 | `cap_cutoff_dropped` | `{slot, trial_id}` for rule 2, including on an excluded cell |
@@ -103,7 +117,7 @@ cell) and one file per cell under `credit_draw/`. A rerun replaces them.
 | `set_aside_count`, `max_set_aside` | The cell's set-aside count and the cap that admitted or excluded it |
 
 ```text
-python3 -m obench.reflection.credit_draw --run <run dir> [--n-pick 3|all] [--max-set-aside 3] [--config draw.json]
+python3 -m obench.reflection.credit_draw --run <run dir> --cells <cell list> [--n-pick 3|all] [--max-set-aside 3] [--config draw.json]
 ```
 
 `--config` is a `DrawConfig` JSON object (`n_pick`, `max_set_aside`).

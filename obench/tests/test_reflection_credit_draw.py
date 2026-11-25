@@ -19,7 +19,11 @@ from pathlib import Path
 from obench.reflection import credit_draw as draw
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sea111_credit_draw.json"
+CELL_LIST = Path(__file__).parent / "fixtures" / "sea111_v2_cells.txt"
+PILOT_TRIALS = Path(__file__).resolve().parents[2] / "data" / "reflection-pilot3-1119" / "trials.jsonl"
 DNA_INSERT = "gemini-4-carbon/dna-insert"
+# Pilot-3 records Opus corewars under this task id. It is not a planned cell.
+OPUS_COREWARS = "claude-opus-5-5/winning-avg-corewars"
 # The pilot cell is excluded because this many set-aside trials exceed the default cap of 3.
 DNA_SET_ASIDE = 5
 
@@ -48,6 +52,10 @@ def spec_sample(cell: str, trial_ids: list[str], n_pick: int | str) -> list[str]
 
 def load_fixture() -> list[dict]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def fixture_cells() -> list[str]:
+    return [cell["cell"] for cell in load_fixture()]
 
 
 def _quiet_main(argv: list[str]) -> int:
@@ -127,8 +135,8 @@ class PostedDraw(unittest.TestCase):
     def test_eight_cells_reproduce_posted_picks_and_dna_insert_is_excluded(self):
         run = fixture_run()
         before = (run / "trials.jsonl").read_text(encoding="utf-8")
-        manifests = draw.run_draw(run)
-        again = draw.run_draw(run)
+        manifests = draw.run_draw(run, cells=fixture_cells())
+        again = draw.run_draw(run, cells=fixture_cells())
         self.assertEqual(again, manifests)  # same seed, same pool, same picks
         self.assertEqual((run / "trials.jsonl").read_text(encoding="utf-8"), before)
         on_disk = json.loads((run / "credit_draw.json").read_text(encoding="utf-8"))
@@ -178,7 +186,7 @@ class PostedDraw(unittest.TestCase):
     def test_n_pick_all_returns_every_eligible_failure_in_draw_order(self):
         run = fixture_run()
         cell = next(item for item in load_fixture() if item["cell"] == "claude-opus-5-5/model-extraction-relu-logits")
-        manifests = draw.run_draw(run, n_pick="all")
+        manifests = draw.run_draw(run, cells=fixture_cells(), n_pick="all")
         picks = [pick["trial_id"] for pick in manifests[cell["cell"]]["picks"]]
         self.assertEqual(picks, spec_sample(cell["cell"], cell["eligible"], "all"))
         self.assertEqual(set(picks), set(cell["eligible"]))
@@ -189,7 +197,7 @@ class PostedDraw(unittest.TestCase):
             _row("m", "tiny", "b", 1),
             _row("m", "tiny", "a", 0),
         ])
-        rec = draw.run_draw(small, n_pick=5)["m/tiny"]
+        rec = draw.run_draw(small, cells=["m/tiny"], n_pick=5)["m/tiny"]
         self.assertEqual([pick["trial_id"] for pick in rec["picks"]], spec_sample("m/tiny", ["b", "a"], "all"))
         self.assertEqual(rec["eligible_pool"], 2)
 
@@ -212,7 +220,7 @@ class Rule2(unittest.TestCase):
             _row("m", "t", "passed", 8, passed=True, timed_out=True, trace="traces/silent.jsonl"),
             _row("m", "t", "infra", 9, status="timeout", passed=None, timed_out=True, trace="traces/silent.jsonl"),
         ]
-        rec = draw.run_draw(_dump(run, rows), n_pick="all")["m/t"]
+        rec = draw.run_draw(_dump(run, rows), cells=["m/t"], n_pick="all")["m/t"]
         self.assertEqual(rec["status"], "IN")
         self.assertEqual([item["trial_id"] for item in rec["cap_cutoff_dropped"]], ["cap-silent"])
         eligible = ["silent-fail", "cap-status", "cap-output", "cap-later"]
@@ -233,7 +241,7 @@ class Rule2(unittest.TestCase):
 
         rows = [_row("synthetic", "cap-changes-draw", trial_id, slot) for slot, trial_id in enumerate(eligible)]
         rows.append(_row("synthetic", "cap-changes-draw", cap_id, 99, timed_out=True, trace="traces/silent.jsonl"))
-        rec = draw.run_draw(new_run(rows))[cell]
+        rec = draw.run_draw(new_run(rows), cells=[cell])[cell]
         self.assertEqual([pick["trial_id"] for pick in rec["picks"]], without)
         self.assertNotEqual([pick["trial_id"] for pick in rec["picks"]], with_cap)
         self.assertEqual(rec["cap_cutoff_dropped"], [{"slot": 99, "trial_id": cap_id}])
@@ -257,8 +265,11 @@ class SetAsideCap(unittest.TestCase):
         for i in range(5):
             rows.append(_row("other-model", "three", f"patched-aside-{i}", 10 + i, status="provider_blocked",
                              passed=None, trace=None, patch_id="patch-1"))
+        # Present in the rows, absent from the list: not drawn, even with zero set-aside trials.
+        rows.append(_row("other-model", "stray", "stray-fail", 0))
+        listed = ["other-model/three", "other-model/four", "other-model/five", "other-model/three@patch-1"]
 
-        manifests = draw.run_draw(new_run(rows))
+        manifests = draw.run_draw(new_run(rows), cells=listed)
         self.assertEqual(manifests["other-model/three"]["status"], "IN")
         self.assertEqual(manifests["other-model/three"]["set_aside_count"], 3)
         self.assertEqual(manifests["other-model/three"]["picks"][0]["trial_id"], "three-fail")
@@ -271,8 +282,13 @@ class SetAsideCap(unittest.TestCase):
         self.assertEqual(patched["status"], "EXCLUDED")
         self.assertEqual(patched["set_aside_count"], 5)
         self.assertIn("provider_blocked", patched["reason"])
+        stray = manifests["other-model/stray"]
+        self.assertEqual(stray["status"], "NOT_LISTED")
+        self.assertEqual(stray["reason"], "not in the cell list")
+        self.assertEqual(stray["picks"], [])
+        self.assertEqual(stray["eligible_pool"], 0)
 
-        widened = draw.run_draw(new_run(rows), max_set_aside=4)
+        widened = draw.run_draw(new_run(rows), cells=listed, max_set_aside=4)
         self.assertEqual(widened["other-model/four"]["status"], "IN")
         self.assertEqual(widened["other-model/four"]["max_set_aside"], 4)
         self.assertEqual(widened["other-model/five"]["status"], "EXCLUDED")
@@ -285,29 +301,70 @@ class SetAsideCap(unittest.TestCase):
         cfg = run / "draw.json"
         cfg.write_text(json.dumps({"n_pick": "all", "max_set_aside": 0}), encoding="utf-8")
 
-        excluded = draw.run_draw(run, **{"n_pick": draw.resolve_config(cfg).n_pick,
-                                         "max_set_aside": draw.resolve_config(cfg).max_set_aside})
+        cells = run / "cells.txt"
+        cells.write_text("m/t\n", encoding="utf-8")
+        excluded = draw.run_draw(run, cells=["m/t"], n_pick=draw.resolve_config(cfg).n_pick,
+                                 max_set_aside=draw.resolve_config(cfg).max_set_aside)
         self.assertEqual(excluded["m/t"]["status"], "EXCLUDED")
 
-        self.assertEqual(_quiet_main(["--run", str(run), "--config", str(cfg), "--max-set-aside", "4"]), 0)
+        self.assertEqual(_quiet_main(["--run", str(run), "--cells", str(cells), "--config", str(cfg),
+                                      "--max-set-aside", "4"]), 0)
         admitted = json.loads((run / "credit_draw.json").read_text(encoding="utf-8"))["m/t"]
         self.assertEqual(admitted["status"], "IN")
         self.assertEqual(admitted["max_set_aside"], 4)
         self.assertEqual(admitted["n_pick"], "all")
         self.assertEqual([pick["trial_id"] for pick in admitted["picks"]], spec_sample("m/t", ["a", "b"], "all"))
 
-        self.assertEqual(_quiet_main(["--run", str(run), "--n-pick", "1", "--max-set-aside", "4"]), 0)
+        self.assertEqual(_quiet_main(["--run", str(run), "--cells", str(cells), "--n-pick", "1",
+                                      "--max-set-aside", "4"]), 0)
         one = json.loads((run / "credit_draw.json").read_text(encoding="utf-8"))["m/t"]
         self.assertEqual(len(one["picks"]), 1)
         self.assertEqual(one["picks"][0]["trial_id"], spec_sample("m/t", ["a", "b"], 1)[0])
 
         with self.assertRaises(SystemExit):
-            _quiet_main(["--run", str(run), "--n-pick", "0"])
+            _quiet_main(["--run", str(run), "--cells", str(cells), "--n-pick", "0"])
         with self.assertRaises(SystemExit):
-            _quiet_main(["--run", str(run), "--n-pick", "maybe"])
+            _quiet_main(["--run", str(run)])
+        with self.assertRaises(SystemExit):
+            _quiet_main(["--run", str(run), "--cells", str(cells), "--n-pick", "maybe"])
         for raw in ({"n_pick": 0}, {"n_pick": True}, {"n_pick": "3"}, {"max_set_aside": -1}, {"extra": 1}):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 draw.DrawConfig.from_dict(raw)
+
+
+class PilotCellList(unittest.TestCase):
+    def test_pilot3_admits_only_the_listed_cells(self):
+        """Status only. The committed pilot rows point at traces that are not in the repo."""
+        cells = draw.load_cells(CELL_LIST)
+        self.assertEqual(cells, fixture_cells())
+        self.assertEqual(len(cells), 9)
+        run = Path(tempfile.mkdtemp())
+        (run / "trials.jsonl").symlink_to(PILOT_TRIALS)
+        manifests = draw.run_draw(run, cells=cells)
+        by_status: dict[str, set[str]] = {}
+        for name, rec in manifests.items():
+            by_status.setdefault(rec["status"], set()).add(name)
+        planned_in = set(cells) - {DNA_INSERT}
+        self.assertEqual(by_status["IN"], planned_in)
+        self.assertEqual(by_status["EXCLUDED"], {DNA_INSERT})
+        self.assertEqual(manifests[DNA_INSERT]["set_aside_count"], DNA_SET_ASIDE)
+        self.assertEqual(manifests[DNA_INSERT]["picks"], [])
+
+        failure_cells = set()
+        for line in PILOT_TRIALS.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("status") == "completed" and row.get("passed") is False:
+                failure_cells.add(f"{row['model']}/{row['task']}")
+        self.assertIn(OPUS_COREWARS, failure_cells)
+        for name in sorted(failure_cells - set(cells)):
+            rec = manifests[name]
+            self.assertEqual(rec["status"], "NOT_LISTED", name)
+            self.assertEqual(rec["picks"], [])
+            self.assertEqual(rec["eligible_pool"], 0)
+        self.assertEqual(manifests[OPUS_COREWARS]["status"], "NOT_LISTED")
+        self.assertEqual(manifests["gemini-4-carbon/winning-avg-corewars"]["status"], "NOT_LISTED")
 
 
 if __name__ == "__main__":
