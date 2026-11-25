@@ -236,6 +236,12 @@ table is rewritten whole, so a rerun is idempotent.
 
 ## Method B (`credit_b.py`, prompt `B1`)
 
+`run_method_b` judges **drawn failures only**. It reads `credit_draw.json` and
+labels the picks of `IN` cells. An admitted failure that was not drawn gets
+no row and no judge call. A missing `credit_draw.json` is an error. Method A
+is unchanged and still scores every admitted failure. `method_b_row` does
+not read the draw.
+
 1. Find the first failing step `f` with the shared locator.
 2. Ask a **System 1 model** to label each of the `K` steps before `f` as
    `correct` or `near_error` (contributed to the failure). The prompt is
@@ -288,29 +294,39 @@ table is rewritten whole, so a rerun is idempotent.
 | `trace` | Pointer to the trial's trace |
 
 Run it with `python3 -m obench.reflection.credit_b --run <run dir> [--config b.json] [--max-set-aside 3]`.
-It needs `GOOGLE_CLOUD_PROJECT` and Google credentials (ADC). It's paid, but tiny:
-one Flash call per failed trial. An `empty_window` or `empty_trace` row makes no call.
+It needs `GOOGLE_CLOUD_PROJECT` and Google credentials (ADC), and `credit_draw.json`
+in the run directory. It's paid, but tiny: one Flash call per drawn failure
+that has a window. An undrawn trial, an `empty_window` row, or an
+`empty_trace` row makes no call.
 
 ## A/B agreement (`credit_agreement.jsonl`)
 
 The pilot compares Method A and Method B on this table only. Ideation sees
 both methods in one input, so an alternative's later result is not attributed
-to one method. One row per trial that has both a Method A row and a Method B
-row. Method A is unchanged: the locator's first failure stays the first
-failure, including an exploratory probe the agent recovered from.
+to one method. The table is the pre-registered draw: one row per pick of an
+`IN` cell in `credit_draw.json`, and only those. Method A still covers every
+admitted failure; an admitted failure that was not drawn is absent here, even
+when both credit tables have a row for it. Summary counts (`rows`,
+`probe_errors`, `same_step`) are over the drawn rows only. A missing
+`credit_draw.json` is an error. A drawn trial missing a Method A or Method B
+row is an error. Method A's locator is unchanged: the first failure stays the
+first failure, including an exploratory probe the agent recovered from.
 
 ```text
 python3 -m obench.reflection.credit_agreement --run <run dir>
 ```
 
-That command reads the two credit tables. It does not call a model.
+That command reads the draw and the two credit tables. It does not call a model.
 
 | Field | Meaning |
 |---|---|
-| `trial_id`, `task`, `model`, `patch_id` | The failed trial |
+| `trial_id`, `task`, `model`, `patch_id` | The drawn failure |
+| `drawn` | True. Every stored row is a drawn pick, so this column is true on each of them |
 | `method_a_step`, `method_a_signal` | Method A's failing step and signal |
 | `method_b_step`, `method_b_status`, `method_b_window`, `method_b_window_length` | Method B's step, status, window, and actual window length |
-| `same_step` | Method A's step equals Method B's step (both non-null) |
+| `same_step` | Method A's step equals Method B's step (both non-null). Tautological: both steps are the shared locator's first failure, and B's window is built from that step. The column stays so the pre-registered table does not drop it |
+| `earliest_near_error_step` | The earliest step in B's window that B's judge labels `near_error` (contributing). Null when none of the window is `near_error`, or when the status is `empty_window` (also null for an empty trace or a judge error) |
+| `steps_before_a` | Method A's step minus `earliest_near_error_step`. Null when that step is null or Method A's step is null |
 | `near_error_steps`, `near_error_count` | Window steps Method B labelled `near_error`, and how many |
 | `probe_error` | True when Method A's first failure is a tool error (`tool_error_status` or `tool_error_output`) at step 3 or earlier |
 | `probe_error_step` | That step, or null when `probe_error` is false |

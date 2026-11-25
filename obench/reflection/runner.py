@@ -880,22 +880,35 @@ class Runner:
 
 
 def ideation_estimate(executor: Executor, failures: dict, n_alternatives: int = 5, n_trials: int = N_TRIALS,
-                      candidate_fraction: float = 1.0) -> dict:
+                      candidate_fraction: float = 1.0, confirm: str = "all") -> dict:
     """Spend estimate for ideation (SEA-110): selection runs ``n_alternatives
-    x n_trials`` per failure, then every candidate gets a confirmation (a
-    fresh ``n_trials`` alternative run **plus** a fresh ``n_trials`` baseline
-    run). ``failures`` is ``{model: failed trials to ideate on}``.
-    ``candidate_fraction`` = 1.0 is the worst case (every alternative
-    becomes a candidate)."""
+    x n_trials`` per failure, then candidates get a confirmation (a fresh
+    ``n_trials`` alternative run **plus** a fresh ``n_trials`` baseline run).
+
+    ``failures`` is ``{model: failed trials to ideate on}``.
+    ``candidate_fraction`` = 1.0 is the worst case (every alternative becomes
+    a candidate). ``confirm`` is ``all`` or ``top``:
+
+    - ``all``: every candidate is confirmed, so confirmation is
+      ``failures × n_alternatives × candidate_fraction × 2N`` trials.
+    - ``top``: one candidate per failure is confirmed, so that product is
+      capped at one confirmation per failure
+      (``min(1, n_alternatives × candidate_fraction)``).
+    """
+    if confirm not in ("all", "top"):
+        raise ValueError(f"confirm must be 'top' or 'all', got {confirm!r}")
     per_model = {}
+    confirmed_alts = n_alternatives * candidate_fraction
+    if confirm == "top":
+        confirmed_alts = min(1.0, confirmed_alts)
     for model, count in failures.items():
         unit = executor.estimate_cost_usd(model)
         selection = count * n_alternatives * n_trials * unit
-        confirmation = count * n_alternatives * candidate_fraction * 2 * n_trials * unit
+        confirmation = count * confirmed_alts * 2 * n_trials * unit
         per_model[model] = {"selection_usd": round(selection, 2), "confirmation_usd": round(confirmation, 2),
                             "total_usd": round(selection + confirmation, 2)}
     return {"n_alternatives": n_alternatives, "n_trials": n_trials, "candidate_fraction": candidate_fraction,
-            "per_model": per_model,
+            "confirm": confirm, "per_model": per_model,
             "selection_usd": round(sum(v["selection_usd"] for v in per_model.values()), 2),
             "confirmation_usd": round(sum(v["confirmation_usd"] for v in per_model.values()), 2),
             "total_usd": round(sum(v["total_usd"] for v in per_model.values()), 2)}

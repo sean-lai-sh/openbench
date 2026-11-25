@@ -531,8 +531,6 @@ class CombinedIdeation(unittest.TestCase):
             trials.append({"run_id": "r", "trial_id": f"t{i}", "task": "extract-elf", "model": OPUS,
                            "patch_id": None, "trial_index": i, "status": "completed", "passed": False, "trace": rel})
         (self.run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in trials), encoding="utf-8")
-        credit_a.run_method_a(self.run)
-        credit_b.run_method_b(self.run, FakeJudge({1: "near_error"}))
         self.cell = f"{OPUS}/extract-elf"
         (self.run / "credit_draw.json").write_text(json.dumps({
             self.cell: {"status": "IN", "picks": [
@@ -541,6 +539,9 @@ class CombinedIdeation(unittest.TestCase):
             ]},
             f"{OPUS}/not-in-the-run": {"status": "NO_ROWS", "reason": "no rows in trials.jsonl", "picks": []},
         }), encoding="utf-8")
+        credit_a.run_method_a(self.run)
+        self.judge = FakeJudge({1: "near_error"})
+        credit_b.run_method_b(self.run, self.judge)
 
     def test_one_call_per_failure_and_step_one_sends_only_method_a(self):
         from obench.reflection import credit_agreement as agr
@@ -586,10 +587,17 @@ class CombinedIdeation(unittest.TestCase):
         self.assertLess(b_rows["t0"]["window_length"], b_rows["t0"]["k"])
         self.assertEqual((b_rows["t1"]["status"], b_rows["t1"]["window"], b_rows["t1"]["window_length"]),
                          ("empty_window", [], 0))
+        self.assertEqual(len(self.judge.prompts), 1)  # t1 is empty_window; undrawn t2 is not judged
+        self.assertNotIn("t2", b_rows)
         flags = {row["trial_id"]: row for row in agr.run_agreement(self.run)}
+        self.assertEqual(set(flags), {"t0", "t1"})
         self.assertTrue(flags["t0"]["probe_error"] and flags["t0"]["probe_error_step"] == 3)
         self.assertTrue(flags["t1"]["probe_error"] and flags["t1"]["probe_error_step"] == 1)
-        self.assertFalse(flags["t2"]["probe_error"])
+        self.assertEqual(flags["t0"]["earliest_near_error_step"], 1)
+        self.assertEqual(flags["t0"]["steps_before_a"], 2)  # A's step 3 minus the near-error at step 1
+        self.assertTrue(flags["t0"]["same_step"])
+        self.assertIsNone(flags["t1"]["earliest_near_error_step"])
+        self.assertIsNone(flags["t1"]["steps_before_a"])
 
     def test_an_alternative_without_a_citation_is_rejected(self):
         cited = [_cited(i, "A:failing_step", "B:step:1") for i in range(4)]
@@ -608,12 +616,207 @@ class CombinedIdeation(unittest.TestCase):
         self.assertTrue(all(row["uncited"] is False and row["citations"] for row in first[:4]))
 
 
+class ConfirmMode(unittest.TestCase):
+    """``confirm=all`` confirms every candidate. ``confirm=top`` confirms one per failure."""
+
+    def setUp(self):
+        p = mock_patch.dict(os.environ, {hs_config.CUTOFF_ENV: ""})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _run(self, n=2):
+        run = Path(tempfile.mkdtemp())
+        cfg = rn.RunConfig.from_dict({"run_id": "base", "suite": "pilot", "models": [OPUS], "n_trials": n,
+                                      "tasks": ["extract-elf"], "max_rounds": 1})
+        rn.Runner(cfg, run, rn.FixtureExecutor({})).run()
+        from obench.reflection import credit_a
+        credit_a.run_method_a(run)
+        host = EndToEnd()
+        host.run = run
+        host._install_fresh_baseline()
+        return run, [row for row in rn.read_rows(run / "trials.jsonl") if row["passed"] is False]
+
+    def _proposal(self, trial, index, text):
+        patch = {"schema": pt.PATCH_SCHEMA, "ops": [{"op": "system_append", "text": text}]}
+        return {"schema": idn.PROPOSAL_SCHEMA, "status": "accepted", "uncited": False, "index": index,
+                "proposal_id": pt.patch_id(patch), "patch": patch, "parent_trial_id": trial["trial_id"],
+                "task": trial["task"], "model": trial["model"], "credit_method": "A", "citations": []}
+
+    def _write(self, run, proposals):
+        (run / "ideation.jsonl").write_text("".join(json.dumps(row) + "\n" for row in proposals), encoding="utf-8")
+
+    def _executor(self, by_id, confirm_passes=2, baseline_passes=0):
+        class SelectPasses(rn.FixtureExecutor):
+            def run_trial(self, spec, run_dir):
+                if "--confirm-baseline--" in spec.run_id:
+                    passes = baseline_passes
+                elif "--confirm--" in spec.run_id:
+                    passes = confirm_passes
+                else:
+                    passes = by_id[spec.patch_id]
+                self.passes = {(spec.task, spec.model): passes}
+                return super().run_trial(spec, run_dir)
+        return SelectPasses({})
+
+    def _results(self, run):
+        return rn.read_rows(run / "ideation_results.jsonl")
+
+    def test_confirm_all_confirms_every_candidate_and_records_the_mode(self):
+        run, trials = self._run()
+        proposals = [self._proposal(trials[0], 0, "a"), self._proposal(trials[0], 1, "b"),
+                     self._proposal(trials[0], 2, "c")]
+        self._write(run, proposals)
+        # Passes 1 and 2 beat a 0 baseline. Passes 0 does not. Both candidates are confirmed.
+        executor = self._executor({proposals[0]["proposal_id"]: 1, proposals[1]["proposal_id"]: 0,
+                                   proposals[2]["proposal_id"]: 2})
+        for proposal in proposals:
+            idn.evaluate(run, proposal, executor, n_trials=2)  # default confirm=all
+        rows = {row["alternative_index"]: row for row in self._results(run)}
+        self.assertEqual(set(rows), {0, 1, 2})
+        self.assertTrue(all(row["confirm"] == "all" and row["confirm_skipped"] is None for row in rows.values()))
+        self.assertEqual(rows[1]["candidate"], False)
+        self.assertIsNone(rows[1]["confirmation_alt_passes"])
+        self.assertTrue(rows[0]["confirmed"] and rows[2]["confirmed"])
+        self.assertEqual(len(executor.calls), 3 * 2 + 2 * 4)  # three selections, two confirmations
+        with self.assertRaisesRegex(ValueError, "confirm"):
+            idn.evaluate(run, proposals[0], executor, n_trials=2, confirm="maybe")
+
+    def test_confirm_top_keeps_only_the_best_candidate_per_failure(self):
+        run, trials = self._run()
+        # index 0 passes 1; index 1 and 2 both pass 2. The tie breaks to the lower index.
+        low = self._proposal(trials[0], 0, "low")
+        tied_high_index = self._proposal(trials[0], 2, "high-index")
+        tied_low_index = self._proposal(trials[0], 1, "low-index")
+        proposals = [low, tied_high_index, tied_low_index]
+        self._write(run, proposals)
+        executor = self._executor({low["proposal_id"]: 1, tied_high_index["proposal_id"]: 2,
+                                   tied_low_index["proposal_id"]: 2})
+        idn.evaluate(run, low, executor, n_trials=2, confirm="top")
+        idn.evaluate(run, tied_high_index, executor, n_trials=2, confirm="top")
+        mid = self._results(run)
+        self.assertEqual(len(mid), 2)
+        self.assertTrue(all(row["confirm"] == "top" and row["confirmation_run_dirs"] is None for row in mid))
+        self.assertTrue(all(row["confirm_skipped"] is None for row in mid))
+        winner = idn.evaluate(run, tied_low_index, executor, n_trials=2, confirm="top")
+        rows = {row["alternative_index"]: row for row in self._results(run)}
+        self.assertTrue(all(row["confirm"] == "top" for row in rows.values()))
+        self.assertEqual(winner["alternative_index"], 1)
+        self.assertTrue(rows[1]["confirmed"] and rows[1]["confirm_skipped"] is None)
+        self.assertEqual(rows[1]["selection_alt_passes"], 2)
+        for index in (0, 2):
+            self.assertTrue(rows[index]["candidate"])
+            self.assertEqual(rows[index]["confirm_skipped"], "not_top")
+            self.assertIsNone(rows[index]["confirmed"])
+            self.assertFalse(rows[index]["success"])
+            for field in ("confirmation_baseline_passes", "confirmation_baseline_completed",
+                          "confirmation_alt_passes", "confirmation_alt_completed",
+                          "confirmation_beats_baseline", "confirmation_complete", "confirmation_fisher_p",
+                          "confirmation_spend_usd", "confirmation_run_dirs", "confirmation_run_states",
+                          "confirmation_code_commit", "confirmation_baseline_code_commit"):
+                self.assertIsNone(rows[index][field], field)
+        self.assertEqual(len(executor.calls), 3 * 2 + 4)  # selections for three, confirmation for one
+
+    def test_top_is_per_failure_and_fisher_then_index_breaks_ties(self):
+        # Lower Fisher p wins a pass-count tie. A higher pass count wins even with a worse p.
+        # Then the lower alternative index, then the proposal id.
+        rows = [
+            {"candidate": True, "selection_alt_passes": 2, "selection_fisher_p": 0.4,
+             "alternative_index": 0, "proposal_id": "fewer-but-sharper"},
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.2,
+             "alternative_index": 5, "proposal_id": "best-passes"},
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.9,
+             "alternative_index": 1, "proposal_id": "same-passes-worse-p"},
+        ]
+        self.assertEqual(idn.top_candidate(rows)["proposal_id"], "best-passes")
+        tied = [
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.2,
+             "alternative_index": 3, "proposal_id": "b"},
+            {"candidate": True, "selection_alt_passes": 4, "selection_fisher_p": 0.2,
+             "alternative_index": 1, "proposal_id": "a"},
+        ]
+        self.assertEqual(idn.top_candidate(tied)["proposal_id"], "a")
+        self.assertIsNone(idn.top_candidate([{"candidate": False, "selection_alt_passes": 9, "alternative_index": 0}]))
+
+        run, trials = self._run()
+        parent_a, parent_b = trials[0], trials[1]
+        weak = self._proposal(parent_a, 1, "weak")
+        also_weak = self._proposal(parent_a, 0, "also-weak")
+        strong = self._proposal(parent_b, 0, "strong")
+        self._write(run, [weak, also_weak, strong])
+        executor = self._executor({weak["proposal_id"]: 1, also_weak["proposal_id"]: 1, strong["proposal_id"]: 2})
+        idn.evaluate(run, strong, executor, n_trials=2, confirm="top")
+        idn.evaluate(run, weak, executor, n_trials=2, confirm="top")
+        idn.evaluate(run, also_weak, executor, n_trials=2, confirm="top")
+        by_parent = {}
+        for row in self._results(run):
+            by_parent.setdefault(row["parent_trial_id"], []).append(row)
+        a_confirmed = [row for row in by_parent[parent_a["trial_id"]] if row["confirmed"]]
+        b_confirmed = [row for row in by_parent[parent_b["trial_id"]] if row["confirmed"]]
+        self.assertEqual(len(a_confirmed), 1)
+        self.assertEqual(a_confirmed[0]["alternative_index"], 0)  # same passes, lower index
+        self.assertEqual(len(b_confirmed), 1)
+        self.assertEqual(b_confirmed[0]["selection_alt_passes"], 2)
+        skipped = [row for row in by_parent[parent_a["trial_id"]] if row["confirm_skipped"] == "not_top"]
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["alternative_index"], 1)
+
+    def test_cli_flag_overrides_config(self):
+        run, trials = self._run()
+        ideator = FakeIdeator([good(i) for i in range(5)])
+        idn.propose(run, trials[0], "A", ideator)
+        fixture = run / "passes.json"
+        fixture.write_text(json.dumps({f"extract-elf|{OPUS}": 1}), encoding="utf-8")
+        config = run / "ideation-config.json"
+        config.write_text(json.dumps({"confirm": "top"}), encoding="utf-8")
+        self.assertEqual(idn.resolve_config(config, None).confirm, "top")
+        self.assertEqual(idn.resolve_config(config, "all").confirm, "all")
+        self.assertEqual(idn.resolve_config(None, None).confirm, "all")
+        # Config key alone: no --confirm flag.
+        self.assertEqual(idn.main(["--run", str(run), "--fixture", str(fixture), "--config", str(config),
+                                   "--n-trials", "2"]), 0)
+        rows = self._results(run)
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(row["confirm"] == "top" and row["candidate"] for row in rows))
+        confirmed = [row for row in rows if row["confirmation_alt_passes"] is not None]
+        skipped = [row for row in rows if row["confirm_skipped"] == "not_top"]
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["alternative_index"], 0)
+        self.assertEqual(len(skipped), 4)
+        self.assertTrue(all(row["confirmation_alt_passes"] is None for row in skipped))
+
+        other, other_trials = self._run()
+        idn.propose(other, other_trials[0], "A", FakeIdeator([good(i) for i in range(5)]))
+        other_fixture = other / "passes.json"
+        other_fixture.write_text(fixture.read_text(), encoding="utf-8")
+        other_config = other / "ideation-config.json"
+        other_config.write_text(json.dumps({"confirm": "top"}), encoding="utf-8")
+        # The flag overrides the config file.
+        self.assertEqual(idn.main(["--run", str(other), "--fixture", str(other_fixture), "--config", str(other_config),
+                                   "--confirm", "all", "--n-trials", "2"]), 0)
+        all_rows = self._results(other)
+        self.assertEqual(len(all_rows), 5)
+        self.assertTrue(all(row["confirm"] == "all" and row["confirm_skipped"] is None for row in all_rows))
+        self.assertTrue(all(row["confirmation_alt_passes"] == 1 for row in all_rows))
+
+
 class Estimate(unittest.TestCase):
     def test_confirmation_is_in_the_cost_estimate(self):
         est = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1})
-        self.assertEqual((est["selection_usd"], est["confirmation_usd"], est["total_usd"]), (300.0, 600.0, 900.0))
+        self.assertEqual((est["selection_usd"], est["confirmation_usd"], est["total_usd"], est["confirm"]),
+                         (300.0, 600.0, 900.0, "all"))
         half = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, candidate_fraction=0.2)
         self.assertEqual(half["confirmation_usd"], 120.0)
+        top = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, confirm="top")
+        # One confirmation per failure (2 × 30 trials), not five.
+        self.assertEqual((top["selection_usd"], top["confirmation_usd"], top["total_usd"], top["confirm"]),
+                         (300.0, 120.0, 420.0, "top"))
+        spread = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1},
+                                      candidate_fraction=0.5, confirm="top")
+        self.assertEqual(spread["confirmation_usd"], 120.0)  # min(1, 5 × 0.5) = 1
+        all_half = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, candidate_fraction=0.5)
+        self.assertEqual(all_half["confirmation_usd"], 300.0)
+        with self.assertRaisesRegex(ValueError, "confirm"):
+            rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 1}, confirm="maybe")
 
 
 if __name__ == "__main__":

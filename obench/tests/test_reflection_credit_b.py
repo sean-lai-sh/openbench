@@ -107,6 +107,21 @@ class Weights(unittest.TestCase):
                 cb.MethodBConfig.from_dict(raw)
 
 
+def draw_admitted(run: Path, max_set_aside: int = 3) -> None:
+    """Draw every failure ``failed_trials`` would admit, so a test can still score that pool."""
+    from obench.reflection.credit_locator import cell_key, failed_trials
+
+    grouped: dict[str, list[str]] = {}
+    for trial in failed_trials(run, max_set_aside=max_set_aside):
+        task, model, patch = cell_key(trial)
+        name = f"{model}/{task}" if not patch else f"{model}/{task}@{patch}"
+        grouped.setdefault(name, []).append(trial["trial_id"])
+    doc = {cell: {"status": "IN", "picks": [
+        {"draw_order": i + 1, "slot": i, "trial_id": tid} for i, tid in enumerate(ids)
+    ]} for cell, ids in grouped.items()}
+    (Path(run) / "credit_draw.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
 class Table(unittest.TestCase):
     def test_own_table_beside_method_a(self):
         from obench.tests.test_reflection_credit_a import MethodA
@@ -114,11 +129,32 @@ class Table(unittest.TestCase):
         from obench.reflection import credit_a
         a_rows = credit_a.run_method_a(run)
         a_text = (run / "credit_a.jsonl").read_text()
+        draw_admitted(run)
         rows = cb.run_method_b(run, FakeJudge())
         self.assertEqual([r["trial_id"] for r in rows], [r["trial_id"] for r in a_rows])
         self.assertEqual((run / "credit_a.jsonl").read_text(), a_text)  # Method A's table untouched
         self.assertEqual(sorted(p.name for p in run.glob("*.jsonl")), ["credit_a.jsonl", "credit_b.jsonl", "trials.jsonl"])
         self.assertTrue(all(r["schema"] == cb.METHOD_B_SCHEMA for r in rows))
+
+    def test_undrawn_failure_is_not_judged_and_a_missing_draw_fails(self):
+        from obench.tests.test_reflection_credit_a import MethodA
+
+        run = MethodA().make_run()
+        judge = FakeJudge()
+        with self.assertRaisesRegex(ValueError, "credit_draw.json is missing"):
+            cb.run_method_b(run, judge)
+        self.assertEqual(judge.prompts, [])
+        # t0 and t1 are both admitted failures with a window. Only t0 is drawn.
+        (run / "credit_draw.json").write_text(json.dumps({
+            "claude-opus-5-5/t": {"status": "IN", "picks": [
+                {"draw_order": 1, "slot": 0, "trial_id": "t0"}]},
+            "claude-opus-5-5/other": {"status": "EXCLUDED", "picks": [
+                {"draw_order": 1, "slot": 1, "trial_id": "t1"}]},
+        }), encoding="utf-8")
+        rows = cb.run_method_b(run, judge)
+        self.assertEqual([row["trial_id"] for row in rows], ["t0"])
+        self.assertEqual(len(judge.prompts), 1)
+        self.assertFalse((run / "credit_b.jsonl").read_text().count("t1"))
 
     def test_documented_fields_match_rows(self):
         doc = Path(cb.__file__).with_name("CREDIT_ASSIGNMENT.md").read_text()

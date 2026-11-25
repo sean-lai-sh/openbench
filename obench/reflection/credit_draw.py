@@ -343,6 +343,53 @@ def run_draw(run_dir: Path, cells: list[str], n_pick: int | str = N_PICK,
     return manifests
 
 
+def load_draw(run_dir: Path) -> dict:
+    """The ``credit_draw.json`` object. Missing or not an object is an error.
+
+    Later stages (Method B, the agreement table, ideation) score drawn
+    failures only. They call this rather than guessing a pool from
+    ``trials.jsonl``.
+    """
+    path = Path(run_dir) / TABLE
+    if not path.is_file():
+        raise ValueError(f"credit_draw.json is missing at {path}")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise ValueError("credit_draw.json must be an object keyed by cell")
+    return doc
+
+
+def drawn_picks(run_dir: Path) -> list[dict]:
+    """Picks of ``IN`` cells, in cell order then ``draw_order``.
+
+    ``EXCLUDED``, ``NOT_LISTED``, and ``NO_ROWS`` contribute nothing. A
+    repeated trial id is kept once, at its first position.
+    """
+    doc = load_draw(run_dir)
+    picked = []
+    seen: set[str] = set()
+    for cell in sorted(doc):
+        rec = doc[cell]
+        if not isinstance(rec, dict) or rec.get("status") != "IN":
+            continue
+        picks = rec.get("picks") or []
+        if not isinstance(picks, list):
+            raise ValueError(f"{cell}: picks must be a list")
+        ordered = sorted(picks, key=lambda pick: (
+            not isinstance(pick, dict) or pick.get("draw_order") is None,
+            (pick.get("draw_order") or 0) if isinstance(pick, dict) else 0))
+        for pick in ordered:
+            if not isinstance(pick, dict) or not pick.get("trial_id"):
+                raise ValueError(f"{cell}: drawn pick has no trial_id")
+            trial_id = pick["trial_id"]
+            if trial_id in seen:
+                continue
+            seen.add(trial_id)
+            picked.append({"cell": cell, "draw_order": pick.get("draw_order"), "slot": pick.get("slot"),
+                           "trial_id": trial_id})
+    return picked
+
+
 def resolve_config(config_path: Path | None = None, n_pick: int | str | None = None,
                    max_set_aside: int | None = None) -> DrawConfig:
     """Settings from ``--config``. ``--n-pick`` and ``--max-set-aside`` override the file."""
