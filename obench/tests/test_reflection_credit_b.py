@@ -91,7 +91,8 @@ class Weights(unittest.TestCase):
         self.assertEqual(cb.PROMPT_VERSION, "B1")
 
     def test_config_validation(self):
-        for raw in ({"k": -1}, {"near_error_weight": 1.5}, {"cutoff_rule": "other"}, {"system1_thinking": {}}, {"x": 1}):
+        for raw in ({"k": -1}, {"near_error_weight": 1.5}, {"cutoff_rule": "other"}, {"system1_thinking": {}},
+                    {"x": 1}, {"max_set_aside": -1}, {"max_set_aside": True}):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 cb.MethodBConfig.from_dict(raw)
 

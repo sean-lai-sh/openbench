@@ -47,6 +47,10 @@ Rejected proposals are stored with reasons and never run.
 ## Evaluation: selection, then confirmation (`ideation_results.jsonl`)
 
 Two stages (João Sedoc via Sean, 2026-11-13). `evaluate(run_dir, proposal, executor)` runs both.
+The baseline cell is evaluated when its summary `set_aside` count is at most
+`max_set_aside` (default **3**, about 10% of 30), the same cap as credit
+assignment. `evaluate(..., max_set_aside=n)` overrides the default. The count
+is reported on the credit rows for that cell.
 
 1. **Selection.** The alternative runs **N = 30** trials on the parent's task
    and model, with its patch (`ideation/<proposal_id>/select/`). It is a

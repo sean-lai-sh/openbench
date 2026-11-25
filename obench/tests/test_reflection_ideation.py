@@ -186,24 +186,43 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(row["credit_method"], "A")
         self.assertEqual(len(rn.read_rows(self.run / "ideation_results.jsonl")), 1)
 
-    def test_provider_blocked_cells_never_go_to_ideation(self):
-        proposal = self.proposal()
+    def _set_baseline(self, proposal, **fields):
         rows = rn.read_rows(self.run / "summary.jsonl")
         for r in rows:
             if r["task"] == proposal["task"] and r["model"] == proposal["model"] and r["patch_id"] is None:
-                r.update(provider_blocked=1, verdict="excluded")
+                r.update(fields)
         (self.run / "summary.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-        executor = self.arms(select=3, confirm=5, confirm_baseline=1)
-        with self.assertRaisesRegex(ValueError, "provider-blocked"):
-            idn.evaluate(self.run, proposal, executor)
-        self.assertEqual(executor.calls, [])
+
+    def test_set_aside_cap_admits_up_to_three_and_the_setting_overrides_it(self):
+        proposal = self.proposal()
+        self._set_baseline(proposal, set_aside=3, provider_blocked=3, model_refused=0)
+        admitted = self.arms(select=0, confirm=0, confirm_baseline=0)
+        idn.evaluate(self.run, proposal, admitted)
+        self.assertEqual(len(admitted.calls), 30)  # the cell entered selection
+
+        for n in (4, 5):
+            self._set_baseline(proposal, set_aside=n)
+            blocked = self.arms(select=0, confirm=0, confirm_baseline=0)
+            with self.assertRaisesRegex(ValueError, f"{n} set-aside"):
+                idn.evaluate(self.run, proposal, blocked)
+            self.assertEqual(blocked.calls, [])
+
+        self._set_baseline(proposal, set_aside=1)
+        tightened = self.arms(select=0, confirm=0, confirm_baseline=0)
+        with self.assertRaisesRegex(ValueError, "max_set_aside 0"):
+            idn.evaluate(self.run, proposal, tightened, max_set_aside=0)
+        self.assertEqual(tightened.calls, [])
+
+        rows = rn.read_rows(self.run / "summary.jsonl")
         for r in rows:
             if r["task"] == proposal["task"] and r["model"] == proposal["model"] and r["patch_id"] is None:
-                r.update(provider_blocked=0, model_refused=2, verdict="fail")
+                r.pop("set_aside", None)
+                r.update(provider_blocked=1, model_refused=3)
         (self.run / "summary.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-        with self.assertRaisesRegex(ValueError, "model-refused"):
-            idn.evaluate(self.run, proposal, executor)
-        self.assertEqual(executor.calls, [])
+        split = self.arms(select=0, confirm=0, confirm_baseline=0)
+        with self.assertRaisesRegex(ValueError, "4 set-aside"):
+            idn.evaluate(self.run, proposal, split)
+        self.assertEqual(split.calls, [])
 
     def test_one_pass_against_zero_is_a_candidate_but_must_confirm(self):
         self.setUp_zero_baseline()

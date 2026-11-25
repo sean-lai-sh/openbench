@@ -7,6 +7,25 @@ trial's `trace.jsonl` (`openbench.reflection.step/v1`). Each method writes
 `credit_b.jsonl` for B. Neither writes into `trials.jsonl` or into the other's
 table. They are two views of one dataset, not two datasets.
 
+## Which cells enter
+
+A cell is one `(task, model, patch_id)`. Set-aside trials are `provider_blocked`
+and `model_refused` (Researcher ruling 2026-11-17: neither pass nor fail, and
+left out of the pass-rate denominator). The amended rule: the cell enters
+credit assignment when `set_aside_count <= max_set_aside`. The default
+`max_set_aside` is **3**, about 10% of an N=30 cell. A cell with 0, 1, 2, or 3
+set-aside trials enters, and its completed failures are scored. A cell with 4
+or more stays out.
+
+`max_set_aside` is exposed the same way the other driver settings are:
+
+- Method A: `python3 -m obench.reflection.credit_a --run <run dir> [--max-set-aside 3]`
+- Method B: `max_set_aside` on `MethodBConfig` (the `--config` JSON). `--max-set-aside` overrides that file.
+
+Every credit row records `max_set_aside` and that cell's `set_aside_count`
+beside the trial's result. Ideation uses the same cap
+(`evaluate(..., max_set_aside=3)`, read from the baseline summary's `set_aside`).
+
 ## Shared first-failure locator (`credit_locator.py`, `locator-v1`)
 
 1. Walk the steps in order. A step **fails** when one of its tool calls has an
@@ -35,13 +54,15 @@ schema `openbench.reflection.credit_a/v1`:
 |---|---|
 | `rule_version` | `A1+locator-v1` |
 | `run_id`, `trial_id`, `task`, `model`, `patch_id` | The failed trial |
+| `set_aside_count` | Set-aside trials in this cell (provider-blocked plus model-refused), reported beside the result |
+| `max_set_aside` | The cap that admitted the cell (default 3). The cell entered because `set_aside_count` <= this |
 | `failing_step` | 1-based trace step (null for an empty trace) |
 | `signal`, `tool`, `evidence` | What triggered it: the signal, the tool name, and a short excerpt |
 | `rationale` | One sentence, generated from the signal |
 | `steps_total` | Steps in the trace |
 | `trace`, `trace_step` | Pointer to the trace and `trace#step=N` (relative) |
 
-Run it with `python3 -m obench.reflection.credit_a --run <run dir>`. The
+Run it with `python3 -m obench.reflection.credit_a --run <run dir> [--max-set-aside 3]`. The
 table is rewritten whole, so a rerun is idempotent.
 
 ## Method B (`credit_b.py`, prompt `B1`)
@@ -68,6 +89,7 @@ table is rewritten whole, so a rerun is idempotent.
 | `cutoff_rule` | `first_failing_step_onward` | |
 | `system1_model` | **`gemini-3.8-flash`** (Gemini Flash, Vertex `global`; the newest GA Flash, released 2026-09-02) | **Open:** Sean called the model "Jev". Until he confirms whether "Jev" is a specific endpoint, Gemini Flash is the default. Switching is a one-line config change. |
 | `system1_thinking` | `{"thinkingLevel": "LOW"}` | Set explicitly on every judge request (standing rule). Provisional level. |
+| `max_set_aside` | **3** | A cell enters when its set-aside count is at most this (about 10% of 30). `--max-set-aside` overrides the config file. |
 
 ### Table (`credit_b.jsonl`, schema `openbench.reflection.credit_b/v1`)
 
@@ -75,6 +97,7 @@ table is rewritten whole, so a rerun is idempotent.
 |---|---|
 | `prompt_version`, `locator_rule_version` | `B1`, `locator-v1` |
 | `run_id`, `trial_id`, `task`, `model`, `patch_id` | The failed trial (the same rows as Method A) |
+| `set_aside_count`, `max_set_aside` | The cell's set-aside count, reported beside the result, and the cap that admitted it |
 | `system1_model`, `system1_thinking` | The judge and its thinking setting |
 | `k`, `near_error_weight`, `correct_weight`, `past_cutoff_weight`, `cutoff_rule` | The config this row used |
 | `first_failing_step`, `signal` | From the shared locator |
@@ -85,6 +108,6 @@ table is rewritten whole, so a rerun is idempotent.
 | `judge_error` | Set when the judge failed or answered in an unparseable form (then `weights` is null), or `empty_trace` |
 | `trace` | Pointer to the trial's trace |
 
-Run it with `python3 -m obench.reflection.credit_b --run <run dir> [--config b.json]`.
+Run it with `python3 -m obench.reflection.credit_b --run <run dir> [--config b.json] [--max-set-aside 3]`.
 It needs `GOOGLE_CLOUD_PROJECT` and Google credentials (ADC). It's paid, but tiny:
 one Flash call per failed trial.

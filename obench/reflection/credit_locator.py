@@ -92,15 +92,53 @@ def read_trace(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def failed_trials(run_dir: Path) -> list[dict]:
-    """Completed, failing baseline-or-patch trial rows of a runner run (SEA-107), outside provider-blocked cells."""
+# Set-aside trials are neither pass nor fail (Researcher ruling 2026-11-17). The amended rule: a cell
+# (task, model, patch) enters credit assignment when its set-aside count is at most this many. 3 is about
+# 10% of an N=30 cell. Each admitted trial row records the count beside the cell's results.
+SET_ASIDE_STATUSES = ("provider_blocked", "model_refused")
+MAX_SET_ASIDE = 3
+
+
+def check_max_set_aside(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"max_set_aside must be an int >= 0, got {value!r}")
+    return value
+
+
+def cell_key(row: dict) -> tuple:
+    return (row.get("task"), row.get("model"), row.get("patch_id"))
+
+
+def set_aside_counts(rows: list[dict]) -> dict[tuple, int]:
+    """Set-aside trials per cell. A cell with none is present with count 0 once it has any row."""
+    counts: dict[tuple, int] = {}
+    for row in rows:
+        key = cell_key(row)
+        counts[key] = counts.get(key, 0) + (1 if row.get("status") in SET_ASIDE_STATUSES else 0)
+    return counts
+
+
+def failed_trials(run_dir: Path, max_set_aside: int = MAX_SET_ASIDE) -> list[dict]:
+    """Completed, failing trial rows whose cell has ``set_aside_count <= max_set_aside``.
+
+    Each returned row is a copy carrying ``set_aside_count`` (provider-blocked plus
+    model-refused trials in that cell) and ``max_set_aside`` (the cap that admitted it).
+    """
+    max_set_aside = check_max_set_aside(max_set_aside)
     path = Path(run_dir) / "trials.jsonl"
     if not path.exists():
         return []
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    # A cell (task, model, patch) with any provider_blocked trial never goes to credit assignment (Researcher
-    # ruling 2026-11-17), not even its completed trials.
-    blocked = {(r["task"], r["model"], r.get("patch_id")) for r in rows
-               if r.get("status") in ("provider_blocked", "model_refused")}  # set-aside cells (rulings 2026-11-17)
-    return [r for r in rows if r.get("status") == "completed" and r.get("passed") is False
-            and (r["task"], r["model"], r.get("patch_id")) not in blocked]
+    counts = set_aside_counts(rows)
+    admitted = []
+    for row in rows:
+        if row.get("status") != "completed" or row.get("passed") is not False:
+            continue
+        count = counts.get(cell_key(row), 0)
+        if count > max_set_aside:
+            continue
+        trial = dict(row)
+        trial["set_aside_count"] = count
+        trial["max_set_aside"] = max_set_aside
+        admitted.append(trial)
+    return admitted

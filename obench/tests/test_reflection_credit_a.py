@@ -90,17 +90,6 @@ class MethodA(unittest.TestCase):
         self.assertEqual(on_disk, rows)
         self.assertEqual(ca.run_method_a(run), rows)  # idempotent
 
-    def test_provider_blocked_cells_never_go_to_credit_assignment(self):
-        run = self.make_run()
-        rows = [json.loads(l) for l in (run / "trials.jsonl").read_text().splitlines()]
-        rows.append({"run_id": "r", "trial_id": "t9", "task": "t", "model": "claude-opus-5-5", "patch_id": None,
-                     "status": "provider_blocked", "passed": None, "trace": None})
-        (run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in rows))
-        self.assertEqual(ca.run_method_a(run), [])  # the whole cell is out, its completed failures too
-        rows[-1]["status"] = "model_refused"
-        (run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in rows))
-        self.assertEqual(ca.run_method_a(run), [])  # a refusal sets the cell aside the same way
-
     def test_documented_fields_match_rows(self):
         import re
         doc = Path(ca.__file__).with_name("CREDIT_ASSIGNMENT.md").read_text()
@@ -108,6 +97,82 @@ class MethodA(unittest.TestCase):
         documented = {n for line in re.findall(r"^\| ([^|]+) \|", section, re.M) for n in re.findall(r"`([a-z_]+)`", line)}
         row = ca.method_a_row({"trial_id": "x", "task": "t", "model": "m", "trace": "a"}, CLEAR_ERROR)
         self.assertEqual(set(row) - {"schema"}, documented)
+
+
+def set_aside_run() -> Path:
+    """One completed failure per cell, plus the set-aside trials listed for that cell.
+
+    ``four`` mixes both set-aside statuses. ``timeouts`` is five infrastructure
+    timeouts, which stay outside the set-aside count.
+    """
+    run = Path(tempfile.mkdtemp())
+    aside = {
+        "zero": [],
+        "one": ["provider_blocked"],
+        "three": ["model_refused", "model_refused", "model_refused"],
+        "four": ["provider_blocked", "provider_blocked", "model_refused", "model_refused"],
+        "five": ["provider_blocked"] * 5,
+        "timeouts": ["timeout"] * 5,
+    }
+    trials = []
+    for task, statuses in aside.items():
+        trials.append({"run_id": "r", "trial_id": f"{task}-fail", "task": task, "model": "m",
+                       "patch_id": None, "status": "completed", "passed": False, "trace": None})
+        for i, status in enumerate(statuses):
+            trials.append({"run_id": "r", "trial_id": f"{task}-aside-{i}", "task": task, "model": "m",
+                           "patch_id": None, "status": status, "passed": None, "trace": None})
+    (run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in trials))
+    return run
+
+
+def _counts(rows: list[dict]) -> dict[str, int]:
+    return {r["task"]: r["set_aside_count"] for r in rows}
+
+
+class SetAsideCap(unittest.TestCase):
+    def test_zero_one_and_three_enter_four_and_five_stay_out(self):
+        run = set_aside_run()
+        rows = ca.run_method_a(run)
+        on_disk = [json.loads(line) for line in (run / "credit_a.jsonl").read_text().splitlines()]
+        self.assertEqual(on_disk, rows)
+        self.assertEqual(_counts(rows), {"zero": 0, "one": 1, "three": 3, "timeouts": 0})
+        self.assertTrue(all(r["max_set_aside"] == 3 for r in rows))
+
+    def test_setting_overrides_the_default(self):
+        run = set_aside_run()
+        rows = ca.run_method_a(run, max_set_aside=4)
+        self.assertEqual(_counts(rows), {"zero": 0, "one": 1, "three": 3, "four": 4, "timeouts": 0})
+        self.assertTrue(all(r["max_set_aside"] == 4 for r in rows))
+        self.assertEqual(next(r["set_aside_count"] for r in rows if r["task"] == "four"), 4)
+
+        self.assertEqual(ca.main(["--run", str(run), "--max-set-aside", "0"]), 0)
+        cli_rows = [json.loads(line) for line in (run / "credit_a.jsonl").read_text().splitlines()]
+        self.assertEqual(_counts(cli_rows), {"zero": 0, "timeouts": 0})
+        self.assertTrue(all(r["max_set_aside"] == 0 for r in cli_rows))
+
+        self.assertEqual(ca.main(["--run", str(run), "--max-set-aside", "5"]), 0)
+        wide = [json.loads(line) for line in (run / "credit_a.jsonl").read_text().splitlines()]
+        self.assertEqual(_counts(wide),
+                         {"zero": 0, "one": 1, "three": 3, "four": 4, "five": 5, "timeouts": 0})
+        self.assertTrue(all(r["max_set_aside"] == 5 for r in wide))
+
+    def test_method_b_config_and_cli_override_report_the_same_count(self):
+        from obench.reflection import credit_b as cb
+        from obench.tests.test_reflection_credit_b import FakeJudge
+
+        run = set_aside_run()
+        rows = cb.run_method_b(run, FakeJudge(), cb.MethodBConfig())
+        self.assertEqual(_counts(rows), {"zero": 0, "one": 1, "three": 3, "timeouts": 0})
+        self.assertTrue(all(r["max_set_aside"] == 3 for r in rows))
+
+        cfg_path = run / "b.json"
+        cfg_path.write_text(json.dumps({"max_set_aside": 0}))
+        cfg = cb.resolve_config(cfg_path, max_set_aside=4)
+        rows = cb.run_method_b(run, FakeJudge(), cfg)
+        on_disk = [json.loads(line) for line in (run / "credit_b.jsonl").read_text().splitlines()]
+        self.assertEqual(_counts(on_disk), {"zero": 0, "one": 1, "three": 3, "four": 4, "timeouts": 0})
+        self.assertTrue(all(r["max_set_aside"] == 4 for r in on_disk))
+        self.assertEqual(cb.MethodBConfig().max_set_aside, 3)
 
 
 if __name__ == "__main__":
