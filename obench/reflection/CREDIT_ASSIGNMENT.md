@@ -150,6 +150,7 @@ in place.
 | Field | Meaning |
 |---|---|
 | `baseline_commit` | The checkout the fresh trials ran |
+| `code_commit` | The same checkout, recorded on this arm. `evaluate` refuses any arm (this baseline, selection, confirmation, confirmation-baseline) whose `code_commit` differs from `baseline_commit` |
 | `image` | `{ref, id}` from the cell's original trials |
 | `image_matches_pin` | The recorded flag, kept when it is false |
 | `image_matches_pin_false` | True when `image_matches_pin` is false, so the mismatch is visible on the row |
@@ -175,9 +176,11 @@ view of a result belongs only in a report, as a separate sensitivity column
 computed from the recorded Fisher p. That column never changes `candidate`,
 `confirmed`, or `success`.
 
-Every arm (selection, confirmation, and the confirmation baseline) is run on
-the fresh baseline's recorded image, with smoke compaction off. A trial that
-reports a different ref or id is refused. The image is not re-pinned.
+Every arm (fresh baseline, selection, confirmation, and the confirmation
+baseline) records `code_commit` and is run on the fresh baseline's recorded
+image, with smoke compaction off. A trial that reports a different ref or id
+is refused. The image is not re-pinned. `evaluate` refuses an arm whose
+`code_commit` differs from this row's `baseline_commit`.
 
 ```text
 python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --fixture <passes.json> [--n-trials 30]
@@ -237,8 +240,16 @@ table is rewritten whole, so a rerun is idempotent.
 2. Ask a **System 1 model** to label each of the `K` steps before `f` as
    `correct` or `near_error` (contributed to the failure). The prompt is
    deterministic for the same inputs. The request uses temperature 0, a JSON
-   response schema, and an explicit thinking setting.
-3. Assign weights to every step:
+   response schema, and an explicit thinking setting. A window shorter than
+   `K` (the failure is early, so some of `f-K .. f-1` do not exist) is
+   labelled as it is. The row records `window_length`, how many steps were
+   actually in the window. It is not padded and not dropped.
+3. When `f` is step 1 there is no prior step. The row's `status` is
+   `empty_window`, `window` is empty, `window_length` is 0, and the judge is
+   not called. Weights still follow the cutoff rule. The ideator for that
+   failure receives only Method A's evidence, and the proposal row records
+   `method_b_status: empty_window` and `ideator_evidence: ["A"]`.
+4. Assign weights to every step:
    - steps before the window: `correct_weight` (1);
    - window steps labelled `correct`: `correct_weight` (1);
    - window steps labelled `near_error`: `near_error_weight`;
@@ -268,6 +279,8 @@ table is rewritten whole, so a rerun is idempotent.
 | `k`, `near_error_weight`, `correct_weight`, `past_cutoff_weight`, `cutoff_rule` | The config this row used |
 | `first_failing_step`, `signal` | From the shared locator |
 | `window` | The steps the judge labelled (`f-K .. f-1`, those that exist) |
+| `window_length` | How many of those steps exist. A short window is less than `k` and is still labelled |
+| `status` | `ok` when the window was labelled (including a short window), `empty_window` when the failure is at step 1, `empty_trace` when the trace has no steps, `judge_error` when the judge failed |
 | `labels` | `{step: correct\|near_error}` |
 | `weights` | `[{step, weight, why}]` for every trace step (`why`: `before_window`, `correct`, `near_error`, `past_cutoff`) |
 | `raw_judge_output`, `judge_usage` | The judge's raw text and its usage, for audit |
@@ -276,4 +289,30 @@ table is rewritten whole, so a rerun is idempotent.
 
 Run it with `python3 -m obench.reflection.credit_b --run <run dir> [--config b.json] [--max-set-aside 3]`.
 It needs `GOOGLE_CLOUD_PROJECT` and Google credentials (ADC). It's paid, but tiny:
-one Flash call per failed trial.
+one Flash call per failed trial. An `empty_window` or `empty_trace` row makes no call.
+
+## A/B agreement (`credit_agreement.jsonl`)
+
+The pilot compares Method A and Method B on this table only. Ideation sees
+both methods in one input, so an alternative's later result is not attributed
+to one method. One row per trial that has both a Method A row and a Method B
+row. Method A is unchanged: the locator's first failure stays the first
+failure, including an exploratory probe the agent recovered from.
+
+```text
+python3 -m obench.reflection.credit_agreement --run <run dir>
+```
+
+That command reads the two credit tables. It does not call a model.
+
+| Field | Meaning |
+|---|---|
+| `trial_id`, `task`, `model`, `patch_id` | The failed trial |
+| `method_a_step`, `method_a_signal` | Method A's failing step and signal |
+| `method_b_step`, `method_b_status`, `method_b_window`, `method_b_window_length` | Method B's step, status, window, and actual window length |
+| `same_step` | Method A's step equals Method B's step (both non-null) |
+| `near_error_steps`, `near_error_count` | Window steps Method B labelled `near_error`, and how many |
+| `probe_error` | True when Method A's first failure is a tool error (`tool_error_status` or `tool_error_output`) at step 3 or earlier |
+| `probe_error_step` | That step, or null when `probe_error` is false |
+
+`final_answer_rejected` is not a probe error, including on a trace that ends at step 3. A tool error at step 4 or later is not a probe error. A tool error at step 1 is both `probe_error` and Method B `empty_window`.

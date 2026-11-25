@@ -199,13 +199,14 @@ class EndToEnd(unittest.TestCase):
             if summary.get("patch_id") is not None:
                 continue
             cell = f"{summary['model']}/{summary['task']}"
+            commit = rn.code_commit()["commit"]
             doc[cell] = {
                 "schema": "openbench.reflection.credit_baseline/v1", "cell": cell,
                 "task": summary["task"], "model": summary["model"], "passes": summary["passes"],
                 "completed": summary["completed"], "set_aside": summary.get("set_aside", 0),
                 "provider_blocked": summary.get("provider_blocked", 0),
                 "model_refused": summary.get("model_refused", 0),
-                "baseline_commit": "installed-for-test",
+                "baseline_commit": commit, "code_commit": commit,
                 "image": {"ref": "recorded:test", "id": "sha256:" + "11" * 32},
                 "image_matches_pin": True,
             }
@@ -323,10 +324,17 @@ class EndToEnd(unittest.TestCase):
 
     def test_result_records_alpha_and_baseline_commit_and_refuses_any_other_alpha(self):
         proposal = self.proposal()
-        self._set_baseline(proposal, baseline_commit="fresh-commit", passes=0, completed=30, set_aside=0)
-        row = idn.evaluate(self.run, proposal, self.arms(select=1, confirm=0, confirm_baseline=0))
+        self._set_baseline(proposal, baseline_commit="fresh-commit", code_commit="fresh-commit",
+                           passes=0, completed=30, set_aside=0)
+        fake = {"commit": "fresh-commit", "branch": "main", "dirty": False}
+        with mock_patch("obench.reflection.runner.code_commit", return_value=fake):
+            row = idn.evaluate(self.run, proposal, self.arms(select=1, confirm=0, confirm_baseline=0))
         self.assertEqual(row["alpha"], 1.0)
         self.assertEqual(row["baseline_commit"], "fresh-commit")
+        self.assertEqual(row["code_commit"], "fresh-commit")
+        self.assertEqual(row["selection_code_commit"], "fresh-commit")
+        self.assertEqual(row["confirmation_code_commit"], "fresh-commit")
+        self.assertEqual(row["confirmation_baseline_code_commit"], "fresh-commit")
         self.assertEqual(idn.ALPHA, 1.0)
         self.assertNotIn("alpha", inspect.signature(idn.evaluate).parameters)
         self.assertIn("alpha", inspect.signature(idn.decide).parameters)
@@ -336,7 +344,7 @@ class EndToEnd(unittest.TestCase):
 
         saved = (self.run / "ideation_results.jsonl").read_text(encoding="utf-8")
         other = dict(proposal, proposal_id=proposal["proposal_id"] + "-alpha")
-        with mock_patch.object(idn, "ALPHA", 0.05):
+        with mock_patch("obench.reflection.runner.code_commit", return_value=fake), mock_patch.object(idn, "ALPHA", 0.05):
             with self.assertRaisesRegex(ValueError, "alpha"):
                 idn.evaluate(self.run, other, self.arms(select=1, confirm=1, confirm_baseline=0))
         self.assertEqual((self.run / "ideation_results.jsonl").read_text(encoding="utf-8"), saved)
@@ -397,12 +405,19 @@ class EndToEnd(unittest.TestCase):
             "confirm": self.run / row["confirmation_run_dirs"][0] / "trials.jsonl",
             "confirm-baseline": self.run / row["confirmation_run_dirs"][1] / "trials.jsonl",
         }
+        self.assertEqual(fresh["code_commit"], fresh["baseline_commit"])
         for name, path in arms.items():
             self.assertEqual(image_ids(path), {recorded["id"]}, name)
+            summary = rn.read_rows(path.parent / "summary.jsonl")[0]
+            self.assertEqual(summary["code_commit"], fresh["baseline_commit"], name)
             plan = json.loads((path.parent / "plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["code"]["commit"], fresh["baseline_commit"], name)
             self.assertFalse(plan["config"]["smoke_compaction"])
             self.assertEqual(plan["config"]["recorded_image"]["id"], recorded["id"])
             self.assertIs(plan["config"]["recorded_image"]["matches_pin"], False)
+        self.assertEqual(row["selection_code_commit"], fresh["baseline_commit"])
+        self.assertEqual(row["confirmation_code_commit"], fresh["baseline_commit"])
+        self.assertEqual(row["confirmation_baseline_code_commit"], fresh["baseline_commit"])
         self.assertTrue(all(spec.recorded_image["id"] == recorded["id"] and spec.recorded_image["matches_pin"] is False
                             for spec in echo.calls))
 
@@ -423,6 +438,174 @@ class EndToEnd(unittest.TestCase):
         from obench.reflection import credit_a
         credit_a.run_method_a(self.run)
         self._install_fresh_baseline()
+
+
+class Commits(unittest.TestCase):
+    """``evaluate`` refuses an arm whose code_commit differs from the fresh baseline."""
+
+    def setUp(self):
+        self.inner = EndToEnd()
+        self.inner.setUp()
+        self.addCleanup(self.inner.doCleanups)
+
+    def test_mismatched_code_commit_on_any_arm_is_refused(self):
+        proposal = self.inner.proposal()
+        commit = rn.code_commit()["commit"]
+        self.inner._set_baseline(proposal, baseline_commit=commit, code_commit="other-commit",
+                                 passes=0, completed=2, set_aside=0)
+        fresh = self.inner.arms(select=1, confirm=1, confirm_baseline=0)
+        with self.assertRaisesRegex(ValueError, "fresh baseline code_commit"):
+            idn.evaluate(self.inner.run, proposal, fresh, n_trials=2)
+        self.assertEqual(fresh.calls, [])
+        self.inner._set_baseline(proposal, baseline_commit=commit, code_commit=commit)
+
+        other = "0" * 40
+
+        def fake_at(bad_at):
+            state = {"n": 0}
+
+            def fake(root=None):
+                state["n"] += 1
+                return {"commit": other if state["n"] == bad_at else commit, "branch": "main", "dirty": False}
+            return fake
+
+        for bad_at, arm, calls in ((1, "selection", 2), (2, "confirmation", 4), (3, "confirmation-baseline", 6)):
+            alt = dict(proposal, proposal_id=proposal["proposal_id"] + f"-{arm}")
+            executor = self.inner.arms(select=1, confirm=1, confirm_baseline=0)
+            results = self.inner.run / "ideation_results.jsonl"
+            before = results.read_text(encoding="utf-8") if results.exists() else ""
+            with mock_patch("obench.reflection.runner.code_commit", fake_at(bad_at)):
+                with self.assertRaisesRegex(ValueError, f"{arm} code_commit"):
+                    idn.evaluate(self.inner.run, alt, executor, n_trials=2)
+            self.assertEqual(len(executor.calls), calls, arm)
+            after = results.read_text(encoding="utf-8") if results.exists() else ""
+            self.assertEqual(after, before, arm)
+
+        matched = self.inner.arms(select=1, confirm=1, confirm_baseline=0)
+        citations = [{"method": "A", "evidence": "A:failing_step", "pointer": "credit_a.jsonl#t#step=1"}]
+        cited = dict(proposal, proposal_id=proposal["proposal_id"] + "-match", citations=citations, uncited=False)
+        row = idn.evaluate(self.inner.run, cited, matched, n_trials=2)
+        self.assertEqual(row["citations"], citations)
+        self.assertFalse(row["uncited"])
+        self.assertEqual((row["code_commit"], row["selection_code_commit"], row["confirmation_code_commit"],
+                          row["confirmation_baseline_code_commit"]), (commit, commit, commit, commit))
+        for label, rel in (("selection", row["selection_run_dir"]),
+                           ("confirmation", row["confirmation_run_dirs"][0]),
+                           ("confirmation-baseline", row["confirmation_run_dirs"][1])):
+            summary = rn.read_rows(self.inner.run / rel / "summary.jsonl")[0]
+            self.assertEqual(summary["code_commit"], commit, label)
+
+
+def _evidence_ids(prompt: str) -> list[str]:
+    payload = json.loads(prompt[prompt.index("{\n"):])
+    return [item["id"] for item in payload["credit"]["evidence"]]
+
+
+def _cited(i, *ids, method=None):
+    alt = good(i)
+    if method == "both":
+        alt["citations"] = [{"method": "both", "evidence": list(ids)}]
+    else:
+        alt["citations"] = [{"method": item.split(":", 1)[0], "evidence": item} for item in ids]
+    return alt
+
+
+class CombinedIdeation(unittest.TestCase):
+    """One ideator call per drawn failure, with A and B evidence in that one input."""
+
+    def setUp(self):
+        from obench.reflection import credit_a, credit_b
+        from obench.tests.test_reflection_credit_a import call, step
+        from obench.tests.test_reflection_credit_b import FakeJudge
+
+        self.run = Path(tempfile.mkdtemp())
+        short = [step(1, call("bash", "ok")), step(2, call("bash", "ok")), step(3, call("bash", "error: boom"))]
+        early = [step(1, call("bash", "file: command not found"))]
+        late = [step(n, call("bash", "ok")) for n in range(1, 6)] + [step(6, call("bash", "error: late"))]
+        trials = []
+        for i, trace in enumerate((short, early, late)):
+            rel = f"trials/m/extract-elf/{i}/trace.jsonl"
+            path = self.run / rel
+            path.parent.mkdir(parents=True)
+            path.write_text("".join(json.dumps(s) + "\n" for s in trace), encoding="utf-8")
+            trials.append({"run_id": "r", "trial_id": f"t{i}", "task": "extract-elf", "model": OPUS,
+                           "patch_id": None, "trial_index": i, "status": "completed", "passed": False, "trace": rel})
+        (self.run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in trials), encoding="utf-8")
+        credit_a.run_method_a(self.run)
+        credit_b.run_method_b(self.run, FakeJudge({1: "near_error"}))
+        self.cell = f"{OPUS}/extract-elf"
+        (self.run / "credit_draw.json").write_text(json.dumps({
+            self.cell: {"status": "IN", "picks": [
+                {"draw_order": 1, "slot": 0, "trial_id": "t0"},
+                {"draw_order": 2, "slot": 1, "trial_id": "t1"},
+            ]},
+            f"{OPUS}/not-in-the-run": {"status": "NO_ROWS", "reason": "no rows in trials.jsonl", "picks": []},
+        }), encoding="utf-8")
+
+    def test_one_call_per_failure_and_step_one_sends_only_method_a(self):
+        from obench.reflection import credit_agreement as agr
+
+        both = _cited(0, "A:failing_step", "B:step:2", method="both")
+        rest = [_cited(i, "A:failing_step", "B:window") for i in range(1, 5)]
+        only_a = [_cited(i, "A:failing_step") for i in range(5)]
+        ideator = FakeIdeator([both, *rest], only_a)
+        rows = idn.propose_drawn(self.run, ideator)
+        self.assertEqual(len(ideator.prompts), 2)  # one per drawn failure, not one per method, not the undrawn t2
+
+        short_ids = _evidence_ids(ideator.prompts[0])
+        self.assertIn("A:failing_step", short_ids)
+        self.assertIn("B:window", short_ids)
+        self.assertEqual([item for item in short_ids if item.startswith("B:step:")], ["B:step:1", "B:step:2"])
+        early_ids = _evidence_ids(ideator.prompts[1])
+        self.assertEqual(early_ids, ["A:failing_step"])
+        self.assertNotIn("B:window", ideator.prompts[1])
+        self.assertNotIn("B:step:", ideator.prompts[1])
+
+        by_parent = {}
+        for row in rows:
+            by_parent.setdefault(row["parent_trial_id"], []).append(row)
+        self.assertEqual(set(by_parent), {"t0", "t1"})
+        self.assertTrue(all(row["status"] == "accepted" and row["uncited"] is False for row in rows))
+        self.assertEqual(by_parent["t0"][0]["ideator_evidence"], ["A", "B"])
+        self.assertEqual(by_parent["t0"][0]["method_b_status"], "ok")
+        self.assertEqual(by_parent["t0"][0]["method_b_window_length"], 2)
+        self.assertEqual(by_parent["t0"][0]["credit_method"], "A+B")
+        both_row = by_parent["t0"][0]
+        self.assertEqual(both_row["citations"][0]["method"], "both")
+        self.assertEqual(both_row["citations"][0]["evidence"], ["A:failing_step", "B:step:2"])
+        self.assertEqual(len(both_row["citations"][0]["pointer"]), 2)
+        self.assertTrue(any("credit_b.jsonl#t0#step=2" in pointer for pointer in both_row["citations"][0]["pointer"]))
+        self.assertEqual(by_parent["t1"][0]["ideator_evidence"], ["A"])
+        self.assertEqual(by_parent["t1"][0]["method_b_status"], "empty_window")
+        self.assertEqual(by_parent["t1"][0]["method_b_window_length"], 0)
+        self.assertEqual(set(by_parent["t1"][0]["credit_rows"]), {"A", "B"})
+        self.assertIn("step=1", by_parent["t1"][0]["citations"][0]["pointer"])
+
+        b_rows = {row["trial_id"]: row for row in rn.read_rows(self.run / "credit_b.jsonl")}
+        self.assertEqual((b_rows["t0"]["status"], b_rows["t0"]["window_length"], b_rows["t0"]["window"]), ("ok", 2, [1, 2]))
+        self.assertLess(b_rows["t0"]["window_length"], b_rows["t0"]["k"])
+        self.assertEqual((b_rows["t1"]["status"], b_rows["t1"]["window"], b_rows["t1"]["window_length"]),
+                         ("empty_window", [], 0))
+        flags = {row["trial_id"]: row for row in agr.run_agreement(self.run)}
+        self.assertTrue(flags["t0"]["probe_error"] and flags["t0"]["probe_error_step"] == 3)
+        self.assertTrue(flags["t1"]["probe_error"] and flags["t1"]["probe_error_step"] == 1)
+        self.assertFalse(flags["t2"]["probe_error"])
+
+    def test_an_alternative_without_a_citation_is_rejected(self):
+        cited = [_cited(i, "A:failing_step", "B:step:1") for i in range(4)]
+        bad = cited + [good(4)]
+        only_a = [_cited(i, "A:failing_step") for i in range(5)]
+        ideator = FakeIdeator(bad, bad, only_a)
+        rows = idn.propose_drawn(self.run, ideator)
+        self.assertEqual(len(ideator.prompts), 3)  # the uncited set is re-asked once, then the step-1 failure
+        self.assertIn("no citation", ideator.prompts[1])
+        first = [row for row in rows if row["parent_trial_id"] == "t0"]
+        self.assertEqual([row["status"] for row in first], ["accepted"] * 4 + ["rejected"])
+        self.assertTrue(first[4]["uncited"])
+        self.assertIn("no citation", first[4]["rejection_reasons"])
+        self.assertIsNone(first[4]["proposal_id"])
+        self.assertEqual(first[4]["citations"], [])
+        self.assertTrue(all(row["uncited"] is False and row["citations"] for row in first[:4]))
 
 
 class Estimate(unittest.TestCase):

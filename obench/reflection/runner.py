@@ -317,6 +317,14 @@ def _all_or_none(values) -> bool | None:
     return True if values and all(v is True for v in values) else None
 
 
+def _one_commit(trials: list[dict]) -> str | None:
+    """The group's checkout when every trial recorded the same one."""
+    commits = {t.get("code_commit") for t in trials if t.get("code_commit")}
+    if len(commits) == 1:
+        return next(iter(commits))
+    return None
+
+
 def _load() -> list | None:
     try:
         return [round(x, 2) for x in os.getloadavg()]
@@ -741,6 +749,7 @@ class Runner:
                 "image_matches_pin": _all_or_none(t.get("image_matches_pin") for t in trials),
                 "suite_label": self.config.suite_label,
                 "code_commits": sorted({str(t.get("code_commit")) for t in trials}),
+                "code_commit": _one_commit(trials),
                 "pass_rate": round(passes / len(completed), 4) if completed else None,
                 "cutoff": cutoff, "verdict": verdict,
                 "incomplete_reason": reason if verdict == "incomplete" else None,

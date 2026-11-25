@@ -31,15 +31,43 @@ Rejected proposals are stored with reasons and never run.
 
 ## Proposals (`ideation.jsonl`, `openbench.reflection.ideation/v1`)
 
+`propose_drawn(run_dir, ideator)` is the driver. It asks the ideator **once
+per drawn failure** (`credit_draw.json` picks of `IN` cells, in cell order
+then `draw_order`). `EXCLUDED`, `NOT_LISTED`, and `NO_ROWS` cells are not
+ideated. That one input contains Method A and Method B evidence together
+(prompt `I2`). It is not one ideation per method. A re-ask is still that
+same failure.
+
+A single-method `propose(..., "A"|"B")` remains for a library check (prompt
+`I1`) and does not require citations.
+
 - The ideator (`IDEATOR_MODEL`, default `claude-opus-5-5` on Vertex, thinking
-  set explicitly; **open**, configurable) gets the trial's task, model, trace
-  and its credit rows from Method `A`, `B` or `A+B`.
-- It must return **exactly 5** alternatives. A wrong count or any invalid patch
-  gets one re-ask with the reasons.
+  set explicitly; **open**, configurable) gets the trial's task, model, trace,
+  and the evidence items below.
+- Method A contributes `A:failing_step` (pointer `trace#step=N`, or
+  `credit_a.jsonl#<trial>#step=N`).
+- Method B, when `status` is `ok`, contributes `B:window` and one `B:step:<n>`
+  per labelled step (pointer `credit_b.jsonl#<trial>#step=<n>`). A short
+  window is included as it is; `method_b_window_length` is that length.
+- When Method B's `status` is `empty_window` (the failure is at step 1, so
+  there is no prior step), the ideator input contains only Method A's
+  evidence. The proposal row records `method_b_status: empty_window` and
+  `ideator_evidence: ["A"]`. The B credit row is still listed in `credit_rows`.
+  `empty_trace` and `judge_error` also contribute no B item; the row records
+  that status.
+- It must return **exactly 5** alternatives. A wrong count, any invalid patch,
+  or a missing citation gets one re-ask with the reasons.
+- Each alternative cites the evidence it uses: `citations` is a non-empty
+  list of `{method: A|B|both, evidence: <id or [ids]>}`. `A` or `B` names one
+  id of that method. `both` names one A id and one B id. The stored citation
+  keeps the pointer. An alternative with no citation is `rejected`,
+  `uncited: true`, and is not run.
 - Each row records:
-  - `prompt_version` (`I1`) and `ideator_model`;
+  - `prompt_version` (`I2` for a drawn failure, `I1` for a single-method call) and `ideator_model`;
   - `parent_trial_id`, `task`, `model`;
   - **`credit_method`** and `credit_rows` (pointers into `credit_a.jsonl` / `credit_b.jsonl`);
+  - `ideator_evidence` (`["A", "B"]` or `["A"]`), `method_b_status`, `method_b_window_length`;
+  - `citations` (each with `method`, `evidence`, and `pointer`) and `uncited`;
   - `rationale`, `patch` and `proposal_id` (a hash of the patch);
   - `status` (`accepted` or `rejected`), `rejection_reasons` and `complete_set`;
   - the raw ideator output and its usage.
@@ -76,13 +104,19 @@ confirmation baseline, reuses the fresh baseline's recorded image
 compaction off. A trial that reports a different image is refused. The image
 is not re-pinned.
 
+Every arm row records `code_commit`: the fresh baseline manifest, and the
+selection, confirmation, and confirmation-baseline summaries. `evaluate`
+refuses (raises, and does not write a result row) when any arm's
+`code_commit` differs from the fresh baseline's `baseline_commit`. The fresh
+baseline's own `code_commit` must equal `baseline_commit`.
+
 **Columns, one row per evaluated proposal:**
 
 | Stage | Columns |
 |---|---|
-| Selection | `selection_baseline_passes`, `selection_baseline_completed`, `selection_alt_passes`, `selection_alt_completed`, `selection_beats_baseline`, `selection_complete`, `selection_fisher_p`, `candidate`, `selection_spend_usd`, `selection_run_dir`, `selection_run_state` |
-| Confirmation | `confirmation_baseline_passes`, `confirmation_baseline_completed`, `confirmation_alt_passes`, `confirmation_alt_completed`, `confirmation_beats_baseline`, `confirmation_complete`, `confirmation_fisher_p`, `confirmed`, `confirmation_spend_usd`, `confirmation_run_dirs`, `confirmation_run_states`. All null for non-candidates. |
-| Outcome | `success` (= `confirmed`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials`, `alpha`, `baseline_commit` |
+| Selection | `selection_baseline_passes`, `selection_baseline_completed`, `selection_alt_passes`, `selection_alt_completed`, `selection_beats_baseline`, `selection_complete`, `selection_fisher_p`, `candidate`, `selection_spend_usd`, `selection_run_dir`, `selection_run_state`, `selection_code_commit` |
+| Confirmation | `confirmation_baseline_passes`, `confirmation_baseline_completed`, `confirmation_alt_passes`, `confirmation_alt_completed`, `confirmation_beats_baseline`, `confirmation_complete`, `confirmation_fisher_p`, `confirmed`, `confirmation_spend_usd`, `confirmation_run_dirs`, `confirmation_run_states`, `confirmation_code_commit`, `confirmation_baseline_code_commit`. All null for non-candidates. |
+| Outcome | `success` (= `confirmed`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials`, `alpha`, `baseline_commit`, `code_commit`, `citations`, `uncited` |
 
 `alpha` is the value `evaluate` used. It is always `1.0`. `evaluate` has no
 `alpha` parameter and refuses to write a row whose alpha is not 1.0.
