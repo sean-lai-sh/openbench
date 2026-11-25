@@ -305,6 +305,54 @@ class Failures(unittest.TestCase):
         self.assertEqual(caught.exception.code, "events_malformed")
         self.assert_code("events_malformed", [ev("text", 1, "m", text="x")], [])
 
+    def test_synthetic_continue_after_compaction_is_not_a_step(self):
+        """The post-compaction prompt is input. The step it follows is a compaction step."""
+        events = [
+            ev("step_start", 1, "m1"),
+            finish(2, "m1", "stop", 0.0, 10),
+            ev("text", 3, "m_continue", synthetic=True,
+               text="Continue if you have next steps, or stop and ask for clarification if you are unsure."),
+            ev("step_start", 4, "m2"),
+            ev("text", 5, "m2", text="next"),
+            finish(6, "m2", "stop", 0.0, 10),
+        ]
+        parsed = tr.parse_opencode(events)
+        self.assertEqual([s["kind"] for s in parsed.steps], ["compaction", "main"])
+        self.assertEqual(parsed.synthetic_continue_messages, 1)
+        self.assertEqual(parsed.trace_warnings, [tr.IMPLICIT_TEXT_WARNING])
+        self.assertEqual(len(tr.opencode_steps(events)), 1)
+        body = {"thinking": THINKING, "messages": [{"role": "user", "content": "go"}]}
+        wires = [
+            wire(1, body, anthropic_usage(40), role="side"),
+            wire(2, body, anthropic_usage(11)),
+        ]
+        wires[0]["side_kind"] = "compaction"
+        counts = tr.trace_side_counts(parsed, wires)
+        self.assertEqual(counts["steps"], 1)
+        self.assertEqual(counts["compaction_steps"], 1)
+        self.assertEqual(counts["summary_steps"], 0)
+        self.assertEqual(counts["thinking_tokens"], 11)
+        self.assertEqual(counts["compaction_thinking_tokens"], 40)
+        self.assertEqual(counts["thinking_tokens_status"], {"reported": 1})
+        self.assertEqual(len(tr.build_trace(events, wires)), 1)
+        self.assertEqual(tr.build_trace(events, wires)[0]["usage"]["thinking_tokens"], 11)
+
+    def test_other_text_in_the_post_compaction_gap_does_not_fail(self):
+        events = [
+            ev("step_start", 1, "m1"),
+            finish(2, "m1", "stop", 0.0, 10),
+            ev("text", 3, "m_continue", synthetic=True, text="Continue if you have next steps."),
+            ev("text", 4, "m_extra", text="a second injected line"),
+            ev("step_start", 5, "m2"),
+            finish(6, "m2", "stop", 0.0, 10),
+        ]
+        parsed = tr.parse_opencode(events)
+        self.assertEqual(parsed.synthetic_continue_messages, 1)
+        self.assertEqual(parsed.trace_warnings, [tr.IMPLICIT_TEXT_WARNING, tr.IMPLICIT_TEXT_WARNING])
+        self.assertEqual([s["kind"] for s in parsed.steps], ["compaction", "main"])
+        self.assert_code("events_malformed", [ev("step_start", 1, "m"), finish(2, "m", "stop", 0, 1),
+                                              ev("text", 3, "other", text="not a continue prompt")], [])
+
     def test_transcript_headers_and_logs_are_skipped(self):
         lines = ["# transcript header", "", "INFO plain log line",
                  *(json.dumps(e) for e in opencode_stream())]

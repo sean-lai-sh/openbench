@@ -128,7 +128,12 @@ class TrialResult:
     served_models: list = field(default_factory=list)
     thinking_setting: dict | None = None      # the exact thinking setting sent (vertex_models.thinking_sent)
     thinking_tokens_per_step: list | None = None  # usage thinking tokens per trace step (None where not reported)
-    thinking_tokens_status: dict | None = None    # {"reported": n, "unreported": m, ...} over steps
+    thinking_tokens_status: dict | None = None    # {"reported": n, "unreported": m, ...} over main steps
+    compaction_steps: int | None = None           # compaction summary steps; not included in steps
+    summary_steps: int | None = None              # summary-agent session steps, when distinguishable
+    synthetic_continue_messages: int | None = None  # OpenCode's post-compaction continue prompt; not a step
+    compaction_thinking_tokens: int | None = None  # provider thinking on compaction steps; not in thinking_tokens
+    trace_warnings: list | None = None            # non-fatal parse warnings; the trace is still written
     route_counts: dict | None = None
     retried_4xx: dict | None = None           # {"429": n, ...}: 4xx calls OpenCode recovered from (covariate)
     image: dict | None = None                 # {ref, id, pinned, matches_pin}: what actually ran
@@ -640,8 +645,12 @@ class Runner:
                "bench": task.bench["bench"], "bench_commit": task.bench["commit"], "model": spec.model,
                "vertex_id": model.vertex_id, "trial_index": spec.trial_index, "patch_id": spec.patch_id,
                "status": result.status, "passed": result.passed if result.status == "completed" else None,
-               "checker_exit": result.checker_exit, "steps": result.steps, "cost_usd": result.cost_usd,
+               "checker_exit": result.checker_exit, "steps": result.steps,
+               "compaction_steps": result.compaction_steps, "summary_steps": result.summary_steps,
+               "synthetic_continue_messages": result.synthetic_continue_messages,
+               "cost_usd": result.cost_usd,
                "price_verified": model.price_verified, "thinking_tokens": result.thinking_tokens,
+               "compaction_thinking_tokens": result.compaction_thinking_tokens,
                "thinking_flags": sorted(set(result.thinking_flags)), "served_models": sorted(set(result.served_models)),
                "wrong_model_served": wrong, "route_counts": result.route_counts,
                "suite_label": self.config.suite_label, "code_commit": self.code["commit"],
@@ -654,7 +663,8 @@ class Runner:
                "stripped_side_thinking_blocks": result.stripped_side_thinking_blocks,
                "smoke_compaction": vm.smoke_compaction_profile(self.config.smoke_compaction),
                "thinking_block_binding": result.thinking_block_binding,
-               "trace_warning": result.trace_warning, "cost_unpriced_calls": result.cost_unpriced_calls,
+               "trace_warning": result.trace_warning, "trace_warnings": result.trace_warnings,
+               "cost_unpriced_calls": result.cost_unpriced_calls,
                "timed_out": result.timed_out, "timeout_detail": result.timeout_detail,
                "workers": self.workers, "wall_seconds": round(_time.monotonic() - t0, 1),
                "host_load": {"start": load_start, "end": _load(), "cpus": os.cpu_count()},
