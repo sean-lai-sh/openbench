@@ -198,6 +198,37 @@ class Trial(CellCase):
         self.assertEqual((cell["image"], cell["image_source"]), ("task-img:pinned", "task.toml"))
         self.assertEqual(self.vertex.seen[0]["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
 
+    def test_recorded_image_is_reused_and_a_missing_one_is_not_repinned(self):
+        recorded_id = "sha256:" + "ab" * 32
+        docker = FakeTrialDocker(image_ids={"recorded-img:cell": recorded_id})
+        toml = self.tasks / "t1" / "task.toml"
+        toml.write_text(toml.read_text(encoding="utf-8") + 'docker_image_tag = "task-img:local"\n', encoding="utf-8")
+        spec = rn.TrialSpec(
+            run_id="r", trial_id=rn.trial_id("r", "t1", OPUS, None, 0), task="t1", tasks_dir=str(self.tasks),
+            model=OPUS, trial_index=0, patch_id=None, patch=None, trial_dir=f"trials/{OPUS}/t1/rec",
+            recorded_image={"ref": "recorded-img:cell", "id": recorded_id, "matches_pin": False})
+        result = self.executor(docker, use_image_tag=True).run_trial(spec, self.tmp / "run")
+        self.assertEqual(result.image["ref"], "recorded-img:cell")
+        self.assertEqual(result.image["id"], recorded_id)
+        self.assertIs(result.image["matches_pin"], False)
+        args = docker.calls[0]
+        self.assertIn("recorded-img:cell", args)
+        self.assertNotIn("task-img:pinned", args)
+        self.assertNotIn("task-img:local", args)
+        cell = json.loads((self.tmp / "run" / result.trace).with_name("cell.json").read_text(encoding="utf-8"))
+        self.assertEqual(cell["image_source"], "recorded")
+        self.assertIs(cell["image_record"]["matches_pin"], False)
+
+        missing = FakeTrialDocker(absent={"recorded-img:cell"})
+        with self.assertRaisesRegex(ce.CellError, "refusing to re-pin"):
+            self.executor(missing, use_image_tag=True).run_trial(spec, self.tmp / "run-missing")
+        self.assertEqual(missing.calls, [])
+
+        mismatch = FakeTrialDocker()
+        with self.assertRaisesRegex(ce.CellError, "refusing to re-pin"):
+            self.executor(mismatch, use_image_tag=True).run_trial(spec, self.tmp / "run-mismatch")
+        self.assertEqual(mismatch.calls, [])
+
     def test_ideation_patch_reaches_the_model_request(self):
         patch = {"schema": PATCH_SCHEMA, "ops": [{"op": "system_append", "text": "Always run the tests."}]}
         result = self.executor().run_trial(self.spec(patch=patch, patch_id="p1"), self.tmp / "run")

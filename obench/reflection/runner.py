@@ -112,6 +112,7 @@ class TrialSpec:
     trial_dir: str            # relative to the run directory
     retry_of: str | None = None   # original trial id when this spec re-runs an infrastructure error
     attempt: int = 0              # 0 is the original slot; 1..MAX_INFRA_RETRIES are re-runs
+    recorded_image: dict | None = None  # {ref, id, matches_pin} from the cell's original trials; do not re-pin
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -182,6 +183,7 @@ class RunConfig:
     suite_label: str | None = None       # SUITE_LABELS key; on every row; a run directory never mixes labels
     workers: int = 1                     # trials in parallel; fixed for the whole run (resume refuses another value)
     smoke_compaction: bool = False       # opt-in: lower OpenCode limit.context so multi-step trials compact
+    recorded_image: dict | None = None   # reuse this image; the executor must not re-pin
 
     @classmethod
     def load(cls, path: Path) -> "RunConfig":
@@ -221,6 +223,12 @@ class RunConfig:
             raise RunnerError(f"workers must be a positive int, got {self.workers!r}")
         if not isinstance(self.smoke_compaction, bool):
             raise RunnerError(f"smoke_compaction must be a bool, got {self.smoke_compaction!r}")
+        if self.recorded_image is not None:
+            image = self.recorded_image
+            if not isinstance(image, dict) or not isinstance(image.get("ref"), str) or not image["ref"]:
+                raise RunnerError(f"recorded_image must include a ref, got {image!r}")
+            if image.get("matches_pin") not in (True, False, None):
+                raise RunnerError(f"recorded_image matches_pin must be true, false, or null, got {image.get('matches_pin')!r}")
         if self.suite_label is not None:
             rule = SUITE_LABELS.get(self.suite_label)
             if rule is None:
@@ -409,7 +417,7 @@ class Runner:
                     specs.append(TrialSpec(
                         run_id=self.config.run_id, trial_id=tid, task=task, tasks_dir=tasks_dir, model=model,
                         trial_index=index, patch_id=self.config.patch_id, patch=self.config.patch,
-                        trial_dir=f"trials/{model}/{task}/{tid}"))
+                        trial_dir=f"trials/{model}/{task}/{tid}", recorded_image=self.config.recorded_image))
         return specs
 
     def pending_specs(self, tasks_by_model: dict[str, list[str]], retry_infra: bool) -> list[TrialSpec]:
@@ -444,7 +452,7 @@ class Runner:
                 run_id=spec.run_id, trial_id=tid, task=spec.task, tasks_dir=spec.tasks_dir, model=spec.model,
                 trial_index=spec.trial_index, patch_id=spec.patch_id, patch=spec.patch,
                 trial_dir=f"trials/{spec.model}/{spec.task}/{tid}",
-                retry_of=have[0]["trial_id"], attempt=attempt))
+                retry_of=have[0]["trial_id"], attempt=attempt, recorded_image=spec.recorded_image))
         return specs
 
     def infra_retry_report(self, allow_mismatch: bool = False) -> dict:
@@ -545,7 +553,8 @@ class Runner:
         previous = self._read_plan()
         if previous is not None:  # resuming: never pool a different population into this directory
             old = previous.get("config") or {}
-            for key in ("suite", "suite_label", "models", "patch_id", "n_trials", "workers", "smoke_compaction"):
+            for key in ("suite", "suite_label", "models", "patch_id", "n_trials", "workers", "smoke_compaction",
+                        "recorded_image"):
                 was, now = old.get(key), asdict(self.config).get(key)
                 if key == "smoke_compaction":
                     # Plans written before the field are normal runs, not smoke-compaction runs.

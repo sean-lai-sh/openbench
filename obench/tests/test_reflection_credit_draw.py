@@ -367,5 +367,37 @@ class PilotCellList(unittest.TestCase):
         self.assertEqual(manifests["gemini-4-carbon/winning-avg-corewars"]["status"], "NOT_LISTED")
 
 
+class NoRows(unittest.TestCase):
+    def test_listed_cell_with_no_rows_is_no_rows_not_an_empty_pool(self):
+        rows = [_row("m", "real", "a", 0)]
+        # Rows that all passed: the cell is IN, and the pool is empty. That is not NO_ROWS.
+        rows.append(_row("m", "all-pass", "p", 0, passed=True))
+        run = new_run(rows)
+        listed = ["m/real", "m/typo-cell", "m/all-pass"]
+        manifests = draw.run_draw(run, cells=listed)
+        typo = manifests["m/typo-cell"]
+        self.assertEqual(typo["status"], "NO_ROWS")
+        self.assertEqual(typo["reason"], "no rows in trials.jsonl")
+        self.assertEqual(typo["picks"], [])
+        self.assertEqual(typo["eligible_pool"], 0)
+        self.assertNotEqual(typo["status"], "IN")
+        per_cell = json.loads((run / "credit_draw" / "m__typo-cell.json").read_text(encoding="utf-8"))
+        self.assertEqual(per_cell, typo)
+        self.assertEqual(manifests["m/real"]["status"], "IN")
+        self.assertEqual(manifests["m/real"]["picks"][0]["trial_id"], "a")
+        self.assertEqual(manifests["m/all-pass"]["status"], "IN")
+        self.assertEqual(manifests["m/all-pass"]["eligible_pool"], 0)
+        self.assertEqual(manifests["m/all-pass"]["picks"], [])
+
+        cells = run / "cells.txt"
+        cells.write_text("\n".join(listed) + "\n", encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(draw.main(["--run", str(run), "--cells", str(cells)]), 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["no_rows"], 1)
+        self.assertEqual(payload["in"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
