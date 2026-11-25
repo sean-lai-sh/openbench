@@ -5,7 +5,10 @@ For every failed trial (the same rows Method A reads), Method B:
 1. finds the first failing step ``f`` with the shared locator
    (``credit_locator.first_failure``, so A and B agree on ``f``);
 2. asks a System 1 model to label each of the ``K`` steps before ``f`` as
-   ``correct`` or ``near_error`` (it contributed to the failure);
+   ``correct`` or ``near_error`` (it contributed to the failure). A window
+   shorter than ``K`` is labelled as it is; the row records ``window_length``.
+   When ``f`` is step 1 (no prior step), the row's ``status`` is
+   ``empty_window`` and the judge is not called;
 3. assigns weights: ``CORRECT_WEIGHT`` to every step before the window and to
    window steps labelled correct, ``NEAR_ERROR_WEIGHT`` to window steps
    labelled near-error, and ``PAST_CUTOFF_WEIGHT`` to ``f`` and everything
@@ -144,14 +147,24 @@ def method_b_row(trial: dict, steps: list[dict], judge: System1, cfg: MethodBCon
            "system1_model": judge.model_id, "system1_thinking": cfg.system1_thinking,
            "k": cfg.k, "near_error_weight": cfg.near_error_weight, "correct_weight": cfg.correct_weight,
            "past_cutoff_weight": cfg.past_cutoff_weight, "cutoff_rule": cfg.cutoff_rule,
-           "first_failing_step": found.step, "signal": found.signal, "window": [], "labels": None, "weights": None,
+           "first_failing_step": found.step, "signal": found.signal, "window": [], "window_length": 0,
+           "status": None, "labels": None, "weights": None,
            "raw_judge_output": None, "judge_usage": None, "judge_error": None, "trace": trial.get("trace")}
     if found.step is None:
         row["judge_error"] = "empty_trace"
+        row["status"] = "empty_trace"
         return row
     by_step = {s["step"]: s for s in steps}
     window = [n for n in range(found.step - cfg.k, found.step) if n in by_step]
     row["window"] = window
+    row["window_length"] = len(window)
+    # No step before f: nothing for the judge to label. A shorter-than-K window
+    # (some of f-K..f-1 exist) is labelled as it is; window_length is that count.
+    if not any(isinstance(n, int) and not isinstance(n, bool) and n < found.step for n in by_step):
+        row["status"] = "empty_window"
+        row["labels"] = {}
+        row["weights"] = weights(list(by_step), found.step, {}, cfg)
+        return row
     labels: dict[int, str] = {}
     if window:
         prompt = build_prompt(trial["task"], by_step[found.step], [by_step[n] for n in window], found.signal)
@@ -159,13 +172,16 @@ def method_b_row(trial: dict, steps: list[dict], judge: System1, cfg: MethodBCon
             raw, usage = judge.judge(prompt)
         except Exception as exc:  # recorded, never silently dropped
             row["judge_error"] = f"{type(exc).__name__}: {exc}"
+            row["status"] = "judge_error"
             return row
         row["raw_judge_output"], row["judge_usage"] = raw, usage
         try:
             labels = parse_labels(raw, window)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             row["judge_error"] = f"unparseable judge output: {exc}"
+            row["status"] = "judge_error"
             return row
+    row["status"] = "ok"
     row["labels"] = {str(k): v for k, v in sorted(labels.items())}
     row["weights"] = weights(list(by_step), found.step, labels, cfg)
     return row

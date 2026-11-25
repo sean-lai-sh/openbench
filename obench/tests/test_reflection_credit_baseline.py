@@ -101,7 +101,9 @@ class FreshBaseline(unittest.TestCase):
         elf, query = manifests[f"{OPUS}/{ELF}"], manifests[f"{OPUS}/{QUERY}"]
         commit = rn.code_commit()["commit"]
         self.assertEqual(elf["baseline_commit"], commit)
+        self.assertEqual(elf["code_commit"], commit)
         self.assertEqual(query["baseline_commit"], commit)
+        self.assertEqual(query["code_commit"], commit)
         self.assertNotEqual(commit, "422e818a")
         self.assertEqual(elf["passes"], 10)
         self.assertEqual(elf["completed"], 30)

@@ -69,10 +69,20 @@ class Weights(unittest.TestCase):
         judge = FakeJudge()
         row = cb.method_b_row({"trial_id": "t", "task": "x", "model": "m"},
                               [step(1, call("bash", "Traceback (most recent call last):"))], judge, cb.MethodBConfig())
-        self.assertEqual((row["window"], judge.prompts), ([], []))
+        self.assertEqual((row["window"], row["window_length"], row["status"], judge.prompts), ([], 0, "empty_window", []))
         self.assertEqual(row["weights"], [{"step": 1, "weight": 0.0, "why": "past_cutoff"}])
         empty = cb.method_b_row({"trial_id": "t", "task": "x", "model": "m"}, [], judge, cb.MethodBConfig())
-        self.assertEqual((empty["judge_error"], empty["weights"]), ("empty_trace", None))
+        self.assertEqual((empty["judge_error"], empty["status"], empty["weights"]), ("empty_trace", "empty_trace", None))
+
+    def test_short_window_is_labelled_and_records_its_length(self):
+        trace = [step(1, call("bash", "ok")), step(2, call("bash", "ok")), step(3, call("bash", "error: boom"))]
+        judge = FakeJudge({1: "near_error"})
+        row = cb.method_b_row({"trial_id": "t", "task": "x", "model": "m"}, trace, judge, cb.MethodBConfig())
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual((row["k"], row["window"], row["window_length"]), (4, [1, 2], 2))
+        self.assertLess(row["window_length"], row["k"])
+        self.assertEqual(len(judge.prompts), 1)
+        self.assertEqual(row["labels"], {"1": "near_error", "2": "correct"})
 
     def test_bad_judge_output_is_auditable_not_silent(self):
         for judge, msg in ((FakeJudge(raw="not json"), "unparseable"),
