@@ -62,8 +62,9 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 #   model_refused: otherwise, any call refused or stopped for safety (Anthropic stop_reason "refusal", Gemini
 #     finishReason SAFETY), recorded with the step it happened on.
 # Both are neither pass nor fail: left out of the pass-rate denominator and the swap rule, reported per task and
-# model (set_aside.json, provider_blocked.json) with a sensitivity check that counts them all as fails, and cells
-# with any of them never go to credit assignment or ideation.
+# model (set_aside.json, provider_blocked.json) with a sensitivity check that counts them all as fails. A cell
+# enters credit assignment and ideation when its set-aside count is at most 3 (about 10% of 30); the count is
+# reported beside those credit rows.
 # Timeouts (Researcher ruling 2026-11-17): a trial that hits its cap while the agent is still working (a model call
 # finished in the last 5 minutes before the cap) is a task FAIL: status completed, passed False, timed_out True,
 # in the denominator. Only a cap with no model call finishing in those 5 minutes is "timeout" (infrastructure).
@@ -803,7 +804,8 @@ class Runner:
         doc = {"run_id": self.config.run_id, "suite_label": self.config.suite_label,
                "rule": "provider_blocked (last answered call had promptFeedback.blockReason) and model_refused (any "
                        "refusal / SAFETY finish): neither pass nor fail; left out of the denominator and the swap "
-                       "rule; cells never sent to credit assignment or ideation. *_all_fail: sensitivity check "
+                       "rule. A cell enters credit assignment and ideation when its set-aside count is at most 3 "
+                       "(about 10% of 30); that count is reported beside the credit rows. *_all_fail: sensitivity check "
                        "counting them all as fails.", "models": table}
         _write_json(self.run_dir / "set_aside.json", doc)
         return doc
@@ -828,8 +830,8 @@ class Runner:
                 cell["block_reason_messages"].append(info["blockReasonMessage"])
             cell["inferred"] += bool(info.get("inferred"))
         doc = {"run_id": self.config.run_id, "suite_label": self.config.suite_label,
-               "rule": "neither pass nor fail; excluded from the model's pass rate; no swap; never sent to credit "
-                       "assignment or ideation", "models": table}
+               "rule": "neither pass nor fail; excluded from the model's pass rate; no swap; a cell enters credit "
+                       "assignment and ideation when its set-aside count is at most 3 (about 10% of 30)", "models": table}
         _write_json(self.run_dir / "provider_blocked.json", doc)
         return doc
 

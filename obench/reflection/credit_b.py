@@ -30,7 +30,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
-from obench.reflection.credit_locator import LOCATOR_RULE_VERSION, failed_trials, first_failure, read_trace
+from obench.reflection.credit_locator import (
+    LOCATOR_RULE_VERSION, MAX_SET_ASIDE, check_max_set_aside, failed_trials, first_failure, read_trace,
+)
 
 METHOD_B_SCHEMA = "openbench.reflection.credit_b/v1"
 PROMPT_VERSION = "B1"
@@ -59,6 +61,7 @@ class MethodBConfig:
     system1_model: str = SYSTEM1_MODEL
     system1_location: str = SYSTEM1_LOCATION
     system1_thinking: dict = field(default_factory=lambda: dict(SYSTEM1_THINKING))
+    max_set_aside: int = MAX_SET_ASIDE
 
     @classmethod
     def from_dict(cls, raw: dict) -> "MethodBConfig":
@@ -70,6 +73,7 @@ class MethodBConfig:
             raise ValueError("k must be >= 0, near_error_weight in [0, 1], cutoff_rule first_failing_step_onward")
         if not cfg.system1_thinking:
             raise ValueError("system1_thinking must be set explicitly")
+        check_max_set_aside(cfg.max_set_aside)
         return cfg
 
 
@@ -134,7 +138,10 @@ def method_b_row(trial: dict, steps: list[dict], judge: System1, cfg: MethodBCon
     found = first_failure(steps)
     row = {"schema": METHOD_B_SCHEMA, "prompt_version": PROMPT_VERSION, "locator_rule_version": LOCATOR_RULE_VERSION,
            "run_id": trial.get("run_id"), "trial_id": trial["trial_id"], "task": trial["task"], "model": trial["model"],
-           "patch_id": trial.get("patch_id"), "system1_model": judge.model_id, "system1_thinking": cfg.system1_thinking,
+           "patch_id": trial.get("patch_id"),
+           "set_aside_count": trial.get("set_aside_count", 0),
+           "max_set_aside": trial.get("max_set_aside", cfg.max_set_aside),
+           "system1_model": judge.model_id, "system1_thinking": cfg.system1_thinking,
            "k": cfg.k, "near_error_weight": cfg.near_error_weight, "correct_weight": cfg.correct_weight,
            "past_cutoff_weight": cfg.past_cutoff_weight, "cutoff_rule": cfg.cutoff_rule,
            "first_failing_step": found.step, "signal": found.signal, "window": [], "labels": None, "weights": None,
@@ -168,7 +175,7 @@ def run_method_b(run_dir: Path, judge: System1, cfg: MethodBConfig | None = None
     cfg = cfg or MethodBConfig()
     run_dir = Path(run_dir)
     rows = []
-    for trial in failed_trials(run_dir):
+    for trial in failed_trials(run_dir, max_set_aside=cfg.max_set_aside):
         steps = read_trace(run_dir / trial["trace"]) if trial.get("trace") else []
         rows.append(method_b_row(trial, steps, judge, cfg))
     tmp = run_dir / (TABLE + ".tmp")
@@ -205,21 +212,32 @@ class VertexGeminiJudge:
         return text, doc.get("usageMetadata")
 
 
+def resolve_config(config_path: Path | None = None, max_set_aside: int | None = None) -> MethodBConfig:
+    """Method B settings from ``--config``, with ``--max-set-aside`` overriding the file when passed."""
+    cfg = MethodBConfig.from_dict(json.loads(Path(config_path).read_text(encoding="utf-8"))) if config_path else MethodBConfig()
+    if max_set_aside is None:
+        return cfg
+    return MethodBConfig.from_dict({**asdict(cfg), "max_set_aside": max_set_aside})
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Credit assignment Method B (System 1 weights)")
     parser.add_argument("--run", type=Path, required=True)
-    parser.add_argument("--config", type=Path, help="MethodBConfig JSON (k, near_error_weight, system1_model, ...)")
+    parser.add_argument("--config", type=Path, help="MethodBConfig JSON (k, near_error_weight, system1_model, max_set_aside, ...)")
+    parser.add_argument("--max-set-aside", type=int, default=None,
+                        help="admit a cell when its set-aside trials are at most this many (default 3; overrides --config)")
     args = parser.parse_args(argv)
-    cfg = MethodBConfig.from_dict(json.loads(args.config.read_text())) if args.config else MethodBConfig()
+    cfg = resolve_config(args.config, args.max_set_aside)
     project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
     if not project:
         raise SystemExit("GOOGLE_CLOUD_PROJECT is not set")
     from thesis.ab.vertex_anthropic_proxy import AdcToken
 
     rows = run_method_b(args.run, VertexGeminiJudge(cfg, project, AdcToken()), cfg)
-    print(json.dumps({"rows": len(rows), "table": str(args.run / TABLE), "errors": sum(1 for r in rows if r["judge_error"])}))
+    print(json.dumps({"rows": len(rows), "table": str(args.run / TABLE),
+                      "errors": sum(1 for r in rows if r["judge_error"]), "max_set_aside": cfg.max_set_aside}))
     return 0
 
 

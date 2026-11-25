@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from obench.reflection import runner as rn
-from obench.reflection.credit_locator import read_trace
+from obench.reflection.credit_locator import MAX_SET_ASIDE, check_max_set_aside, read_trace
 from obench.reflection.patches import OPS, PATCH_SCHEMA, patch_id, validate_patch
 
 N_ALTERNATIVES = 5
@@ -203,8 +203,15 @@ def _stage(prefix: str, baseline: dict, alt: dict, n: int) -> dict:
             f"{prefix}_fisher_p": d["fisher_p"]}
 
 
+def _set_aside_count(summary: dict) -> int:
+    """Set-aside trials in a runner summary row (the ``set_aside`` count, else blocked plus refused)."""
+    if summary.get("set_aside") is not None:
+        return int(summary["set_aside"])
+    return int(summary.get("provider_blocked") or 0) + int(summary.get("model_refused") or 0)
+
+
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,
-             spend_cap_usd: float | None = None) -> dict:
+             spend_cap_usd: float | None = None, max_set_aside: int = MAX_SET_ASIDE) -> dict:
     """Two-stage evaluation of one accepted proposal (João Sedoc via Sean, 2026-11-13).
 
     1. **Selection:** the alternative runs N trials. It is a *candidate* iff
@@ -217,7 +224,9 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
        beat, full N on both sides).
 
     The one-sided Fisher p for each stage is recorded as a reported statistic
-    only. ``spend_cap_usd`` applies to each arm."""
+    only. ``spend_cap_usd`` applies to each arm. The baseline cell is evaluated
+    when its set-aside count is at most ``max_set_aside`` (default 3, about
+    10% of 30), the same cap as credit assignment."""
     if proposal["status"] != "accepted":
         raise ValueError("only accepted proposals are evaluated")
     run_dir = Path(run_dir)
@@ -226,10 +235,13 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
                 if s["task"] == proposal["task"] and s["model"] == proposal["model"] and s["patch_id"] is None]
     if not baseline:
         raise ValueError(f"no baseline summary for {proposal['task']} / {proposal['model']}")
-    if baseline[0].get("provider_blocked") or baseline[0].get("model_refused") or baseline[0].get("verdict") == "excluded":
-        # Researcher rulings 2026-11-17: provider-blocked and model-refused cells never go to ideation
-        raise ValueError(f"{proposal['task']} / {proposal['model']} is provider-blocked or model-refused (set aside); "
-                         "not evaluated")
+    max_set_aside = check_max_set_aside(max_set_aside)
+    aside = _set_aside_count(baseline[0])
+    # Amended Researcher ruling 2026-11-17: a cell enters when its set-aside count is at most max_set_aside
+    # (default 3, about 10% of 30). The same cap admits the cell to credit assignment.
+    if aside > max_set_aside:
+        raise ValueError(f"{proposal['task']} / {proposal['model']} has {aside} set-aside trials "
+                         f"(max_set_aside {max_set_aside}); not evaluated")
     sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd)
     selection = _stage("selection", baseline[0], sel_alt, n_trials)
     candidate = selection["selection_complete"] and selection["selection_beats_baseline"]

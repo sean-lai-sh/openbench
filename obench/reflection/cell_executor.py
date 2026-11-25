@@ -41,8 +41,9 @@ A prompt the provider blocked (Gemini ``promptFeedback.blockReason``, HTTP 200
 with no candidates) ends the trial at once: the proxy stops the container and
 refuses OpenCode's retries, and the trial is ``provider_blocked`` (raw
 blockReason and blockReasonMessage kept): neither pass nor fail, excluded from
-the model's pass rate, never swapped, never sent to credit assignment or
-ideation (Researcher ruling 2026-11-17).
+the model's pass rate, never swapped (Researcher ruling 2026-11-17). The cell
+still enters credit assignment and ideation when its set-aside count is at
+most 3 (about 10% of 30).
 
 Otherwise, any refusal or safety stop in the trial (Anthropic ``stop_reason:
 "refusal"``, Gemini ``finishReason: SAFETY``) makes it ``model_refused``, recorded
