@@ -5,11 +5,13 @@ model calls, no credentials, no OpenCode binary."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tempfile
 import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +20,7 @@ from pathlib import Path
 from obench.reflection import smoke
 from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
-from obench.reflection.wire_proxy import WireProxy
+from obench.reflection.wire_proxy import WireProxy, prepare_request
 
 DOC = Path(tr.__file__).with_name("TRACE_SCHEMA.md")
 TOOLS_ANTHROPIC = [{"name": "bash", "description": "run", "input_schema": {"type": "object"}}]
@@ -284,6 +286,136 @@ class AnthropicRoute(ProxyCase):
         self.assertEqual(status, 529)
         (rec,) = self.records()
         self.assertEqual((rec["status"], rec["response_usage"], rec["cost_usd"]), (529, None, None))
+
+    def test_main_turn_is_unchanged_when_history_has_a_signed_thinking_block(self):
+        """Opus effort high and the thinking setting stay the body prepare_request already sends.
+        A signed thinking block in the main conversation is not rebound and not stripped."""
+        signed = {"type": "thinking", "thinking": "plan the fix", "signature": "sig-main-conversation"}
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [signed, {"type": "text", "text": "next"}]},
+        ]
+        body = {"model": "claude-opus-5-5", "max_tokens": 32000, "stream": True, "temperature": 0.2,
+                "tools": TOOLS_ANTHROPIC, "output_config": {"effort": "low"},
+                "thinking": {"type": "enabled", "budget_tokens": 1024}, "messages": messages}
+        client_beta = "fine-grained-tool-streaming-2025-05-14"
+        status, _ = self.post("/m/claude-opus-5-5/v1/messages", body, {"anthropic-beta": client_beta})
+        self.assertEqual(status, 200)
+        seen = self.vertex.seen[-1]
+        expected, _, _ = prepare_request(vm.resolve("claude-opus-5-5"), "/m/claude-opus-5-5/v1/messages", body)
+        self.assertEqual(seen["body"], expected)  # nothing after prepare_request touched a main turn
+        self.assertEqual(seen["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(seen["body"]["output_config"], {"effort": "high"})
+        self.assertEqual(seen["body"]["messages"], messages)
+        self.assertNotIn("block_binding", json.dumps(seen["body"]))
+        self.assertEqual(seen["headers"].get("anthropic-beta"), client_beta)
+        self.assertNotIn("thinking-binding-controls", seen["headers"].get("anthropic-beta", ""))
+        (rec,) = self.records()
+        self.assertEqual((rec["call_role"], rec["side_kind"], rec["thinking_block_binding"]), ("main", None, None))
+        self.assertEqual(rec["anthropic_beta"], client_beta)
+        self.assertFalse(rec["thinking_signature_reject"])
+        self.assertEqual(rec["request"]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(rec["request"]["messages"], messages)
+
+    def test_side_request_with_a_foreign_thinking_signature_uses_drop_block(self):
+        from thesis.ab.vertex_anthropic_proxy import BLOCK_BINDING_BETA
+        signed = {"type": "thinking", "thinking": "from the main turn", "signature": "sig-other-conversation"}
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": [signed, {"type": "text", "text": "ran bash"}]},
+            {"role": "user", "content": "Provide a detailed prompt for continuing our conversation above."},
+        ]
+        system = "You are a helpful AI assistant tasked with summarizing conversations."
+        body = {"model": "claude-opus-5-5", "max_tokens": 32000, "stream": True, "system": system, "messages": messages}
+        signature_400 = json.dumps({
+            "type": "error",
+            "error": {"type": "invalid_request_error",
+                      "message": "messages.1.content.0: Invalid `signature` in `thinking` block. "
+                                 "The block is bound to a different conversation."},
+        }).encode()
+
+        def reply(path):
+            sent = self.vertex.seen[-1]
+            thinking = sent["body"].get("thinking") or {}
+            beta = sent["headers"].get("anthropic-beta") or ""
+            bound = (thinking.get("block_binding") or {}).get("prefix_mismatch_behavior") == "drop_block"
+            if bound and BLOCK_BINDING_BETA in beta:
+                return default_reply(path)
+            return 400, "application/json", signature_400
+
+        self.vertex.reply = reply
+        status, payload = self.post("/m/claude-opus-5-5/v1/messages", body,
+                                    {"anthropic-beta": "fine-grained-tool-streaming-2025-05-14"})
+        self.assertEqual(status, 200)
+        self.assertNotIn(b"Invalid", payload)
+        seen = self.vertex.seen[-1]
+        plain, _, _ = prepare_request(vm.resolve("claude-opus-5-5"), "/m/claude-opus-5-5/v1/messages", body)
+        self.assertEqual({k: v for k, v in seen["body"].items() if k != "thinking"},
+                         {k: v for k, v in plain.items() if k != "thinking"})
+        self.assertEqual(seen["body"]["thinking"], {
+            "type": "adaptive", "display": "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"}})
+        self.assertEqual(seen["body"]["output_config"], {"effort": "high"})
+        self.assertEqual(seen["body"]["messages"], messages)  # signatures stay; the upstream drops a mismatch
+        self.assertEqual(seen["headers"].get("anthropic-beta"),
+                         "fine-grained-tool-streaming-2025-05-14," + BLOCK_BINDING_BETA)
+        (rec,) = self.records()
+        self.assertEqual(rec["call_role"], "side")
+        self.assertEqual(rec["side_kind"], "compaction")
+        self.assertEqual(rec["thinking_block_binding"], "drop_block")
+        self.assertEqual(rec["anthropic_beta"], seen["headers"]["anthropic-beta"])
+        self.assertFalse(rec["thinking_signature_reject"])
+        self.assertEqual(rec["status"], 200)
+
+    def test_side_request_without_the_binding_reproduces_the_signature_400(self):
+        from thesis.ab.vertex_anthropic_proxy import BLOCK_BINDING_ENV
+        signed = {"type": "thinking", "thinking": "from the main turn", "signature": "sig-other-conversation"}
+        messages = [{"role": "user", "content": "Generate a title for this conversation:"},
+                    {"role": "assistant", "content": [signed, {"type": "text", "text": "done"}]}]
+        body = {"model": "claude-opus-5-5", "max_tokens": 64, "stream": False,
+                "system": "You are a title generator. You output ONLY a thread title.",
+                "messages": messages}
+        signature_400 = json.dumps({
+            "type": "error",
+            "error": {"type": "invalid_request_error",
+                      "message": "Invalid `signature` in `thinking` block. The block is bound to a different conversation."},
+        }).encode()
+
+        def reply(path):
+            sent = self.vertex.seen[-1]
+            if (sent["body"].get("thinking") or {}).get("block_binding"):
+                return default_reply(path)
+            return 400, "application/json", signature_400
+
+        self.vertex.reply = reply
+        with mock.patch.dict(os.environ, {BLOCK_BINDING_ENV: "off"}):
+            status, payload = self.post("/m/claude-opus-5-5/v1/messages", body)
+        self.assertEqual(status, 400)
+        self.assertIn(b"bound to a different conversation", payload)
+        seen = self.vertex.seen[-1]
+        self.assertEqual(seen["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertNotIn("block_binding", json.dumps(seen["body"]))
+        self.assertNotIn("anthropic-beta", seen["headers"])
+        self.assertEqual(seen["body"]["messages"], messages)
+        (rec,) = self.records()
+        self.assertEqual((rec["call_role"], rec["side_kind"], rec["thinking_block_binding"]), ("side", "title", "off"))
+        self.assertIsNone(rec["anthropic_beta"])
+        self.assertTrue(rec["thinking_signature_reject"])
+        self.assertEqual(rec["status"], 400)
+
+    def test_a_side_request_with_no_thinking_block_is_not_rewritten(self):
+        body = {"model": "claude-opus-5-5", "max_tokens": 64, "stream": False,
+                "system": "Summarize what was done in this conversation. Write like a pull request description.",
+                "messages": [{"role": "user", "content": "I added the parser."}]}
+        status, _ = self.post("/m/claude-opus-5-5/v1/messages", body)
+        self.assertEqual(status, 200)
+        seen = self.vertex.seen[-1]
+        self.assertEqual(seen["body"]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertNotIn("block_binding", json.dumps(seen["body"]))
+        self.assertNotIn("anthropic-beta", seen["headers"])
+        (rec,) = self.records()
+        self.assertEqual((rec["side_kind"], rec["thinking_block_binding"], rec["thinking_signature_reject"]),
+                         ("summary", "off", False))
 
 
 def Registry_documented_wire():

@@ -16,8 +16,17 @@ the proxy:
 4. appends one ``openbench.reflection.wire/v1`` record (request as sent,
    model served, response usage, cost) to the wire JSONL.
 
-Calls without tools are tagged ``call_role: "side"`` (OpenCode's title and
-summary calls); every agent step carries tools. stdlib only.
+Calls without tools are tagged ``call_role: "side"``. At the OpenCode pin
+those are title, summary, and compaction calls; every agent step carries
+tools. Compaction (and a title call that replays earlier turns) copies
+assistant reasoning, signatures included, into a request whose system prompt
+is not the main conversation. Vertex answers 400 ``Invalid signature in
+thinking block`` / ``bound to a different conversation``. Side requests that
+still carry such a block are sent with ``thinking.block_binding
+.prefix_mismatch_behavior=drop_block`` and beta
+``thinking-binding-controls-2026-08-01`` (the H2 proxy's
+``apply_block_binding``). Main turns are not modified. stdlib plus that one
+helper.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -39,10 +49,163 @@ from obench.reflection import vertex_models as vm
 from obench.reflection.gptoss_repair import repair as repair_text_tool_calls, to_sse
 from obench.reflection.patches import PatchError, apply_patch, validate_patch
 from obench.reflection.trace import WIRE_SCHEMA, TraceError, usage_from_response
+from thesis.ab.vertex_anthropic_proxy import BLOCK_BINDING_BETA, BLOCK_BINDING_ENV, apply_block_binding
 
 ANTHROPIC_VERSION = "vertex-2023-10-16"
 _FORWARD_HEADERS = ("anthropic-beta",)
 _ANTHROPIC_THINKING_CONFLICTS = ("temperature", "top_k", "top_p")
+# OpenCode pin ba54cee (1.1.61) agent prompts. Matched on the system prompt
+# first so a compaction replay of the user's words cannot re-label the call.
+_TITLE_SYSTEM = re.compile(r"you are a title generator", re.IGNORECASE)
+_SUMMARY_SYSTEM = re.compile(
+    r"summarize what was done in this conversation|write like a pull request description", re.IGNORECASE)
+_COMPACTION_SYSTEM = re.compile(r"tasked with summarizing conversations", re.IGNORECASE)
+_TITLE_USER = re.compile(r"generate a title for this conversation|the following is the text to summarize", re.IGNORECASE)
+_COMPACTION_USER = re.compile(r"provide a detailed prompt for continuing our conversation above", re.IGNORECASE)
+_THINKING_SIGNATURE_RE = re.compile(
+    r"invalid\W{0,3}signature\W{0,3}in\W{0,3}thinking\W{0,3}block", re.IGNORECASE)
+
+
+def side_binding_mode() -> str | None:
+    """Reflection default: ``drop_block`` on side requests.
+
+    ``OBENCH_THINKING_BLOCK_BINDING`` unset or ``drop_block`` enables it. Any
+    other value (``off``, empty) disables it. The H2 proxy reads the same
+    variable and stays off when it is unset; this default applies only here,
+    and only to side requests.
+    """
+    raw = os.environ.get(BLOCK_BINDING_ENV)
+    if raw is None or raw.strip() == "drop_block":
+        return "drop_block"
+    return None
+
+
+def _text_blocks(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, list):
+        return []
+    out = []
+    for block in value:
+        if isinstance(block, str):
+            out.append(block)
+        elif isinstance(block, dict) and isinstance(block.get("text"), str):
+            out.append(block["text"])
+    return out
+
+
+def _system_text(body: dict) -> str:
+    parts = _text_blocks(body.get("system"))
+    for message in body.get("messages") or []:
+        if isinstance(message, dict) and message.get("role") == "system":
+            parts.extend(_text_blocks(message.get("content")))
+    return "\n".join(parts)
+
+
+def _user_text(body: dict) -> str:
+    parts = []
+    for message in body.get("messages") or []:
+        if isinstance(message, dict) and message.get("role") == "user":
+            parts.extend(_text_blocks(message.get("content")))
+    return "\n".join(parts)
+
+
+def classify_side_kind(body: dict) -> str:
+    """``title``, ``summary``, ``compaction``, or ``unknown``.
+
+    OpenCode's title agent (``title.txt``, including the message-summary call
+    that uses that agent), summary agent (``summary.txt``), and compaction
+    agent (``compaction.txt`` plus the continuation prompt). System text wins
+    over user text so a replayed conversation cannot relabel compaction.
+    """
+    if not isinstance(body, dict):
+        return "unknown"
+    system, user = _system_text(body), _user_text(body)
+    if _TITLE_SYSTEM.search(system):
+        return "title"
+    if _SUMMARY_SYSTEM.search(system):
+        return "summary"
+    if _COMPACTION_SYSTEM.search(system):
+        return "compaction"
+    if _COMPACTION_USER.search(user):
+        return "compaction"
+    if _TITLE_USER.search(user):
+        return "title"
+    if _SUMMARY_SYSTEM.search(user):
+        return "summary"
+    return "unknown"
+
+
+def is_side_request(body: dict) -> bool:
+    tools = body.get("tools") if isinstance(body, dict) else None
+    return not (isinstance(tools, list) and tools)
+
+
+def with_binding_beta(header: str | None) -> str:
+    parts = [p.strip() for p in (header or "").split(",") if p.strip()]
+    if BLOCK_BINDING_BETA not in parts:
+        parts.append(BLOCK_BINDING_BETA)
+    return ",".join(parts)
+
+
+def bind_side_request(model: vm.VertexModel, sent: dict, beta: str | None) -> tuple[str | None, str | None]:
+    """Apply drop_block to an Anthropic side request that replays thinking.
+
+    Returns ``(binding, beta header to send)``. Main turns, non-Anthropic
+    wires, and side requests with no thinking block are unchanged: binding is
+    None for a main/non-Anthropic call and ``off`` for an Anthropic side call
+    that was not rewritten. ``beta`` is the header actually sent.
+    """
+    if model.wire != "anthropic" or not is_side_request(sent):
+        return None, beta
+    mode = side_binding_mode()
+    applied = apply_block_binding(sent, mode=mode) if mode else None
+    if applied:
+        return applied, with_binding_beta(beta)
+    return "off", beta
+
+
+def is_thinking_signature_error(raw: bytes | str | None) -> bool:
+    if not raw:
+        return False
+    text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+    return _THINKING_SIGNATURE_RE.search(text) is not None
+
+
+def signature_400_count(wire_records: list[dict]) -> int:
+    return sum(1 for w in wire_records if w.get("thinking_signature_reject"))
+
+
+def side_kind_counts(wire_records: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for record in wire_records:
+        if record.get("call_role") != "side":
+            continue
+        kind = record.get("side_kind") or "unknown"
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def thinking_binding_seen(wire_records: list[dict]) -> str | None:
+    """``drop_block`` if any call applied it, else ``off`` if a side call recorded that, else None."""
+    values = [w.get("thinking_block_binding") for w in wire_records]
+    if "drop_block" in values:
+        return "drop_block"
+    if "off" in values:
+        return "off"
+    return None
+
+
+def terminating_side_signature(wire_records: list[dict]) -> dict | None:
+    """The last model call was a side request rejected for a foreign thinking signature."""
+    if not wire_records:
+        return None
+    last = max(wire_records, key=lambda w: w.get("call_index") or 0)
+    if last.get("call_role") != "side" or not last.get("thinking_signature_reject"):
+        return None
+    return {"call_index": last.get("call_index"), "side_kind": last.get("side_kind"),
+            "status": last.get("status"), "thinking_block_binding": last.get("thinking_block_binding"),
+            "anthropic_beta": last.get("anthropic_beta")}
 
 
 def prepare_request(model: vm.VertexModel, client_path: str, body: dict) -> tuple[dict, bool, dict]:
@@ -474,17 +637,29 @@ class WireProxy:
             return self._reply(handler, 400, {"error": "request body is not JSON"})
         except ValueError as exc:
             return self._reply(handler, 400, {"error": str(exc)})
+        beta = handler.headers.get("anthropic-beta")
+        binding, beta = bind_side_request(model, sent, beta)
+        note = {
+            "side_kind": classify_side_kind(sent) if is_side_request(sent) else None,
+            "thinking_block_binding": binding,
+            "anthropic_beta": beta,
+            "thinking_signature_reject": False,
+        }
         with self._lock:
             self._index += 1
             index = self._index
         started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         if self.provider_blocked is not None:
             self._record(index, started, model, sent, enforced, None, None, None, "provider_blocked: not sent",
-                         extra={"short_circuited": True}, note_last=False)
+                         extra={"short_circuited": True, **note}, note_last=False)
             return self._reply(handler, 400, {"error": {"code": 400, "status": "PROVIDER_BLOCKED",
                                                         "message": f"provider blocked: {self.provider_blocked.get('blockReason')}"}})
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.token()}"}
         for name in _FORWARD_HEADERS:
+            if name == "anthropic-beta":
+                if beta:
+                    headers[name] = beta
+                continue
             if handler.headers.get(name):
                 headers[name] = handler.headers[name]
         upstream_stream = stream if model.upstream_stream is None else model.upstream_stream
@@ -504,7 +679,7 @@ class WireProxy:
             response = exc
         except OSError as exc:
             self._record(index, started, model, sent, enforced, None, None, None, str(exc),
-                         response_arrived=False, first_byte_at=None)
+                         extra=dict(note), response_arrived=False, first_byte_at=None)
             return self._reply(handler, 502, {"error": f"upstream unreachable: {exc}"})
         client = {"ok": True}
 
@@ -552,7 +727,8 @@ class WireProxy:
                                     "response_bytes": len(raw_all), "route_repair": repair,
                                     "upstream_response_summary": response_summary(model, raw_all, upstream_stream),
                                     "upstream_stream": upstream_stream, "stream_error": stream_error,
-                                    "upstream_raw": self._save_raw(index, raw_all, upstream_stream)},
+                                    "upstream_raw": self._save_raw(index, raw_all, upstream_stream),
+                                    **dict(note, thinking_signature_reject=status == 400 and is_thinking_signature_error(raw_all))},
                              response_arrived=True, first_byte_at=first_byte_at)
                 send(b"0\r\n\r\n")
                 return
@@ -593,7 +769,8 @@ class WireProxy:
                      "provider_blocked": blocked,
                      "client_disconnected": not client["ok"], "response_bytes": len(raw_all),
                      "stream_error": stream_error,
-                     "usage_events": usage_events(model, raw_all, upstream_stream) if status == 200 else None}
+                     "usage_events": usage_events(model, raw_all, upstream_stream) if status == 200 else None,
+                     **dict(note, thinking_signature_reject=status == 400 and is_thinking_signature_error(raw_all))}
             if model.repair_text_tool_calls:  # gpt-oss error bodies too: what the route sent, byte for byte
                 extra.update({"route_repair": None, "upstream_response_summary": None, "upstream_stream": upstream_stream,
                               "upstream_raw": self._save_raw(index, raw_all, upstream_stream)})

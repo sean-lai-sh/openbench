@@ -49,7 +49,10 @@ Otherwise, any refusal or safety stop in the trial (Anthropic ``stop_reason:
 with the step it happened on; it is set aside the same way, and the checker
 still runs. OpenCode exiting 0 with a tool call pending is
 ``agent_exit_pending_tool`` (``agent_exit.json``): infrastructure, never a task
-fail.
+fail. A final side request rejected for a thinking-block signature bound to
+another conversation is ``side_thinking_signature`` instead
+(``side_signature.json``, ``env_cause=vertex_thinking_signature``): the last
+tool had already finished, and the 400 is not a pending tool.
 
 Timeouts (Researcher ruling 2026-11-17): the cap is the task's agent timeout
 (``task.toml`` ``agent_timeout_s``, else 1800 s, the same for both models). A
@@ -129,7 +132,9 @@ from obench.reflection import trace as tr
 from obench.reflection import vertex_models as vm
 from obench.reflection.runner import TrialResult, TrialSpec, code_commit
 from obench.reflection.wire_proxy import (WireProxy, classify_4xx, last_vertex_request, model_refused,
-                                          provider_blocked, route_repair_counts, route_truncated)
+                                          provider_blocked, route_repair_counts, route_truncated,
+                                          side_kind_counts, signature_400_count, terminating_side_signature,
+                                          thinking_binding_seen)
 
 SINKHOLED_HOSTS = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai",
                    "aiplatform.googleapis.com", "us-central1-aiplatform.googleapis.com")
@@ -665,7 +670,9 @@ class CellExecutor:
         blocked = provider_blocked(wires)
         common = dict(cost_usd=cost, served_models=served, route_counts=counts, thinking_setting=thinking_setting,
                       retried_4xx=fours["retried"], image=image, wire=rel(wire_path),
-                      cost_unpriced_calls=unpriced, last_vertex_request=last_vertex_request(wires, live))
+                      cost_unpriced_calls=unpriced, last_vertex_request=last_vertex_request(wires, live),
+                      signature_400s=signature_400_count(wires), side_kinds=side_kind_counts(wires),
+                      thinking_block_binding=thinking_binding_seen(wires))
         if blocked is not None:  # the provider refused the prompt: neither pass nor fail
             (trial_dir / "provider_blocked.json").write_text(json.dumps(blocked, sort_keys=True) + "\n")
             return TrialResult(status="provider_blocked", passed=None, provider_blocked=blocked, **common,
@@ -729,6 +736,19 @@ class CellExecutor:
             return TrialResult(status="completed", passed=False, timed_out=True, timeout_detail=timeout_detail, **done,
                                error=f"agent still working at the {timeout_detail['cap_seconds']}s cap (task fail)")
         last_finish = records[-1].get("finish_reason") if records else None
+        signature = terminating_side_signature(wires)
+        if signature and last_finish in ("tool-calls", "tool_calls", "tool_use"):
+            # The last tool already finished. OpenCode died on a side request (title, summary, or compaction)
+            # whose replayed thinking block was signed for the main conversation. Not a pending tool.
+            info = dict(signature, last_finish=last_finish,
+                        pending_tools=[c.get("name") for c in records[-1].get("tool_calls") or []],
+                        opencode_exit=code)
+            (trial_dir / "side_signature.json").write_text(json.dumps(info, sort_keys=True) + "\n")
+            kind = f" ({info['side_kind']})" if info.get("side_kind") else ""
+            return TrialResult(status="side_thinking_signature", passed=None, env_cause="vertex_thinking_signature",
+                               side_signature=info, **done,
+                               error="side request rejected: thinking block signature is bound to a different conversation"
+                                     + kind)
         if last_finish in ("tool-calls", "tool_calls", "tool_use") and code in (0, None):
             # OpenCode exited 0 with a tool call pending: infrastructure, never a task fail. Usually `opencode run`
             # auto-rejecting a permission request; also an upstream stream reset mid-response.

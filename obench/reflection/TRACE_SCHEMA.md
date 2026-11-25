@@ -95,6 +95,10 @@ and Opus report real counts. Compare gpt-oss thinking by `thinking.chars` or
 | `ts` | string\|null | no | When the request was sent |
 | `provider_wire` | string | yes | `anthropic` \| `openai_chat` \| `gemini` |
 | `call_role` | string | no | `main` (default) or `side` |
+| `side_kind` | string\|null | no | On a side request: `title`, `summary`, `compaction`, or `unknown` (OpenCode's title agent, summary agent, or compaction agent at the pin). Null on a main turn |
+| `thinking_block_binding` | string\|null | no | `drop_block` when this side request was sent with `thinking.block_binding.prefix_mismatch_behavior=drop_block`. `off` on an Anthropic side request that was not rewritten (no thinking block, or `OBENCH_THINKING_BLOCK_BINDING` set to something other than `drop_block`). Null on a main turn and on non-Anthropic calls. Main-turn thinking and effort are not modified |
+| `anthropic_beta` | string\|null | no | The `anthropic-beta` header actually sent upstream. When binding is applied this includes `thinking-binding-controls-2026-08-01`, appended to whatever the client sent. Null when no beta header was sent |
+| `thinking_signature_reject` | bool | no | True when this response was HTTP 400 whose body matches `Invalid signature in thinking block` (backticks optional). A trial's `signature_400s` is the count of these |
 | `requested_model` | string\|null | no | Model id on the incoming request |
 | `upstream_model` | string\|null | yes | Model actually served |
 | `request` | object | yes | Request body as sent |

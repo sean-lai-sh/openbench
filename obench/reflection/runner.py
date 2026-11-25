@@ -70,8 +70,12 @@ SUMMARY_SCHEMA = "openbench.reflection.summary/v1"
 # agent_exit_pending_tool: OpenCode exited 0 with a tool call still pending (e.g. `opencode run` auto-rejected a
 # permission request) - infrastructure, never a task fail. checker_error: the checker could not run (missing
 # interpreter/tool in the task image, docker failure) - infrastructure.
+# side_thinking_signature: the trial's last call was a side request (title, summary, or compaction) rejected
+# with HTTP 400 "Invalid signature in thinking block" / bound to a different conversation, and the last step
+# still shows a tool call. The tool had already finished; this is not agent_exit_pending_tool. Infrastructure,
+# env_cause vertex_thinking_signature. Not a task fail. The pass/fail formula is unchanged.
 STATUSES = ("completed", "error", "timeout", "route_truncated", "upstream_4xx", "provider_blocked",
-            "model_refused", "agent_exit_pending_tool", "checker_error")
+            "model_refused", "agent_exit_pending_tool", "side_thinking_signature", "checker_error")
 SET_ASIDE = ("provider_blocked", "model_refused")  # neither pass/fail nor infra; not in errors
 # Settled = passed or failed (``completed``, including a cap hit while the agent was still working),
 # refused, or blocked. Everything else is an infrastructure error. This is the only infra set:
@@ -126,6 +130,11 @@ class TrialResult:
     provider_blocked: dict | None = None      # raw {blockReason, blockReasonMessage, ...} when status is provider_blocked
     model_refused: dict | None = None         # {stop_reason, stop_details, call_index, step, refusals, ...}
     agent_exit: dict | None = None            # agent_exit_pending_tool: {last_finish, pending_tools, permission_rejected, ...}
+    env_cause: str | None = None              # vertex_thinking_signature when status is side_thinking_signature
+    signature_400s: int = 0                   # side or main calls whose body was the thinking-signature 400
+    side_kinds: dict | None = None            # {title, summary, compaction, unknown: counts} of side requests
+    side_signature: dict | None = None        # the terminating side signature-400, when that is the status
+    thinking_block_binding: str | None = None  # drop_block if a side request applied it, else off, else None
     trace_warning: str | None = None          # the trace could not be built (e.g. step_call_mismatch); verdict kept
     timed_out: bool = False                   # the agent hit its cap (task.toml agent_timeout_s, else 1800 s)
     timeout_detail: dict | None = None        # {cap_seconds, last_call_ended_before_cap_s, still_working}
@@ -624,6 +633,9 @@ class Runner:
                "code_branch": self.code["branch"], "code_dirty": self.code["dirty"],
                "retried_4xx": result.retried_4xx or {}, "provider_blocked": result.provider_blocked,
                "model_refused": result.model_refused, "agent_exit": result.agent_exit,
+               "env_cause": result.env_cause, "signature_400s": result.signature_400s,
+               "side_kinds": result.side_kinds or {}, "side_signature": result.side_signature,
+               "thinking_block_binding": result.thinking_block_binding,
                "trace_warning": result.trace_warning, "cost_unpriced_calls": result.cost_unpriced_calls,
                "timed_out": result.timed_out, "timeout_detail": result.timeout_detail,
                "workers": self.workers, "wall_seconds": round(_time.monotonic() - t0, 1),
@@ -680,6 +692,8 @@ class Runner:
                 "pass_rate_all_fail": round(passes / (len(completed) + aside), 4) if completed or aside else None,
                 "verdict_all_fail": verdict_all_fail,
                 "agent_exit_pending_tool": sum(1 for t in trials if t["status"] == "agent_exit_pending_tool"),
+                "side_thinking_signature": sum(1 for t in trials if t["status"] == "side_thinking_signature"),
+                "signature_400s": sum(int(t.get("signature_400s") or 0) for t in trials),
                 "checker_error": sum(1 for t in trials if t["status"] == "checker_error"),
                 "workers": sorted({t.get("workers") for t in trials if t.get("workers") is not None}),
                 "retried_4xx": _sum_counts(t.get("retried_4xx") for t in trials),
