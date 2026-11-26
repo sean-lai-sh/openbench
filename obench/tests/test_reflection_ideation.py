@@ -213,7 +213,7 @@ class EndToEnd(unittest.TestCase):
                 "model_refused": summary.get("model_refused", 0),
                 "baseline_commit": commit, "code_commit": commit,
                 "image": {"ref": "recorded:test", "id": "sha256:" + "11" * 32},
-                "image_matches_pin": True,
+                "image_matches_pin": True, "workers": 1,
             }
         (self.run / "credit_baseline.json").write_text(json.dumps(doc) + "\n", encoding="utf-8")
 

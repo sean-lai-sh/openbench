@@ -266,11 +266,15 @@ class LiveCli(unittest.TestCase):
         opencode = run / "bin" / "opencode"
         seen = {}
 
-        def fake_run_baselines(run_dir, cell_names, executor, n_trials=rn.N_TRIALS, max_set_aside=3):
+        def fake_run_baselines(run_dir, cell_names, executor, n_trials=rn.N_TRIALS, max_set_aside=3,
+                                max_usd=None, max_usd_per_cell=None, workers=1):
             seen["run_dir"] = Path(run_dir)
             seen["cells"] = cell_names
             seen["executor"] = executor
             seen["n_trials"] = n_trials
+            seen["max_usd"] = max_usd
+            seen["max_usd_per_cell"] = max_usd_per_cell
+            seen["workers"] = workers
             return {}
 
         real = ce.CellExecutor
@@ -302,6 +306,7 @@ class LiveCli(unittest.TestCase):
         self.assertEqual(seen["executor"].default_image, "h1-env:1027-strace")
         self.assertIs(seen["executor"].use_image_tag, False)
         self.assertEqual(seen["executor"].estimates_usd, ce.DEFAULT_ESTIMATES_USD)
+        self.assertEqual((seen["workers"], seen["max_usd"], seen["max_usd_per_cell"]), (1, None, None))
         payload = json.loads(buf.getvalue())
         self.assertEqual(payload["n_trials"], 4)
         self.assertEqual(payload["cells"], 0)

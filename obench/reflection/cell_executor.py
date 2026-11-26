@@ -175,6 +175,31 @@ def _load() -> list | None:
 AGENT_PERMISSIONS = {"external_directory": "allow", "doom_loop": "allow", "read": "allow"}
 OPENCODE_IN_CONTAINER = "/opt/opencode"   # the pinned standalone binary's directory, mounted read-only
 CHECKER_LAUNCHED = "__openbench_checker_launched__"  # printed in the checker container before checker.sh runs
+_RUNTIME_MEDIAN = re.compile(
+    r"""['"](?P<name>golden|solution)['"]\s*:\s*\{[^{}]*?['"]median_s['"]\s*:\s*"""
+    r"""(?P<median>[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)""")
+
+
+def parse_checker_runtime(text: str | None) -> dict:
+    """Pull query-optimize's printed medians out of checker output.
+
+    The checker prints a dict with ``golden.median_s`` and ``solution.median_s``.
+    ``runtime_measured_s`` is the solution median, ``runtime_golden_s`` is the
+    golden median, and ``runtime_ratio`` is measured / golden. The last pair
+    in the output wins (pytest prints the summary, then may echo it). All
+    three are null when either median is missing. This does not re-time the query.
+    """
+    empty = {"runtime_measured_s": None, "runtime_golden_s": None, "runtime_ratio": None}
+    if not text:
+        return empty
+    found: dict[str, float] = {}
+    for match in _RUNTIME_MEDIAN.finditer(text):
+        found[match.group("name")] = float(match.group("median"))
+    golden, measured = found.get("golden"), found.get("solution")
+    if golden is None or measured is None or golden == 0:
+        return empty
+    return {"runtime_measured_s": measured, "runtime_golden_s": golden,
+            "runtime_ratio": round(measured / golden, 6)}
 PERMISSION_LINE = re.compile(r"permission requested: (\S+) \(([^)]*)\); auto-rejecting")
 
 
@@ -764,7 +789,14 @@ class CellExecutor:
         # upstream_4xx before this check). Keep that order unless the trace says
         # the trial actually died on the side signature 400.
         working_timeout = timed_out and refused is None and not deferred_breaking
-        checker_exit, checker_mode, checker_out = self._check(task, workspace) if run_checker else (None, None, "")
+        if run_checker:
+            checker_exit, checker_mode, checker_out = self._check(task, workspace)
+        else:
+            checker_exit, checker_mode, checker_out = None, None, ""
+            saved = trial_dir / "checker-output.txt"
+            if saved.is_file():
+                checker_out = saved.read_text(encoding="utf-8", errors="replace")
+        common.update(parse_checker_runtime(checker_out))
         if refused is None and checker_mode == "container_not_launched" and checker_exit in (125, 126, 127):
             # Only a launch failure of the checker container itself (docker error 125, bash not invocable 126 / not
             # found 127, before the launch marker was printed) is checker_error. A command missing inside the task's
