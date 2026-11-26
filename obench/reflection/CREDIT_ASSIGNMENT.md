@@ -158,6 +158,8 @@ in place.
 | `set_aside` | Set-aside trials in the fresh run |
 | `cost_usd` | Spend of the fresh run |
 | `smoke_compaction` | False |
+| `workers` | The arm's worker count (default 1). `evaluate` refuses selection and confirmation when this differs from the count it was asked to use. A row written before the field is not refused; the command warns |
+| `stopped_by_cap`, `trials_completed`, `stop_reason`, `stop_cell` | Set when a spend cap stopped the cell before N trials. The row is not a scored baseline. `stop_reason` is `max_usd` or `max_usd_per_cell` |
 
 `evaluate` scores selection against this row. A cell with no fresh baseline is
 an error. The pilot `summary.jsonl` row is not a fallback (`summary_row_baseline`
@@ -196,8 +198,44 @@ is refused. The image is not re-pinned. `evaluate` refuses an arm whose
 
 ```text
 python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --fixture <passes.json> [--n-trials 30]
-python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --live --opencode <bin/<sha>/opencode> [--n-trials 30]
+python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --live --opencode <bin/<sha>/opencode> [--n-trials 30] [--max-usd D] [--max-usd-per-cell D] [--workers N]
 ```
+
+`--max-usd` is the total for this invocation. `--max-usd-per-cell` is the
+runner's `spend_cap_usd` check for one `(model, task)` cell (the same
+comparison `Runner` already makes: do not start a trial when spend so far,
+plus estimates of trials in flight, plus this trial's estimate, would pass
+the cap). The per-trial estimate is the one `ideation_estimate` and the
+baseline preflight use (`estimate_cost_usd`). Both flags are optional. Unset,
+the run is unchanged. A value that is not > 0 is refused. The intended
+per-cell setting is 1.5× that cell's estimate (`n_trials × estimate_cost_usd`).
+
+A per-cell stop does not start the next trial of that cell. Other cells
+continue. A total stop does not start another cell. Rows already written stay
+(trials are appended as each one finishes). The cell row records
+`stopped_by_cap`, `trials_completed`, and `stop_reason` (`max_usd` or
+`max_usd_per_cell`, with `stop_cell`). The printed summary has the same
+`stop_reason` (`max_usd` when the invocation stopped, otherwise null) plus
+`stopped_cells`. Exit code is 0. A cap stop on a cell with no finished
+baseline is published and marked `stopped_by_cap`, so `evaluate` will not
+score it. A cap stop does not replace a baseline that already finished N
+trials. That partial run is kept beside it as `credit_baseline/runs/<cell>.stopped`.
+
+`--workers N` (default 1, int >= 1) is `runner --workers`: up to N trials of
+the one cell run at once. Cells run one at a time, in this process and across
+processes. The host lock is `~/.obench/arm.lock` (`fcntl` flock, non-blocking).
+If it is held, the command refuses with a clear error and does not wait.
+`plan.json` records `arm_lock` (`path`, `acquired`, `acquired_at`) and, when a
+cap is set, `max_usd` and `max_usd_per_cell`. `workers` is on `plan.json` and
+on every trial row, the same way `runner --workers` records it. Each trial
+row also has `host_load` (`start`, `end`, `cpus`: load average at the start
+and end of the trial). A resumed arm's existing rows count toward the caps
+once.
+
+Trial rows also record `runtime_measured_s`, `runtime_golden_s`, and
+`runtime_ratio` when the checker prints query-optimize's golden and solution
+medians. They are null otherwise. The numbers are parsed from the checker
+output. The trial is not re-timed.
 
 Exactly one of `--fixture` and `--live` is required. `--fixture` is the offline
 pass table and does not start a provider. `--live` builds a `CellExecutor`,
