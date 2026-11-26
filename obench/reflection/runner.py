@@ -393,15 +393,15 @@ class ArmBusy(RunnerError):
 
 
 class SpendLedger:
-    """Invocation spend for the credit-assignment caps.
+    """Experiment spend for the credit-assignment caps.
 
     The comparison is the runner's ``spend_cap_usd`` check: do not start a
-    trial when spend so far, plus the estimates of trials already in flight,
-    plus this trial's estimate, would pass the cap. ``max_usd_per_cell`` is
-    that cap for one ``(model, task)`` cell, shared by every arm of the cell
-    in this invocation. ``max_usd`` is the same check over the whole
-    invocation. A trial id is counted once, so a resumed arm's rows are not
-    added again when the arm seeds them and when it appends them.
+    trial when spend so far, plus the estimates of trials already in flight
+    that have not yet written a row, plus this trial's estimate, would pass
+    the cap. ``max_usd_per_cell`` is that cap for one ``(model, task)`` cell.
+    ``max_usd`` is the total. Both cover the whole experiment: baseline,
+    selection, and confirmation, including rows written by an earlier process.
+    A trial id is stored once.
     """
 
     def __init__(self, max_usd: float | None = None, max_usd_per_cell: float | None = None):
@@ -420,6 +420,28 @@ class SpendLedger:
                 cost = row.get("cost_usd")
                 amount = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
                 self._cost[trial_id] = (row.get("model"), row.get("task"), amount)
+
+    def seed_run(self, run_dir: Path) -> None:
+        """Count arm trials already on disk under ``run_dir``.
+
+        Baseline runs live in ``credit_baseline/`` and selection, confirmation,
+        and confirmation-baseline runs live in ``ideation/``. The pilot
+        ``trials.jsonl`` at the run root is not an arm and is not counted.
+        Calling this again, or noting a row the walk already stored, does not
+        add that trial id a second time.
+        """
+        run_dir = Path(run_dir)
+        for name in ("credit_baseline", "ideation"):
+            root = run_dir / name
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("trials.jsonl")):
+                self.note_rows(read_rows(path))
+
+    def missing(self, trial_ids) -> set:
+        """Ids in ``trial_ids`` that have no recorded cost yet."""
+        with self._lock:
+            return {trial_id for trial_id in trial_ids if trial_id not in self._cost}
 
     def spent_total(self, exclude: set | None = None) -> float:
         skip = exclude or set()
@@ -803,21 +825,24 @@ class Runner:
 
         With no ledger, the cap is this run's ``spend_cap_usd`` and spend is
         this directory's rows (a resumed row counts once). With a ledger, the
-        same comparison uses the invocation total (``max_usd``) and the
+        same comparison uses the experiment total (``max_usd``) and the
         ``(model, task)`` cell (``max_usd_per_cell``, falling back to
-        ``spend_cap_usd``). Trials already running count as their estimate, so
-        concurrent starts cannot together pass the cap.
+        ``spend_cap_usd``), including arm rows seeded from earlier processes.
+        A trial still running with no row yet counts as its estimate. A trial
+        whose row has landed counts at that cost only.
         """
         estimate = self.executor.estimate_cost_usd(spec.model)
-        reserved = sum(self.executor.estimate_cost_usd(item.model) for item in running_specs)
-        # A trial still in ``running`` is reserved at its estimate. If its row has already
-        # been appended, leave that cost out so it is not counted twice.
-        running_ids = {item.trial_id for item in running_specs}
+        # A running trial with a row on the ledger (or in this directory) counts
+        # at that recorded cost. Only a running trial that has not written a row
+        # is reserved at its estimate, so the two are never added for one id.
         if self.ledger is not None:
+            unrecorded = self.ledger.missing(item.trial_id for item in running_specs)
+            reserved = sum(self.executor.estimate_cost_usd(item.model) for item in running_specs
+                           if item.trial_id in unrecorded)
             total_cap = self.ledger.max_usd
             cell_cap = self.ledger.max_usd_per_cell if self.ledger.max_usd_per_cell is not None else self.config.spend_cap_usd
-            spent_total = self.ledger.spent_total(running_ids)
-            spent_cell = self.ledger.spent_cell(spec.model, spec.task, running_ids)
+            spent_total = self.ledger.spent_total()
+            spent_cell = self.ledger.spent_cell(spec.model, spec.task)
             if total_cap is not None and spent_total + reserved + estimate > total_cap:
                 return {"state": "capped", "stop_reason": "max_usd", "max_usd": total_cap,
                         "max_usd_per_cell": cell_cap}
@@ -825,8 +850,11 @@ class Runner:
                 return {"state": "capped", "stop_reason": "max_usd_per_cell", "cell": f"{spec.model}/{spec.task}",
                         "max_usd": total_cap, "max_usd_per_cell": cell_cap, "spend_cap_usd": cell_cap}
             return None
+        on_disk = {row.get("trial_id") for row in read_rows(self.trials_path)}
+        reserved = sum(self.executor.estimate_cost_usd(item.model) for item in running_specs
+                       if item.trial_id not in on_disk)
         cap = self.config.spend_cap_usd
-        if cap is not None and self.spent(running_ids) + reserved + estimate > cap:
+        if cap is not None and self.spent() + reserved + estimate > cap:
             return {"state": "capped", "spend_cap_usd": cap}
         return None
 

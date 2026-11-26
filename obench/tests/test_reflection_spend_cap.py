@@ -319,6 +319,62 @@ class Caps(unittest.TestCase):
         self.assertEqual(row["trials_completed"], 12)
         self.assertIsNone(row["candidate"])
 
+    def test_a_restart_spends_only_the_remaining_per_cell_budget(self):
+        # First process spends 8 of a 10 cap and exits. The next process is a new ledger.
+        run = _ideation_run()
+        proposal = _proposal()
+        (run / "ideation.jsonl").write_text(json.dumps(proposal) + "\n", encoding="utf-8")
+        first = Priced(cost=1.0)
+        with mock_patch.object(idn, "decide", wraps=idn.decide) as decide:
+            stopped = idn.evaluate(run, proposal, first, n_trials=30, spend_cap_usd=8.0)
+        decide.assert_not_called()
+        self.assertEqual(stopped["trials_completed"], 8)
+        self.assertEqual(len(first.calls), 8)
+        again = Priced(cost=1.0)
+        with mock_patch.object(idn, "decide", wraps=idn.decide) as decide:
+            resumed = idn.evaluate(run, proposal, again, n_trials=30, spend_cap_usd=10.0)
+        decide.assert_not_called()
+        self.assertTrue(resumed["stopped_by_cap"])
+        self.assertEqual(resumed["stop_reason"], "max_usd_per_cell")
+        self.assertIsNone(resumed["candidate"])
+        self.assertEqual(len(again.calls), 2)
+        rows = rn.read_rows(run / resumed["selection_run_dir"] / "trials.jsonl")
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(sum(row["cost_usd"] for row in rows), 10.0)
+        self.assertEqual(len({row["trial_id"] for row in rows}), 10)
+
+    def test_baseline_spend_counts_toward_a_later_max_usd(self):
+        run = _two_cells()
+        base.run_baselines(run, [f"{OPUS}/{ELF}"], Priced(cost=1.0), n_trials=4)
+        proposal = _proposal()
+        (run / "ideation.jsonl").write_text(json.dumps(proposal) + "\n", encoding="utf-8")
+        stub = Priced(cost=1.0)
+        with mock_patch.object(idn, "decide", wraps=idn.decide) as decide:
+            row = idn.evaluate(run, proposal, stub, n_trials=30, max_usd=6.0)
+        decide.assert_not_called()
+        self.assertEqual(len(stub.calls), 2)
+        self.assertTrue(row["stopped_by_cap"])
+        self.assertEqual(row["stop_reason"], "max_usd")
+        self.assertIsNone(row["candidate"])
+        self.assertEqual(row["trials_completed"], 2)
+
+    def test_a_trial_id_already_on_disk_is_counted_once(self):
+        run = _ideation_run()
+        pilot = sum(row.get("cost_usd") or 0.0 for row in rn.read_rows(run / "trials.jsonl"))
+        self.assertGreater(pilot, 0.0)
+        row = {"trial_id": "t-once", "model": OPUS, "task": ELF, "cost_usd": 4.0}
+        for label in ("select", "confirm"):
+            path = run / "ideation" / "pid" / label / "trials.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        ledger = rn.SpendLedger(max_usd=10.0, max_usd_per_cell=10.0)
+        ledger.seed_run(run)
+        ledger.seed_run(run)
+        ledger.note_rows([dict(row)])
+        self.assertEqual(ledger.spent_total(), 4.0)
+        self.assertEqual(ledger.spent_cell(OPUS, ELF), 4.0)
+        self.assertNotIn("t-once", ledger.missing(["t-once"]))
+
 
 class WorkersAndLock(unittest.TestCase):
     def setUp(self):

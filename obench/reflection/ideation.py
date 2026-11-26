@@ -1028,6 +1028,8 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
     check_baseline_workers(baseline, workers, cell_name)
     if ledger is None and (spend_cap_usd is not None or max_usd is not None):
         ledger = rn.SpendLedger(max_usd=max_usd, max_usd_per_cell=spend_cap_usd)
+    if ledger is not None:
+        ledger.seed_run(run_dir)
     max_set_aside = check_max_set_aside(max_set_aside)
     aside = _set_aside_count(baseline)
     # Amended Researcher ruling 2026-11-17: a cell enters when its set-aside count is at most max_set_aside
@@ -1172,6 +1174,7 @@ def main(argv: list[str] | None = None) -> int:
     ledger = None
     if args.max_usd is not None or args.max_usd_per_cell is not None:
         ledger = rn.SpendLedger(max_usd=args.max_usd, max_usd_per_cell=args.max_usd_per_cell)
+        ledger.seed_run(args.run)
     try:
         for proposal in proposals:
             if ledger is not None and ledger.invocation_stop == "max_usd":

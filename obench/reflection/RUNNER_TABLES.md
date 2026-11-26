@@ -158,7 +158,7 @@ So a model's suite keeps its planned size. If the pool runs out, `PoolExhausted`
     For `top` it is `confirm_k` confirmations per cell (`confirm_k × 2N` trials)
     on top of selection.
 - During the run, spend is the sum of logged trial costs. Every trial, including an infrastructure re-run, checks the cap and the alert thresholds before it starts. Trials already running count as their per-trial estimate, so concurrent workers cannot together pass the cap.
-- Credit-assignment invocations (`credit_baseline`, `evaluate`, the ideation CLI) use that same check through `SpendLedger`. `max_usd_per_cell` is `spend_cap_usd` for one `(model, task)` cell, shared by that cell's arms. `max_usd` is the invocation total. A resumed row counts once. See `CREDIT_ASSIGNMENT.md`.
+- Credit-assignment invocations (`credit_baseline`, `evaluate`, the ideation CLI) use that same check through `SpendLedger`. `max_usd_per_cell` is `spend_cap_usd` for one `(model, task)` cell. `max_usd` is the experiment total. At startup the ledger reads every `trials.jsonl` under `credit_baseline/` and `ideation/`, so a restart keeps both caps cumulative. A trial id is stored once. A running trial with no row yet is reserved at its estimate; a landed row counts at its recorded cost only. See `CREDIT_ASSIGNMENT.md`.
 
 ## Credit-assignment agreement
 

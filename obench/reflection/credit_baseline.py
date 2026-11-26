@@ -294,8 +294,10 @@ def run_baselines(run_dir: Path, cells: list[str], executor: rn.Executor, n_tria
             raise BaselineError(
                 f"{item['cell']}: fresh baseline runs the unpatched cell; a patched cell is not baselined here")
         prepared.append((item, recorded_image(item["cell"], item["rows"])))
-    ledger = rn.SpendLedger(max_usd=max_usd, max_usd_per_cell=max_usd_per_cell) if (
-        max_usd is not None or max_usd_per_cell is not None) else None
+    ledger = None
+    if max_usd is not None or max_usd_per_cell is not None:
+        ledger = rn.SpendLedger(max_usd=max_usd, max_usd_per_cell=max_usd_per_cell)
+        ledger.seed_run(run_dir)
     previous = getattr(executor, "smoke_compaction", None)
     if previous:
         executor.smoke_compaction = False

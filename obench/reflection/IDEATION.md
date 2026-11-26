@@ -132,18 +132,25 @@ called.
 python3 -m obench.reflection.ideation --run <run dir> --fixture passes.json [--config ideation.json] [--confirm top|all] [--confirm-k K] [--max-usd D] [--max-usd-per-cell D] [--workers N]
 ```
 
-`--max-usd` is the total for this invocation (every proposal's selection and
-confirmation). `--max-usd-per-cell` maps onto `spend_cap_usd` / `evaluate(...,
-spend_cap_usd=)`: the runner's per-trial cap check for one `(model, task)`
-cell, shared by that cell's selection and confirmation arms, including
+`--max-usd` is the total for the whole experiment: baseline, selection, and
+confirmation trials already under the run, plus this invocation.
+`--max-usd-per-cell` maps onto `spend_cap_usd` / `evaluate(...,
+spend_cap_usd=)`: the same check for one `(model, task)` cell, shared by that
+cell's baseline and its selection and confirmation arms, including
 `confirm=top` / `confirm_k`. Other cells continue. The total stops the
 invocation. Both are optional and must be > 0 when set. Unset, scoring is
 unchanged. The estimate used before each trial is `estimate_cost_usd` (the
 same number `ideation_estimate` uses). The intended per-cell cap is 1.5× that
 cell's estimate.
 
-Before each trial the check is spend so far (resumed rows counted once) plus
-the estimates of trials already in flight plus this trial's estimate. If that
+At startup the ledger reads every `trials.jsonl` under `credit_baseline/` and
+`ideation/`. A trial id already in one of those files counts once. A later
+append of that same id, or a second read after a restart, does not add it
+again. The pilot `trials.jsonl` at the run root is not counted. In-flight
+trials that have not written a row are reserved at their estimate. A row that
+has landed counts at its recorded cost, not also as a reservation.
+
+Before each trial the check is that total plus this trial's estimate. If that
 would pass either cap, the trial does not start. In-flight trials still
 finish and their rows stay. An arm that stops before N is `stopped_by_cap`
 with `trials_completed` and `stop_reason` (`max_usd` or `max_usd_per_cell`,
