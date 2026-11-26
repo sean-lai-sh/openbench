@@ -34,7 +34,8 @@ João Sedoc via Sean, SEA-110, 2026-11-13):
   new fresh N-trial baseline run (new trial ids, no reuse of the selection
   trials or of the selection baseline). ``success`` iff it beats that new
   baseline again. ``confirm`` is ``all`` (default: every selection candidate)
-  or ``top`` (one candidate per cell, across that cell's drawn failures).
+  or ``top`` (the top ``confirm_k`` candidates per cell, default 1, across
+  that cell's drawn failures).
 
 Both stages record the one-sided Fisher exact p as a reported statistic only.
 ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0). It
@@ -78,9 +79,10 @@ CREDIT_METHODS = ("A", "B", "A+B")
 IDEATOR_MODEL = "claude-opus-5-5"              # open: configurable; not the model under test by design
 IDEATOR_THINKING = {"type": "adaptive"}        # set explicitly on every ideator request
 CONFIRM_ALL = "all"                            # every selection candidate is confirmed
-CONFIRM_TOP = "top"                            # one best candidate per cell (model, task)
+CONFIRM_TOP = "top"                            # top confirm_k candidates per cell (model, task)
 CONFIRM_MODES = (CONFIRM_ALL, CONFIRM_TOP)
-CONFIRM_SKIPPED_NOT_TOP = "not_top"            # a candidate that lost the top ranking
+CONFIRM_SKIPPED_NOT_TOP = "not_top"            # a candidate outside the top confirm_k
+DEFAULT_CONFIRM_K = 1
 
 
 def check_confirm(value: str) -> str:
@@ -90,10 +92,20 @@ def check_confirm(value: str) -> str:
     return value
 
 
+def check_confirm_k(value, confirm: str | None = None) -> int:
+    """``confirm_k`` is an int >= 1. A value other than 1 is only valid for ``top``."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"confirm_k must be an int >= 1, got {value!r}")
+    if confirm is not None and confirm != CONFIRM_TOP and value != 1:
+        raise ValueError(f"confirm_k must be 1 when confirm is {confirm!r}; got {value}")
+    return value
+
+
 @dataclass(frozen=True)
 class IdeationConfig:
-    """Settings for evaluation. ``confirm`` is the only key today."""
+    """Evaluation settings. ``confirm_k`` selects how many ``top`` candidates to confirm."""
     confirm: str = CONFIRM_ALL
+    confirm_k: int = DEFAULT_CONFIRM_K
 
     @classmethod
     def from_dict(cls, raw: dict) -> "IdeationConfig":
@@ -102,15 +114,22 @@ class IdeationConfig:
             raise ValueError(f"unknown ideation config keys: {sorted(unknown)}")
         cfg = cls(**raw)
         check_confirm(cfg.confirm)
+        check_confirm_k(cfg.confirm_k, cfg.confirm)
         return cfg
 
 
-def resolve_config(config_path: Path | None = None, confirm: str | None = None) -> IdeationConfig:
-    """Settings from ``--config``. ``--confirm`` overrides the file when passed."""
+def resolve_config(config_path: Path | None = None, confirm: str | None = None,
+                   confirm_k: int | None = None) -> IdeationConfig:
+    """Settings from ``--config``. ``--confirm`` and ``--confirm-k`` override the file."""
     cfg = IdeationConfig.from_dict(json.loads(Path(config_path).read_text(encoding="utf-8"))) if config_path else IdeationConfig()
-    if confirm is None:
+    if confirm is None and confirm_k is None:
         return cfg
-    return IdeationConfig.from_dict({**asdict(cfg), "confirm": confirm})
+    data = asdict(cfg)
+    if confirm is not None:
+        data["confirm"] = confirm
+    if confirm_k is not None:
+        data["confirm_k"] = confirm_k
+    return IdeationConfig.from_dict(data)
 
 
 class Ideator(Protocol):
@@ -453,24 +472,33 @@ def _recorded_image(baseline: dict) -> dict:
 
 
 def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: bool, executor: rn.Executor,
-         n_trials: int, spend_cap_usd: float | None, recorded_image: dict) -> tuple[dict, str, str]:
+         n_trials: int, spend_cap_usd: float | None, recorded_image: dict,
+         arm_scope: str | None = None) -> tuple[dict, str, str]:
     """One N-trial arm of one proposal: ``(summary row or {}, run state, relative dir)``.
 
     Each arm has its own run_id, so its trial ids are new and never reuse
     another arm's trials. The image is the fresh baseline's recorded image.
     Smoke compaction is off. A trial that reports a different image is refused.
+
+    ``arm_scope`` separates two confirmation arms that share a ``proposal_id``
+    (the same patch on two failures). Unset, the directory and run id stay
+    ``ideation/<proposal_id>/<label>``.
     """
     if not isinstance(recorded_image, dict) or not recorded_image.get("ref"):
         raise ValueError("arm has no recorded image; refusing to re-pin")
     pid = proposal["proposal_id"]
     rel = f"ideation/{pid}/{label}"
+    run_identity = pid
+    if arm_scope:
+        rel = f"ideation/{pid}/{arm_scope}/{label}"
+        run_identity = f"{pid}--{arm_scope}"
     child = run_dir / rel
     previous = getattr(executor, "smoke_compaction", None)
     if previous:
         executor.smoke_compaction = False
     try:
         cfg = rn.RunConfig.from_dict({
-            "run_id": f"{base_cfg['run_id']}--{label}--{pid}", "suite": base_cfg["suite"], "models": [proposal["model"]],
+            "run_id": f"{base_cfg['run_id']}--{label}--{run_identity}", "suite": base_cfg["suite"], "models": [proposal["model"]],
             "n_trials": n_trials, "tasks": [proposal["task"]], "max_rounds": 1, "fixed_tasks": True,
             "patch_id": pid if patched else None, "patch": proposal["patch"] if patched else None,
             "spend_cap_usd": spend_cap_usd, "smoke_compaction": False, "recorded_image": recorded_image})
@@ -584,6 +612,17 @@ def top_candidate(rows: list[dict]) -> dict | None:
     return min(candidates, key=_candidate_rank)
 
 
+def top_candidates(rows: list[dict], k: int) -> list[dict]:
+    """The first ``k`` selection candidates of one cell, best first.
+
+    The order is ``top_candidate``'s order. A cell with fewer than ``k``
+    candidates returns all of them. ``selection_fisher_p`` is not a tie-break.
+    """
+    check_confirm_k(k)
+    candidates = [row for row in rows if row.get("candidate")]
+    return sorted(candidates, key=_candidate_rank)[:k]
+
+
 def _model_task_of_draw_cell(cell: str) -> tuple[str, str]:
     """``model/task`` from a draw key. A ``@patch`` suffix is not part of the cell."""
     model, _, rest = cell.partition("/")
@@ -671,7 +710,7 @@ def _proposal_by_id(run_dir: Path, proposal_id: str, current: dict, parent_trial
 
 
 def _skip_not_top(row: dict) -> None:
-    """A selection candidate that is not the one confirmed under ``confirm=top``."""
+    """A selection candidate outside the confirmed set under ``confirm=top``."""
     row.update(
         confirmation_baseline_passes=None, confirmation_baseline_completed=None,
         confirmation_alt_passes=None, confirmation_alt_completed=None,
@@ -683,13 +722,17 @@ def _skip_not_top(row: dict) -> None:
 
 def _run_confirmation(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, executor: rn.Executor,
                       n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str,
-                      alphas: list) -> dict:
-    """Fresh confirmation arms. Raises before the result row is replaced when a check fails."""
+                      alphas: list, arm_scope: str | None = None) -> dict:
+    """Fresh confirmation arms. Raises before the result row is replaced when a check fails.
+
+    Each call runs a new alternative and a new baseline. ``arm_scope`` keeps
+    those arms distinct when two confirmed candidates share a proposal id.
+    """
     conf_alt, alt_state, alt_dir = _arm(run_dir, base_cfg, proposal, "confirm", True, executor, n_trials,
-                                        spend_cap_usd, recorded)
+                                        spend_cap_usd, recorded, arm_scope=arm_scope)
     conf_commit = _require_arm_commit(run_dir / alt_dir, "confirmation", baseline_commit)
     conf_base, base_state, base_dir = _arm(run_dir, base_cfg, proposal, "confirm-baseline", False, executor,
-                                           n_trials, spend_cap_usd, recorded)
+                                           n_trials, spend_cap_usd, recorded, arm_scope=arm_scope)
     base_commit = _require_arm_commit(run_dir / base_dir, "confirmation-baseline", baseline_commit)
     confirmation, conf_alpha = _stage("confirmation", conf_base, conf_alt, n_trials)
     alphas.append(conf_alpha)
@@ -703,15 +746,18 @@ def _run_confirmation(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, 
 
 
 def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, executor: rn.Executor,
-                 n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str) -> dict:
-    """Confirm one candidate for the cell once every drawn failure's proposals are selected.
+                 n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str,
+                 confirm_k: int = DEFAULT_CONFIRM_K) -> dict:
+    """Confirm the top ``confirm_k`` candidates once every drawn failure is selected.
 
     The cell is ``(model, task)``. The set is every accepted alternative of
     that cell's drawn failures, not one parent failure. Until every drawn
     failure has a proposal row and every accepted proposal has a selection
     row, this row is stored with confirmation fields null. When the set
-    completes, the winner is confirmed and every other candidate in the cell
-    is ``confirm_skipped: not_top`` with ``candidate`` left true.
+    completes, the top ``confirm_k`` candidates (or every candidate, when the
+    cell has fewer) are each confirmed on a fresh baseline. Every other
+    candidate in the cell is ``confirm_skipped: not_top`` with ``candidate``
+    left true. ``confirm_k`` 1 uses ``top_candidate``.
     """
     model, task = row["model"], row["task"]
     # The same patch hashes to one proposal_id. Keep the other failure's row.
@@ -729,26 +775,37 @@ def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, execu
         return row
     group = [item for item in results
              if item.get("model") == model and item.get("task") == task and item.get("parent_trial_id") in drawn_ids]
-    winner = top_candidate(group)
-    if winner is None:
+    if confirm_k == 1:
+        picked = top_candidate(group)
+        winners = [] if picked is None else [picked]
+    else:
+        winners = top_candidates(group, confirm_k)
+    if not winners:
         _save_results(run_dir, results)
         return row
+    winner_keys = {_result_key(item) for item in winners}
     for item in group:
-        if item.get("candidate") and _result_key(item) != _result_key(winner):
+        if item.get("candidate") and _result_key(item) not in winner_keys:
             _skip_not_top(item)
-    winner_proposal = _proposal_by_id(run_dir, winner["proposal_id"], proposal, winner.get("parent_trial_id"))
-    # Confirmation can refuse the arm. Save only after it returns.
-    confirmed = _run_confirmation(
-        run_dir, base_cfg, winner_proposal, dict(winner), executor, n_trials, spend_cap_usd, recorded,
-        baseline_commit, [winner.get("alpha", ALPHA)])
-    results = [confirmed if _result_key(item) == _result_key(winner) else item for item in results]
+    pid_counts: dict[str, int] = {}
+    for item in winners:
+        pid_counts[item["proposal_id"]] = pid_counts.get(item["proposal_id"], 0) + 1
+    # Confirmation can refuse an arm. Save only after every winner returns.
+    confirmed_by_key = {}
+    for winner in winners:
+        winner_proposal = _proposal_by_id(run_dir, winner["proposal_id"], proposal, winner.get("parent_trial_id"))
+        scope = winner.get("parent_trial_id") if pid_counts[winner["proposal_id"]] > 1 else None
+        confirmed_by_key[_result_key(winner)] = _run_confirmation(
+            run_dir, base_cfg, winner_proposal, dict(winner), executor, n_trials, spend_cap_usd, recorded,
+            baseline_commit, [winner.get("alpha", ALPHA)], arm_scope=scope)
+    results = [confirmed_by_key.get(_result_key(item), item) for item in results]
     _save_results(run_dir, results)
     return next(item for item in results if _result_key(item) == _result_key(row))
 
 
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,
              spend_cap_usd: float | None = None, max_set_aside: int = MAX_SET_ASIDE,
-             confirm: str = CONFIRM_ALL) -> dict:
+             confirm: str = CONFIRM_ALL, confirm_k: int = DEFAULT_CONFIRM_K) -> dict:
     """Two-stage evaluation of one accepted proposal (João Sedoc via Sean, SEA-110).
 
     1. **Selection:** the alternative runs N trials. It is a *candidate* iff
@@ -763,15 +820,18 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
        new baseline (bare beat, full N on both sides).
 
     ``confirm`` is ``all`` (default) or ``top``. ``all`` confirms every
-    selection candidate. ``top`` confirms one candidate per cell
-    ``(model, task)``, across that cell's drawn failures: highest
+    selection candidate. ``top`` confirms ``confirm_k`` candidates per cell
+    ``(model, task)`` (default 1), across that cell's drawn failures: highest
     ``selection_alt_passes``, then earlier ``draw_order`` from
     ``credit_draw.json``, then lower ``alternative_index``, then
-    ``proposal_id``. Fisher p is not a tie-break. Other candidates in the
+    ``proposal_id``. Fisher p is not a tie-break. A cell with fewer than
+    ``confirm_k`` candidates confirms all of them. Other candidates in the
     cell stay candidates, with ``confirm_skipped: not_top`` and confirmation
     fields null. The choice waits until every drawn failure has a proposal
-    row and every accepted proposal has a selection row. The mode is stored
-    on every result row as ``confirm``.
+    row and every accepted proposal has a selection row; until then the cell
+    stays unconfirmed. ``confirm`` and ``confirm_k`` are stored on every
+    result row. ``confirm_k`` must be an int >= 1, and a value other than 1
+    is an error when ``confirm`` is ``all``.
 
     The one-sided Fisher p for each stage is recorded as a reported statistic
     only. ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0).
@@ -783,6 +843,7 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
     count is at most ``max_set_aside`` (default 3, about 10% of 30), the same
     cap as credit assignment."""
     mode = check_confirm(confirm)
+    k = check_confirm_k(confirm_k, mode)
     if proposal["status"] != "accepted":
         raise ValueError("only accepted proposals are evaluated")
     run_dir = Path(run_dir)
@@ -818,7 +879,7 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
            "task": proposal["task"], "model": proposal["model"], "credit_method": proposal["credit_method"],
            "citations": proposal.get("citations"), "uncited": bool(proposal.get("uncited")),
            "alternative_index": proposal.get("index"), "draw_order": draw_order,
-           "confirm": mode, "confirm_skipped": None,
+           "confirm": mode, "confirm_k": k, "confirm_skipped": None,
            "n_trials": n_trials, "baseline_commit": baseline_commit, "code_commit": baseline_commit, **selection,
            "candidate": candidate, "selection_spend_usd": sel_alt.get("spend_usd", 0.0),
            "selection_run_dir": sel_dir, "selection_run_state": sel_state, "selection_code_commit": sel_commit,
@@ -834,7 +895,7 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
     elif mode == CONFIRM_TOP:
         row["alpha"] = _require_alpha(alphas)
         return _confirm_top(run_dir, base_cfg, proposal, row, executor, n_trials, spend_cap_usd, recorded,
-                            baseline_commit)
+                            baseline_commit, confirm_k=k)
     else:
         row["alpha"] = _require_alpha(alphas)
     _append_result(run_dir, row)
@@ -868,15 +929,17 @@ class VertexClaudeIdeator:
 def main(argv: list[str] | None = None) -> int:
     """Evaluate accepted proposals. The only executor is the offline ``--fixture`` table.
 
-    This command does not start a provider. ``--confirm`` overrides ``--config``.
+    This command does not start a provider. ``--confirm`` and ``--confirm-k`` override ``--config``.
     """
     import argparse
 
     parser = argparse.ArgumentParser(description="Evaluate accepted ideation proposals (offline fixture only)")
     parser.add_argument("--run", type=Path, required=True)
-    parser.add_argument("--config", type=Path, help="IdeationConfig JSON (confirm: top|all)")
+    parser.add_argument("--config", type=Path, help="IdeationConfig JSON (confirm: top|all, confirm_k)")
     parser.add_argument("--confirm", choices=list(CONFIRM_MODES), default=None,
                         help="which selection candidates to confirm (default all; overrides --config)")
+    parser.add_argument("--confirm-k", type=int, default=None,
+                        help="how many candidates confirm=top confirms per cell (default 1; overrides --config)")
     parser.add_argument("--fixture", type=Path, required=True,
                         help='offline pass table {"task|model": passes}. This command does not call a provider.')
     parser.add_argument("--n-trials", type=int, default=rn.N_TRIALS)
@@ -885,7 +948,7 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(args.n_trials, bool) or args.n_trials < 1:
         raise SystemExit("n-trials must be a positive integer")
     try:
-        cfg = resolve_config(args.config, args.confirm)
+        cfg = resolve_config(args.config, args.confirm, args.confirm_k)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
     raw = json.loads(args.fixture.read_text(encoding="utf-8"))
@@ -897,12 +960,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for proposal in proposals:
             evaluate(args.run, proposal, executor, n_trials=args.n_trials,
-                     max_set_aside=args.max_set_aside, confirm=cfg.confirm)
+                     max_set_aside=args.max_set_aside, confirm=cfg.confirm, confirm_k=cfg.confirm_k)
     except (ValueError, rn.RunnerError, BaselineError) as exc:
         raise SystemExit(str(exc)) from None
     rows = rn.read_rows(args.run / "ideation_results.jsonl")
     print(json.dumps({
-        "confirm": cfg.confirm, "evaluated": len(rows),
+        "confirm": cfg.confirm, "confirm_k": cfg.confirm_k, "evaluated": len(rows),
         "candidates": sum(1 for row in rows if row.get("candidate")),
         "confirmed": sum(1 for row in rows if row.get("confirmed")),
         "confirm_skipped": sum(1 for row in rows if row.get("confirm_skipped")),

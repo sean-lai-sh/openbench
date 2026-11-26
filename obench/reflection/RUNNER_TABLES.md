@@ -141,17 +141,21 @@ So a model's suite keeps its planned size. If the pool runs out, `PoolExhausted`
 ## Spend
 
 - `preflight()` gives `round_one_usd` (tasks × models × N × the executor's per-trial estimate) and `worst_case_usd` (× `max_rounds`), checked against `spend_cap_usd`.
-- `ideation_estimate(executor, {model: failures}, confirm="all", cells=None)` prices ideation.
+- `ideation_estimate(executor, {model: failures}, confirm="all", cells=None, confirm_k=1)` prices ideation.
   `confirm` is `all` (default) or `top`, the same setting as
-  `evaluate(..., confirm=)`. `cells` is `{model: cell count}`, required for `top`:
+  `evaluate(..., confirm=)`. `cells` is `{model: cell count}`, required for `top`.
+  `confirm_k` defaults to 1 and must be an int >= 1 (a value other than 1
+  requires `confirm=top`):
   - selection: `failures × 5 × N` trials;
   - `confirm=all`: confirmation is `failures × 5 × candidate_fraction × 2N`
     trials (a fresh alternative run plus a fresh baseline run for every
     candidate);
-  - `confirm=top`: confirmation is `cells × 2N` trials, because the cell
-    confirms one candidate across its drawn failures;
+  - `confirm=top`: confirmation is `cells × confirm_k × 2N` trials, because
+    the cell confirms that many candidates across its drawn failures, each
+    with its own fresh baseline;
   - the worst case for `all` (every alternative a candidate) is 3× selection.
-    For `top` it is one confirmation per cell (2N trials) on top of selection.
+    For `top` it is `confirm_k` confirmations per cell (`confirm_k × 2N` trials)
+    on top of selection.
 - During the run, spend is the sum of logged trial costs. Every trial, including an infrastructure re-run, checks the cap and the alert thresholds before it starts.
 
 ## Credit-assignment agreement
