@@ -18,6 +18,11 @@ per cell under ``credit_baseline/``. Trial output lives under
 The pilot ``summary.jsonl`` row is not a fallback.
 
     python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --fixture <passes.json> [--n-trials 30]
+    python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --live --opencode <bin/<sha>/opencode> [--n-trials 30]
+
+``--fixture`` is the offline pass table. ``--live`` builds the ``CellExecutor``
+``python3 -m obench.reflection.runner --cell`` builds and passes it to
+``run_baselines``. Exactly one of the two is required.
 """
 
 from __future__ import annotations
@@ -272,19 +277,54 @@ def fresh_baseline_row(run_dir: Path, task: str, model: str) -> dict:
     return row
 
 
+def _live_executor(args):
+    """The ``CellExecutor`` ``runner --cell`` builds for a paid trial.
+
+    Same constructor call as ``obench.reflection.runner.main``: pinned
+    OpenCode, ADC token, default estimates, and the image flags. Smoke
+    compaction is off for this baseline even when ``OBENCH_SMOKE_COMPACTION``
+    is set. ``run_baselines`` forces that knob off for the trials and
+    restores it afterwards.
+    """
+    from obench.reflection.cell_executor import DEFAULT_ESTIMATES_USD, CellExecutor
+    from thesis.ab.vertex_anthropic_proxy import AdcToken
+
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project or not args.opencode:
+        raise SystemExit("--live needs GOOGLE_CLOUD_PROJECT and --opencode")
+    token = AdcToken()
+    token()  # fail before any trial if credentials are missing
+    return CellExecutor(args.opencode, project, token, estimates_usd={**DEFAULT_ESTIMATES_USD, **(args.estimates or {})},
+                        default_image=args.default_image, use_image_tag=args.use_image_tag,
+                        smoke_compaction=False)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fresh N-trial baseline for admitted credit-assignment cells")
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--cells", type=Path, required=True, help="candidate cells, one <model>/<task> key per line or a JSON array")
     parser.add_argument("--n-trials", type=int, default=rn.N_TRIALS, help="trials per admitted cell (default 30)")
     parser.add_argument("--max-set-aside", type=int, default=None, help="admit a cell at or under this many set-aside trials (default 3)")
-    parser.add_argument("--fixture", type=Path, required=True,
-                        help='offline pass table {"task|model": passes}. This command does not call a provider.')
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--fixture", type=Path,
+                      help='offline pass table {"task|model": passes}. Does not call a provider.')
+    mode.add_argument("--live", action="store_true",
+                      help="paid trials: the CellExecutor runner --cell builds (needs GOOGLE_CLOUD_PROJECT and --opencode)")
+    parser.add_argument("--opencode", type=Path, help="--live: the pinned OpenCode binary (bin/<sha>/opencode)")
+    parser.add_argument("--estimates", type=json.loads, default=None,
+                        help='--live: per-trial USD estimates, e.g. {"claude-opus-5-5": 2.0}')
+    parser.add_argument("--default-image", default="h1-env:1027-strace",
+                        help="--live: agent image for tasks that name none (openbench-tb-hard)")
+    parser.add_argument("--use-image-tag", action="store_true",
+                        help="--live: when a task.toml digest ref isn't on this host, run its docker_image_tag (recorded)")
     args = parser.parse_args(argv)
     if isinstance(args.n_trials, bool) or args.n_trials < 1:
         raise SystemExit("n-trials must be a positive integer")
-    raw = json.loads(args.fixture.read_text(encoding="utf-8"))
-    executor = rn.FixtureExecutor({tuple(k.split("|", 1)): int(v) for k, v in raw.items()})
+    if args.fixture is not None:
+        raw = json.loads(args.fixture.read_text(encoding="utf-8"))
+        executor = rn.FixtureExecutor({tuple(k.split("|", 1)): int(v) for k, v in raw.items()})
+    else:
+        executor = _live_executor(args)
     try:
         manifests = run_baselines(
             args.run, draw.load_cells(args.cells), executor, n_trials=args.n_trials,

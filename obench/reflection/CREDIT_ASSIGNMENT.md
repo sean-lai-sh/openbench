@@ -188,14 +188,17 @@ is refused. The image is not re-pinned. `evaluate` refuses an arm whose
 
 ```text
 python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --fixture <passes.json> [--n-trials 30]
+python3 -m obench.reflection.credit_baseline --run <run dir> --cells <cell list> --live --opencode <bin/<sha>/opencode> [--n-trials 30]
 ```
 
-That command's only executor is the offline `--fixture` pass table. It does
-not start a provider. The paid baseline calls `run_baselines` with a
-`CellExecutor`, the same executor `python3 -m obench.reflection.runner --cell`
-builds (one container of the recorded image per trial, pinned OpenCode,
-recording proxy). That run is on `thesis-h1-cpu`, the same VM as the selection
-and confirmation arms. This module does not launch that path.
+Exactly one of `--fixture` and `--live` is required. `--fixture` is the offline
+pass table and does not start a provider. `--live` builds a `CellExecutor`,
+the same executor `python3 -m obench.reflection.runner --cell` builds (one
+container of the recorded image per trial, pinned OpenCode, recording proxy),
+and passes it to `run_baselines`. `--live` needs `GOOGLE_CLOUD_PROJECT` and
+`--opencode`. `--estimates`, `--default-image`, and `--use-image-tag` match
+`runner --cell`. Smoke compaction stays off. This baseline runs on the same
+VM as the selection and confirmation arms.
 
 ## Shared first-failure locator (`credit_locator.py`, `locator-v1`)
 

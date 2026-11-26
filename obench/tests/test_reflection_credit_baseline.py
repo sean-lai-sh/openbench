@@ -238,5 +238,74 @@ class FreshBaseline(unittest.TestCase):
             rn.RunConfig.from_dict({"run_id": "x", "suite": "pilot", "models": [OPUS], "recorded_image": {}})
 
 
+class LiveCli(unittest.TestCase):
+    def _argv(self, *extra):
+        return ["--run", "run", "--cells", "cells.txt", *extra]
+
+    def test_cli_rejects_neither_and_both_executor_flags(self):
+        cases = (
+            self._argv(),
+            self._argv("--fixture", "passes.json", "--live"),
+        )
+        for argv in cases:
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+                    base.main(argv)
+                code = caught.exception.code
+                self.assertIsInstance(code, int)
+                self.assertNotEqual(code, 0)
+                self.assertTrue(err.getvalue().strip())
+
+    def test_cli_live_reaches_run_baselines_with_the_cell_executor(self):
+        from obench.reflection import cell_executor as ce
+
+        run = Path(tempfile.mkdtemp())
+        cells = run / "cells.txt"
+        cells.write_text(f"{OPUS}/{ELF}\n", encoding="utf-8")
+        opencode = run / "bin" / "opencode"
+        seen = {}
+
+        def fake_run_baselines(run_dir, cell_names, executor, n_trials=rn.N_TRIALS, max_set_aside=3):
+            seen["run_dir"] = Path(run_dir)
+            seen["cells"] = cell_names
+            seen["executor"] = executor
+            seen["n_trials"] = n_trials
+            return {}
+
+        real = ce.CellExecutor
+
+        class Offline(real):
+            """Skip the pin check and any host probe. The dataclass constructor still runs."""
+
+            def __post_init__(self):
+                return None
+
+        buf = io.StringIO()
+        with mock_patch.object(base, "run_baselines", fake_run_baselines), \
+                mock_patch.object(ce, "CellExecutor", Offline), \
+                mock_patch("thesis.ab.vertex_anthropic_proxy.AdcToken", return_value=lambda: "tok"), \
+                mock_patch.dict(os.environ, {"GOOGLE_CLOUD_PROJECT": "proj", vm.SMOKE_COMPACTION_ENV: "1"}), \
+                contextlib.redirect_stdout(buf):
+            self.assertEqual(base.main([
+                "--run", str(run), "--cells", str(cells), "--live",
+                "--opencode", str(opencode), "--n-trials", "4",
+            ]), 0)
+        self.assertEqual(seen["n_trials"], 4)
+        self.assertIsInstance(seen["executor"], real)
+        self.assertIs(type(seen["executor"]), Offline)
+        self.assertEqual(seen["run_dir"], run)
+        self.assertEqual(seen["cells"], [f"{OPUS}/{ELF}"])
+        self.assertEqual(seen["executor"].opencode, opencode)
+        self.assertEqual(seen["executor"].project, "proj")
+        self.assertIs(seen["executor"].smoke_compaction, False)
+        self.assertEqual(seen["executor"].default_image, "h1-env:1027-strace")
+        self.assertIs(seen["executor"].use_image_tag, False)
+        self.assertEqual(seen["executor"].estimates_usd, ce.DEFAULT_ESTIMATES_USD)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["n_trials"], 4)
+        self.assertEqual(payload["cells"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
