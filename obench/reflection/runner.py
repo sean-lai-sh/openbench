@@ -16,7 +16,10 @@ to its index.
 Spend: ``preflight`` estimates the plan's cost before anything runs. The run
 stops before a trial that would push spend past ``spend_cap_usd``, and pauses
 (writing ``status.json``) when spend crosses an alert threshold ($5K, $10K,
-$15K by default), so a person can look before it continues.
+$15K by default), so a person can look before it continues. Credit-assignment
+invocations use the same check (``SpendLedger``): ``max_usd_per_cell`` is that
+per-(model, task) cap, shared by every arm of the cell, and ``max_usd`` is the
+invocation total. In-flight trials count as their estimate until the row lands.
 
 On resume, ``--retry-infra`` re-runs infrastructure-error trials (a new row with
 ``retry_of`` pointing at the original id; the original row stays) until each
@@ -38,6 +41,8 @@ import hashlib
 import json
 import os
 import socket
+import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,6 +162,9 @@ class TrialResult:
     wire: str | None = None                   # relative path
     error: str | None = None
     last_vertex_request: dict | None = None   # {sent_at, model, response_arrived, first_byte_at, call_index, status}
+    runtime_measured_s: float | None = None   # checker solution median, when the checker prints one
+    runtime_golden_s: float | None = None     # checker golden median, when the checker prints one
+    runtime_ratio: float | None = None        # measured / golden; null when the checker does not report both
 
 
 class Executor(Protocol):
@@ -332,6 +340,168 @@ def _load() -> list | None:
         return None
 
 
+CAP_STOP_REASONS = ("max_usd", "max_usd_per_cell")
+# One arm at a time on this host. Credit-assignment arms flock this file and
+# refuse, rather than wait, when another arm already holds it.
+ARM_LOCK_PATH = Path.home() / ".obench" / "arm.lock"
+
+
+def check_optional_usd(name: str, value):
+    """``None`` (no cap) or a number > 0. Anything else is an error."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        raise ValueError(f"{name} must be > 0, got {value!r}")
+    return float(value)
+
+
+def check_workers(value) -> int:
+    """Worker count for one arm. ``1`` is one trial at a time."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"workers must be an int >= 1, got {value!r}")
+    return value
+
+
+def positive_usd_arg(text: str) -> float:
+    """argparse type for ``--max-usd`` and ``--max-usd-per-cell``."""
+    import argparse
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a number > 0, got {text!r}") from None
+    try:
+        return check_optional_usd("usd", value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be > 0, got {text}") from None
+
+
+def positive_workers_arg(text: str) -> int:
+    """argparse type for ``--workers``."""
+    import argparse
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an int >= 1, got {text!r}") from None
+    try:
+        return check_workers(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an int >= 1, got {text}") from None
+
+
+class ArmBusy(RunnerError):
+    """Another arm on this host holds the arm lock. The caller does not wait."""
+
+
+class SpendLedger:
+    """Experiment spend for the credit-assignment caps.
+
+    The comparison is the runner's ``spend_cap_usd`` check: do not start a
+    trial when spend so far, plus the estimates of trials already in flight
+    that have not yet written a row, plus this trial's estimate, would pass
+    the cap. ``max_usd_per_cell`` is that cap for one ``(model, task)`` cell.
+    ``max_usd`` is the total. Both cover the whole experiment: baseline,
+    selection, and confirmation, including rows written by an earlier process.
+    A trial id is stored once.
+    """
+
+    def __init__(self, max_usd: float | None = None, max_usd_per_cell: float | None = None):
+        self.max_usd = check_optional_usd("max_usd", max_usd)
+        self.max_usd_per_cell = check_optional_usd("max_usd_per_cell", max_usd_per_cell)
+        self._cost: dict[str, tuple] = {}
+        self._lock = threading.Lock()
+        self.invocation_stop: str | None = None
+
+    def note_rows(self, rows: list[dict]) -> None:
+        with self._lock:
+            for row in rows:
+                trial_id = row.get("trial_id")
+                if not isinstance(trial_id, str) or not trial_id or trial_id in self._cost:
+                    continue
+                cost = row.get("cost_usd")
+                amount = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+                self._cost[trial_id] = (row.get("model"), row.get("task"), amount)
+
+    def seed_run(self, run_dir: Path) -> None:
+        """Count arm trials already on disk under ``run_dir``.
+
+        Baseline runs live in ``credit_baseline/`` and selection, confirmation,
+        and confirmation-baseline runs live in ``ideation/``. The pilot
+        ``trials.jsonl`` at the run root is not an arm and is not counted.
+        Calling this again, or noting a row the walk already stored, does not
+        add that trial id a second time.
+        """
+        run_dir = Path(run_dir)
+        for name in ("credit_baseline", "ideation"):
+            root = run_dir / name
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("trials.jsonl")):
+                self.note_rows(read_rows(path))
+
+    def missing(self, trial_ids) -> set:
+        """Ids in ``trial_ids`` that have no recorded cost yet."""
+        with self._lock:
+            return {trial_id for trial_id in trial_ids if trial_id not in self._cost}
+
+    def spent_total(self, exclude: set | None = None) -> float:
+        skip = exclude or set()
+        with self._lock:
+            return round(sum(cost for trial_id, (_, _, cost) in self._cost.items() if trial_id not in skip), 6)
+
+    def spent_cell(self, model: str, task: str, exclude: set | None = None) -> float:
+        skip = exclude or set()
+        with self._lock:
+            return round(sum(cost for trial_id, (row_model, row_task, cost) in self._cost.items()
+                             if trial_id not in skip and row_model == model and row_task == task), 6)
+
+    def note_stop(self, stop: dict) -> None:
+        """Remember an invocation-wide stop. A per-cell stop does not set it."""
+        if stop.get("stop_reason") == "max_usd":
+            self.invocation_stop = "max_usd"
+
+
+def is_cap_status(status: dict) -> bool:
+    """True when a run stopped before the next trial because a cap would be passed."""
+    return status.get("state") == "capped" or status.get("stop_reason") in CAP_STOP_REASONS
+
+
+@contextmanager
+def arm_lock(path: Path | None = None):
+    """Hold the host arm lock for one arm. Refuse immediately when it is taken.
+
+    The lock file is ``~/.obench/arm.lock`` unless ``path`` is set. The yield
+    is the record stamped onto ``plan.json``. It does not include a hostname.
+    """
+    import fcntl
+    target = Path(path) if path is not None else ARM_LOCK_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle = target.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise ArmBusy(f"another arm is running on this host ({target}); refusing to start a second arm") from None
+    info = {"path": str(target), "acquired": True, "acquired_at": _now()}
+    try:
+        yield info
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def stamp_arm_lock(child: Path, info: dict, ledger: SpendLedger | None = None) -> None:
+    """Record the arm lock, and the invocation caps when a ledger is in use, on ``plan.json``."""
+    path = child / "plan.json"
+    if not path.is_file():
+        return
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    plan["arm_lock"] = {"path": info.get("path"), "acquired": True, "acquired_at": info.get("acquired_at")}
+    if ledger is not None:
+        plan["max_usd"] = ledger.max_usd
+        plan["max_usd_per_cell"] = ledger.max_usd_per_cell
+    _write_json(path, plan)
+
+
 def read_rows(path: Path) -> list[dict]:
     if not Path(path).exists():
         return []
@@ -372,12 +542,13 @@ def infra_retry_reason(exhausted: list[dict]) -> str | None:
 
 class Runner:
     def __init__(self, config: RunConfig, run_dir: Path, executor: Executor, suites_dir: Path | None = None,
-                 workers: int | None = None):
+                 workers: int | None = None, ledger: SpendLedger | None = None):
         if workers is not None:  # CLI --workers; part of the config, so a resume with another value is refused
             from dataclasses import replace as _replace
             config = _replace(config, workers=workers)
         config.validate()
         self.config, self.executor, self.workers = config, executor, config.workers
+        self.ledger = ledger
         if hasattr(executor, "set_run_context"):  # the executor records it on every cell too
             executor.set_run_context({"run_id": config.run_id, "workers": config.workers})
         import threading
@@ -505,12 +676,20 @@ class Runner:
 
     # ---------------------------------------------------------------- run
 
-    def spent(self) -> float:
+    def spent(self, exclude: set | None = None) -> float:
+        """Sum of recorded trial costs. ``exclude`` drops ids still in flight, so a row that
+        has landed is not also reserved as an estimate."""
+        skip = exclude or set()
         with self._rows_lock:
-            return round(sum(r.get("cost_usd") or 0.0 for r in read_rows(self.trials_path)), 6)
+            return round(sum(r.get("cost_usd") or 0.0 for r in read_rows(self.trials_path)
+                             if r.get("trial_id") not in skip), 6)
 
     def _status(self, state: str, **extra) -> dict:
-        status = {"run_id": self.config.run_id, "state": state, "spent_usd": self.spent(), "at": _now(), **extra}
+        status = {"run_id": self.config.run_id, "state": state, "spent_usd": self.spent(),
+                  "workers": self.workers, "at": _now(), **extra}
+        if self.ledger is not None:
+            status.setdefault("max_usd", self.ledger.max_usd)
+            status.setdefault("max_usd_per_cell", self.ledger.max_usd_per_cell)
         _write_json(self.run_dir / "status.json", status)
         return status
 
@@ -576,12 +755,15 @@ class Runner:
         probe = getattr(self.executor, "isolation_preflight", None)
         isolation = probe() if probe is not None else None
         self._write_plan(previous, cutoff, isolation)
+        if self.ledger is not None:  # resumed rows count once; note_rows ignores ids it already has
+            self.ledger.note_rows(read_rows(self.trials_path))
         states = {m: self._swap_state(m) for m in self.config.models}
         done: set = set()
         for round_no in range(1, self.config.max_rounds + 1):
             tasks_by_model = {m: self._round_tasks(states[m]) for m in self.config.models}
             stop = self._execute(tasks_by_model, done, acknowledge_alerts, retry_infra)
             if stop is not None:
+                self.write_summary(cutoff)  # keep the partial table; the rows already on disk stay
                 return self._status(stop.pop("state"), round=round_no, **stop)
             summaries = self.write_summary(cutoff)
             swapped = False
@@ -613,7 +795,7 @@ class Runner:
         far plus the estimate of every trial still running is checked against the alerts and the cap; on a stop,
         no new trial starts and the running ones finish and are recorded. Returns the stop status, or None."""
         from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-        cap, pending, running, stop = self.config.spend_cap_usd, list(specs), {}, None
+        pending, running, stop = list(specs), {}, None
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
             while pending or running:
                 while stop is None and pending and len(running) < self.workers:
@@ -623,9 +805,10 @@ class Runner:
                     if crossed:
                         stop = {"state": "alert", "threshold_usd": crossed[0]}
                         break
-                    reserved = sum(self.executor.estimate_cost_usd(s.model) for s in running.values())
-                    if cap is not None and spent + reserved + self.executor.estimate_cost_usd(spec.model) > cap:
-                        stop = {"state": "capped", "spend_cap_usd": cap}
+                    stop = self._spend_stop(spec, list(running.values()))
+                    if stop is not None:
+                        if self.ledger is not None:
+                            self.ledger.note_stop(stop)
                         break
                     running[pool.submit(self._run_one, spec)] = pending.pop(0)
                 if not running:
@@ -636,6 +819,44 @@ class Runner:
                     future.result()  # _run_one records executor crashes as trial errors; anything else is a bug
                     done.add(spec.trial_id)
         return stop
+
+    def _spend_stop(self, spec: TrialSpec, running_specs: list[TrialSpec]) -> dict | None:
+        """The spend-cap check. Do not start ``spec`` when it would pass a cap.
+
+        With no ledger, the cap is this run's ``spend_cap_usd`` and spend is
+        this directory's rows (a resumed row counts once). With a ledger, the
+        same comparison uses the experiment total (``max_usd``) and the
+        ``(model, task)`` cell (``max_usd_per_cell``, falling back to
+        ``spend_cap_usd``), including arm rows seeded from earlier processes.
+        A trial still running with no row yet counts as its estimate. A trial
+        whose row has landed counts at that cost only.
+        """
+        estimate = self.executor.estimate_cost_usd(spec.model)
+        # A running trial with a row on the ledger (or in this directory) counts
+        # at that recorded cost. Only a running trial that has not written a row
+        # is reserved at its estimate, so the two are never added for one id.
+        if self.ledger is not None:
+            unrecorded = self.ledger.missing(item.trial_id for item in running_specs)
+            reserved = sum(self.executor.estimate_cost_usd(item.model) for item in running_specs
+                           if item.trial_id in unrecorded)
+            total_cap = self.ledger.max_usd
+            cell_cap = self.ledger.max_usd_per_cell if self.ledger.max_usd_per_cell is not None else self.config.spend_cap_usd
+            spent_total = self.ledger.spent_total()
+            spent_cell = self.ledger.spent_cell(spec.model, spec.task)
+            if total_cap is not None and spent_total + reserved + estimate > total_cap:
+                return {"state": "capped", "stop_reason": "max_usd", "max_usd": total_cap,
+                        "max_usd_per_cell": cell_cap}
+            if cell_cap is not None and spent_cell + reserved + estimate > cell_cap:
+                return {"state": "capped", "stop_reason": "max_usd_per_cell", "cell": f"{spec.model}/{spec.task}",
+                        "max_usd": total_cap, "max_usd_per_cell": cell_cap, "spend_cap_usd": cell_cap}
+            return None
+        on_disk = {row.get("trial_id") for row in read_rows(self.trials_path)}
+        reserved = sum(self.executor.estimate_cost_usd(item.model) for item in running_specs
+                       if item.trial_id not in on_disk)
+        cap = self.config.spend_cap_usd
+        if cap is not None and self.spent() + reserved + estimate > cap:
+            return {"state": "capped", "spend_cap_usd": cap}
+        return None
 
     def _round_tasks(self, state: dict) -> list[str]:
         if self.config.fixed:  # ideation arms: exactly the parent's task, even a swapped-in pool task
@@ -667,6 +888,8 @@ class Runner:
                "compaction_steps": result.compaction_steps, "summary_steps": result.summary_steps,
                "synthetic_continue_messages": result.synthetic_continue_messages,
                "cost_usd": result.cost_usd,
+               "runtime_measured_s": result.runtime_measured_s, "runtime_golden_s": result.runtime_golden_s,
+               "runtime_ratio": result.runtime_ratio,
                "price_verified": model.price_verified, "thinking_tokens": result.thinking_tokens,
                "compaction_thinking_tokens": result.compaction_thinking_tokens,
                "thinking_flags": sorted(set(result.thinking_flags)), "served_models": sorted(set(result.served_models)),
@@ -695,6 +918,8 @@ class Runner:
                "started_at": started, "finished_at": _now(), "error": result.error}
         with self._rows_lock:
             _append(self.trials_path, row)
+            if self.ledger is not None:
+                self.ledger.note_rows([row])
 
     # ---------------------------------------------------------------- tables
 

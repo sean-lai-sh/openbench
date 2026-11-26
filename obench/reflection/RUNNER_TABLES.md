@@ -51,6 +51,7 @@ The pass cutoff is **not** a runner setting. It is `obench.hardsuite.config.PASS
 | `checker_exit` | int\|null | Checker exit code |
 | `steps` | int\|null | Main-agent calls that returned 200. One trace row each. Compaction summary steps are not included. Null when the trace could not be built. |
 | `cost_usd` | number\|null | From the wire records (`vertex_models.cost_usd`) |
+| `runtime_measured_s`, `runtime_golden_s`, `runtime_ratio` | number\|null | From the checker's own output when it prints query-optimize's medians (`solution.median_s`, `golden.median_s`). `runtime_ratio` is measured / golden. All three are null when the checker does not report both medians. The runner does not re-time the query |
 | `price_verified` | bool | False for Carbon and gpt-oss (unverified list prices) |
 | `compaction_steps` | int\|null | Session steps that are the compaction summary: the step immediately before OpenCode's synthetic continue text. Not included in `steps`. 0 when the trace was built and the trial did not compact. Null when the trace was not built. |
 | `summary_steps` | int\|null | Session steps attributed to the summary agent, when they can be distinguished from compaction steps. Title and summary side calls do not emit a session step. 0 when none are distinguished. Null when the trace was not built. |
@@ -156,7 +157,8 @@ So a model's suite keeps its planned size. If the pool runs out, `PoolExhausted`
   - the worst case for `all` (every alternative a candidate) is 3× selection.
     For `top` it is `confirm_k` confirmations per cell (`confirm_k × 2N` trials)
     on top of selection.
-- During the run, spend is the sum of logged trial costs. Every trial, including an infrastructure re-run, checks the cap and the alert thresholds before it starts.
+- During the run, spend is the sum of logged trial costs. Every trial, including an infrastructure re-run, checks the cap and the alert thresholds before it starts. Trials already running count as their per-trial estimate, so concurrent workers cannot together pass the cap.
+- Credit-assignment invocations (`credit_baseline`, `evaluate`, the ideation CLI) use that same check through `SpendLedger`. `max_usd_per_cell` is `spend_cap_usd` for one `(model, task)` cell. `max_usd` is the experiment total. At startup the ledger reads every `trials.jsonl` under `credit_baseline/` and `ideation/`, so a restart keeps both caps cumulative. A trial id is stored once. A running trial with no row yet is reserved at its estimate; a landed row counts at its recorded cost only. See `CREDIT_ASSIGNMENT.md`.
 
 ## Credit-assignment agreement
 

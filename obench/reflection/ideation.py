@@ -38,15 +38,18 @@ João Sedoc via Sean, SEA-110, 2026-11-13):
   that cell's drawn failures).
 
 Both stages record the one-sided Fisher exact p as a reported statistic only.
-``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0). It
-refuses to write a row whose alpha is not 1.0. ``decide(alpha=...)`` remains
-for a library check. A p-gated view is a report column computed from the
-recorded Fisher p and does not change ``candidate``, ``confirmed``, or
-``success``. Each arm reuses the fresh baseline's recorded image, with smoke
-compaction off. Every arm row records ``code_commit``. ``evaluate`` refuses
-an arm whose ``code_commit`` differs from the fresh baseline's
-``baseline_commit``.
-``runner.ideation_estimate`` prices selection plus confirmation.
+``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0) on a
+scored row. It refuses to write a scored row whose alpha is not 1.0. A cap
+stop is not scored: ``decide`` is not called, and the row is
+``stopped_by_cap`` with ``alpha`` null. ``decide(alpha=...)`` remains for a
+library check. A p-gated view is a report column computed from the recorded
+Fisher p and does not change ``candidate``, ``confirmed``, or ``success``.
+Each arm reuses the fresh baseline's recorded image, with smoke compaction
+off. Every arm row records ``code_commit``. ``evaluate`` refuses an arm whose
+``code_commit`` differs from the fresh baseline's ``baseline_commit``.
+``spend_cap_usd`` is the per-cell cap (``--max-usd-per-cell``). ``max_usd``
+is the invocation total. ``runner.ideation_estimate`` prices selection plus
+confirmation.
 
 Tables (in the run directory, separate from the trial and credit tables):
 ``ideation.jsonl`` (proposals) and ``ideation_results.jsonl`` (one row per
@@ -59,6 +62,7 @@ import json
 import math
 import os
 import urllib.request
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Protocol
@@ -471,9 +475,45 @@ def _recorded_image(baseline: dict) -> dict:
     return {"ref": ref, "id": image.get("id"), "matches_pin": baseline.get("image_matches_pin")}
 
 
+def check_baseline_workers(baseline: dict, workers: int, cell: str) -> None:
+    """Refuse a worker count other than the fresh baseline's. A missing field warns.
+
+    Baselines written before ``workers`` was recorded have no field. Those rows
+    are not refused.
+    """
+    recorded = baseline.get("workers") if isinstance(baseline, dict) else None
+    if isinstance(recorded, bool) or not isinstance(recorded, int):
+        warnings.warn(
+            f"{cell}: fresh baseline has no recorded workers (row predates the field); "
+            f"not refusing workers={workers}",
+            UserWarning, stacklevel=2)
+        return
+    if recorded != workers:
+        raise ValueError(
+            f"{cell}: refusing to run selection or confirmation with workers={workers}; "
+            f"the fresh baseline recorded workers={recorded}")
+
+
+def _trials_completed(child: Path) -> int:
+    return len(rn.read_rows(Path(child) / "trials.jsonl"))
+
+
+def _cap_fields(status: dict, trials_completed: int) -> dict | None:
+    """Fields for an arm the cap stopped before N. ``None`` when the arm finished."""
+    if not rn.is_cap_status(status):
+        return None
+    reason = status.get("stop_reason")
+    if reason not in rn.CAP_STOP_REASONS:
+        reason = "max_usd_per_cell"
+    return {"stopped_by_cap": True, "stop_reason": reason, "stop_cell": status.get("cell"),
+            "trials_completed": trials_completed, "max_usd": status.get("max_usd"),
+            "max_usd_per_cell": status.get("max_usd_per_cell")}
+
+
 def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: bool, executor: rn.Executor,
          n_trials: int, spend_cap_usd: float | None, recorded_image: dict,
-         arm_scope: str | None = None) -> tuple[dict, str, str]:
+         arm_scope: str | None = None, workers: int = 1,
+         ledger: rn.SpendLedger | None = None) -> tuple[dict, str, str, dict]:
     """One N-trial arm of one proposal: ``(summary row or {}, run state, relative dir)``.
 
     Each arm has its own run_id, so its trial ids are new and never reuse
@@ -483,6 +523,10 @@ def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: boo
     ``arm_scope`` separates two confirmation arms that share a ``proposal_id``
     (the same patch on two failures). Unset, the directory and run id stay
     ``ideation/<proposal_id>/<label>``.
+
+    Returns ``(summary row or {}, run state, relative dir, status)``.
+    ``spend_cap_usd`` is the per-cell cap (``max_usd_per_cell``) on the ledger
+    when one is passed, and the runner's own ``spend_cap_usd`` otherwise.
     """
     if not isinstance(recorded_image, dict) or not recorded_image.get("ref"):
         raise ValueError("arm has no recorded image; refusing to re-pin")
@@ -498,20 +542,24 @@ def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: boo
     if previous:
         executor.smoke_compaction = False
     try:
+        cell_cap = ledger.max_usd_per_cell if ledger is not None and ledger.max_usd_per_cell is not None else spend_cap_usd
         cfg = rn.RunConfig.from_dict({
             "run_id": f"{base_cfg['run_id']}--{label}--{run_identity}", "suite": base_cfg["suite"], "models": [proposal["model"]],
             "n_trials": n_trials, "tasks": [proposal["task"]], "max_rounds": 1, "fixed_tasks": True,
             "patch_id": pid if patched else None, "patch": proposal["patch"] if patched else None,
-            "spend_cap_usd": spend_cap_usd, "smoke_compaction": False, "recorded_image": recorded_image})
-        status = rn.Runner(cfg, child, executor).run()
-        _stamp_arm_parent(child, proposal.get("parent_trial_id"))
-        _check_fresh_image(f"{proposal['model']}/{proposal['task']}", child, recorded_image)
+            "spend_cap_usd": cell_cap, "workers": workers,
+            "smoke_compaction": False, "recorded_image": recorded_image})
+        with rn.arm_lock() as lock:
+            status = rn.Runner(cfg, child, executor, workers=workers, ledger=ledger).run()
+            _stamp_arm_parent(child, proposal.get("parent_trial_id"))
+            rn.stamp_arm_lock(child, lock, ledger)
+            _check_fresh_image(f"{proposal['model']}/{proposal['task']}", child, recorded_image)
     finally:
         if previous:
             executor.smoke_compaction = previous
     rows = [s for s in rn.read_rows(child / "summary.jsonl")
             if s["patch_id"] == (pid if patched else None) and s["task"] == proposal["task"]]
-    return (rows[0] if rows else {}), status["state"], rel
+    return (rows[0] if rows else {}), status["state"], rel, status
 
 
 def _plan_str(value) -> str | None:
@@ -791,20 +839,54 @@ def _skip_not_top(row: dict) -> None:
         confirmed=None, success=False, confirm_skipped=CONFIRM_SKIPPED_NOT_TOP)
 
 
+def _mark_unconfirmed(row: dict, cap: dict, spend: float, dirs: list, states: list,
+                      alt_commit: str | None, base_commit: str | None) -> dict:
+    """A confirmation the cap stopped partway. The candidate stays unconfirmed.
+
+    ``decide`` is not called. ``confirmed`` stays null, so this is not a loss.
+    """
+    row.update(cap, confirmed=None, success=None, confirm_skipped=None,
+               confirmation_baseline_passes=None, confirmation_baseline_completed=None,
+               confirmation_alt_passes=None, confirmation_alt_completed=None,
+               confirmation_beats_baseline=None, confirmation_complete=None, confirmation_fisher_p=None,
+               confirmation_spend_usd=round(spend, 6), confirmation_run_dirs=dirs, confirmation_run_states=states,
+               confirmation_code_commit=alt_commit, confirmation_baseline_code_commit=base_commit)
+    return row
+
+
 def _run_confirmation(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, executor: rn.Executor,
                       n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str,
-                      alphas: list, arm_scope: str | None = None) -> dict:
+                      alphas: list, arm_scope: str | None = None, workers: int = 1,
+                      ledger: rn.SpendLedger | None = None) -> dict:
     """Fresh confirmation arms. Raises before the result row is replaced when a check fails.
 
     Each call runs a new alternative and a new baseline. ``arm_scope`` keeps
     those arms distinct when two confirmed candidates share a proposal id.
+    A cap that stops either arm leaves the candidate unconfirmed and does not
+    call ``decide``. The confirmation baseline is not started when the
+    alternative arm already stopped for a cap.
     """
-    conf_alt, alt_state, alt_dir = _arm(run_dir, base_cfg, proposal, "confirm", True, executor, n_trials,
-                                        spend_cap_usd, recorded, arm_scope=arm_scope)
+    conf_alt, alt_state, alt_dir, alt_status = _arm(
+        run_dir, base_cfg, proposal, "confirm", True, executor, n_trials,
+        spend_cap_usd, recorded, arm_scope=arm_scope, workers=workers, ledger=ledger)
     conf_commit = _require_arm_commit(run_dir / alt_dir, "confirmation", baseline_commit)
-    conf_base, base_state, base_dir = _arm(run_dir, base_cfg, proposal, "confirm-baseline", False, executor,
-                                           n_trials, spend_cap_usd, recorded, arm_scope=arm_scope)
+    alt_cap = _cap_fields(alt_status, _trials_completed(run_dir / alt_dir))
+    if alt_cap:
+        if alt_cap.get("stop_cell") is None:
+            alt_cap["stop_cell"] = f"{proposal['model']}/{proposal['task']}"
+        return _mark_unconfirmed(row, alt_cap, conf_alt.get("spend_usd", 0.0), [alt_dir], [alt_state],
+                                 conf_commit, None)
+    conf_base, base_state, base_dir, base_status = _arm(
+        run_dir, base_cfg, proposal, "confirm-baseline", False, executor,
+        n_trials, spend_cap_usd, recorded, arm_scope=arm_scope, workers=workers, ledger=ledger)
     base_commit = _require_arm_commit(run_dir / base_dir, "confirmation-baseline", baseline_commit)
+    base_cap = _cap_fields(base_status, _trials_completed(run_dir / base_dir))
+    if base_cap:
+        if base_cap.get("stop_cell") is None:
+            base_cap["stop_cell"] = f"{proposal['model']}/{proposal['task']}"
+        spend = conf_alt.get("spend_usd", 0.0) + conf_base.get("spend_usd", 0.0)
+        return _mark_unconfirmed(row, base_cap, spend, [alt_dir, base_dir], [alt_state, base_state],
+                                 conf_commit, base_commit)
     confirmation, conf_alpha = _stage("confirmation", conf_base, conf_alt, n_trials)
     alphas.append(conf_alpha)
     confirmed = confirmation["confirmation_complete"] and confirmation["confirmation_beats_baseline"]
@@ -818,7 +900,8 @@ def _run_confirmation(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, 
 
 def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, executor: rn.Executor,
                  n_trials: int, spend_cap_usd: float | None, recorded: dict, baseline_commit: str,
-                 confirm_k: int = DEFAULT_CONFIRM_K) -> dict:
+                 confirm_k: int = DEFAULT_CONFIRM_K, workers: int = 1,
+                 ledger: rn.SpendLedger | None = None) -> dict:
     """Confirm the top ``confirm_k`` candidates once every drawn failure is selected.
 
     The cell is ``(model, task)``. The set is every accepted alternative of
@@ -870,16 +953,20 @@ def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, execu
         scope = winner.get("parent_trial_id") if pid_counts[winner["proposal_id"]] > 1 else None
         confirmed = _run_confirmation(
             run_dir, base_cfg, winner_proposal, dict(winner), executor, n_trials, spend_cap_usd, recorded,
-            baseline_commit, [winner.get("alpha", ALPHA)], arm_scope=scope)
+            baseline_commit, [winner.get("alpha", ALPHA)], arm_scope=scope, workers=workers, ledger=ledger)
         confirmed_by_key[_result_key(winner)] = confirmed
         results = [confirmed_by_key.get(_result_key(item), item) for item in results]
         _save_results(run_dir, results)
+        if confirmed.get("stopped_by_cap"):
+            break  # this cell (or the invocation) is done spending; later winners are not started
     return next(item for item in results if _result_key(item) == _result_key(row))
 
 
 def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int = rn.N_TRIALS,
              spend_cap_usd: float | None = None, max_set_aside: int = MAX_SET_ASIDE,
-             confirm: str = CONFIRM_ALL, confirm_k: int = DEFAULT_CONFIRM_K) -> dict:
+             confirm: str = CONFIRM_ALL, confirm_k: int = DEFAULT_CONFIRM_K,
+             max_usd: float | None = None, workers: int = 1,
+             ledger: rn.SpendLedger | None = None) -> dict:
     """Two-stage evaluation of one accepted proposal (João Sedoc via Sean, SEA-110).
 
     1. **Selection:** the alternative runs N trials. It is a *candidate* iff
@@ -909,21 +996,40 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
 
     The one-sided Fisher p for each stage is recorded as a reported statistic
     only. ``evaluate`` does not take ``alpha`` and always uses ``ALPHA`` (1.0).
-    A row whose alpha is not 1.0 is not written. ``spend_cap_usd`` applies to
-    each arm. Every arm reuses the fresh baseline's recorded image, with smoke
+    A row whose alpha is not 1.0 is not written, except a cap stop: that row
+    is unresolved (``stopped_by_cap``, ``alpha`` null) and ``decide`` is not
+    called on the partial arm. ``spend_cap_usd`` is ``max_usd_per_cell``: the
+    runner's spend check for the ``(model, task)`` cell, shared across this
+    invocation's arms of that cell. ``max_usd`` is the invocation total. A
+    partial confirmation leaves the candidate unconfirmed (``confirmed`` null),
+    not failed. Every arm reuses the fresh baseline's recorded image, with smoke
     compaction off, and records ``code_commit``. An arm whose ``code_commit``
     differs from the fresh baseline's ``baseline_commit`` is refused.
+    ``workers`` must match the fresh baseline's recorded ``workers`` (default
+    1). A baseline row from before that field warns and is not refused.
     The cell is evaluated when the fresh baseline's set-aside
     count is at most ``max_set_aside`` (default 3, about 10% of 30), the same
     cap as credit assignment."""
     mode = check_confirm(confirm)
     k = check_confirm_k(confirm_k, mode)
+    workers = rn.check_workers(workers)
+    spend_cap_usd = rn.check_optional_usd("max_usd_per_cell", spend_cap_usd)
+    max_usd = rn.check_optional_usd("max_usd", max_usd)
     if proposal["status"] != "accepted":
         raise ValueError("only accepted proposals are evaluated")
     run_dir = Path(run_dir)
     base_cfg = json.loads((run_dir / "plan.json").read_text())["config"]
     # The pilot summary row is retired. Do not fall back to it when this raises.
     baseline = fresh_baseline_row(run_dir, proposal["task"], proposal["model"])
+    cell_name = f"{proposal['model']}/{proposal['task']}"
+    if baseline.get("stopped_by_cap"):
+        raise ValueError(f"{cell_name}: fresh baseline was stopped_by_cap at "
+                         f"{baseline.get('trials_completed')} trials; refusing to score")
+    check_baseline_workers(baseline, workers, cell_name)
+    if ledger is None and (spend_cap_usd is not None or max_usd is not None):
+        ledger = rn.SpendLedger(max_usd=max_usd, max_usd_per_cell=spend_cap_usd)
+    if ledger is not None:
+        ledger.seed_run(run_dir)
     max_set_aside = check_max_set_aside(max_set_aside)
     aside = _set_aside_count(baseline)
     # Amended Researcher ruling 2026-11-17: a cell enters when its set-aside count is at most max_set_aside
@@ -943,9 +1049,36 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
             raise ValueError(f"{proposal['model']}/{proposal['task']}: parent failure {parent} is not a drawn pick; "
                              "confirm=top ranks the cell's drawn failures")
         draw_order = orders[parent]
-    sel_alt, sel_state, sel_dir = _arm(run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd,
-                                       recorded)
+    sel_alt, sel_state, sel_dir, sel_status = _arm(
+        run_dir, base_cfg, proposal, "select", True, executor, n_trials, spend_cap_usd,
+        recorded, workers=workers, ledger=ledger)
     sel_commit = _require_arm_commit(run_dir / sel_dir, "selection", baseline_commit)
+    sel_cap = _cap_fields(sel_status, _trials_completed(run_dir / sel_dir))
+    if sel_cap is not None:
+        # Partial selection is unresolved. decide does not run, so this is not a non-candidate.
+        if sel_cap.get("stop_cell") is None:
+            sel_cap["stop_cell"] = cell_name
+        row = {"schema": RESULT_SCHEMA, "proposal_id": proposal["proposal_id"],
+               "parent_trial_id": proposal["parent_trial_id"],
+               "task": proposal["task"], "model": proposal["model"], "credit_method": proposal["credit_method"],
+               "citations": proposal.get("citations"), "uncited": bool(proposal.get("uncited")),
+               "alternative_index": proposal.get("index"), "draw_order": draw_order,
+               "confirm": mode, "confirm_k": k, "confirm_skipped": None,
+               "n_trials": n_trials, "baseline_commit": baseline_commit, "code_commit": baseline_commit,
+               "selection_baseline_passes": None, "selection_baseline_completed": None,
+               "selection_alt_passes": None, "selection_alt_completed": None,
+               "selection_beats_baseline": None, "selection_complete": None, "selection_fisher_p": None,
+               "candidate": None, "selection_spend_usd": sel_alt.get("spend_usd", 0.0),
+               "selection_run_dir": sel_dir, "selection_run_state": sel_state, "selection_code_commit": sel_commit,
+               "confirmation_baseline_passes": None, "confirmation_baseline_completed": None,
+               "confirmation_alt_passes": None, "confirmation_alt_completed": None,
+               "confirmation_beats_baseline": None,
+               "confirmation_complete": None, "confirmation_fisher_p": None, "confirmation_spend_usd": 0.0,
+               "confirmation_run_dirs": None, "confirmation_run_states": None,
+               "confirmation_code_commit": None, "confirmation_baseline_code_commit": None,
+               "confirmed": None, "success": None, "alpha": None, **sel_cap}
+        _append_result(run_dir, row)
+        return row
     selection, sel_alpha = _stage("selection", baseline, sel_alt, n_trials)
     candidate = selection["selection_complete"] and selection["selection_beats_baseline"]
     alphas = [sel_alpha]
@@ -965,11 +1098,11 @@ def evaluate(run_dir: Path, proposal: dict, executor: rn.Executor, n_trials: int
            "confirmed": None, "success": False}
     if candidate and mode == CONFIRM_ALL:
         row = _run_confirmation(run_dir, base_cfg, proposal, row, executor, n_trials, spend_cap_usd, recorded,
-                                baseline_commit, alphas)
+                                baseline_commit, alphas, workers=workers, ledger=ledger)
     elif mode == CONFIRM_TOP:
         row["alpha"] = _require_alpha(alphas)
         return _confirm_top(run_dir, base_cfg, proposal, row, executor, n_trials, spend_cap_usd, recorded,
-                            baseline_commit, confirm_k=k)
+                            baseline_commit, confirm_k=k, workers=workers, ledger=ledger)
     else:
         row["alpha"] = _require_alpha(alphas)
     _append_result(run_dir, row)
@@ -1018,6 +1151,13 @@ def main(argv: list[str] | None = None) -> int:
                         help='offline pass table {"task|model": passes}. This command does not call a provider.')
     parser.add_argument("--n-trials", type=int, default=rn.N_TRIALS)
     parser.add_argument("--max-set-aside", type=int, default=MAX_SET_ASIDE)
+    parser.add_argument("--max-usd", type=rn.positive_usd_arg, default=None,
+                        help="stop the invocation before the trial that would pass this total (optional, > 0)")
+    parser.add_argument("--max-usd-per-cell", type=rn.positive_usd_arg, default=None,
+                        help="per (model, task) cell cap; maps to spend_cap_usd (optional, > 0). "
+                             "Other cells continue. Intended use: 1.5x that cell's estimate")
+    parser.add_argument("--workers", type=rn.positive_workers_arg, default=1,
+                        help="trials of one arm at once (default 1). Arms run one at a time")
     args = parser.parse_args(argv)
     if isinstance(args.n_trials, bool) or args.n_trials < 1:
         raise SystemExit("n-trials must be a positive integer")
@@ -1031,18 +1171,39 @@ def main(argv: list[str] | None = None) -> int:
     proposals.sort(key=lambda row: (row.get("parent_trial_id") or "", row.get("index") is None,
                                     row.get("index") if isinstance(row.get("index"), int) else 0,
                                     row.get("proposal_id") or ""))
+    ledger = None
+    if args.max_usd is not None or args.max_usd_per_cell is not None:
+        ledger = rn.SpendLedger(max_usd=args.max_usd, max_usd_per_cell=args.max_usd_per_cell)
+        ledger.seed_run(args.run)
     try:
         for proposal in proposals:
+            if ledger is not None and ledger.invocation_stop == "max_usd":
+                break
             evaluate(args.run, proposal, executor, n_trials=args.n_trials,
-                     max_set_aside=args.max_set_aside, confirm=cfg.confirm, confirm_k=cfg.confirm_k)
+                     spend_cap_usd=args.max_usd_per_cell, max_usd=args.max_usd,
+                     max_set_aside=args.max_set_aside, confirm=cfg.confirm, confirm_k=cfg.confirm_k,
+                     workers=args.workers, ledger=ledger)
     except (ValueError, rn.RunnerError, BaselineError) as exc:
         raise SystemExit(str(exc)) from None
     rows = rn.read_rows(args.run / "ideation_results.jsonl")
+    cell_stops = [{"cell": row.get("stop_cell") or f"{row.get('model')}/{row.get('task')}",
+                   "stop_reason": row.get("stop_reason"), "trials_completed": row.get("trials_completed"),
+                   "proposal_id": row.get("proposal_id")}
+                  for row in rows if row.get("stopped_by_cap")]
+    if ledger is not None and ledger.invocation_stop == "max_usd":
+        stop_reason = "max_usd"
+    elif cell_stops:
+        stop_reason = "max_usd_per_cell"
+    else:
+        stop_reason = None
     print(json.dumps({
         "confirm": cfg.confirm, "confirm_k": cfg.confirm_k, "evaluated": len(rows),
+        "workers": args.workers, "max_usd": args.max_usd, "max_usd_per_cell": args.max_usd_per_cell,
+        "stop_reason": stop_reason, "stopped_cells": cell_stops,
         "candidates": sum(1 for row in rows if row.get("candidate")),
         "confirmed": sum(1 for row in rows if row.get("confirmed")),
         "confirm_skipped": sum(1 for row in rows if row.get("confirm_skipped")),
+        "stopped_by_cap": len(cell_stops),
     }))
     return 0
 

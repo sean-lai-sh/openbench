@@ -129,8 +129,51 @@ called.
    layout.
 
 ```text
-python3 -m obench.reflection.ideation --run <run dir> --fixture passes.json [--config ideation.json] [--confirm top|all] [--confirm-k K]
+python3 -m obench.reflection.ideation --run <run dir> --fixture passes.json [--config ideation.json] [--confirm top|all] [--confirm-k K] [--max-usd D] [--max-usd-per-cell D] [--workers N]
 ```
+
+`--max-usd` is the total for the whole experiment: baseline, selection, and
+confirmation trials already under the run, plus this invocation.
+`--max-usd-per-cell` maps onto `spend_cap_usd` / `evaluate(...,
+spend_cap_usd=)`: the same check for one `(model, task)` cell, shared by that
+cell's baseline and its selection and confirmation arms, including
+`confirm=top` / `confirm_k`. Other cells continue. The total stops the
+invocation. Both are optional and must be > 0 when set. Unset, scoring is
+unchanged. The estimate used before each trial is `estimate_cost_usd` (the
+same number `ideation_estimate` uses). The intended per-cell cap is 1.5× that
+cell's estimate.
+
+At startup the ledger reads every `trials.jsonl` under `credit_baseline/` and
+`ideation/`. A trial id already in one of those files counts once. A later
+append of that same id, or a second read after a restart, does not add it
+again. The pilot `trials.jsonl` at the run root is not counted. In-flight
+trials that have not written a row are reserved at their estimate. A row that
+has landed counts at its recorded cost, not also as a reservation.
+
+Before each trial the check is that total plus this trial's estimate. If that
+would pass either cap, the trial does not start. In-flight trials still
+finish and their rows stay. An arm that stops before N is `stopped_by_cap`
+with `trials_completed` and `stop_reason` (`max_usd` or `max_usd_per_cell`,
+and `stop_cell`). `decide` is not called on a partial arm. A partial
+selection is unresolved: `candidate` is null, not false. A partial
+confirmation leaves the candidate unconfirmed (`confirmed` null), not failed.
+The printed summary's `stop_reason` is `max_usd` when the invocation stopped,
+`max_usd_per_cell` when a cell stopped and the invocation did not, and null
+when nothing stopped. Exit code is 0 either way.
+
+`--workers N` (default 1) is `runner --workers` on each selection and
+confirmation arm. Arms run one at a time. Within an arm, up to N trials run
+at once, and their estimates are reserved so they cannot together pass a cap.
+`workers` is recorded on `plan.json` and on every trial row. `evaluate`
+refuses to run when N differs from the fresh baseline's recorded `workers`
+for that cell. A baseline row that predates the field warns and is not
+refused. The host lock is `~/.obench/arm.lock`. If another arm holds it, the
+command refuses and does not wait. `plan.json` records `arm_lock`.
+
+Each trial row has `host_load` (`start`, `end`, `cpus`). Rows also record
+`runtime_measured_s`, `runtime_golden_s`, and `runtime_ratio` parsed from
+checker output when the checker prints query-optimize's medians, and null
+otherwise.
 
 `--config` is an `IdeationConfig` JSON object (`{"confirm": "top", "confirm_k": 3}`
 or `"all"`). `--confirm` and `--confirm-k` override the file. The default is
@@ -158,10 +201,11 @@ baseline's own `code_commit` must equal `baseline_commit`.
 |---|---|
 | Selection | `selection_baseline_passes`, `selection_baseline_completed`, `selection_alt_passes`, `selection_alt_completed`, `selection_beats_baseline`, `selection_complete`, `selection_fisher_p`, `candidate`, `selection_spend_usd`, `selection_run_dir`, `selection_run_state`, `selection_code_commit` |
 | Confirmation | `confirmation_baseline_passes`, `confirmation_baseline_completed`, `confirmation_alt_passes`, `confirmation_alt_completed`, `confirmation_beats_baseline`, `confirmation_complete`, `confirmation_fisher_p`, `confirmed`, `confirmation_spend_usd`, `confirmation_run_dirs`, `confirmation_run_states`, `confirmation_code_commit`, `confirmation_baseline_code_commit`. All null for non-candidates and for candidates skipped under `confirm=top`. |
-| Outcome | `success` (= `confirmed`), `confirm` (`all` or `top`, on every row), `confirm_k` (on every row; default 1), `confirm_skipped` (`not_top` when a candidate in the cell was outside the confirmed set; otherwise null), `alternative_index`, `draw_order` (the seeded pick, set under `top`; null under `all`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials`, `alpha`, `baseline_commit`, `code_commit`, `citations`, `uncited` |
+| Outcome | `success` (= `confirmed`), `confirm` (`all` or `top`, on every row), `confirm_k` (on every row; default 1), `confirm_skipped` (`not_top` when a candidate in the cell was outside the confirmed set; otherwise null), `alternative_index`, `draw_order` (the seeded pick, set under `top`; null under `all`), `credit_method`, `parent_trial_id`, `task`, `model`, `n_trials`, `alpha`, `baseline_commit`, `code_commit`, `citations`, `uncited`. A cap stop adds `stopped_by_cap`, `trials_completed`, `stop_reason`, `stop_cell`. `candidate` and `alpha` are null when selection stopped early. `confirmed` and `success` are null when confirmation stopped early. `workers` and `host_load` stay on each trial row and on `plan.json` |
 
-`alpha` is the value `evaluate` used. It is always `1.0`. `evaluate` has no
-`alpha` parameter and refuses to write a row whose alpha is not 1.0.
+`alpha` is the value `evaluate` used. It is `1.0` on a scored row. `evaluate` has no
+`alpha` parameter and refuses to write a scored row whose alpha is not 1.0.
+A `stopped_by_cap` row is not scored: `alpha` is null and `decide` did not run.
 `baseline_commit` is the fresh baseline's checkout.
 
 `*_fisher_p` is the one-sided Fisher exact p for that stage, **reported only,
