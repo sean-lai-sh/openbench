@@ -880,7 +880,8 @@ class Runner:
 
 
 def ideation_estimate(executor: Executor, failures: dict, n_alternatives: int = 5, n_trials: int = N_TRIALS,
-                      candidate_fraction: float = 1.0, confirm: str = "all", cells: dict | None = None) -> dict:
+                      candidate_fraction: float = 1.0, confirm: str = "all", cells: dict | None = None,
+                      confirm_k: int = 1) -> dict:
     """Spend estimate for ideation (SEA-110): selection runs ``n_alternatives
     x n_trials`` per failure, then candidates get a confirmation (a fresh
     ``n_trials`` alternative run **plus** a fresh ``n_trials`` baseline run).
@@ -891,14 +892,17 @@ def ideation_estimate(executor: Executor, failures: dict, n_alternatives: int = 
 
     - ``all``: every candidate is confirmed, so confirmation is
       ``failures × n_alternatives × candidate_fraction × 2N`` trials.
-    - ``top``: one candidate per cell is confirmed, so confirmation is
-      ``cells × 2N`` trials. ``cells`` is ``{model: cell count}`` and is
-      required. ``candidate_fraction`` does not change that count.
+    - ``top``: ``confirm_k`` candidates per cell are confirmed (default 1),
+      so confirmation is ``cells × confirm_k × 2N`` trials. ``cells`` is
+      ``{model: cell count}`` and is required. ``candidate_fraction`` does
+      not change that count. ``confirm_k`` must be an int >= 1, and a value
+      other than 1 is an error when ``confirm`` is ``all``.
     """
-    if confirm not in ("all", "top"):
-        raise ValueError(f"confirm must be 'top' or 'all', got {confirm!r}")
+    from obench.reflection.ideation import check_confirm, check_confirm_k
+    check_confirm(confirm)
+    check_confirm_k(confirm_k, confirm)
     if confirm == "top" and not isinstance(cells, dict):
-        raise ValueError("confirm=top prices one confirmation per cell; pass cells={model: cell count}")
+        raise ValueError("confirm=top prices confirm_k confirmations per cell; pass cells={model: cell count}")
     cell_counts: dict[str, int] = {}
     if confirm == "top":
         for model, count in cells.items():
@@ -916,13 +920,13 @@ def ideation_estimate(executor: Executor, failures: dict, n_alternatives: int = 
         failure_count = failures.get(model, 0)
         selection = failure_count * n_alternatives * n_trials * unit
         if confirm == "top":
-            confirmation = cell_counts[model] * 2 * n_trials * unit
+            confirmation = cell_counts[model] * confirm_k * 2 * n_trials * unit
         else:
             confirmation = failure_count * confirmed_alts * 2 * n_trials * unit
         per_model[model] = {"selection_usd": round(selection, 2), "confirmation_usd": round(confirmation, 2),
                             "total_usd": round(selection + confirmation, 2)}
     return {"n_alternatives": n_alternatives, "n_trials": n_trials, "candidate_fraction": candidate_fraction,
-            "confirm": confirm, "cells": cell_counts or None, "per_model": per_model,
+            "confirm": confirm, "confirm_k": confirm_k, "cells": cell_counts or None, "per_model": per_model,
             "selection_usd": round(sum(v["selection_usd"] for v in per_model.values()), 2),
             "confirmation_usd": round(sum(v["confirmation_usd"] for v in per_model.values()), 2),
             "total_usd": round(sum(v["total_usd"] for v in per_model.values()), 2)}

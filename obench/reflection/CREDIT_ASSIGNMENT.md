@@ -168,10 +168,18 @@ than this fresh baseline's passes and both sides completed N. A tie is not a
 candidate. Confirmation runs a new N-trial alternative and a new N-trial
 baseline, and the candidate is confirmed only when the alternative has more
 passes than that new baseline. `confirm=all` (the default) confirms every
-candidate. `confirm=top` confirms one candidate per cell `(model, task)`,
-chosen across that cell's drawn failures: most selection passes, then the
-earlier seeded pick (`draw_order` in `credit_draw.json`), then the lower
-alternative index, then `proposal_id`. Fisher p is not part of that ranking.
+candidate. `confirm=top` confirms the top `confirm_k` candidates per cell
+`(model, task)` (default `confirm_k` 1). The pool is that cell's drawn
+failures, ranked by most selection passes, then the earlier seeded pick
+(`draw_order` in `credit_draw.json`), then the lower alternative index, then
+`proposal_id`. Fisher p is not part of that ranking. A cell with fewer than
+`confirm_k` candidates confirms every candidate. Every other candidate stays
+a candidate with `confirm_skipped: not_top`. Each confirmed candidate keeps
+its own fresh N-trial alternative run and its own fresh N-trial baseline.
+`confirm_k` is an integer >= 1. A value other than 1 is an error when
+`confirm` is `all`. `confirm` and `confirm_k` are recorded on every result
+row. A cell whose drawn failures are not all selected yet stays unconfirmed
+(`confirmed` null and `confirm_skipped` null).
 The one-sided Fisher exact p is written on the result and is not a gate. `evaluate` does not take an `alpha` argument and
 always uses `ALPHA` (1.0). The result row records that `alpha` and the fresh
 baseline's `baseline_commit`. `evaluate` refuses to write a row whose alpha is

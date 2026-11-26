@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
+import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch as mock_patch
 
@@ -681,7 +686,8 @@ class ConfirmMode(unittest.TestCase):
             idn.evaluate(run, proposal, executor, n_trials=2)  # default confirm=all
         rows = {row["alternative_index"]: row for row in self._results(run)}
         self.assertEqual(set(rows), {0, 1, 2})
-        self.assertTrue(all(row["confirm"] == "all" and row["confirm_skipped"] is None for row in rows.values()))
+        self.assertTrue(all(row["confirm"] == "all" and row["confirm_k"] == 1 and row["confirm_skipped"] is None
+                            for row in rows.values()))
         self.assertEqual(rows[1]["candidate"], False)
         self.assertIsNone(rows[1]["confirmation_alt_passes"])
         self.assertTrue(rows[0]["confirmed"] and rows[2]["confirmed"])
@@ -704,11 +710,12 @@ class ConfirmMode(unittest.TestCase):
         idn.evaluate(run, tied_high_index, executor, n_trials=2, confirm="top")
         mid = self._results(run)
         self.assertEqual(len(mid), 2)
-        self.assertTrue(all(row["confirm"] == "top" and row["confirmation_run_dirs"] is None for row in mid))
-        self.assertTrue(all(row["confirm_skipped"] is None for row in mid))
+        self.assertTrue(all(row["confirm"] == "top" and row["confirm_k"] == 1 and row["confirmation_run_dirs"] is None
+                            for row in mid))
+        self.assertTrue(all(row["confirm_skipped"] is None and row["confirmed"] is None for row in mid))
         winner = idn.evaluate(run, tied_low_index, executor, n_trials=2, confirm="top")
         rows = {row["alternative_index"]: row for row in self._results(run)}
-        self.assertTrue(all(row["confirm"] == "top" for row in rows.values()))
+        self.assertTrue(all(row["confirm"] == "top" and row["confirm_k"] == 1 for row in rows.values()))
         self.assertEqual(winner["alternative_index"], 1)
         self.assertTrue(rows[1]["confirmed"] and rows[1]["confirm_skipped"] is None)
         self.assertEqual(rows[1]["selection_alt_passes"], 2)
@@ -850,22 +857,414 @@ class ConfirmMode(unittest.TestCase):
                                    "--confirm", "all", "--n-trials", "2"]), 0)
         all_rows = self._results(other)
         self.assertEqual(len(all_rows), 5)
-        self.assertTrue(all(row["confirm"] == "all" and row["confirm_skipped"] is None for row in all_rows))
+        self.assertTrue(all(row["confirm"] == "all" and row["confirm_k"] == 1 and row["confirm_skipped"] is None
+                            for row in all_rows))
         self.assertTrue(all(row["confirmation_alt_passes"] == 1 for row in all_rows))
+
+    def _canon_rows(self, rows):
+        """Serialized result rows with ``confirm_k`` removed."""
+        return "".join(
+            json.dumps({key: value for key, value in row.items() if key != "confirm_k"}, sort_keys=True) + "\n"
+            for row in rows)
+
+    def _ideation_at_0ea7671c(self):
+        cached = getattr(ConfirmMode, "_baseline_ideation", None)
+        if cached is not None:
+            return cached
+        rev = "0ea7671c0acc17da23ab92852cc9af17ae8db863"
+        source = subprocess.check_output(
+            ["git", "show", f"{rev}:obench/reflection/ideation.py"],
+            cwd=Path(__file__).resolve().parents[2])
+        path = Path(tempfile.mkdtemp()) / "ideation_0ea7671c.py"
+        path.write_bytes(source)
+        name = "ideation_baseline_0ea7671c"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        ConfirmMode._baseline_ideation = module
+        return module
+
+    def _assert_k1_matches_baseline(self, drive, name):
+        """``confirm_k`` 1 matches ``confirm=top`` rows from main 0ea7671c, aside from the new field."""
+        old_rows = drive(self._ideation_at_0ea7671c().evaluate)
+        default_rows = drive(idn.evaluate)
+
+        def explicit(*args, **kwargs):
+            kwargs["confirm_k"] = 1
+            return idn.evaluate(*args, **kwargs)
+
+        explicit_rows = drive(explicit)
+        self.assertEqual(self._canon_rows(default_rows), self._canon_rows(old_rows), name)
+        self.assertEqual(self._canon_rows(explicit_rows), self._canon_rows(old_rows), name)
+        self.assertTrue(old_rows, name)
+        self.assertTrue(all("confirm_k" not in row for row in old_rows), name)
+        self.assertTrue(all(row["confirm_k"] == 1 for row in default_rows), name)
+        self.assertTrue(all(row["confirm_k"] == 1 for row in explicit_rows), name)
+
+    def test_confirm_k_one_matches_top_rows_on_0ea7671c(self):
+        def best_of_three(evaluate):
+            run, trials = self._run()
+            self._draw(run, [trials[0]])
+            low = self._proposal(trials[0], 0, "low")
+            tied_high_index = self._proposal(trials[0], 2, "high-index")
+            tied_low_index = self._proposal(trials[0], 1, "low-index")
+            self._write(run, [low, tied_high_index, tied_low_index])
+            executor = self._executor({low["proposal_id"]: 1, tied_high_index["proposal_id"]: 2,
+                                       tied_low_index["proposal_id"]: 2})
+            for proposal in (low, tied_high_index, tied_low_index):
+                evaluate(run, proposal, executor, n_trials=2, confirm="top")
+            return self._results(run)
+
+        def across_failures(evaluate):
+            run, trials = self._run()
+            self._draw(run, trials)
+            early = self._proposal(trials[0], 0, "early")
+            late = self._proposal(trials[1], 0, "late")
+            self._write(run, [early, late])
+            executor = self._executor({early["proposal_id"]: 1, late["proposal_id"]: 2})
+            evaluate(run, early, executor, n_trials=2, confirm="top")
+            evaluate(run, late, executor, n_trials=2, confirm="top")
+            return self._results(run)
+
+        def earlier_draw(evaluate):
+            run, trials = self._run()
+            self._draw(run, trials)
+            early = self._proposal(trials[0], 4, "early-high-index")
+            late = self._proposal(trials[1], 0, "late-low-index")
+            self._write(run, [early, late])
+            executor = self._executor({early["proposal_id"]: 1, late["proposal_id"]: 1})
+            evaluate(run, late, executor, n_trials=2, confirm="top")
+            evaluate(run, early, executor, n_trials=2, confirm="top")
+            return self._results(run)
+
+        def same_patch(evaluate):
+            run, trials = self._run()
+            self._draw(run, trials)
+            first = self._proposal(trials[0], 0, "same-patch")
+            second = dict(first, parent_trial_id=trials[1]["trial_id"])
+            self._write(run, [first, second])
+            executor = self._executor({first["proposal_id"]: 0})
+            evaluate(run, first, executor, n_trials=2, confirm="top")
+            evaluate(run, second, executor, n_trials=2, confirm="top")
+            return self._results(run)
+
+        def still_pending(evaluate):
+            run, trials = self._run()
+            self._draw(run, trials)
+            early = self._proposal(trials[0], 0, "early")
+            late = self._proposal(trials[1], 0, "late")
+            self._write(run, [early, late])
+            executor = self._executor({early["proposal_id"]: 1, late["proposal_id"]: 2})
+            evaluate(run, early, executor, n_trials=2, confirm="top")
+            return self._results(run)
+
+        def confirm_all(evaluate):
+            run, trials = self._run()
+            proposals = [self._proposal(trials[0], 0, "a"), self._proposal(trials[0], 1, "b"),
+                         self._proposal(trials[0], 2, "c")]
+            self._write(run, proposals)
+            executor = self._executor({proposals[0]["proposal_id"]: 1, proposals[1]["proposal_id"]: 0,
+                                       proposals[2]["proposal_id"]: 2})
+            for proposal in proposals:
+                evaluate(run, proposal, executor, n_trials=2)
+            return self._results(run)
+
+        self._assert_k1_matches_baseline(best_of_three, "best of three")
+        self._assert_k1_matches_baseline(across_failures, "across failures")
+        self._assert_k1_matches_baseline(earlier_draw, "earlier draw")
+        self._assert_k1_matches_baseline(same_patch, "same patch")
+        self._assert_k1_matches_baseline(still_pending, "still pending")
+        self._assert_k1_matches_baseline(confirm_all, "confirm all")
+
+    def test_confirm_k_keeps_the_top_three_of_five_across_two_failures(self):
+        run, trials = self._run(4)
+        early_trial, late_trial = trials[0], trials[1]
+        self._draw(run, [early_trial, late_trial])
+        ranked_text = []
+        i = 0
+        while len(ranked_text) < 3:
+            text = f"rank-{i}"
+            ranked_text.append((self._proposal(late_trial, 0, text)["proposal_id"], text))
+            i += 1
+        ranked_text.sort()
+        high_index_text, low_id_text, high_id_text = (text for _, text in ranked_text)
+        self.assertLess(self._proposal(late_trial, 0, high_index_text)["proposal_id"],
+                        self._proposal(late_trial, 0, low_id_text)["proposal_id"])
+        self.assertLess(self._proposal(late_trial, 0, low_id_text)["proposal_id"],
+                        self._proposal(late_trial, 0, high_id_text)["proposal_id"])
+        high_id = self._proposal(late_trial, 1, high_id_text)
+        high_index = self._proposal(late_trial, 2, high_index_text)
+        most = self._proposal(late_trial, 9, "most-passes")
+        low_id = self._proposal(late_trial, 1, low_id_text)
+        early = self._proposal(early_trial, 5, "early-draw")
+        proposals = [high_id, high_index, most, low_id, early]
+        labels = {row["proposal_id"]: name for row, name in (
+            (high_id, "high-id"), (high_index, "high-index"), (most, "most"),
+            (low_id, "low-id"), (early, "early"))}
+        self._write(run, proposals)
+        executor = self._executor({most["proposal_id"]: 4, early["proposal_id"]: 3, low_id["proposal_id"]: 3,
+                                   high_id["proposal_id"]: 3, high_index["proposal_id"]: 3})
+        for proposal in (high_id, high_index, most, low_id):
+            idn.evaluate(run, proposal, executor, n_trials=4, confirm="top", confirm_k=3)
+        pending = self._results(run)
+        self.assertEqual(len(pending), 4)
+        self.assertTrue(all(row["confirm_k"] == 3 and row["confirm_skipped"] is None and row["confirmed"] is None
+                            and row["confirmation_run_dirs"] is None for row in pending))
+        idn.evaluate(run, early, executor, n_trials=4, confirm="top", confirm_k=3)
+        rows = self._results(run)
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(row["confirm"] == "top" and row["confirm_k"] == 3 for row in rows))
+        confirmed = {labels[row["proposal_id"]] for row in rows if row["confirmation_alt_passes"] is not None}
+        skipped = {labels[row["proposal_id"]] for row in rows if row["confirm_skipped"] == "not_top"}
+        self.assertEqual(confirmed, {"most", "early", "low-id"})
+        self.assertEqual(skipped, {"high-id", "high-index"})
+        by_label = {labels[row["proposal_id"]]: row for row in rows}
+        self.assertGreater(by_label["most"]["selection_alt_passes"], by_label["early"]["selection_alt_passes"])
+        self.assertLess(by_label["early"]["draw_order"], by_label["low-id"]["draw_order"])
+        self.assertEqual(by_label["early"]["selection_alt_passes"], by_label["low-id"]["selection_alt_passes"])
+        self.assertGreater(by_label["early"]["alternative_index"], by_label["low-id"]["alternative_index"])
+        self.assertEqual(by_label["low-id"]["alternative_index"], by_label["high-id"]["alternative_index"])
+        self.assertEqual(by_label["low-id"]["draw_order"], by_label["high-id"]["draw_order"])
+        self.assertLess(by_label["low-id"]["proposal_id"], by_label["high-id"]["proposal_id"])
+        self.assertLess(by_label["high-index"]["proposal_id"], by_label["low-id"]["proposal_id"])
+        self.assertGreater(by_label["high-index"]["alternative_index"], by_label["low-id"]["alternative_index"])
+        order = [labels[row["proposal_id"]] for row in idn.top_candidates(rows, 5)]
+        self.assertEqual(order, ["most", "early", "low-id", "high-id", "high-index"])
+        for name in ("high-id", "high-index"):
+            self.assertTrue(by_label[name]["candidate"])
+            self.assertIsNone(by_label[name]["confirmed"])
+            self.assertIsNone(by_label[name]["confirmation_baseline_passes"])
+        baselines = []
+        for name in ("most", "early", "low-id"):
+            row = by_label[name]
+            self.assertTrue(row["confirmed"])
+            self.assertIsNone(row["confirm_skipped"])
+            trial_rows = rn.read_rows(run / row["confirmation_run_dirs"][1] / "trials.jsonl")
+            self.assertEqual(len(trial_rows), 4)
+            baselines.append({item["trial_id"] for item in trial_rows})
+        self.assertEqual(len(set().union(*baselines)), 12)
+
+    def test_confirm_k_confirms_every_candidate_when_the_cell_has_fewer(self):
+        run, trials = self._run()
+        self._draw(run, [trials[0]])
+        first = self._proposal(trials[0], 0, "first")
+        second = self._proposal(trials[0], 1, "second")
+        miss = self._proposal(trials[0], 2, "miss")
+        self._write(run, [first, second, miss])
+        executor = self._executor({first["proposal_id"]: 1, second["proposal_id"]: 2, miss["proposal_id"]: 0})
+        for proposal in (first, second, miss):
+            idn.evaluate(run, proposal, executor, n_trials=2, confirm="top", confirm_k=3)
+        rows = {row["alternative_index"]: row for row in self._results(run)}
+        self.assertTrue(all(row["confirm_k"] == 3 and row["confirm"] == "top" for row in rows.values()))
+        self.assertTrue(rows[0]["confirmed"] and rows[1]["confirmed"])
+        self.assertFalse(rows[2]["candidate"])
+        self.assertIsNone(rows[2]["confirm_skipped"])
+        self.assertIsNone(rows[2]["confirmed"])
+        self.assertFalse(any(row["confirm_skipped"] == "not_top" for row in rows.values()))
+        bases = {tuple(row["confirmation_run_dirs"]) for row in rows.values() if row["confirmed"]}
+        self.assertEqual(len(bases), 2)
+
+    def test_same_patch_confirm_k_keeps_a_fresh_baseline_per_failure(self):
+        n = rn.N_TRIALS
+        run, trials = self._run(n)
+        pair = trials[:2]
+        self._draw(run, pair)
+        first = self._proposal(pair[0], 0, "same-patch")
+        second = dict(first, parent_trial_id=pair[1]["trial_id"])
+        self.assertEqual(first["proposal_id"], second["proposal_id"])
+        self._write(run, [first, second])
+        executor = self._executor({first["proposal_id"]: 1})
+        idn.evaluate(run, first, executor, n_trials=n, confirm="top", confirm_k=2)
+        idn.evaluate(run, second, executor, n_trials=n, confirm="top", confirm_k=2)
+        rows = self._results(run)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            sorted((row["parent_trial_id"], row["proposal_id"]) for row in rows),
+            sorted((trial["trial_id"], first["proposal_id"]) for trial in pair))
+        self.assertTrue(all(row["confirmed"] and row["confirm_k"] == 2 and row["confirm_skipped"] is None
+                            for row in rows))
+        self.assertEqual(len({tuple(row["confirmation_run_dirs"]) for row in rows}), 2)
+        baseline_ids = []
+        for row in rows:
+            self.assertEqual(row["confirmation_baseline_completed"], n)
+            self.assertEqual(row["confirmation_alt_completed"], n)
+            trial_rows = rn.read_rows(run / row["confirmation_run_dirs"][1] / "trials.jsonl")
+            self.assertEqual(len(trial_rows), n)
+            baseline_ids.append({item["trial_id"] for item in trial_rows})
+        self.assertFalse(baseline_ids[0] & baseline_ids[1])
+        baseline_calls = [call for call in executor.calls if "--confirm-baseline--" in call.run_id]
+        alt_calls = [call for call in executor.calls if "--confirm--" in call.run_id]
+        self.assertEqual(len({call.run_id for call in baseline_calls}), 2)
+        self.assertEqual(len(baseline_calls), 2 * n)
+        self.assertEqual(len({call.run_id for call in alt_calls}), 2)
+        self.assertEqual(len(alt_calls), 2 * n)
+
+    def test_confirm_k_below_one_and_with_confirm_all_is_rejected(self):
+        run, trials = self._run()
+        proposal = self._proposal(trials[0], 0, "a")
+        executor = self._executor({proposal["proposal_id"]: 1})
+        for bad in (0, -1, True, 1.5, "2"):
+            with self.assertRaisesRegex(ValueError, "confirm_k"):
+                idn.evaluate(run, proposal, executor, n_trials=2, confirm="top", confirm_k=bad)
+        with self.assertRaisesRegex(ValueError, "confirm_k"):
+            idn.evaluate(run, proposal, executor, n_trials=2, confirm="all", confirm_k=2)
+        self.assertFalse((run / "ideation_results.jsonl").exists())
+        with self.assertRaisesRegex(ValueError, "confirm_k"):
+            idn.IdeationConfig.from_dict({"confirm": "top", "confirm_k": 0})
+        with self.assertRaisesRegex(ValueError, "confirm_k"):
+            idn.IdeationConfig.from_dict({"confirm": "all", "confirm_k": 3})
+        with self.assertRaisesRegex(ValueError, "confirm_k"):
+            idn.IdeationConfig.from_dict({"confirm": "top", "confirm_k": True})
+        self.assertEqual(idn.IdeationConfig.from_dict({"confirm": "all"}).confirm_k, 1)
+        self.assertEqual(idn.IdeationConfig.from_dict({"confirm": "top", "confirm_k": 3}).confirm_k, 3)
+        self.assertEqual(idn.resolve_config(None, None, None).confirm_k, 1)
+        self.assertEqual(idn.resolve_config(None, "top", 3).confirm, "top")
+        self.assertEqual(idn.resolve_config(None, "top", 3).confirm_k, 3)
+        config = run / "ideation-config.json"
+        config.write_text(json.dumps({"confirm": "top", "confirm_k": 3}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "confirm_k"):
+            idn.resolve_config(config, "all", None)
+        self.assertEqual(idn.resolve_config(config, "all", 1).confirm_k, 1)
+        for bad in (0, -3):
+            with self.assertRaisesRegex(ValueError, "confirm_k"):
+                rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 1}, confirm="top", cells={OPUS: 1}, confirm_k=bad)
+        with self.assertRaisesRegex(ValueError, "confirm_k"):
+            rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 1}, confirm="all", confirm_k=4)
+        with self.assertRaisesRegex(ValueError, "cell"):
+            rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 1}, confirm="top", confirm_k=3)
+        with self.assertRaisesRegex(SystemExit, "confirm_k"):
+            idn.main(["--run", "unused", "--fixture", "unused", "--confirm", "top", "--confirm-k", "0"])
+        with self.assertRaisesRegex(SystemExit, "confirm_k"):
+            idn.main(["--run", "unused", "--fixture", "unused", "--confirm", "all", "--confirm-k", "2"])
+
+    def test_confirm_k_cli_confirms_that_many_and_records_it(self):
+        run, trials = self._run()
+        idn.propose(run, trials[0], "A", FakeIdeator([good(i) for i in range(5)]))
+        self._draw(run, [trials[0]])
+        fixture = run / "passes.json"
+        fixture.write_text(json.dumps({f"extract-elf|{OPUS}": 1}), encoding="utf-8")
+        config = run / "ideation-config.json"
+        config.write_text(json.dumps({"confirm": "top", "confirm_k": 1}), encoding="utf-8")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(idn.main(["--run", str(run), "--fixture", str(fixture), "--config", str(config),
+                                       "--confirm-k", "3", "--n-trials", "2"]), 0)
+        summary = json.loads(buf.getvalue())
+        self.assertEqual((summary["confirm"], summary["confirm_k"]), ("top", 3))
+        rows = self._results(run)
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(row["confirm"] == "top" and row["confirm_k"] == 3 for row in rows))
+        confirmed = sorted(row["alternative_index"] for row in rows if row["confirmation_alt_passes"] is not None)
+        skipped = sorted(row["alternative_index"] for row in rows if row["confirm_skipped"] == "not_top")
+        self.assertEqual(confirmed, [0, 1, 2])
+        self.assertEqual(skipped, [3, 4])
+
+    def _arm_inputs(self, run, proposal):
+        base_cfg = json.loads((run / "plan.json").read_text(encoding="utf-8"))["config"]
+        fresh = json.loads((run / "credit_baseline.json").read_text(encoding="utf-8"))
+        cell = fresh[f"{proposal['model']}/{proposal['task']}"]
+        recorded = {"ref": cell["image"]["ref"], "id": cell["image"]["id"],
+                    "matches_pin": cell["image_matches_pin"]}
+        return base_cfg, recorded
+
+    def test_confirm_k_persists_each_winner_before_the_next(self):
+        run, trials = self._run()
+        self._draw(run, [trials[0]])
+        proposals = [self._proposal(trials[0], index, f"rank-{index}") for index in range(3)]
+        self._write(run, proposals)
+        # n=2. Passes 2, then 1, then 1: rank is index 0, 1, 2. All three are candidates.
+        executor = self._executor({proposals[0]["proposal_id"]: 2, proposals[1]["proposal_id"]: 1,
+                                   proposals[2]["proposal_id"]: 1})
+        for proposal in proposals[:2]:
+            idn.evaluate(run, proposal, executor, n_trials=2, confirm="top", confirm_k=3)
+        seen = []
+        real = idn._run_confirmation
+
+        def wrapped(*args, **kwargs):
+            seen.append(args[2]["proposal_id"])
+            if len(seen) == 2:
+                raise RuntimeError("confirmation failed")
+            return real(*args, **kwargs)
+
+        with mock_patch.object(idn, "_run_confirmation", side_effect=wrapped):
+            with self.assertRaisesRegex(RuntimeError, "confirmation failed"):
+                idn.evaluate(run, proposals[2], executor, n_trials=2, confirm="top", confirm_k=3)
+        self.assertEqual(seen, [proposals[0]["proposal_id"], proposals[1]["proposal_id"]])
+        rows = {row["proposal_id"]: row for row in self._results(run)}
+        self.assertEqual(set(rows), {proposal["proposal_id"] for proposal in proposals})
+        first = rows[proposals[0]["proposal_id"]]
+        self.assertEqual((first["parent_trial_id"], first["proposal_id"]),
+                         (trials[0]["trial_id"], proposals[0]["proposal_id"]))
+        self.assertTrue(first["confirmed"])
+        self.assertEqual(first["confirm_k"], 3)
+        self.assertIsNotNone(first["confirmation_run_dirs"])
+        for proposal in proposals[1:]:
+            self.assertIsNone(rows[proposal["proposal_id"]]["confirmation_alt_passes"])
+            self.assertFalse((run / "ideation" / proposal["proposal_id"] / "confirm").exists())
+
+    def test_arm_dir_refuses_a_different_model_task_or_parent(self):
+        run, trials = self._run()
+        proposal = self._proposal(trials[0], 0, "guard")
+        base_cfg, recorded = self._arm_inputs(run, proposal)
+        executor = rn.FixtureExecutor({})
+        idn._arm(run, base_cfg, proposal, "select", True, executor, 2, None, recorded)
+        calls = len(executor.calls)
+        plan_path = run / "ideation" / proposal["proposal_id"] / "select" / "plan.json"
+        original = plan_path.read_text(encoding="utf-8")
+        other_model = dict(proposal, model="gemini-4-carbon")
+        with self.assertRaisesRegex(ValueError, r"\(model\)"):
+            idn._arm(run, base_cfg, other_model, "select", True, executor, 2, None, recorded)
+        other_task = dict(proposal, task="other-task")
+        with self.assertRaisesRegex(ValueError, r"\(task\)"):
+            idn._arm(run, base_cfg, other_task, "select", True, executor, 2, None, recorded)
+        self.assertEqual(plan_path.read_text(encoding="utf-8"), original)
+        self.assertEqual(len(executor.calls), calls)
+
+        idn._arm(run, base_cfg, proposal, "confirm", True, executor, 2, None, recorded)
+        confirm_plan = run / "ideation" / proposal["proposal_id"] / "confirm" / "plan.json"
+        confirm_text = confirm_plan.read_text(encoding="utf-8")
+        confirm_calls = len(executor.calls)
+        other_parent = dict(proposal, parent_trial_id=trials[1]["trial_id"])
+        with self.assertRaisesRegex(ValueError, r"\(parent_trial_id\)"):
+            idn._arm(run, base_cfg, other_parent, "confirm", True, executor, 2, None, recorded)
+        self.assertEqual(confirm_plan.read_text(encoding="utf-8"), confirm_text)
+        self.assertEqual(len(executor.calls), confirm_calls)
+
+    def test_arm_dir_same_identity_rerun_is_not_refused(self):
+        run, trials = self._run()
+        proposal = self._proposal(trials[0], 0, "again")
+        base_cfg, recorded = self._arm_inputs(run, proposal)
+        executor = rn.FixtureExecutor({})
+        idn._arm(run, base_cfg, proposal, "select", True, executor, 2, None, recorded)
+        plan_path = run / "ideation" / proposal["proposal_id"] / "select" / "plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["parent_trial_id"], proposal["parent_trial_id"])
+        calls = len(executor.calls)
+        idn._arm(run, base_cfg, proposal, "select", True, executor, 2, None, recorded)
+        self.assertEqual(len(executor.calls), calls)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["parent_trial_id"], proposal["parent_trial_id"])
+        self.assertEqual(plan["config"]["models"], [proposal["model"]])
+        self.assertEqual(plan["config"]["tasks"], [proposal["task"]])
+        # The same patch on another failure shares the selection directory.
+        other_parent = dict(proposal, parent_trial_id=trials[1]["trial_id"])
+        idn._arm(run, base_cfg, other_parent, "select", True, executor, 2, None, recorded)
+        self.assertEqual(len(executor.calls), calls)
 
 
 class Estimate(unittest.TestCase):
     def test_confirmation_is_in_the_cost_estimate(self):
         est = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1})
-        self.assertEqual((est["selection_usd"], est["confirmation_usd"], est["total_usd"], est["confirm"]),
-                         (300.0, 600.0, 900.0, "all"))
+        self.assertEqual((est["selection_usd"], est["confirmation_usd"], est["total_usd"], est["confirm"],
+                          est["confirm_k"]), (300.0, 600.0, 900.0, "all", 1))
         half = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 1}, candidate_fraction=0.2)
         self.assertEqual(half["confirmation_usd"], 120.0)
         # Three failures in one cell: selection is three, confirmation is one.
         one_cell = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 3},
                                         confirm="top", cells={OPUS: 1})
         self.assertEqual((one_cell["selection_usd"], one_cell["confirmation_usd"], one_cell["total_usd"],
-                          one_cell["confirm"]), (900.0, 120.0, 1020.0, "top"))
+                          one_cell["confirm"], one_cell["confirm_k"]), (900.0, 120.0, 1020.0, "top", 1))
         # Eight cells, twenty-four failures: eight confirmations, not twenty-four.
         eight = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=2.0), {OPUS: 24},
                                      confirm="top", cells={OPUS: 8}, candidate_fraction=0.5)
@@ -876,6 +1275,22 @@ class Estimate(unittest.TestCase):
             rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 3}, confirm="top")
         with self.assertRaisesRegex(ValueError, "confirm"):
             rn.ideation_estimate(rn.FixtureExecutor({}), {OPUS: 1}, confirm="maybe")
+
+    def test_top_confirmation_price_is_cells_times_k_times_2n(self):
+        unit = 2.0
+        n = rn.N_TRIALS
+        three = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=unit), {OPUS: 3},
+                                     confirm="top", cells={OPUS: 1}, confirm_k=3)
+        self.assertEqual(three["confirm_k"], 3)
+        self.assertEqual(three["confirmation_usd"], 1 * 3 * 2 * n * unit)
+        self.assertEqual(three["selection_usd"], 900.0)
+        eight = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=unit), {OPUS: 24},
+                                     confirm="top", cells={OPUS: 8}, confirm_k=2, candidate_fraction=0.5)
+        self.assertEqual(eight["confirmation_usd"], 8 * 2 * 2 * n * unit)
+        self.assertEqual(eight["confirm_k"], 2)
+        default = rn.ideation_estimate(rn.FixtureExecutor({}, cost_per_trial=unit), {OPUS: 3},
+                                       confirm="top", cells={OPUS: 1})
+        self.assertEqual((default["confirm_k"], default["confirmation_usd"]), (1, 1 * 1 * 2 * n * unit))
 
 
 if __name__ == "__main__":
