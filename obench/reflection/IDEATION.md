@@ -116,6 +116,17 @@ called.
    are eight confirmations. `confirm` and `confirm_k` are stored on every
    result row, and a `top` row records `draw_order`. `confirm_k` must be an
    integer >= 1. A value other than 1 is an error when `confirm` is `all`.
+   Each confirmed candidate is written to `ideation_results.jsonl` as soon as
+   its confirmation finishes. A later confirmation that raises leaves those
+   rows in the file, and the confirmations after it do not start.
+
+   An arm directory is `ideation/<proposal_id>/<label>`, with the parent trial
+   id added only when one cell confirms the same patch more than once. Before
+   the arm runs, an existing `plan.json` whose model, task, or `parent_trial_id`
+   belongs to a different arm is an error. The directory is not overwritten. The
+   same arm run again resumes. Selection of one patch on the same model and task
+   stays one directory across that cell's failures, which is the `confirm_k` 1
+   layout.
 
 ```text
 python3 -m obench.reflection.ideation --run <run dir> --fixture passes.json [--config ideation.json] [--confirm top|all] [--confirm-k K]

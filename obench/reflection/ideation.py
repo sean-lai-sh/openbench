@@ -493,6 +493,7 @@ def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: boo
         rel = f"ideation/{pid}/{arm_scope}/{label}"
         run_identity = f"{pid}--{arm_scope}"
     child = run_dir / rel
+    _refuse_foreign_arm(child, proposal, label)
     previous = getattr(executor, "smoke_compaction", None)
     if previous:
         executor.smoke_compaction = False
@@ -503,6 +504,7 @@ def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: boo
             "patch_id": pid if patched else None, "patch": proposal["patch"] if patched else None,
             "spend_cap_usd": spend_cap_usd, "smoke_compaction": False, "recorded_image": recorded_image})
         status = rn.Runner(cfg, child, executor).run()
+        _stamp_arm_parent(child, proposal.get("parent_trial_id"))
         _check_fresh_image(f"{proposal['model']}/{proposal['task']}", child, recorded_image)
     finally:
         if previous:
@@ -510,6 +512,75 @@ def _arm(run_dir: Path, base_cfg: dict, proposal: dict, label: str, patched: boo
     rows = [s for s in rn.read_rows(child / "summary.jsonl")
             if s["patch_id"] == (pid if patched else None) and s["task"] == proposal["task"]]
     return (rows[0] if rows else {}), status["state"], rel
+
+
+def _plan_str(value) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _plan_list(value) -> tuple:
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return ()
+
+
+def _refuse_foreign_arm(child: Path, proposal: dict, label: str) -> None:
+    """Refuse an arm directory whose ``plan.json`` belongs to a different arm.
+
+    Compared fields are model, task, and ``parent_trial_id``. A missing
+    ``parent_trial_id`` (the plan was written before the stamp) is not a
+    difference. Selection of one patch on the same model and task is one
+    directory for every failure of that patch: that resume is the ``confirm_k``
+    1 layout, so a different parent there is not a new arm. Any other
+    difference raises before the runner starts, and the directory is left
+    unchanged.
+    """
+    path = child / "plan.json"
+    if not path.is_file():
+        return
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    config = plan.get("config") if isinstance(plan.get("config"), dict) else {}
+    recorded_models = _plan_list(config.get("models"))
+    recorded_tasks = _plan_list(config.get("tasks"))
+    recorded = (recorded_models, recorded_tasks, _plan_str(plan.get("parent_trial_id")))
+    incoming = ((proposal.get("model"),), (proposal.get("task"),), _plan_str(proposal.get("parent_trial_id")))
+    shared_selection = (label == "select" and recorded_models == incoming[0] and recorded_tasks == incoming[1])
+    names = ("model", "task", "parent_trial_id")
+    mismatched = []
+    for name, was, now in zip(names, recorded, incoming):
+        if was == now:
+            continue
+        if name == "parent_trial_id" and (was is None or shared_selection):
+            continue
+        mismatched.append(name)
+    if not mismatched:
+        return
+    raise ValueError(
+        f"refusing to reuse {child.name} under {child.parent.name}: plan.json "
+        f"model={recorded_models!r} task={recorded_tasks!r} parent_trial_id={recorded[2]!r} "
+        f"differs from this arm model={incoming[0]!r} task={incoming[1]!r} "
+        f"parent_trial_id={incoming[2]!r} ({', '.join(mismatched)})")
+
+
+def _stamp_arm_parent(child: Path, parent_trial_id) -> None:
+    """Record ``parent_trial_id`` on the arm's ``plan.json`` once.
+
+    The runner rewrites ``plan.json`` without this field. The first completed
+    arm stamps it so a later arm can see whose directory this is. A stamp
+    already present is left in place.
+    """
+    if not isinstance(parent_trial_id, str) or not parent_trial_id:
+        return
+    path = child / "plan.json"
+    if not path.is_file():
+        return
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    if _plan_str(plan.get("parent_trial_id")) is not None:
+        return
+    plan["parent_trial_id"] = parent_trial_id
+    rn._write_json(path, plan)
 
 
 def _stage(prefix: str, baseline: dict, alt: dict, n: int) -> tuple[dict, float | None]:
@@ -757,7 +828,10 @@ def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, execu
     completes, the top ``confirm_k`` candidates (or every candidate, when the
     cell has fewer) are each confirmed on a fresh baseline. Every other
     candidate in the cell is ``confirm_skipped: not_top`` with ``candidate``
-    left true. ``confirm_k`` 1 uses ``top_candidate``.
+    left true. ``confirm_k`` 1 uses ``top_candidate``. Each winner is written
+    to ``ideation_results.jsonl`` as soon as its confirmation returns. A later
+    confirmation that raises leaves the earlier rows in place and does not
+    start the confirmations after it.
     """
     model, task = row["model"], row["task"]
     # The same patch hashes to one proposal_id. Keep the other failure's row.
@@ -790,16 +864,16 @@ def _confirm_top(run_dir: Path, base_cfg: dict, proposal: dict, row: dict, execu
     pid_counts: dict[str, int] = {}
     for item in winners:
         pid_counts[item["proposal_id"]] = pid_counts.get(item["proposal_id"], 0) + 1
-    # Confirmation can refuse an arm. Save only after every winner returns.
     confirmed_by_key = {}
     for winner in winners:
         winner_proposal = _proposal_by_id(run_dir, winner["proposal_id"], proposal, winner.get("parent_trial_id"))
         scope = winner.get("parent_trial_id") if pid_counts[winner["proposal_id"]] > 1 else None
-        confirmed_by_key[_result_key(winner)] = _run_confirmation(
+        confirmed = _run_confirmation(
             run_dir, base_cfg, winner_proposal, dict(winner), executor, n_trials, spend_cap_usd, recorded,
             baseline_commit, [winner.get("alpha", ALPHA)], arm_scope=scope)
-    results = [confirmed_by_key.get(_result_key(item), item) for item in results]
-    _save_results(run_dir, results)
+        confirmed_by_key[_result_key(winner)] = confirmed
+        results = [confirmed_by_key.get(_result_key(item), item) for item in results]
+        _save_results(run_dir, results)
     return next(item for item in results if _result_key(item) == _result_key(row))
 
 

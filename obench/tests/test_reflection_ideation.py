@@ -1160,6 +1160,98 @@ class ConfirmMode(unittest.TestCase):
         self.assertEqual(confirmed, [0, 1, 2])
         self.assertEqual(skipped, [3, 4])
 
+    def _arm_inputs(self, run, proposal):
+        base_cfg = json.loads((run / "plan.json").read_text(encoding="utf-8"))["config"]
+        fresh = json.loads((run / "credit_baseline.json").read_text(encoding="utf-8"))
+        cell = fresh[f"{proposal['model']}/{proposal['task']}"]
+        recorded = {"ref": cell["image"]["ref"], "id": cell["image"]["id"],
+                    "matches_pin": cell["image_matches_pin"]}
+        return base_cfg, recorded
+
+    def test_confirm_k_persists_each_winner_before_the_next(self):
+        run, trials = self._run()
+        self._draw(run, [trials[0]])
+        proposals = [self._proposal(trials[0], index, f"rank-{index}") for index in range(3)]
+        self._write(run, proposals)
+        # n=2. Passes 2, then 1, then 1: rank is index 0, 1, 2. All three are candidates.
+        executor = self._executor({proposals[0]["proposal_id"]: 2, proposals[1]["proposal_id"]: 1,
+                                   proposals[2]["proposal_id"]: 1})
+        for proposal in proposals[:2]:
+            idn.evaluate(run, proposal, executor, n_trials=2, confirm="top", confirm_k=3)
+        seen = []
+        real = idn._run_confirmation
+
+        def wrapped(*args, **kwargs):
+            seen.append(args[2]["proposal_id"])
+            if len(seen) == 2:
+                raise RuntimeError("confirmation failed")
+            return real(*args, **kwargs)
+
+        with mock_patch.object(idn, "_run_confirmation", side_effect=wrapped):
+            with self.assertRaisesRegex(RuntimeError, "confirmation failed"):
+                idn.evaluate(run, proposals[2], executor, n_trials=2, confirm="top", confirm_k=3)
+        self.assertEqual(seen, [proposals[0]["proposal_id"], proposals[1]["proposal_id"]])
+        rows = {row["proposal_id"]: row for row in self._results(run)}
+        self.assertEqual(set(rows), {proposal["proposal_id"] for proposal in proposals})
+        first = rows[proposals[0]["proposal_id"]]
+        self.assertEqual((first["parent_trial_id"], first["proposal_id"]),
+                         (trials[0]["trial_id"], proposals[0]["proposal_id"]))
+        self.assertTrue(first["confirmed"])
+        self.assertEqual(first["confirm_k"], 3)
+        self.assertIsNotNone(first["confirmation_run_dirs"])
+        for proposal in proposals[1:]:
+            self.assertIsNone(rows[proposal["proposal_id"]]["confirmation_alt_passes"])
+            self.assertFalse((run / "ideation" / proposal["proposal_id"] / "confirm").exists())
+
+    def test_arm_dir_refuses_a_different_model_task_or_parent(self):
+        run, trials = self._run()
+        proposal = self._proposal(trials[0], 0, "guard")
+        base_cfg, recorded = self._arm_inputs(run, proposal)
+        executor = rn.FixtureExecutor({})
+        idn._arm(run, base_cfg, proposal, "select", True, executor, 2, None, recorded)
+        calls = len(executor.calls)
+        plan_path = run / "ideation" / proposal["proposal_id"] / "select" / "plan.json"
+        original = plan_path.read_text(encoding="utf-8")
+        other_model = dict(proposal, model="gemini-4-carbon")
+        with self.assertRaisesRegex(ValueError, r"\(model\)"):
+            idn._arm(run, base_cfg, other_model, "select", True, executor, 2, None, recorded)
+        other_task = dict(proposal, task="other-task")
+        with self.assertRaisesRegex(ValueError, r"\(task\)"):
+            idn._arm(run, base_cfg, other_task, "select", True, executor, 2, None, recorded)
+        self.assertEqual(plan_path.read_text(encoding="utf-8"), original)
+        self.assertEqual(len(executor.calls), calls)
+
+        idn._arm(run, base_cfg, proposal, "confirm", True, executor, 2, None, recorded)
+        confirm_plan = run / "ideation" / proposal["proposal_id"] / "confirm" / "plan.json"
+        confirm_text = confirm_plan.read_text(encoding="utf-8")
+        confirm_calls = len(executor.calls)
+        other_parent = dict(proposal, parent_trial_id=trials[1]["trial_id"])
+        with self.assertRaisesRegex(ValueError, r"\(parent_trial_id\)"):
+            idn._arm(run, base_cfg, other_parent, "confirm", True, executor, 2, None, recorded)
+        self.assertEqual(confirm_plan.read_text(encoding="utf-8"), confirm_text)
+        self.assertEqual(len(executor.calls), confirm_calls)
+
+    def test_arm_dir_same_identity_rerun_is_not_refused(self):
+        run, trials = self._run()
+        proposal = self._proposal(trials[0], 0, "again")
+        base_cfg, recorded = self._arm_inputs(run, proposal)
+        executor = rn.FixtureExecutor({})
+        idn._arm(run, base_cfg, proposal, "select", True, executor, 2, None, recorded)
+        plan_path = run / "ideation" / proposal["proposal_id"] / "select" / "plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["parent_trial_id"], proposal["parent_trial_id"])
+        calls = len(executor.calls)
+        idn._arm(run, base_cfg, proposal, "select", True, executor, 2, None, recorded)
+        self.assertEqual(len(executor.calls), calls)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["parent_trial_id"], proposal["parent_trial_id"])
+        self.assertEqual(plan["config"]["models"], [proposal["model"]])
+        self.assertEqual(plan["config"]["tasks"], [proposal["task"]])
+        # The same patch on another failure shares the selection directory.
+        other_parent = dict(proposal, parent_trial_id=trials[1]["trial_id"])
+        idn._arm(run, base_cfg, other_parent, "select", True, executor, 2, None, recorded)
+        self.assertEqual(len(executor.calls), calls)
+
 
 class Estimate(unittest.TestCase):
     def test_confirmation_is_in_the_cost_estimate(self):
