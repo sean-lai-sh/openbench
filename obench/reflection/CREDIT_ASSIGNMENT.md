@@ -228,6 +228,11 @@ continue. A total stop does not start another cell. Rows already written stay
 baseline is published and marked `stopped_by_cap`, so `evaluate` will not
 score it. A cap stop does not replace a baseline that already finished N
 trials. That partial run is kept beside it as `credit_baseline/runs/<cell>.stopped`.
+A total-cap stop also leaves every requested cell it did not reach in
+`credit_baseline.json`. A fresh attempt at a cell that already has trials
+uses a new run id, so the new charges are new trial ids. The replaced
+attempt's `trials.jsonl` is kept under `credit_baseline/history/` and still
+counts. Repeating the command cannot spend past the cap by reusing the old ids.
 
 `--workers N` (default 1, int >= 1) is `runner --workers`: up to N trials of
 the one cell run at once. Cells run one at a time, in this process and across

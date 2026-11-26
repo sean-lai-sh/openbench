@@ -47,6 +47,7 @@ SCHEMA = "openbench.reflection.credit_baseline/v1"
 TABLE = "credit_baseline.json"
 CELL_DIR = "credit_baseline"
 RUNS_DIR = "runs"
+HISTORY_DIR = "history"
 
 
 class BaselineError(Exception):
@@ -170,15 +171,63 @@ def _check_fresh_image(cell: str, child: Path, image: dict) -> None:
             f"{cell}: fresh trials ran image id {sorted(ids)}, not the recorded id {image['id']}; refusing to re-pin")
 
 
-def _publish_run(staging: Path, published: Path) -> None:
+def _plan_run_id(path: Path) -> str | None:
+    plan_path = path / "plan.json"
+    if not plan_path.is_file():
+        return None
+    config = json.loads(plan_path.read_text(encoding="utf-8")).get("config") or {}
+    run_id = config.get("run_id")
+    return run_id if isinstance(run_id, str) and run_id else None
+
+
+def _archive_trials(run_dir: Path, slug: str, source: Path) -> None:
+    """Keep a copy of ``source``'s trials before that directory is deleted.
+
+    A later baseline attempt has different trial ids, and the ledger still
+    has to see what the deleted attempt spent.
+    """
+    trials = source / "trials.jsonl"
+    if not trials.is_file() or not trials.read_text(encoding="utf-8").strip():
+        return
+    run_id = _plan_run_id(source) or "unknown"
+    dest = run_dir / CELL_DIR / HISTORY_DIR / slug / run_id
+    dest.mkdir(parents=True, exist_ok=True)
+    target = dest / "trials.jsonl"
+    if not target.exists():
+        shutil.copyfile(trials, target)
+
+
+def _baseline_run_id(run_dir: Path, base_run_id: str, slug: str) -> str:
+    """A fresh attempt does not reuse a run id whose trials are already on disk."""
+    used = set()
+    runs = run_dir / CELL_DIR / RUNS_DIR
+    for name in (slug, slug + ".stopped", slug + ".incoming", slug + ".replacing"):
+        found = _plan_run_id(runs / name)
+        if found:
+            used.add(found)
+    history = run_dir / CELL_DIR / HISTORY_DIR / slug
+    if history.is_dir():
+        used.update(path.name for path in history.iterdir() if path.is_dir())
+    candidate = f"{base_run_id}--baseline--{slug}"
+    if candidate not in used:
+        return candidate
+    attempt = 2
+    while f"{candidate}--attempt-{attempt}" in used:
+        attempt += 1
+    return f"{candidate}--attempt-{attempt}"
+
+
+def _publish_run(staging: Path, published: Path, run_dir: Path, slug: str) -> None:
     """Move a checked run into the directory the manifest names.
 
     The previous run is kept until the new directory is in place. A failure
     before this call leaves that previous run, and the manifest that points
-    at it, unchanged.
+    at it, unchanged. The replaced attempt's trials are archived first so
+    its spend stays in the ledger.
     """
     backup = published.with_name(published.name + ".replacing")
     if backup.exists():
+        _archive_trials(run_dir, slug, backup)
         shutil.rmtree(backup)
     if published.exists():
         published.rename(backup)
@@ -189,6 +238,7 @@ def _publish_run(staging: Path, published: Path) -> None:
             backup.rename(published)
         raise
     if backup.exists():
+        _archive_trials(run_dir, slug, backup)
         shutil.rmtree(backup)
 
 
@@ -229,11 +279,12 @@ def _run_one(run_dir: Path, base_cfg: dict, item: dict, image: dict, executor: r
     slug = draw._manifest_name(cell).removesuffix(".json")
     staging = run_dir / CELL_DIR / RUNS_DIR / (slug + ".incoming")
     if staging.exists():
+        _archive_trials(run_dir, slug, staging)
         shutil.rmtree(staging)
     rel = f"{CELL_DIR}/{RUNS_DIR}/{slug}"
     cell_cap = ledger.max_usd_per_cell if ledger is not None else None
     cfg = rn.RunConfig.from_dict({
-        "run_id": f"{base_cfg['run_id']}--baseline--{slug}", "suite": base_cfg["suite"], "models": [model],
+        "run_id": _baseline_run_id(run_dir, base_cfg["run_id"], slug), "suite": base_cfg["suite"], "models": [model],
         "n_trials": n_trials, "tasks": [task], "max_rounds": 1, "fixed_tasks": True,
         "spend_cap_usd": cell_cap, "smoke_compaction": False, "recorded_image": image, "workers": workers,
     })
@@ -256,6 +307,7 @@ def _run_one(run_dir: Path, base_cfg: dict, item: dict, image: dict, executor: r
             raise BaselineError(f"{cell}: expected one baseline summary row, got {len(matches)}")
         return _baseline_row(cell, model, task, image, matches[0], plan, n_trials, rel, status["state"], workers), staging
     except Exception:
+        _archive_trials(run_dir, slug, staging)
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
@@ -302,12 +354,17 @@ def run_baselines(run_dir: Path, cells: list[str], executor: rn.Executor, n_tria
     if previous:
         executor.smoke_compaction = False
     staged: list[tuple[str, dict, Path]] = []
+    skipped_for_cap: list[str] = []
     try:
+        capped = False
         for item, image in prepared:
-            if ledger is not None and ledger.invocation_stop == "max_usd":
-                break
+            if capped:
+                skipped_for_cap.append(item["cell"])
+                continue
             row, staging = _run_one(run_dir, base_cfg, item, image, executor, n_trials, workers, ledger)
             staged.append((item["cell"], row, staging))
+            if ledger is not None and ledger.invocation_stop == "max_usd":
+                capped = True
     except Exception:
         for _, _, staging in staged:
             shutil.rmtree(staging, ignore_errors=True)
@@ -335,12 +392,17 @@ def run_baselines(run_dir: Path, cells: list[str], executor: rn.Executor, n_tria
         if keep_prior:
             kept = published.with_name(published.name + ".stopped")
             if kept.exists():
+                _archive_trials(run_dir, draw._manifest_name(name).removesuffix(".json"), kept)
                 shutil.rmtree(kept)
             staging.rename(kept)
             published_rows.append((name, prior))
         else:
-            _publish_run(staging, published)
+            _publish_run(staging, published, run_dir, draw._manifest_name(name).removesuffix(".json"))
             published_rows.append((name, row))
+    for name in skipped_for_cap:
+        prior = previous_manifest.get(name)
+        if isinstance(prior, dict):
+            published_rows.append((name, prior))
     manifests = {name: row for name, row in published_rows}
     _write_json(run_dir / TABLE, manifests)
     cell_dir = run_dir / CELL_DIR

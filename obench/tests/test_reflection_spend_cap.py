@@ -319,6 +319,41 @@ class Caps(unittest.TestCase):
         self.assertEqual(row["trials_completed"], 12)
         self.assertIsNone(row["candidate"])
 
+    def test_a_fresh_baseline_attempt_is_a_new_charge(self):
+        run = _two_cells()
+        cells = [f"{OPUS}/{ELF}"]
+        first = Priced(cost=1.0)
+        base.run_baselines(run, cells, first, n_trials=4, max_usd=5.0)
+        self.assertEqual(len(first.calls), 4)
+        second = Priced(cost=1.0)
+        base.run_baselines(run, cells, second, n_trials=4, max_usd=5.0)
+        self.assertEqual(len(second.calls), 1)
+        self.assertNotIn(second.calls[0].trial_id, {call.trial_id for call in first.calls})
+        third = Priced(cost=1.0)
+        base.run_baselines(run, cells, third, n_trials=4, max_usd=5.0)
+        self.assertEqual(third.calls, [])
+        fourth = Priced(cost=1.0)
+        base.run_baselines(run, cells, fourth, n_trials=4, max_usd=5.0)
+        self.assertEqual(fourth.calls, [])
+
+    def test_total_cap_keeps_baselines_it_does_not_reach(self):
+        run = _two_cells()
+        cells = [f"{OPUS}/{ELF}", f"{OPUS}/{QUERY}"]
+        first_exec = Priced(cost=1.0)
+        first = base.run_baselines(run, cells, first_exec, n_trials=2)
+        self.assertEqual(len(first_exec.calls), 4)
+        query_passes = first[f"{OPUS}/{QUERY}"]["passes"]
+        per_cell = run / "credit_baseline" / f"{OPUS}__{QUERY}.json"
+        per_cell_text = per_cell.read_text(encoding="utf-8")
+        again = Priced(cost=1.0)
+        second = base.run_baselines(run, cells, again, n_trials=2, max_usd=4.0)
+        self.assertEqual(again.calls, [])
+        self.assertEqual(set(second), set(cells))
+        self.assertEqual(second[f"{OPUS}/{QUERY}"]["passes"], query_passes)
+        self.assertFalse(second[f"{OPUS}/{QUERY}"].get("stopped_by_cap"))
+        self.assertEqual(per_cell.read_text(encoding="utf-8"), per_cell_text)
+        self.assertEqual(base.fresh_baseline_row(run, QUERY, OPUS)["passes"], query_passes)
+
     def test_a_restart_spends_only_the_remaining_per_cell_budget(self):
         # First process spends 8 of a 10 cap and exits. The next process is a new ledger.
         run = _ideation_run()
